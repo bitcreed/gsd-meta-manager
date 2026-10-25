@@ -73,7 +73,7 @@ use super::host::{decide, detect, Posture};
 use super::outcome::{self, LaunchEnd, StreamAccumulator, StreamSummary, Verdict};
 use super::process::{respawn_detached, run_bounded, spawn_launch_child};
 use super::prompt::{self, ResolvedPrompt};
-use super::push;
+use super::push::{self, planted};
 use super::sandbox::{
     bridged_command, bwrap_argv, child_env, claude_argv, common_env_sets, egress_env_sets,
     render_prompt, scope_unit_name, systemd_run_argv, LaunchPaths, SandboxSpec, BRIDGE_PORT,
@@ -95,7 +95,8 @@ use crate::driverctl::serve::{
 };
 use crate::driverctl::store::{
     CapLimits, DriverSpec, LaunchPosture, LaunchSpec, RunState, RunStore, TerminalOutcome,
-    TerminalStatus, EXTRA_ACTIVE_SECONDS, EXTRA_INFERENCE_REQUESTS, LOG_FILE, STATE_FILE,
+    TerminalStatus, EXTRA_ACTIVE_SECONDS, EXTRA_INFERENCE_REQUESTS, EXTRA_PLANTED, LOG_FILE,
+    STATE_FILE,
 };
 use crate::envelope::policy::EnvelopePolicy;
 use crate::error::LockError;
@@ -692,6 +693,12 @@ pub fn launch(opts: LaunchOptions) -> Result<LaunchSummary, LauncherError> {
         return Err(io_error("seed the per-run config directory", e));
     }
 
+    // D-22: the planted-file baseline of the checkout, once, before any driver of this
+    // run exists. An error leaves no baseline, so the push runs in strict mode.
+    if let Err(e) = planted::save_baseline_if_absent(&state_dir, &planted::snapshot(&project)) {
+        eprintln!("driver launch: could not record the planted-file baseline ({e}); the push will run in strict mode");
+    }
+
     // D-24, D-25 (RESEARCH §4): pin the push mirror and record the branch and start
     // commit of the run, host side, before any sandbox of this launch exists.
     record_push_basis(&session, &project, &root);
@@ -874,6 +881,8 @@ fn run_one_launch(
     };
     match supervise(session, ctx, n, &unit, &scope, &budget) {
         Ok(exited) => {
+            // D-22: every posture, the degraded one included (detection is host side).
+            record_planted(session, ctx);
             record_inference_requests(session, ctx, &exited);
             finish_launch(session, ctx, &exited)
         }
@@ -903,6 +912,56 @@ fn launch_posture(ctx: &LaunchContext) -> LaunchPosture {
             Posture::Degraded { .. } => None,
         },
         protections_absent: None,
+    }
+}
+
+/// Re-scan the checkout after a launch and record what the driver planted (D-22).
+///
+/// The findings are measured against the run's baseline, rendered at most
+/// [`planted::MAX_RECORDED`] lines long (`+N more` last) and written as the run's
+/// `planted` list when that differs from the stored one; the change is logged once
+/// (`planted`, with the counts) and printed. A store error is reported and does not
+/// change how the launch ends.
+fn record_planted(session: &Session, ctx: &LaunchContext) {
+    let baseline = planted::load_baseline(&ctx.state_dir).ok().flatten();
+    let now = planted::snapshot(&ctx.project);
+    let found = planted::findings(baseline.as_ref(), &now, &ctx.project);
+    let lines = planted::render_bounded(&found);
+    let git_relevant = found.iter().filter(|f| f.is_git_relevant()).count();
+    let mut store = lock_store(&session.store);
+    let stored: Vec<String> = store
+        .state()
+        .extra
+        .get(EXTRA_PLANTED)
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default();
+    if lines == stored {
+        return;
+    }
+    if let Err(e) = store.set_launcher_list(EXTRA_PLANTED, &lines) {
+        eprintln!("driver launch: could not record the planted findings: {e}");
+        return;
+    }
+    if let Err(e) = store.log_launcher_event(
+        "planted",
+        vec![
+            ("findings", Some(found.len().to_string())),
+            ("git", Some(git_relevant.to_string())),
+        ],
+    ) {
+        eprintln!("driver launch: could not log the planted findings: {e}");
+    }
+    if !found.is_empty() {
+        eprintln!(
+            "driver launch: {} planted finding(s) in the checkout ({git_relevant} git-relevant); inspect them before running git or claude there",
+            found.len()
+        );
     }
 }
 

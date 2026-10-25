@@ -1393,3 +1393,115 @@ fn a_host_proxy_is_warned_about_once() {
         stderr(&out)
     );
 }
+
+// ---------------------------------------------------------------- planted files (28.1-09, D-22, D-23)
+
+/// A `git` the test runs itself in `dir`, with no user or system configuration.
+fn plain_git(dir: &std::path::Path, args: &[&str]) {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .output()
+        .expect("git runs");
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// The fixture's project as a git repository on branch `work` with one commit, an
+/// `origin` that is a local bare repository, and a `.claude/settings.json`.
+fn git_project_with_claude_settings(fx: &Fixture) {
+    let dir = fx.project();
+    let origin = fx.scratch.path().join("origin.git");
+    fs::create_dir_all(&origin).unwrap();
+    plain_git(&origin, &["init", "--quiet", "--bare"]);
+    plain_git(dir, &["init", "--quiet", "-b", "work"]);
+    plain_git(dir, &["config", "user.name", "Driver Test"]);
+    plain_git(dir, &["config", "user.email", "driver@example.invalid"]);
+    plain_git(dir, &["config", "commit.gpgsign", "false"]);
+    fs::write(dir.join("README"), "base\n").unwrap();
+    plain_git(dir, &["add", "README"]);
+    plain_git(dir, &["commit", "--quiet", "-m", "base"]);
+    plain_git(
+        dir,
+        &[
+            "remote",
+            "add",
+            "origin",
+            &format!("file://{}", origin.display()),
+        ],
+    );
+    fs::create_dir_all(dir.join(".claude")).unwrap();
+    fs::write(dir.join(".claude/settings.json"), "{}\n").unwrap();
+}
+
+/// A driver that commits once, then plants an `fsmonitor` in `.git/config` and
+/// rewrites `.claude/settings.json`, as a compromised one would (D-23).
+const PLANT_DURING_LAUNCH: &str = r#"
+driverctl log start --mode headless --loop-mode loop
+echo "driver work" > feature.txt
+git add feature.txt
+git commit --quiet -m "driver work"
+printf '[core]\n\tfsmonitor = "false"\n' >> .git/config
+echo '{"hooks":{}}' > .claude/settings.json
+driverctl log end --reason all-done
+printf '%s\n' '{"type":"result","subtype":"success"}'
+"#;
+
+#[test]
+fn a_plant_during_the_launch_is_recorded_and_stops_the_push() {
+    let fx = Fixture::new();
+    git_project_with_claude_settings(&fx);
+    fx.write_scenario(PLANT_DURING_LAUNCH);
+
+    let out = fx.launch(&[]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let err = stderr(&out);
+    assert!(
+        err.contains("planted finding(s) in the checkout")
+            && err.contains("inspect them before running git or claude there"),
+        "{err}"
+    );
+
+    let state = fx.state_json();
+    let planted: Vec<&str> = state["planted"]
+        .as_array()
+        .expect("planted is recorded")
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect();
+    for want in [
+        "changed .git/config",
+        "git-config-key:core.fsmonitor .git/config",
+        "changed .claude/settings.json",
+    ] {
+        assert!(planted.contains(&want), "{want} missing from {planted:?}");
+    }
+    assert!(planted.len() <= 20, "{planted:?}");
+
+    let view = read_driver_run(&fx.run_dir).expect("the run reads back");
+    let framed = view.frontmatter.planted.clone().unwrap_or_default();
+    assert!(
+        framed.iter().any(|l| l == "changed .claude/settings.json"),
+        "the frontmatter carries planted: {framed:?}"
+    );
+
+    let log = fx.log();
+    let lines: Vec<&str> = log
+        .lines()
+        .filter(|l| l.contains("RUN | planted |"))
+        .collect();
+    assert_eq!(lines.len(), 1, "{log}");
+    assert!(
+        lines[0].contains("findings=") && lines[0].contains("git="),
+        "{}",
+        lines[0]
+    );
+
+    assert_eq!(state["status_reason"], "push-refused:planted_git_config");
+}

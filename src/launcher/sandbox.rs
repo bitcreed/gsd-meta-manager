@@ -253,6 +253,69 @@ pub const NULL_MASK_FILES: &[&str] = &[
     ".config/gsd-meta-manager/driver-oauth-token",
 ];
 
+/// Project directories bound onto themselves when they exist (D-21), so the driver
+/// cannot rename them away (`rename(2)` on a mount point fails with `EBUSY`) and swap
+/// in a directory of its own.
+pub const GUARD_SELF_DIRS: &[&str] = &[".git", ".claude"];
+
+/// The project-relative paths bound read-only inside the self-bound directories
+/// (D-21), with whether each is a directory. A path that is absent at launch gets no
+/// bind: placing a placeholder in the operator's project would leave junk behind
+/// (LNCH-11 prohibition), so detection alone (D-22) covers it.
+pub const GUARD_RO_REL: &[(&str, bool)] = &[
+    (".git/config", false),
+    (".git/hooks", true),
+    (".claude/settings.json", false),
+    (".claude/settings.local.json", false),
+    (".claude/hooks", true),
+    (".claude/agents", true),
+    (".claude/commands", true),
+];
+
+/// One bind of the planted-file guard (D-21).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GuardBind {
+    /// `--bind p p`: the directory stays writable but cannot be renamed or replaced.
+    SelfBind(PathBuf),
+    /// `--ro-bind p p`: the file or directory is unwritable.
+    Ro(PathBuf),
+}
+
+/// The guard binds for `project`, existing paths only, each self-bind before its
+/// children. A `.git` that is a file (a worktree checkout) gets no `.git` binds: its
+/// pointer is covered by detection only. A symlinked `.git` or `.claude` gets none
+/// either: binding through a link would bind the target, not the project's entry.
+pub fn guard_binds_for(project: &Path) -> Vec<GuardBind> {
+    let is_real_dir = |p: &Path| {
+        std::fs::symlink_metadata(p)
+            .map(|m| m.file_type().is_dir())
+            .unwrap_or(false)
+    };
+    let mut binds = Vec::new();
+    for dir in GUARD_SELF_DIRS {
+        let root = project.join(dir);
+        if !is_real_dir(&root) {
+            continue;
+        }
+        binds.push(GuardBind::SelfBind(root));
+        for (rel, is_dir) in GUARD_RO_REL {
+            if !rel.starts_with(&format!("{dir}/")) {
+                continue;
+            }
+            let path = project.join(rel);
+            let Ok(meta) = std::fs::symlink_metadata(&path) else {
+                continue;
+            };
+            let kind = meta.file_type();
+            // Regular files and directories only: a symlink is detection-only.
+            if (*is_dir && kind.is_dir()) || (!*is_dir && kind.is_file()) {
+                binds.push(GuardBind::Ro(path));
+            }
+        }
+    }
+    binds
+}
+
 /// The scope unit name of launch `launch_n` of a run (D-08):
 /// `gsdmm-driver-<run-id>-<hash8>-<n>`. systemd appends `.scope`; the name the
 /// store records carries the suffix.
@@ -296,6 +359,9 @@ pub struct SandboxSpec {
     /// The user's home directory the masks are relative to.
     pub home: PathBuf,
     pub paths: LaunchPaths,
+    /// The planted-file guard (D-21): self-binds and read-only binds of the project's
+    /// existing `.git` and `.claude` paths, emitted right after the project bind.
+    pub guard_binds: Vec<GuardBind>,
     /// The `$HOME` entries re-bound over the tmpfs `$HOME` (D-16), parents first.
     pub home_binds: Vec<HomeBind>,
     /// The per-run gitconfig, bound read-only at `<home>/.gitconfig` (D-17).
@@ -369,9 +435,11 @@ impl SandboxSpec {
         let runtime_dir = std::env::var_os("XDG_RUNTIME_DIR")
             .map(PathBuf::from)
             .filter(|dir| dir.is_absolute());
+        let guard_binds = guard_binds_for(&paths.project);
         SandboxSpec {
             home: home.to_owned(),
             paths,
+            guard_binds,
             home_binds: setup.binds.clone(),
             gitconfig: setup.gitconfig.clone(),
             null_masks,
@@ -478,6 +546,14 @@ pub fn bwrap_argv(spec: &SandboxSpec, command: &[OsString]) -> Vec<OsString> {
         argv.push(path.as_os_str().to_owned());
     };
     bind(&mut argv, "--bind", &paths.project);
+    // D-21: the planted-file guard follows the project bind (a later bind covers an
+    // earlier one) and precedes the drivers tmpfs; each self-bind precedes its children.
+    for guard in &spec.guard_binds {
+        match guard {
+            GuardBind::SelfBind(path) => bind(&mut argv, "--bind", path),
+            GuardBind::Ro(path) => bind(&mut argv, "--ro-bind", path),
+        }
+    }
     // Sibling runs vanish: an empty tmpfs over the drivers dir, then this run's own
     // directory is re-bound on top. The tmpfs must follow the project bind (which
     // would otherwise re-mount the host drivers dir over it) and precede the run-dir
@@ -698,6 +774,7 @@ mod tests {
         SandboxSpec {
             home: PathBuf::from("/home/u"),
             paths: paths(),
+            guard_binds: Vec::new(),
             home_binds: vec![
                 HomeBind::Ro(PathBuf::from("/home/u/.claude/hooks")),
                 HomeBind::Overlay(PathBuf::from("/home/u/.cargo/registry")),

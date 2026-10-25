@@ -435,6 +435,23 @@ printf '%s\n' '{{"type":"result","subtype":"success"}}'
 
     let launched = fx.launch(&[]);
     assert!(launched.status.success(), "{}", stderr(&launched));
+    // 28.1-09: the launcher records the baseline at launch, so the rewrite of
+    // `.git/config` is a `changed .git/config` finding and the end-of-run push is
+    // refused; nothing reached either repository.
+    assert_eq!(
+        fx.state_json()["status_reason"],
+        "push-refused:planted_git_config"
+    );
+    assert_eq!(pinned.refs(), "");
+    assert_eq!(hostile.refs(), "");
+
+    // The operator inspects the change and acknowledges it: the push then goes to
+    // the URL pinned before the driver existed, not to the rewritten one.
+    let acked = push_command(&fx)
+        .arg("--ack-planted")
+        .output()
+        .expect("spawn driver push");
+    assert!(acked.status.success(), "{}", stderr(&acked));
     let tip = git(fx.project(), &["rev-parse", "work"]);
     assert_eq!(
         pinned.branch("gsd-auto/p28/r28").as_deref(),
@@ -687,10 +704,9 @@ fn strict_mode_without_a_baseline_still_refuses() {
 
     let launched = fx.launch(&[]);
     assert!(launched.status.success(), "{}", stderr(&launched));
-    assert!(
-        !fx.state_dir().join(planted::BASELINE_FILE).exists(),
-        "this test runs without a baseline"
-    );
+    // 28.1-09: the launcher records the baseline itself; strict mode is what a
+    // lost or unreadable one leaves, so remove it before the push.
+    fs::remove_file(fx.state_dir().join(planted::BASELINE_FILE)).expect("a baseline was written");
 
     let again = run_push(&fx);
     assert_planted_refusal(&fx, &origin, &again);

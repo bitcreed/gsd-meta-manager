@@ -23,8 +23,8 @@ use gsd_meta_manager::launcher::egress::socket_path_for;
 use gsd_meta_manager::launcher::home::{HomeBind, HomeSetup};
 use gsd_meta_manager::launcher::sandbox::{
     bridged_command, bwrap_argv, child_env, claude_argv, common_env_sets, egress_env_sets,
-    etc_entries_in, EtcEntry, LaunchPaths, SandboxSpec, BRIDGE_PORT, DUMMY_OAUTH_TOKEN,
-    EXTRA_STRIP_ENV, ROUTING_STRIP_ENV, STRIP_ENV,
+    etc_entries_in, guard_binds_for, EtcEntry, GuardBind, LaunchPaths, SandboxSpec, BRIDGE_PORT,
+    DUMMY_OAUTH_TOKEN, EXTRA_STRIP_ENV, ROUTING_STRIP_ENV, STRIP_ENV,
 };
 use tempfile::TempDir;
 
@@ -55,6 +55,7 @@ fn golden_bwrap_argv() {
     let spec = SandboxSpec {
         home: PathBuf::from("/home/u"),
         paths: paths(),
+        guard_binds: Vec::new(),
         home_binds: vec![
             HomeBind::Ro(PathBuf::from("/home/u/.local/share/claude")),
             HomeBind::Ro(PathBuf::from("/home/u/.claude/hooks")),
@@ -360,6 +361,7 @@ fn the_etc_block_precedes_remount_and_skips_host_claude_code() {
     let spec = SandboxSpec {
         home: PathBuf::from("/home/u"),
         paths: paths(),
+        guard_binds: Vec::new(),
         home_binds: Vec::new(),
         gitconfig: None,
         null_masks: Vec::new(),
@@ -404,6 +406,7 @@ fn a_socket_outside_the_runtime_dir_is_not_re_bound() {
     let spec = SandboxSpec {
         home: PathBuf::from("/home/u"),
         paths: p,
+        guard_binds: Vec::new(),
         home_binds: Vec::new(),
         gitconfig: None,
         null_masks: Vec::new(),
@@ -420,6 +423,7 @@ fn the_egress_socket_is_re_bound_after_the_driverctl_socket_and_only_inside_the_
     let spec = SandboxSpec {
         home: PathBuf::from("/home/u"),
         paths: paths(),
+        guard_binds: Vec::new(),
         home_binds: Vec::new(),
         gitconfig: None,
         null_masks: Vec::new(),
@@ -457,6 +461,7 @@ fn the_run_tmpfs_follows_the_etc_block_and_precedes_the_project_and_the_runtime_
     let spec = SandboxSpec {
         home: PathBuf::from("/home/u"),
         paths: paths(),
+        guard_binds: Vec::new(),
         home_binds: Vec::new(),
         gitconfig: None,
         null_masks: Vec::new(),
@@ -792,4 +797,150 @@ fn runtime_dir_holds_only_the_driverctl_socket() {
             names[0], names[1]
         )
     );
+}
+
+// ---------------------------------------------------------------- planted-file guard (28.1-09, D-21)
+
+fn guard_spec(binds: Vec<GuardBind>) -> SandboxSpec {
+    SandboxSpec {
+        home: PathBuf::from("/home/u"),
+        paths: paths(),
+        guard_binds: binds,
+        home_binds: Vec::new(),
+        gitconfig: None,
+        null_masks: Vec::new(),
+        runtime_dir: None,
+        etc_entries: Vec::new(),
+    }
+}
+
+/// A project with a `.git` (config, hooks, objects) and a `.claude` (every guarded
+/// entry plus the writable skills and worktrees dirs).
+fn full_project() -> TempDir {
+    let dir = TempDir::new().expect("project");
+    let root = dir.path();
+    for d in [
+        ".git/hooks",
+        ".git/objects",
+        ".claude/hooks",
+        ".claude/agents",
+        ".claude/commands",
+        ".claude/skills",
+        ".claude/worktrees",
+        ".planning",
+    ] {
+        fs::create_dir_all(root.join(d)).expect("dir");
+    }
+    for f in [
+        ".git/config",
+        ".claude/settings.json",
+        ".claude/settings.local.json",
+        "CLAUDE.md",
+    ] {
+        fs::write(root.join(f), "x").expect("file");
+    }
+    dir
+}
+
+#[test]
+fn guard_binds_follow_the_project_bind() {
+    let project = full_project();
+    let root = project.path();
+    let binds = guard_binds_for(root);
+    let p = |rel: &str| root.join(rel);
+    assert_eq!(
+        binds,
+        vec![
+            GuardBind::SelfBind(p(".git")),
+            GuardBind::Ro(p(".git/config")),
+            GuardBind::Ro(p(".git/hooks")),
+            GuardBind::SelfBind(p(".claude")),
+            GuardBind::Ro(p(".claude/settings.json")),
+            GuardBind::Ro(p(".claude/settings.local.json")),
+            GuardBind::Ro(p(".claude/hooks")),
+            GuardBind::Ro(p(".claude/agents")),
+            GuardBind::Ro(p(".claude/commands")),
+        ],
+        "each self-bind precedes its children; skills, worktrees, CLAUDE.md and .planning stay writable"
+    );
+
+    // The argv: right after the project bind, before the drivers tmpfs, in that order.
+    let mut spec = guard_spec(binds);
+    spec.paths.project = root.to_owned();
+    spec.paths.run_dir = root.join(".planning/meta-manager/drivers/r1");
+    let argv = strings(&bwrap_argv(&spec, &[OsString::from("true")]));
+    let project_bind = argv
+        .windows(3)
+        .position(|w| w[0] == "--bind" && w[1] == w[2] && w[1] == root.display().to_string())
+        .expect("project bind");
+    let mut expected: Vec<String> = Vec::new();
+    for (flag, rel) in [
+        ("--bind", ".git"),
+        ("--ro-bind", ".git/config"),
+        ("--ro-bind", ".git/hooks"),
+        ("--bind", ".claude"),
+        ("--ro-bind", ".claude/settings.json"),
+        ("--ro-bind", ".claude/settings.local.json"),
+        ("--ro-bind", ".claude/hooks"),
+        ("--ro-bind", ".claude/agents"),
+        ("--ro-bind", ".claude/commands"),
+    ] {
+        let path = root.join(rel).display().to_string();
+        expected.extend([flag.to_owned(), path.clone(), path]);
+    }
+    let start = project_bind + 3;
+    assert_eq!(&argv[start..start + expected.len()], expected.as_slice());
+    let drivers = root
+        .join(".planning/meta-manager/drivers")
+        .display()
+        .to_string();
+    let tmpfs = argv
+        .windows(2)
+        .position(|w| w[0] == "--tmpfs" && w[1] == drivers)
+        .expect("drivers tmpfs");
+    assert!(
+        start + expected.len() <= tmpfs,
+        "the guard precedes the drivers tmpfs"
+    );
+    for writable in [
+        ".claude/skills",
+        ".claude/worktrees",
+        "CLAUDE.md",
+        ".planning/",
+    ] {
+        let path = root.join(writable).display().to_string();
+        assert!(
+            !argv.iter().any(|a| a == &path),
+            "{writable} must stay writable (no bind of its own)"
+        );
+    }
+}
+
+#[test]
+fn absent_guard_paths_get_no_bind() {
+    // Only a .git with a config and no hooks, and no .claude at all.
+    let dir = TempDir::new().expect("project");
+    let root = dir.path();
+    fs::create_dir_all(root.join(".git")).expect("git");
+    fs::write(root.join(".git/config"), "x").expect("config");
+    assert_eq!(
+        guard_binds_for(root),
+        vec![
+            GuardBind::SelfBind(root.join(".git")),
+            GuardBind::Ro(root.join(".git/config")),
+        ]
+    );
+    // LNCH-11 prohibition: nothing is created in the operator's project.
+    assert!(!root.join(".git/hooks").exists());
+    assert!(!root.join(".claude").exists());
+
+    // A .git FILE (a worktree checkout) and a symlinked .claude get no binds at all.
+    let other = TempDir::new().expect("project");
+    fs::write(other.path().join(".git"), "gitdir: /elsewhere\n").expect("gitfile");
+    fs::create_dir_all(other.path().join("real-claude")).expect("real");
+    std::os::unix::fs::symlink("real-claude", other.path().join(".claude")).expect("link");
+    assert!(guard_binds_for(other.path()).is_empty());
+
+    // Nothing at all: the bare project.
+    assert!(guard_binds_for(TempDir::new().expect("empty").path()).is_empty());
 }
