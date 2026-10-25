@@ -241,6 +241,13 @@ pub fn redact_urls(text: &str) -> String {
     USERINFO.replace_all(text, "://").into_owned()
 }
 
+/// A captured child stderr line, made safe to persist to LOG.md: URL userinfo first
+/// ([`redact_urls`]), then the SAFE-04 token and path table
+/// ([`crate::journal::redact::redact`]).
+fn redact_captured(line: &str) -> String {
+    crate::journal::redact::redact(&redact_urls(line))
+}
+
 fn is_hex_sha(text: &str) -> bool {
     matches!(text.len(), 40 | 64) && text.chars().all(|c| c.is_ascii_hexdigit())
 }
@@ -322,7 +329,7 @@ fn git_with_env(args: Vec<OsString>, budget: Duration, more_env: &[(&str, &str)]
         Some((out, line)) => GitRun {
             success: out.status.success(),
             stdout: String::from_utf8_lossy(&out.stdout).trim().to_owned(),
-            last_error: redact_urls(&line),
+            last_error: redact_captured(&line),
         },
         None => GitRun {
             success: false,
@@ -880,7 +887,7 @@ fn open_pull_request(
             pr_url(&String::from_utf8_lossy(&out.stdout)),
             "gh printed no pull-request URL".to_owned(),
         ),
-        Some((_, line)) => (None, redact_urls(&line)),
+        Some((_, line)) => (None, redact_captured(&line)),
         None => (
             None,
             format!("gh did not start or did not finish within {GH_BUDGET:?}"),
@@ -1143,6 +1150,19 @@ mod tests {
             "git@github.com:o/r.git"
         );
         assert!(!redact_urls("ssh://deploy@host/x").contains("deploy"));
+    }
+
+    #[test]
+    fn redact_captured_masks_a_token_and_url_userinfo() {
+        // Assembled here so this file holds no token-shaped literal.
+        let secret = "ABCDEFGHIJKLMNOPQRSTUVWXYZ012345";
+        let line = format!(
+            "fatal: unable to access 'https://user:pw@github.com/o/r.git/' (token ghp_{secret})"
+        );
+        let out = redact_captured(&line);
+        assert!(out.contains("[REDACTED:github-token]"), "{out}");
+        assert!(!out.contains(secret), "{out}");
+        assert!(!out.contains("user:pw@"), "{out}");
     }
 
     #[test]

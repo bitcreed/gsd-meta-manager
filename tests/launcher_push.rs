@@ -584,6 +584,47 @@ fn open_pr_opens_one_pr_then_the_cap_refuses() {
     );
 }
 
+/// The secret body of the token the failing `gh` shim prints.
+const GH_TOKEN_BODY: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZ012345";
+
+/// A `gh` that fails the way a revoked credential does: a token on its last stderr
+/// line, exit 1. The token is assembled here so this file holds no token-shaped
+/// literal (the `KEY_BODY` convention).
+fn gh_fail_shim() -> String {
+    format!("#!/bin/sh\necho 'HTTP 401: Bad credentials (token ghp_{GH_TOKEN_BODY})' >&2\nexit 1\n")
+}
+
+#[test]
+fn a_failed_pr_create_logs_its_stderr_redacted() {
+    let fx = Fixture::new();
+    let origin = Remote::new(&fx, "origin.git");
+    init_project(&fx, "https://github.com/o/r.git");
+    alias_github_to(&fx, &origin);
+    launcher_support::write_executable(&fx.shims(), "gh", &gh_fail_shim());
+    enable_open_pr(&fx);
+    fx.write_scenario(COMMIT_AND_END);
+
+    let launched = launch_tuned(&fx, &[]);
+    assert!(launched.status.success(), "{}", stderr(&launched));
+    assert!(
+        origin.branch("gsd-auto/p28/r28").is_some(),
+        "the push itself landed even though the PR did not open"
+    );
+
+    let log = fx.log();
+    let failed = lines_of(&log, "pr-failed");
+    assert_eq!(failed.len(), 1, "{log}");
+    assert!(
+        failed[0].contains("[REDACTED:github-token]"),
+        "the logged detail is redacted: {}",
+        failed[0]
+    );
+    assert!(
+        !log.contains(GH_TOKEN_BODY),
+        "no byte of the token reaches LOG.md: {log}"
+    );
+}
+
 #[test]
 fn non_github_remote_skips_the_pr() {
     let fx = Fixture::new();
