@@ -4,11 +4,11 @@ milestone: v1.15.0
 current_phase: "28.1"
 current_phase_name: Sandbox Egress & Agent-Channel Isolation (INSERTED)
 status: executing
-stopped_at: Completed 28.1-09-PLAN.md
-last_updated: "2026-10-25T01:53:57.332Z"
+stopped_at: Completed 28.1-11-PLAN.md
+last_updated: "2026-10-25T02:03:35.784Z"
 last_activity: 2026-10-24
 last_activity_desc: Phase 28.1 execution started
-state_head: e95038bb7e300821836da23bf6355ae267892097
+state_head: 2f8244ae56eb75927c2c4d02d318468265a08b53
 progress:
   total_phases: 10
   completed_phases: 14
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-10-24)
 
 ## Current Position
 
-Status: Executing Phase 28.1
+Status: Ready to execute
   Phase 30 (Driver Tab on DIRECTION.md) complete 2026-10-24: 9/9 plans, re-verified 6/6 after quick
   261023-v1s staled the report (direction.rs give-back exchange); UAT 2/2, SECURITY threats_open 0,
   regression gate green apart from the known local git-version witness. Re-review WR-10/WR-08/WR-09
@@ -270,7 +270,7 @@ Carried forward from v1.7.0 (unchanged by this patch):
 Active milestone (superseded by the 2026-10-14 re-plan above; resume there):
 Milestone: v2.0 Autonomous Orchestration (Phases 14-31). Phases 19/21/22/23 are superseded.
 Phase: 28.1 (Sandbox Egress & Agent-Channel Isolation (INSERTED)) — EXECUTING
-Plan: 11 of 14
+Plan: 12 of 14
   19-11 closed T-19-60 structurally (resolve the effective program by finding the first token
   whose BASENAME is in a closed GOVERNED_PROGRAMS set; NO wrapper-name list added, one DELETED).
   19-12 certifies that closure at the CLASS level rather than at the instance level:
@@ -554,6 +554,7 @@ verify-phase if the gate is fixed.
 | Phase 28.1 P07 | 22 min | 3 tasks | 12 files |
 | Phase 28.1 P08 | 25 min | 3 tasks | 10 files |
 | Phase 28.1 P09 | 50 min | 3 tasks | 8 files |
+| Phase 28.1 P11 | 35 min | 3 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -781,6 +782,8 @@ Recent decisions affecting current work:
 - [Phase 28.1]: 28.1-08: $HOME is a 256 MiB tmpfs with a host-derived ro allowlist, a three-key per-run gitconfig and a registry overlay; install-root rule, tmpfs sizes (256 MiB/1 GiB/64 MiB) and the for-probe exemption in hook_is_kept are [inferred — audit]
 - [Phase 28.1]: [inferred — audit] 28.1-09: the socket sweep forces an lstat (-perm -000 -type s) because GNU find trusts d_type and a bwrap-bound socket sits on a regular-file mount point
 - [Phase 28.1]: [inferred — audit] 28.1-09: symlinked .git/.claude and guarded children get no bind (detection only); record_planted writes/logs/prints only when the planted list changed
+- [Phase 28.1]: [inferred - audit] 28.1-11: refuse any inference body that repeats a JSON key (any depth, decoded text) and forward the judged bytes unchanged, instead of re-serialising
+- [Phase 28.1]: [inferred - audit] 28.1-11: egress.log capped at LOG_MAX_BYTES = 8 MiB with one truncation marker; T-28.1-41 (case-insensitive upstream matching) accepted
 
 ### Roadmap Evolution
 
@@ -975,8 +978,8 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-10-25T00:20:06.277Z
-Stopped at: Completed 28.1-09-PLAN.md
+Last session: 2026-10-25T02:03:34.632Z
+Stopped at: Completed 28.1-11-PLAN.md
 Resume file: None
 
 Next: `/gsd-plan-phase 28.1` (or `/gsd-discuss-phase 28.1`). Phase 30 verified and complete. v1.15.0 is an interim release; the v2.0
