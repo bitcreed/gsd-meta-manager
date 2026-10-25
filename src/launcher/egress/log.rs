@@ -120,13 +120,20 @@ pub struct EgressLog {
     cap: u64,
 }
 
+/// Open `path` for appending, 0600, off the async threads.
 async fn open_append(path: &Path) -> io::Result<tokio::fs::File> {
-    tokio::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .mode(0o600)
-        .open(path)
-        .await
+    use std::os::unix::fs::OpenOptionsExt;
+    let path = path.to_owned();
+    let file = tokio::task::spawn_blocking(move || {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .mode(0o600)
+            .open(&path)
+    })
+    .await
+    .map_err(io::Error::other)??;
+    Ok(tokio::fs::File::from_std(file))
 }
 
 impl EgressLog {
