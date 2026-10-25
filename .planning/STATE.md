@@ -4,11 +4,11 @@ milestone: v1.15.0
 current_phase: 31
 current_phase_name: Retire Superseded Envelope & Goal-Layer Code
 status: executing
-stopped_at: Completed 31-02-PLAN.md
-last_updated: "2026-10-25T05:09:23.866Z"
+stopped_at: Completed 31-03-PLAN.md
+last_updated: "2026-10-25T05:43:46.603Z"
 last_activity: 2026-10-24
 last_activity_desc: Phase 31 execution started
-state_head: 6d976e47a9f3425cc9613ac43b6ef962bf041d7b
+state_head: 9d22292aa44e3e3aabc86d6d6dbf2b20d3e27cd5
 progress:
   total_phases: 10
   completed_phases: 14
@@ -270,7 +270,7 @@ Carried forward from v1.7.0 (unchanged by this patch):
 Active milestone (superseded by the 2026-10-14 re-plan above; resume there):
 Milestone: v2.0 Autonomous Orchestration (Phases 14-31). Phases 19/21/22/23 are superseded.
 Phase: 31 (Retire Superseded Envelope & Goal-Layer Code) — EXECUTING
-Plan: 3 of 7
+Plan: 4 of 7
   19-11 closed T-19-60 structurally (resolve the effective program by finding the first token
   whose BASENAME is in a closed GOVERNED_PROGRAMS set; NO wrapper-name list added, one DELETED).
   19-12 certifies that closure at the CLASS level rather than at the instance level:
@@ -560,6 +560,7 @@ verify-phase if the gate is fixed.
 | Phase 28.1 P14 | 20 min | 3 tasks | 1 files |
 | Phase 31 P01 | 17 min | 3 tasks | 7 files |
 | Phase 31 P02 | 20min | 2 tasks | 17 files |
+| Phase 31 P03 | 32 min | 3 tasks | 20 files |
 
 ## Accumulated Context
 
@@ -797,6 +798,8 @@ Recent decisions affecting current work:
 - [Phase 31]: 31-02: dashboard o deleted with r and x; the Driver-tab o keeps the opt-in toggle reachable [inferred - audit] — D-03 names the dashboard o for deletion; research Open Question 1 suggested keeping it
 - [Phase 31]: 31-02: opt-in prompts state only what launcher::push::policy_for reads (PR caps, branch namespace, defaults without a record); no gate or run-start claim [inferred - audit] — C12/D-13: drive is being retired, so the spawn-gate and no-new-run sentences became false
 - [Phase 31]: 31-02: opt-in disclosure kept (read by the grant prompt); only its two gate sentences reworded; seam/executor paragraphs need a pass in 31-04/31-07 [inferred - audit] — the plan deletes it only if solely the Start prompt read it
+- [Phase 31]: 31-03: attention rank 1 and the driven badge read the launcher marker Driven class only; needs_human lost its run and outcome inputs [inferred - audit]
+- [Phase 31]: 31-03: classify_change maps meta-manager/runs/** (>= 3 components) to Ignored; TerminalState kept for driver::run's label test until 31-04 [inferred - audit]
 
 ### Roadmap Evolution
 
@@ -991,8 +994,8 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-10-25T05:09:22.463Z
-Stopped at: Completed 31-02-PLAN.md
+Last session: 2026-10-25T05:43:45.240Z
+Stopped at: Completed 31-03-PLAN.md
 Resume file: None
 
 Next: `/gsd-plan-phase 28.1` (or `/gsd-discuss-phase 28.1`). Phase 30 verified and complete. v1.15.0 is an interim release; the v2.0
