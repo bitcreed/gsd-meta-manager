@@ -182,6 +182,14 @@ keep the driver usable on arbitrary projects. Each is its own entry.
   flags them after the run and push refuses on git-relevant ones. Nested repositories under
   skipped build directories (`target`, `node_modules`, `.venv`, `venv`, `__pycache__`) are not
   scanned.
+- **The inference and CONNECT proxy runs in the launcher, outside the sandbox's cgroup.** Its
+  memory, connections and time are bounded by the proxy itself, not by the scope's `MemoryMax` and
+  `TasksMax`: at most 64 connections; request bodies in flight share a 512 MiB weighted budget (a
+  body counts four times its length, a chunked one at the 32 MiB maximum), and a request that
+  cannot get its share within 10 seconds is answered `503`; a `CONNECT` tunnel ends after 5 minutes
+  without a byte or 1 hour in all; a response relay ends after 10 minutes of upstream silence, 60
+  seconds on one client write, or 2 hours in all. A driver can still use all 64 connection slots
+  for the length of those limits, which shows up as inference failures in that run only.
 - **The same-uid kernel attack surface.** The sandbox is namespaces and mounts, not a virtual
   machine. The agent shares your uid and your kernel; a kernel or `bwrap` vulnerability, or a flaw
   in a namespace the profile leaves open, is outside what this design defends.

@@ -65,6 +65,39 @@ const READY_TIMEOUT: Duration = Duration::from_secs(5);
 /// read its error does not hold a permit forever.
 const REPLY_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// The most memory the request bodies in flight may hold, in "weighted bytes" (WR-02): a
+/// body is weighed at [`BODY_WEIGHT`] times its length, covering the second copy the
+/// forwarded request needs and the `serde_json::Value` the judge builds. The proxy runs
+/// in the launcher, outside the scope's `MemoryMax`, so without this a driver could
+/// make 64 connections hold 32 MiB each and have the judge expand each of them.
+/// 512 MiB `[inferred — audit]`: about 4 maximum-size bodies, or hundreds of ordinary ones.
+pub const BODY_MEMORY_BUDGET: u32 = 512 * 1024 * 1024;
+
+/// The weight of one body byte against [`BODY_MEMORY_BUDGET`] `[inferred — audit]`.
+const BODY_WEIGHT: usize = 4;
+
+/// How long a request waits for body memory before it is answered `503`.
+const BODY_BUDGET_WAIT: Duration = Duration::from_secs(10);
+
+/// The longest a `CONNECT` tunnel may carry no byte in either direction (WR-02)
+/// `[inferred — audit]`.
+pub const TUNNEL_IDLE: Duration = Duration::from_secs(300);
+
+/// The longest a `CONNECT` tunnel may stay open (WR-02) `[inferred — audit]`.
+pub const TUNNEL_LIFETIME: Duration = Duration::from_secs(3600);
+
+/// The longest the upstream may stay silent before or during a response (WR-02). A
+/// non-streaming completion sends nothing until it is done, which can take minutes, so
+/// this is generous `[inferred — audit]`.
+const UPSTREAM_IDLE: Duration = Duration::from_secs(600);
+
+/// How long one write of the response to the client may take. A client that stopped
+/// reading does not pin a connection slot (WR-02).
+const CLIENT_WRITE_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// The longest one relayed response may take in all (WR-02) `[inferred — audit]`.
+const RELAY_LIFETIME: Duration = Duration::from_secs(7200);
+
 /// The run token as the proxy sees it. The driver never does.
 #[derive(Clone)]
 pub enum TokenProvider {
@@ -259,6 +292,8 @@ struct Ctx {
     connector: Connector,
     counters: Arc<Counters>,
     log: EgressLog,
+    /// What is left of [`BODY_MEMORY_BUDGET`].
+    body_budget: Arc<Semaphore>,
 }
 
 impl Ctx {
@@ -364,6 +399,7 @@ async fn run(
         connector,
         counters,
         log,
+        body_budget: Arc::new(Semaphore::new(BODY_MEMORY_BUDGET as usize)),
     });
     let _ = ready.send(Ok(()));
 
@@ -494,6 +530,19 @@ async fn inference(
             return;
         }
     }
+    // WR-02: the memory the body will take is reserved before it is read, so the bodies
+    // in flight stay within `BODY_MEMORY_BUDGET`.
+    let weight = body_weight(framing);
+    let reserved = tokio::time::timeout(
+        BODY_BUDGET_WAIT,
+        Arc::clone(&ctx.body_budget).acquire_many_owned(weight),
+    )
+    .await;
+    let Ok(Ok(reservation)) = reserved else {
+        return ctx
+            .deny_inference(client, &req, 503, "too many request bodies in flight")
+            .await;
+    };
     let body = match http1::read_body(client, leftover, framing).await {
         Ok(body) => body,
         Err(e) => {
@@ -523,6 +572,7 @@ async fn inference(
             .deny_inference(client, &req, 502, "no usable credential for the upstream")
             .await;
     };
+    drop(body);
     let mut up = match ctx.connector.connect().await {
         Ok(up) => up,
         Err(_) => {
@@ -536,7 +586,26 @@ async fn inference(
             .deny_inference(client, &req, 502, "the upstream refused the request")
             .await;
     }
+    // The request is on the wire: its memory is free for the next body while the
+    // response, which can take minutes, is relayed.
+    drop(request);
+    drop(reservation);
     relay_response(&mut up, client, ctx, &req).await;
+}
+
+/// What a body reserves of [`BODY_MEMORY_BUDGET`] before it is read: its announced
+/// length (the maximum for a chunked body, whose length is unknown) times
+/// [`BODY_WEIGHT`], at least 1 and at most the whole budget.
+fn body_weight(framing: policy::Framing) -> u32 {
+    let announced = match framing {
+        policy::Framing::Length(len) => usize::try_from(len).unwrap_or(usize::MAX),
+        policy::Framing::Chunked => http1::BODY_MAX_BYTES,
+    };
+    let weight = announced
+        .min(http1::BODY_MAX_BYTES)
+        .saturating_mul(BODY_WEIGHT)
+        .clamp(1, BODY_MEMORY_BUDGET as usize);
+    u32::try_from(weight).unwrap_or(BODY_MEMORY_BUDGET)
 }
 
 /// The status code of an HTTP/1.x status line, or `None`.
@@ -566,9 +635,14 @@ async fn relay_response(
     // The first read(s) up to the end of the status line, so a non-HTTP answer is
     // not passed on as one.
     while !first.contains(&b'\n') && first.len() < chunk.len() {
-        match up.read(&mut chunk).await {
-            Ok(0) | Err(_) => break,
-            Ok(n) => first.extend_from_slice(&chunk[..n]),
+        match tokio::time::timeout(UPSTREAM_IDLE, up.read(&mut chunk)).await {
+            Ok(Ok(0) | Err(_)) => break,
+            Ok(Ok(n)) => first.extend_from_slice(&chunk[..n]),
+            Err(_) => {
+                return ctx
+                    .deny_inference(client, req, 504, "the upstream did not answer in time")
+                    .await
+            }
         }
     }
     if !first.starts_with(b"HTTP/1.") {
@@ -588,22 +662,38 @@ async fn relay_response(
             "forwarded",
         )
         .await;
-    if client.write_all(&first).await.is_err() {
-        return;
-    }
-    loop {
-        match up.read(&mut chunk).await {
-            Ok(0) => break,
-            Ok(n) => {
-                if client.write_all(&chunk[..n]).await.is_err() {
-                    return;
-                }
-            }
-            // A TLS peer that closes without close_notify: the end of the stream.
-            Err(_) => break,
+    // WR-02: no read, write or whole-response wait is unbounded, so a stalled upstream
+    // or a client that stopped reading ends here instead of pinning a connection slot.
+    let relayed = tokio::time::timeout(RELAY_LIFETIME, async {
+        if !write_to_client(client, &first).await {
+            return;
         }
-    }
-    let _ = client.shutdown().await;
+        loop {
+            match tokio::time::timeout(UPSTREAM_IDLE, up.read(&mut chunk)).await {
+                Ok(Ok(0)) => break,
+                Ok(Ok(n)) => {
+                    if !write_to_client(client, &chunk[..n]).await {
+                        return;
+                    }
+                }
+                // A TLS peer that closes without close_notify: the end of the stream.
+                Ok(Err(_)) => break,
+                Err(_) => return,
+            }
+        }
+        let _ = tokio::time::timeout(CLIENT_WRITE_TIMEOUT, client.shutdown()).await;
+    })
+    .await;
+    drop(relayed);
+}
+
+/// One write of response bytes to the client within [`CLIENT_WRITE_TIMEOUT`]; false
+/// when it failed or timed out.
+async fn write_to_client(client: &mut UnixStream, bytes: &[u8]) -> bool {
+    matches!(
+        tokio::time::timeout(CLIENT_WRITE_TIMEOUT, client.write_all(bytes)).await,
+        Ok(Ok(()))
+    )
 }
 
 /// How long resolving an allowlisted name may take.
@@ -695,6 +785,9 @@ async fn connect(client: &mut UnixStream, ctx: &Ctx, leftover: Vec<u8>, host: St
 /// first, then both directions are copied until either side ends. Returns the
 /// bytes copied to the upstream and to the client after the leftover. Generic over the two streams
 /// so the positive path is unit-tested over `tokio::io::duplex` pairs.
+///
+/// A tunnel that carries no byte for [`TUNNEL_IDLE`], or stays open for
+/// [`TUNNEL_LIFETIME`], ends with a `TimedOut` error (WR-02).
 pub async fn tunnel<C, U>(
     client: &mut C,
     upstream: &mut U,
@@ -704,10 +797,69 @@ where
     C: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
     U: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
-    if !leftover.is_empty() {
-        upstream.write_all(leftover).await?;
+    tunnel_within(client, upstream, leftover, TUNNEL_IDLE, TUNNEL_LIFETIME).await
+}
+
+fn timed_out(what: &str) -> io::Error {
+    io::Error::new(io::ErrorKind::TimedOut, what.to_owned())
+}
+
+/// [`tunnel`] with the two limits as parameters (the test seam).
+pub async fn tunnel_within<C, U>(
+    client: &mut C,
+    upstream: &mut U,
+    leftover: &[u8],
+    idle: Duration,
+    lifetime: Duration,
+) -> io::Result<(u64, u64)>
+where
+    C: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    U: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let both = async {
+        if !leftover.is_empty() {
+            tokio::time::timeout(idle, upstream.write_all(leftover))
+                .await
+                .map_err(|_| timed_out("the tunnel stalled"))??;
+        }
+        let (mut client_read, mut client_write) = tokio::io::split(client);
+        let (mut up_read, mut up_write) = tokio::io::split(upstream);
+        tokio::try_join!(
+            pump(&mut client_read, &mut up_write, idle),
+            pump(&mut up_read, &mut client_write, idle)
+        )
+    };
+    match tokio::time::timeout(lifetime, both).await {
+        Ok(result) => result,
+        Err(_) => Err(timed_out("the tunnel reached its lifetime")),
     }
-    tokio::io::copy_bidirectional(client, upstream).await
+}
+
+/// Copy `from` to `to` until `from` ends, then shut `to` down (a half-close, as
+/// `copy_bidirectional` does). No read or write waits longer than `idle`.
+async fn pump<R, W>(from: &mut R, to: &mut W, idle: Duration) -> io::Result<u64>
+where
+    R: tokio::io::AsyncRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    let mut buf = [0u8; 16 * 1024];
+    let mut total = 0u64;
+    loop {
+        let n = tokio::time::timeout(idle, from.read(&mut buf))
+            .await
+            .map_err(|_| timed_out("the tunnel was idle"))??;
+        if n == 0 {
+            let _ = tokio::time::timeout(idle, to.shutdown()).await;
+            return Ok(total);
+        }
+        tokio::time::timeout(idle, async {
+            to.write_all(&buf[..n]).await?;
+            to.flush().await
+        })
+        .await
+        .map_err(|_| timed_out("the tunnel stalled"))??;
+        total += n as u64;
+    }
 }
 
 #[cfg(test)]
@@ -764,5 +916,62 @@ mod tests {
         assert!(rest.is_empty());
         drop(up_far);
         pump.await.expect("join").expect("a clean close");
+    }
+
+    #[test]
+    fn a_body_reserves_a_weighted_share_of_the_budget() {
+        use policy::Framing;
+        assert_eq!(body_weight(Framing::Length(1000)), 4000);
+        assert_eq!(body_weight(Framing::Length(0)), 1);
+        let max = http1::BODY_MAX_BYTES as u32 * 4;
+        assert_eq!(body_weight(Framing::Chunked), max);
+        // A lying Content-Length reserves at most the cap's worth.
+        assert_eq!(body_weight(Framing::Length(u64::MAX)), max);
+        // Four maximum-size bodies fit the budget; a fifth waits.
+        assert_eq!(BODY_MEMORY_BUDGET / max, 4);
+    }
+
+    #[tokio::test]
+    async fn a_silent_tunnel_ends_at_its_idle_limit() {
+        let (mut client_end, _client_far) = duplex(64);
+        let (mut up_end, _up_far) = duplex(64);
+        let err = tunnel_within(
+            &mut client_end,
+            &mut up_end,
+            b"",
+            Duration::from_millis(60),
+            Duration::from_secs(30),
+        )
+        .await
+        .expect_err("idle");
+        assert_eq!(err.kind(), io::ErrorKind::TimedOut);
+    }
+
+    #[tokio::test]
+    async fn a_busy_tunnel_still_ends_at_its_lifetime() {
+        let (mut client_end, mut client_far) = duplex(64);
+        let (mut up_end, _up_far) = duplex(64);
+        let pump = tokio::spawn(async move {
+            tunnel_within(
+                &mut client_end,
+                &mut up_end,
+                b"",
+                Duration::from_secs(5),
+                Duration::from_millis(150),
+            )
+            .await
+        });
+        // A byte every 20 ms never lets the idle limit fire.
+        let feeder = tokio::spawn(async move {
+            for _ in 0..40 {
+                if client_far.write_all(b"x").await.is_err() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        });
+        let err = pump.await.expect("join").expect_err("lifetime");
+        assert_eq!(err.kind(), io::ErrorKind::TimedOut);
+        feeder.abort();
     }
 }
