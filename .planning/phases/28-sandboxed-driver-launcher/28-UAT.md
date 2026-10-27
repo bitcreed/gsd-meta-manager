@@ -3,7 +3,7 @@ status: complete
 phase: 28-sandboxed-driver-launcher
 source: [28-VERIFICATION.md]
 started: 2026-10-20T00:47:15Z
-updated: 2026-10-24T18:33:41.627Z
+updated: 2026-10-27T14:45:00.000Z
 ---
 
 ## Current Test
@@ -58,6 +58,39 @@ evidence: |
   Residual [inferred — audit]: Apple Silicon (aarch64-apple-darwin) was not run, only built-checked by CI
   (.github/workflows/release.yml:65-97); the VM is Intel. The TUI-initiated [U] unsandboxed launch was not driven on Darwin
   (covered by driver_launch::tests::launcher_launch_a_degraded_host_* on Linux).
+
+  Re-run 2026-10-27 on HEAD 2ea7d77 (after Phases 28.1, 29, 30, 31), same host and method. [inferred — audit]
+  `git archive HEAD` built natively on the VM with a throwaway rustup (rustc 1.99.1): `cargo build --locked` rc 0,
+  `--version` 1.15.0. Same hermetic fixture (env -i, private HOME/XDG_*, alias p28, `claude` shim 2.1.303, host
+  SSH_AUTH_SOCK/GH_TOKEN/ANTHROPIC_API_KEY set). Token: `driver auth setup` stored at
+  $HOME/Library/Application Support/gsd-meta-manager/driver-oauth-token, -rw-------, rc 0.
+  - No flag, foreground AND detached: rc 1, same "sandbox unavailable: missing bwrap, systemd-run, user-systemd; rerun with
+    --unsandboxed ..." stderr; run dir still holds only DIRECTION.md (byte-identical), the driver never ran.
+  - `--unsandboxed --foreground` (WELL_MANNERED, r28): rc 0, "ended status=stopped reason=driver:stop"; LOG.md
+    "RUN | launch | n=1 | mode=degraded"; DIRECTION.md `sandbox: "degraded"`, `sandbox_missing` the three pieces,
+    `protections_absent` all eight words (28.1-09 vocabulary, net-isolation ... registry-overlay); state.json the same,
+    hook_dispatches=1, launcher connection mode=degraded, scope_unit=null. 28.1 egress on Darwin degraded: no proxy is
+    started (no egress.log or egress socket anywhere, no *_PROXY in the driver env, no `egress_allow` recorded), which
+    is the documented behaviour (src/launcher/host.rs:262-270, src/launcher/run.rs:964-966) and is what
+    `egress-proxy`/`net-isolation` in protections_absent declare. Driver env: no SSH_AUTH_SOCK/GH_TOKEN/ANTHROPIC_API_KEY,
+    CLAUDE_CODE_OAUTH_TOKEN present (also re-checked on the detached run below: 0 hits).
+  - Group supervision, now launched DETACHED (`--unsandboxed`, no --foreground, GROUP scenario r29): "run r29 started
+    (pid 2171)"; leader 2186 = pgid 2186 with `sleep 600` 2192 in that group; `driver stop p28 r29` rc 0 "stopped the
+    launcher (pid 2171); the run is now stopped"; leader and child dead, no launcher left; LOG.md
+    "launch-end | status=stopped | reason=stop:user".
+  - TUI in a 160x45 pty (GSDMM_EXPERIMENTAL_FEATURES=1), Enter then `D`: rows "▮ stopped r29!" / "r28!", the `!` bold
+    yellow (pyte: fg cdcd00, bold); detail "sandbox UNSANDBOXED · absent: all 8 · missing: bwrap, systemd-run,
+    user-systemd". Dashboard smoke without the flag: renders the p28 row, `q` exits 0 and restores the terminal
+    (?1049l, mouse modes off, ?25h).
+  - [U] residual: NOT closable on Darwin; it is unreachable there, not untested. On macOS `R` and `s` on the Driver tab
+    only post "read-only: steering needs Linux" (observed), because can_steer() is cfg!(target_os = "linux")
+    (src/ui/screens/driver_steer.rs:43-45), checked at src/ui/screens/detail.rs:5846 (`s`) and :5874 (`R`); and even a
+    dispatched DriverLaunchRequested is refused off Linux (src/app.rs:2488-2494). So the TUI launch, and with it the
+    `[U] launch UNSANDBOXED instead (asks again)` confirmation, exists only on a Linux host lacking bwrap/systemd. This is
+    the open 28-REVIEW WR-05 ("macOS enablement is half applied"), not a regression; the CLI path above is the only
+    degraded launch on macOS. Closing the residual needs WR-05 fixed first (a product-scope call: widen the TUI launch to
+    macOS or declare it Linux-only). Minor, same finding: the launcher connection records `host: null` on Darwin.
+  VM temp dir removed afterwards; the VM was left running.
 
 ## Summary
 
