@@ -490,6 +490,10 @@ pub struct GitConfig {
     // --- gsd-core re-sync at 1.14.0 (quick task 260916-vqw) ---
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub create_tag: Option<bool>,
+    /// gsd-core v1.19.0 (#5706, quick task 261027-184): `single` (default) or
+    /// `per_repo`. Stored verbatim; gsd-core reads any other value as `single`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo_tagging: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allow_default_branch_commits: Option<bool>,
     /// A list of branch names — surfaced read-only.

@@ -420,19 +420,21 @@ in another value, is displayed like any other value (T-jnf-07, accepted).
 
 ## Modelled
 
-Every key `build_defaults_entries` pushes a row for, in display order. **135
+Every key `build_defaults_entries` pushes a row for, in display order. **136
 rows**: **51** carry a `since` measured at the 1.14.0 re-sync (260916-vqw
 measured 57; six were retired at 261012-jqb), **2** carry `v1.15.0` (added by
 260926-gtk, measured against the v1.15.0 tag at 261012-jqb), **7** carry a
 `since` measured when quick task 260926-jnf promoted them, **2** carry
-`v1.16.0` (261012-jqb), **1** carries `v1.6.0`, measured at 261019-guw, and the
-**72** without one predate this record and were not retro-measured.
+`v1.16.0` (261012-jqb), **1** carries `v1.6.0`, measured at 261019-guw, **1**
+carries `v1.19.0` (261027-184), and the **72** without one predate this record
+and were not retro-measured.
 
-`DEFAULTS_OPTION_COUNT` in `src/ui/screens/detail.rs` pins this count at 135
-(132 -> 139 at 260926-jnf, 139 -> 135 at 261012-jqb), `RESYNCED_KEYS` /
-`RESYNCED_KEYS_1_15_0` / `RESYNCED_KEYS_1_16_0` / `PROMOTED_TOP_LEVEL_KEYS` pin
-the four key lists, `REMOVED_KEYS_1_16_0` pins the six retired ones, and three
-coverage assertions refuse a row with no `ConfigHelp`.
+`DEFAULTS_OPTION_COUNT` in `src/ui/screens/detail.rs` pins this count at 136
+(132 -> 139 at 260926-jnf, 139 -> 135 at 261012-jqb, 135 -> 136 at 261027-184),
+`RESYNCED_KEYS` / `RESYNCED_KEYS_1_15_0` / `RESYNCED_KEYS_1_16_0` /
+`RESYNCED_KEYS_1_19_0` / `PROMOTED_TOP_LEVEL_KEYS` pin the five key lists,
+`REMOVED_KEYS_1_16_0` pins the six retired ones, and three coverage assertions
+refuse a row with no `ConfigHelp`.
 
 ### Planning
 
@@ -552,6 +554,7 @@ coverage assertions refuse a row with no `ConfigHelp`.
 | `milestone_branch_template` | |
 | `quick_branch_template` | |
 | `git.create_tag` | v1.01.0 |
+| `git.repo_tagging` | v1.19.0 |
 | `git.allow_default_branch_commits` | v1.13.0 |
 | `git.protected_branches` | v1.12.0 |
 

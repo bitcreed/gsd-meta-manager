@@ -12540,6 +12540,18 @@ fn build_defaults_entries(
     push(cat, "git.create_tag", v, k, false, ConfigHelp::new(
         "Tags the repository when a milestone closes; turn it off for a project with its own release flow.",
     ).since("v1.01.0"));
+    // gsd-core v1.19.0 re-sync (quick task 261027-184, #5706).
+    let (v, k) = opt_enum(
+        pgit.and_then(|g| g.repo_tagging.as_deref()),
+        &["single", "per_repo"],
+    );
+    push(cat, "git.repo_tagging", v, k, false, ConfigHelp::with_choices(
+        "How a milestone is tagged: one tag for the project, or one release per configured repository in a multi-repo project.",
+        &[
+            ("single", "one milestone tag for the whole project; the existing behaviour"),
+            ("per_repo", "one release per configured repository, recorded in a release map; with git.create_tag off it records the map and tags nothing"),
+        ],
+    ).since("v1.19.0"));
     let (v, k) = opt_bool(pgit.and_then(|g| g.allow_default_branch_commits));
     push(cat, "git.allow_default_branch_commits", v, k, false, ConfigHelp::with_choices(
         "Escape hatch letting an executor commit straight onto the repository's own trunk instead of refusing.",
@@ -12899,6 +12911,8 @@ fn builtin_default_for_key(key: &str) -> Option<&'static str> {
         "mode" => "interactive",
         "model_profile" => "balanced",
         "branching_strategy" => "none",
+        // gsd-core v1.19.0 config-defaults.manifest.json (quick task 261027-184).
+        "git.repo_tagging" => "single",
         "phase_branch_template" => "gsd/phase-{phase}-{slug}",
         "milestone_branch_template" => "gsd/{milestone}-{slug}",
         "discuss_mode" => "discuss",
@@ -13959,6 +13973,13 @@ fn set_config_value(
                 .branching_strategy = Some(value.to_string());
             true
         }
+        "git.repo_tagging" => {
+            config
+                .git
+                .get_or_insert_with(GitConfig::default)
+                .repo_tagging = Some(value.to_string());
+            true
+        }
         "discuss_mode" => {
             config
                 .workflow
@@ -14868,6 +14889,10 @@ fn clear_config_value(config: &mut crate::state_reader::config_json::GsdConfig, 
             config.git.get_or_insert_with(GitConfig::default).create_tag = None;
             true
         }
+        "git.repo_tagging" => {
+            config.git.get_or_insert_with(GitConfig::default).repo_tagging = None;
+            true
+        }
         "git.allow_default_branch_commits" => {
             config
                 .git
@@ -15468,6 +15493,12 @@ fn mutate_config_entry(
                     git.branching_strategy = Some(cycle(current));
                     true
                 }
+                "git.repo_tagging" => {
+                    let git = config.git.get_or_insert_with(GitConfig::default);
+                    let current = git.repo_tagging.as_deref().unwrap_or("single");
+                    git.repo_tagging = Some(cycle(current));
+                    true
+                }
                 "discuss_mode" => {
                     let wf = config.workflow.get_or_insert_with(WorkflowConfig::default);
                     let current = wf.discuss_mode.as_deref().unwrap_or("discuss");
@@ -15743,6 +15774,7 @@ mod tests {
                 "milestone_branch_template": "gsd/{milestone}-{slug}",
                 "quick_branch_template": "gsd/quick-{slug}",
                 "create_tag": true,
+                "repo_tagging": "per_repo",
                 "allow_default_branch_commits": false,
                 "protected_branches": ["release"]
             },
@@ -15869,8 +15901,10 @@ mod tests {
     /// at the release-1.15.0 re-sync (quick task 260926-gtk), and 132 -> 139 at
     /// quick task 260926-jnf (7 top-level keys; kg_backend is a value, not a
     /// key), and 139 -> 135 at quick task 261012-jqb (gsd-core v1.16.0:
-    /// +gates.confirm_milestone_scope, +audit.enabled, -6 gates.* keys). It is
-    /// asserted rather than trusted so a 136th option cannot slip past the
+    /// +gates.confirm_milestone_scope, +audit.enabled, -6 gates.* keys), and
+    /// 135 -> 136 at quick task 261027-184 (gsd-core v1.19.0:
+    /// +git.repo_tagging). It is
+    /// asserted rather than trusted so a 137th option cannot slip past the
     /// coverage assertions below by being added to a list nobody counted.
     ///
     /// **It counts STATIC rows only.** `append_passthrough_entries` emits one
@@ -15878,7 +15912,7 @@ mod tests {
     /// carrying such a key would make this number a property of the fixture
     /// rather than of the tab. [`populated_gsd_config`] is therefore kept free
     /// of unmodelled keys, and the pass-through rows have their own fixture.
-    const DEFAULTS_OPTION_COUNT: usize = 135;
+    const DEFAULTS_OPTION_COUNT: usize = 136;
 
     #[test]
     fn every_config_entry_carries_a_non_empty_summary() {
@@ -15961,8 +15995,9 @@ mod tests {
         }
 
         // 12 -> 13 at quick task 260926-jnf (`context_profile`), MEASURED.
+        // 13 -> 14 at quick task 261027-184 (`git.repo_tagging`), MEASURED.
         assert_eq!(
-            enum_entries, 13,
+            enum_entries, 14,
             "the Defaults tab's Enum-kinded option count changed; each one needs a per-value \
              explanation"
         );
@@ -16659,6 +16694,85 @@ mod tests {
         }
     }
 
+    /// `git.repo_tagging` (gsd-core v1.19.0, quick task 261027-184) is the one
+    /// enum in the delta, so it cannot ride the bool-only loop above. Same
+    /// guarantees: one typed row, its own JSON path on set / cycle / clear (a
+    /// cleared key leaves the file rather than writing null), a drawn `since`
+    /// marker, and a 1.19.0-written file surviving a TUI save (T-184-01/02).
+    #[test]
+    fn git_repo_tagging_is_an_enum_row_writing_its_own_json_path() {
+        use crate::state_reader::config_json::{parse_gsd_config, serialize_gsd_config, GsdConfig};
+
+        let key = "git.repo_tagging";
+        let entries = all_config_entries();
+        let matching: Vec<(usize, &ConfigEntry)> = entries
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| entry.key.as_ref() == key)
+            .collect();
+        assert_eq!(matching.len(), 1, "`{key}` must have exactly one row");
+        let (idx, entry) = matching[0];
+        assert!(
+            matches!(entry.kind, ConfigValueKind::Enum(_)),
+            "`{key}` is an enum; kind is {:?}",
+            entry.kind
+        );
+        assert_eq!(dropdown_options(&entry.kind), vec!["single", "per_repo"]);
+        assert_ne!(entry.category, PASSTHROUGH_CATEGORY);
+        assert_eq!(entry.help.since, "v1.19.0");
+        // The built-in default shows only while the key is unset.
+        let unset_rows = build_defaults_entries(&parse_gsd_config("{}").unwrap());
+        let unset_row = unset_rows
+            .iter()
+            .find(|e| e.key.as_ref() == key)
+            .expect("the unset config still lists the row");
+        assert_eq!(unset_row.builtin_default, Some("single"));
+
+        let at = |config: &GsdConfig| {
+            serde_json::to_value(config)
+                .expect("the config serialises")
+                .pointer("/git/repo_tagging")
+                .cloned()
+        };
+        let mut config = parse_gsd_config("{}").unwrap();
+        assert!(set_config_value(&mut config, key, "per_repo"), "set");
+        assert_eq!(at(&config), Some(serde_json::json!("per_repo")));
+        assert!(mutate_config_entry(&mut config, key, &entry.kind), "cycle");
+        assert_eq!(at(&config), Some(serde_json::json!("single")));
+        assert!(clear_config_value(&mut config, key), "clear");
+        assert_eq!(at(&config), None, "clear left the key in the file");
+        // I-3: from unset the first press advances FROM the documented default.
+        assert!(mutate_config_entry(&mut config, key, &entry.kind), "cycle");
+        assert_eq!(at(&config), Some(serde_json::json!("per_repo")));
+
+        let rendered = squeeze_ws(&render_defaults_to_text(120, 40, idx));
+        assert!(
+            rendered.contains(&squeeze_ws(&format!("{SINCE_PREFIX}v1.19.0"))),
+            "the help pane for `{key}` did not draw the `since` marker: {rendered}"
+        );
+
+        // A file written by gsd-core 1.19.0: the typed field claims the key
+        // from ExtraKeys (no pass-through duplicate) and a save keeps it.
+        let written = parse_gsd_config(r#"{"git":{"repo_tagging":"per_repo"}}"#).unwrap();
+        let rows = build_defaults_entries(&written);
+        assert_eq!(
+            rows.iter().filter(|e| e.key.as_ref() == key).count(),
+            1,
+            "exactly one `{key}` row"
+        );
+        assert!(
+            rows.iter()
+                .all(|e| !(e.key.as_ref() == key && e.category == PASSTHROUGH_CATEGORY)),
+            "`{key}` rendered as a pass-through row"
+        );
+        let saved = serialize_gsd_config(&written).expect("serialises");
+        let reparsed: serde_json::Value = serde_json::from_str(&saved).unwrap();
+        assert_eq!(
+            reparsed.pointer("/git/repo_tagging"),
+            Some(&serde_json::json!("per_repo"))
+        );
+    }
+
     /// `planner` became a typed block at 1.15.0, but only its boolean is
     /// modelled. The two stall-tuning knobs must stay VISIBLE (as `planner.`-
     /// prefixed pass-through rows, not a single `planner` row holding the whole
@@ -17021,6 +17135,16 @@ mod tests {
         ("audit.enabled", "bool"),
     ];
 
+    /// Every key gsd-core v1.19.0 added (quick task 261027-184), with the kind
+    /// its row must carry — MEASURED from the `docs/CONFIGURATION.md` key-cell
+    /// diff v1.18.0..v1.19.0 (+7 / -0 cells). Exactly one cell is a key; the
+    /// other six (`environment`, `reference`, `release`, `repo`, `status`,
+    /// `tag`) are column cells of the new release-map table.
+    ///
+    /// Kept separate from the earlier tables for the same reason they are
+    /// separate: each pins its own measurement. The per-kind loops iterate all.
+    const RESYNCED_KEYS_1_19_0: &[(&str, &str)] = &[("git.repo_tagging", "enum")];
+
     /// The real top-level gsd-core keys that were still pass-through after the
     /// release-1.15.0 re-sync, promoted to typed rows by quick task
     /// 260926-jnf — MEASURED against `upstream/release-1.15.0` (the 260926-gtk
@@ -17195,6 +17319,12 @@ mod tests {
              gsd-core and update docs/GSD-CORE-SYNC.md in the SAME commit"
         );
         assert_eq!(
+            RESYNCED_KEYS_1_19_0.len(),
+            1,
+            "the v1.19.0 delta was MEASURED at +1 key; re-measure against \
+             gsd-core and update docs/GSD-CORE-SYNC.md in the SAME commit"
+        );
+        assert_eq!(
             PROMOTED_TOP_LEVEL_KEYS.len(),
             7,
             "quick task 260926-jnf promoted exactly 7 top-level keys (kg_backend is \
@@ -17349,6 +17479,7 @@ mod tests {
             .iter()
             .chain(RESYNCED_KEYS_1_15_0)
             .chain(RESYNCED_KEYS_1_16_0)
+            .chain(RESYNCED_KEYS_1_19_0)
             .chain(PROMOTED_TOP_LEVEL_KEYS)
         {
             let matching: Vec<&ConfigEntry> = entries
@@ -17400,6 +17531,7 @@ mod tests {
             .iter()
             .chain(RESYNCED_KEYS_1_15_0)
             .chain(RESYNCED_KEYS_1_16_0)
+            .chain(RESYNCED_KEYS_1_19_0)
             .chain(PROMOTED_TOP_LEVEL_KEYS)
         {
             let entry = entries
