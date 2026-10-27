@@ -1,18 +1,18 @@
 # gsd-core config sync record
 
-**Config surface synced against gsd-core `v1.18.0`**
-(`35f5a452239b897b8d6352c973e1e4efd683370f`, `package.json` 1.18.0, tagged
-2026-10-19) **on 2026-10-19. Conformance oracle / `GSD_CORE_SYNCED_VERSION`
-pinned at `1.18.0`**, the latest version published on npm.
+**Config surface synced against gsd-core `v1.19.0`**
+(`9dc57a772195de423ab788e4d0d8734b162db35d`, `package.json` 1.19.0, tagged
+2026-10-26) **on 2026-10-27. Conformance oracle / `GSD_CORE_SYNCED_VERSION`
+pinned at `1.19.0`**, the latest version published on npm.
 
 `src/state_reader/config_json.rs` carries the machine-readable copy of those
 values as three constants, which at this sync all name the same release:
 
 | Constant | Value | What it means |
 |---|---|---|
-| `GSD_CORE_SYNCED_VERSION` | `1.18.0` | The **conformance-oracle pin**: the latest gsd-core release published on npm at or below the synced commit. `scripts/install-conformance-oracle.sh` greps this declaration and runs `npm install @opengsd/gsd-core@<version>` — in the publish job (`.github/workflows/release.yml`) and inside `./scripts/pre-tag-check.sh --container`. The floor of the installed-GSD comparison's in-sync range. |
-| `GSD_CORE_SYNCED_COMMIT` | `v1.18.0` | The tree the config surface was diffed against, as `git describe --tags --always` spells it. |
-| `GSD_CORE_SYNCED_TREE_VERSION` | `1.18.0` | The `package.json` version of that tree. The ceiling of the installed-GSD comparison's in-sync range (quick task 260926-j0a). |
+| `GSD_CORE_SYNCED_VERSION` | `1.19.0` | The **conformance-oracle pin**: the latest gsd-core release published on npm at or below the synced commit. `scripts/install-conformance-oracle.sh` greps this declaration and runs `npm install @opengsd/gsd-core@<version>` — in the publish job (`.github/workflows/release.yml`) and inside `./scripts/pre-tag-check.sh --container`. The floor of the installed-GSD comparison's in-sync range. |
+| `GSD_CORE_SYNCED_COMMIT` | `v1.19.0` | The tree the config surface was diffed against, as `git describe --tags --always` spells it. |
+| `GSD_CORE_SYNCED_TREE_VERSION` | `1.19.0` | The `package.json` version of that tree. The ceiling of the installed-GSD comparison's in-sync range (quick task 260926-j0a). |
 
 This file is the human-readable half: the full key inventory, per-key status,
 and the exact commands that produced it, so the *next* sync starts from a
@@ -36,7 +36,9 @@ baseline-only, with no config key, default or loader change — see
 [The v1.17.0 delta](#the-v1170-delta-quick-task-261016-dx3). The v1.18.0 sync
 (quick task 261019-foc) was baseline-only as well, with no config key or default
 change and a loader refactor that keeps the `GSD_HOME` rule — see
-[The v1.18.0 delta](#the-v1180-delta-quick-task-261019-foc).
+[The v1.18.0 delta](#the-v1180-delta-quick-task-261019-foc). The v1.19.0 sync
+(quick task 261027-184) modelled one new key, `git.repo_tagging` — see
+[The v1.19.0 delta](#the-v1190-delta-quick-task-261027-184).
 
 > **Keep this file, `config_json.rs`'s three constants and README.md's
 > `**GSD compatibility:**` note in step, in the SAME commit.** A record that
@@ -68,14 +70,15 @@ it, and nothing below checks out a branch there.
 
 **Measure against a REF, never the working tree.** The local checkout's HEAD is
 whatever branch someone last worked on (at the time of writing: `next`, at
-`v1.18.0-6-g8d3d29c46` with `package.json` 1.18.0) — not the sync target. A
+`v1.18.0-119-gbe164db40` with `package.json` 1.19.0, i.e. 119 commits past the
+last tag it was described from) — not the sync target. A
 plain `cat "$CORE/docs/CONFIGURATION.md"` or `node -p require(package.json)`
 measures the wrong tree.
 
 ```bash
 CORE=~/projects/node/gsd-core
-REF=v1.19.0                          # the sync target: the next release tag
-PREV=v1.18.0                         # the previous GSD_CORE_SYNCED_COMMIT
+REF=v1.20.0                          # the sync target: the next release tag
+PREV=v1.19.0                         # the previous GSD_CORE_SYNCED_COMMIT
 
 # 1. The baseline constants.
 git -C "$CORE" describe --tags --always "$REF"   # -> GSD_CORE_SYNCED_COMMIT
@@ -126,6 +129,63 @@ reproduced verbatim.
 `capabilities/<name>/capability.json` (like `workflow.ui_interaction_capture`)
 shows up in CONFIGURATION.md and in step 4's capability diff, but not in
 `config-schema.manifest.json`'s `validKeys`. Diff both.
+
+---
+
+## The v1.19.0 delta (quick task 261027-184)
+
+Measured on 2026-10-27 between `v1.18.0` and `v1.19.0`
+(`9dc57a772195de423ab788e4d0d8734b162db35d`), against the tags, not the
+working tree:
+
+| Measurement | v1.18.0 | v1.19.0 | Change |
+|---|---:|---:|---|
+| CONFIGURATION.md key cells (step 2) | 255 | 262 | **+7 / -0**: one key, `git.repo_tagging`. The other six cells (`environment`, `reference`, `release`, `repo`, `status`, `tag`) are the columns of the new per-repository release-map table, not keys |
+| `config-schema.manifest.json` | — | — | +`git.repo_tagging` |
+| `config-defaults.manifest.json` | — | — | +`repo_tagging: "single"` |
+| `gsd-core/templates/config.json` | — | — | +`repo_tagging` |
+| `src/config-loader.cts` | — | — | `resolveRepoTagging`: only `per_repo` is honoured; anything else reads `single` and never throws |
+| `src/config.cts` | — | — | `VALID_REPO_TAGGING_MODES = ['single','per_repo']` and the `config-set` enum assertion |
+| `src/secrets.cts` | — | — | unchanged (no diff) |
+| Existing keys whose default changed | | | **none** |
+| `capabilities/*/capability.json` | | | 45 files bump `version` 1.18.0 -> 1.19.0; `pi` also changes runtime `bun` -> `node` and gains install surfaces; none adds or changes a config key |
+
+**How this build models the key.** `GitConfig.repo_tagging` is an
+`Option<String>`, skipped when unset so a clear removes the key instead of
+writing `null`. The Defaults row is an Enum `[single, per_repo]` with built-in
+default `single` and `since` `v1.19.0`, MEASURED by step 5: the first commit
+naming it is `754e886bf` (#5706, PR #5720, 2026-10-25) and its first
+containing tag is `v1.19.0`. Set, cycle and clear write `/git/repo_tagging`; a
+cycle from unset starts at `single`, so the first press lands on `per_repo`.
+Modelled and `DEFAULTS_OPTION_COUNT` go 135 -> 136 and Enum rows 13 -> 14 (Task
+1, 261027-184). A hand-edited value outside the two choices is shown verbatim,
+while gsd-core's loader reads it as `single` (inferred I-4).
+
+**Areas that needed no change:**
+
+- **.planning formats.** `milestone complete --release-map` writes
+  `milestones/<ver>-RELEASE-MAP.json`, which this build does not read.
+  `grep -rn 'RELEASE-MAP' src` is empty.
+- **Routing.** The conformance oracle test `tests/driver_router_conformance.rs`
+  is green against the installed gsd-core 1.19.0 (`~/.claude/gsd-core/VERSION`
+  reads `1.19.0`); see this task's SUMMARY for the full-suite result line.
+- **The CLI.** `git diff --shortstat v1.18.0 v1.19.0 -- commands/gsd` is
+  empty: no slash-command file changed. `src/` changed in many modules
+  (release-map, milestone-lock, config); none is a surface this build shells
+  out to. [inferred — audit]
+- **Agents/worktrees.** `agents/` changed in 3 files (+7 / -6:
+  `gsd-code-fixer`, `gsd-code-fixer.compact`, `gsd-verifier`), and the
+  `per-plan-worktree-gate` and `worktree-pre-dispatch-commit` workflow steps
+  changed. This build reads no agent file and does not drive worktree dispatch.
+  [inferred — audit]
+- **Codex.** `capabilities/codex/capability.json` is a 1-line change, the
+  `version` bump.
+- **Secret-bearing keys.** The re-diff found no change:
+  `git diff v1.18.0 v1.19.0 -- src/secrets.cts
+  gsd-core/references/gsd-run-resolver.md` is empty.
+
+**Deferred.** A TUI badge surfacing a milestone's per-repository release map is
+not built in this sync. It has an owner under "Next sync".
 
 ---
 
@@ -721,7 +781,7 @@ warning.
 Then, in priority order:
 
 1. **Re-measure the baseline trio** with step 1 against the next release tag
-   (`REF=v1.19.0`, `PREV=v1.18.0`). If `GSD_CORE_SYNCED_COMMIT` already
+   (`REF=v1.20.0`, `PREV=v1.19.0`). If `GSD_CORE_SYNCED_COMMIT` already
    matches the new REF, there is nothing else to do. If the target is an
    untagged tree past the last npm release, see "When the three disagree"
    above. After moving the oracle pin, re-run
@@ -749,3 +809,7 @@ Then, in priority order:
    command, if a reader ever needs the full history rather than the delta.
 6. **Consider the label rename** described under "Known inconsistency" — as its
    own change, never folded into a sync.
+7. **Release-map TUI badge (deferred at 261027-184).** Surface a milestone's
+   per-repository release map (`milestones/<ver>-RELEASE-MAP.json`, written
+   when `git.repo_tagging` is `per_repo`) as a badge. This build reads no
+   release map today.
