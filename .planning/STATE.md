@@ -5,10 +5,10 @@ current_phase: 31
 current_phase_name: Retire Superseded Envelope & Goal-Layer Code
 status: executing
 stopped_at: Completed 31-06-PLAN.md
-last_updated: "2026-10-25T07:13:24.509Z"
+last_updated: "2026-10-27T06:09:11.015Z"
 last_activity: 2026-10-24
 last_activity_desc: Phase 31 execution started
-state_head: 98f949ab4fe3ff614cb9a34e2c1affeb14156c96
+state_head: 3cda6eb8b25d27d57995dfcb46d61e8b1e8dffba
 progress:
   total_phases: 10
   completed_phases: 14
@@ -304,7 +304,7 @@ Status: Ready to execute
   criterion 4 remains PRESENT_BEHAVIOUR_UNVERIFIED and permanently agent-unclosable — it needs
   a human with a live Claude subscription for the 10 #[ignore]d arms. 4/5 is the correct ceiling.
   Phase 19 human-judgement UAT items were deferred by explicit user decision on 2026-08-19, not resolved.
-Last activity: 2026-10-24 — Phase 31 execution started
+Last activity: 2026-10-27 - Completed quick task 261027-184: Sync against gsd-core v1.19.0 (git.repo_tagging, synced constants, README, GSD-CORE-SYNC doc)
 Note (260908-uqq): the D-06 "a capability refusal costs zero tokens and zero quota" guarantee no
 longer holds unconditionally. It holds on the **eager arm** only (CLI announced inside the grace).
 On the **late arm** — 2.1.266's measured shape — the grace releases the prompt first, so a refusal
@@ -1001,6 +1001,7 @@ Recent decisions affecting current work:
 | 261023-pxh | Fix crate packaging excludes (root-anchor /assets/) and add pre-tag-check gate 6 cargo package --locked | 2026-10-23 | eccf0fe | [261023-pxh-fix-crate-packaging-excludes-and-add-pre](./quick/261023-pxh-fix-crate-packaging-excludes-and-add-pre/) |
 | 261023-qs8 | Fix flaky driverctl_race two-writers direction-lock test (two-way lock handshake; 22/200 -> 0/200 in container) | 2026-10-23 | 5ee12e1 | [261023-qs8-fix-flaky-driverctl-race-two-writers-dir](./quick/261023-qs8-fix-flaky-driverctl-race-two-writers-dir/) |
 | 261023-v1s | fix flaky driverctl_race editor_race_smoke (product give-back race + test quiet splice); also driverctl_serve flood and driver_lock SIGKILL flakes | 2026-10-24 | 58acaa2 | [261023-v1s-fix-flaky-editor-race-smoke-test-in-driv](./quick/261023-v1s-fix-flaky-editor-race-smoke-test-in-driv/) |
+| 261027-184 | Sync against gsd-core v1.19.0: model git.repo_tagging, bump synced constants, update README and GSD-CORE-SYNC doc | 2026-10-27 | 3cda6eb | [261027-184-sync-against-gsd-core-v1-19-0-model-git-](./quick/261027-184-sync-against-gsd-core-v1-19-0-model-git-/) |
 
 ## Session Continuity
 
