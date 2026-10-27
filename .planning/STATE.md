@@ -821,17 +821,17 @@ Recent decisions affecting current work:
 
 ### Pending Todos
 
-- [2026-07-29] [ui] Badge glyphs may misalign by one cell across terminals — [todo file](.planning/todos/pending/2026-07-29-badge-glyph-display-width-alignment.md)
 - [2026-07-29] [ui] Driver tab renders blank pipeline row at terminal heights 8-13 — [todo file](.planning/todos/pending/2026-07-29-driver-tab-layout-at-medium-terminal-heights.md)
-- [2026-07-29] [ui] Invalidate browser file cache after $EDITOR exits — [todo file](.planning/todos/pending/2026-07-29-invalidate-browser-cache-after-editor-exit.md)
-- [2026-08-18] [ui] Surface destructive confirmations in a modal popup with Yes/No buttons — [todo file](.planning/todos/pending/2026-08-18-surface-destructive-confirmations-in-a-modal-popup-with-yes.md)
 - [2026-08-19] [driver] The verify-work gate policy must be configurable — skip | defer | auto-validate — [todo file](.planning/todos/pending/2026-08-19-verify-work-gate-policy-configurable.md)
 - [2026-09-15] [ui] Make queue input truly multi-line — [todo file](.planning/todos/pending/2026-09-15-make-queue-input-truly-multi-line.md) — Needs TBD — this todo's deliverable is a **UX proposal**, not a fix. Whoever picks.
 - [2026-09-22] [driver] "Codex runtime: remainder after the MVP slice (260922-hdj) [AUDIT]" — [todo file](.planning/todos/pending/2026-09-22-codex-runtime-remainder-after-mvp.md)
-- [2026-09-23] [ui] Add a global settings editor with unambiguous scope — [todo file](.planning/todos/pending/2026-09-23-add-a-global-settings-editor-with-unambiguous-scope.md)
-- [2026-10-02] [ui] Show worktree-only roadmap phases in project view — [todo file](.planning/todos/pending/2026-10-01-show-worktree-only-roadmap-phases-in-project-view.md) — Needs TBD. Starting hints from mapping the current code:.
-- [2026-10-02] [ui] Config view must not show global defaults as effective values — [todo file](.planning/todos/pending/2026-10-02-config-view-wrongly-shows-global-defaults-as-effective.md)
-- [2026-10-02] [ui] Git view should draw merges as gitk-style tracks — [todo file](.planning/todos/pending/2026-10-02-git-view-show-merges-as-gitk-style-tracks.md)
+- [2026-10-18] [state_reader] Dashboard renders quoted VERIFICATION status as Unknown while driverctl counts it as a gap round — [todo file](.planning/todos/pending/2026-10-18-dashboard-verification-status-quote-divergence.md)
+- [2026-10-21] [ui] Borders and typography still draw 2 cells under ambiguous-wide settings; DarkGray remains outside the Driver tab — [todo file](.planning/todos/pending/2026-10-21-ambiguous-wide-typography-borders-and-darkgray.md)
+- [2026-10-24] [session_detector] Session detector binds the successor of -r/--resume although claude treats the value as optional — [todo file](.planning/todos/pending/2026-10-24-session-detector-resume-optional-arity.md)
+- [2026-10-25] [envelope] Two unpinned properties in surviving envelope code (scan Absent never permits, CredentialSource drift) — [todo file](.planning/todos/pending/2026-10-25-phase-19-surviving-pin-gaps-scan-and-credential-source.md)
+- [2026-10-25] [session_detector] Round-trip certificate for session ids omits the --session-id spellings the executor emits — [todo file](.planning/todos/pending/2026-10-25-session-detector-wire-forms-omit-session-id.md)
+- [2026-10-27] [ui] Enable TUI driver launch and steering on macOS (close 28-REVIEW WR-05) — [todo file](.planning/todos/pending/2026-10-27-enable-tui-driver-launch-and-steering-on-macos.md)
+- [2026-10-27] [ui] Add TUI badge for per-repo release maps — [todo file](.planning/todos/pending/2026-10-27-tui-badge-for-per-repo-release-maps.md)
 
 ### Blockers/Concerns
 
