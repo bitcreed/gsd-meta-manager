@@ -829,4 +829,55 @@ mod tests {
         // And the rendered report says so in as many words.
         assert!(report.render().contains("it never ran"));
     }
+
+    /// T-19-72 / D-11: "absent is never a reason to allow". An external
+    /// scanner that is not installed (`ExternalScanner::Absent`) must not move
+    /// the verdict in either direction: it must neither permit a report that
+    /// has findings nor block one that is clean. The assertion that 19-03-SUMMARY
+    /// cited in `tests/envelope_hook_refusals.rs` never existed; this test is
+    /// now the pin. Bases of both polarities, so a flip either way is caught.
+    #[test]
+    fn an_absent_external_scanner_never_changes_the_verdict() {
+        let clean = tempdir();
+        write(clean.path(), "notes.txt", b"nothing to see here\n");
+        let clean_report = scan_worktree(clean.path(), ScanLimits::default());
+
+        let dirty = tempdir();
+        write(dirty.path(), "leak.txt", PLANTED_AWS_KEY.as_bytes());
+        let dirty_report = scan_worktree(dirty.path(), ScanLimits::default());
+
+        let missing_root = tempdir();
+        let unreadable_report = scan_worktree(
+            &missing_root.path().join("does-not-exist"),
+            ScanLimits::default(),
+        );
+
+        // Anchor each base's polarity so a vacuous matrix is impossible.
+        let bases = [
+            ("clean worktree", clean_report, true),
+            ("worktree with a planted key", dirty_report, false),
+            ("unreadable root", unreadable_report, false),
+        ];
+        for (name, base, expected_clean) in bases {
+            assert_eq!(
+                base.external,
+                ExternalScanner::NotAttempted,
+                "{name}: scan_worktree must leave the external scanner NotAttempted"
+            );
+            assert_eq!(
+                base.is_clean(),
+                expected_clean,
+                "{name}: the base polarity drifted: {base:?}"
+            );
+            let absent = ScanReport {
+                external: ExternalScanner::Absent,
+                ..base.clone()
+            };
+            assert_eq!(
+                absent.is_clean(),
+                base.is_clean(),
+                "{name}: an absent external scanner moved the verdict: {absent:?}"
+            );
+        }
+    }
 }
