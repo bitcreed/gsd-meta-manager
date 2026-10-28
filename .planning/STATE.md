@@ -2,10 +2,10 @@
 gsd_state_version: "1.0"
 milestone: v2.0
 milestone_name: Autonomous Orchestration
-status: verifying
+status: executing
 stopped_at: "Cleanup applied (2026-10-28); next: quick-task fixes, then re-verify 14, 24, 25, 27, 28, 28.1, 29, 30, then milestone audit"
-last_updated: "2026-10-28T21:31:23.747Z"
-state_head: 29034171f8dc1a30139e8910c3fe45559422c1ab
+last_updated: "2026-10-28T23:07:16.036Z"
+state_head: ba50776b4d1769cf556d5e49dd29ebcaf464a955
 progress:
   total_phases: 16
   completed_phases: 14
@@ -13,8 +13,8 @@ progress:
   completed_plans: 125
   percent: 88
 last_activity: 2026-10-28
+current_phase_name: Sandbox Egress & Agent-Channel Isolation (INSERTED)
 current_phase: "28.1"
-current_phase_name: Sandbox Egress & Agent-Channel Isolation
 last_activity_desc: "Project cleanup: Phases 19/21/22/23/26 closed by supersession, the capabilities phase (formerly numbered 32) deferred to backlog 999.8, WINDOWS 0 open"
 ---
 
@@ -25,11 +25,11 @@ last_activity_desc: "Project cleanup: Phases 19/21/22/23/26 closed by supersessi
 See: .planning/PROJECT.md (updated 2026-10-24)
 
 **Core value:** See the state of every GSD project at a glance and act on any of them without leaving the TUI.
-**Current focus:** Phase 31 — Retire Superseded Envelope & Goal-Layer Code
+**Current focus:** Phase 28.1 — Sandbox Egress & Agent-Channel Isolation (INSERTED)
 
 ## Current Position
 
-Status: Cleanup applied 2026-10-28 — milestone v2.0 open, current phase 28.1
+Status: Executing Phase 28.1
   - Phases 19, 21, 22, 23 closed by supersession (spikes 001/002, Phases 26-31; Phase 31 deleted their code).
     The Phase 19 and Phase 21 gap-closure loops are closed by supersession, not resumed.
   - Phase 26 closed as superseded by 26.1 (not re-verified). the capabilities phase (formerly numbered 32) deferred to backlog 999.8.
