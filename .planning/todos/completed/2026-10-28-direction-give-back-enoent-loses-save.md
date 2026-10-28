@@ -4,6 +4,8 @@ title: A DIRECTION.md save can be lost when give-back hits ENOENT; restore with 
 area: driver
 severity: major
 source: .planning/phases/30-driver-tab-on-direction-md/30-REVIEW.md
+completed: 2026-10-28
+resolved_by: quick 261028-n0z 44eef32 (WR-10: give-back ENOENT restores by NOREPLACE rename)
 files:
   - src/driver/direction.rs:684-694
   - src/launcher/run.rs:613

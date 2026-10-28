@@ -5,15 +5,15 @@ titles: json
 findings:
   - id: WR-08
     severity: warning
-    disposition: deferred
+    disposition: fixed
     title: "`DIRECTION.lock` is opened by path with symlink-following and truncating-write semantics, the one run-directory open the hardening still skips"
   - id: WR-09
     severity: warning
-    disposition: deferred
+    disposition: fixed
     title: "`run_loop`'s guarded read has no size cap, although every other run-directory reader enforces 1 MiB"
   - id: WR-10
     severity: warning
-    disposition: deferred
+    disposition: fixed
     title: "A give-back `ENOENT` strands the human's newest save at a hidden temp name, where the next launch sweeps it"
   - id: IN-06
     severity: info
@@ -88,9 +88,9 @@ recorded: 2026-10-24T18:41:08.771Z
 
 | Finding | Severity | Disposition | Source |
 |---------|----------|-------------|--------|
-| WR-08 | warning | deferred | still present (lock.rs has no O_NOFOLLOW); destructive write in the T-30-04/T-30-24 model, so deferred not skipped; todo 2026-10-28-direction-lock-nofollow-and-run-file-read-cap.md [inferred — cleanup 2026-10-28] |
-| WR-09 | warning | deferred | still present (read_run_file uncapped); low severity, bundled with WR-08 in todo 2026-10-28-direction-lock-nofollow-and-run-file-read-cap.md [inferred — cleanup 2026-10-28] |
-| WR-10 | warning | deferred | still present; todo 2026-10-28-direction-give-back-enoent-loses-save.md (NOREPLACE rename on ENOENT) [inferred — cleanup 2026-10-28] |
+| WR-08 | warning | fixed | fixed by quick 261028-n0z 670e099 (acquire_at opens with O_NOFOLLOW plus O_NONBLOCK and refuses a non-regular or multiply-linked file before flock; launcher.lock too) |
+| WR-09 | warning | fixed | fixed by quick 261028-n0z 0f85617 (read_run_file capped at 1 MiB via take; run_loop refuses a write past the cap) |
+| WR-10 | warning | fixed | fixed by quick 261028-n0z 44eef32 (a give-back ENOENT restores by no-replace rename; EEXIST runs another exchange round) |
 | IN-06 | info | open | - |
 | IN-08 | info | open | - |
 | IN-09 | info | open | - |

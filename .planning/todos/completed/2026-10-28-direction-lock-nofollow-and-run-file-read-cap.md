@@ -4,6 +4,8 @@ title: Open DIRECTION.lock with O_NOFOLLOW + regular-file check, and cap read_ru
 area: driver
 severity: minor
 source: .planning/phases/30-driver-tab-on-direction-md/30-REVIEW.md
+completed: 2026-10-28
+resolved_by: quick 261028-n0z 670e099 (WR-08 lock open) and 0f85617 (WR-09 1 MiB cap)
 files:
   - src/driver/lock.rs
   - src/driver/direction.rs:588-593
