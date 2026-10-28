@@ -5,23 +5,23 @@ titles: json
 findings:
   - id: WR-01
     severity: warning
-    disposition: open
+    disposition: fixed
     title: "Opt-in disclosure still describes retired model seams and a re-confirmation that nothing performs"
   - id: WR-02
     severity: warning
-    disposition: open
+    disposition: fixed
     title: "Opt-in prompts and docs claim the push step reads a branch namespace from the opt-in; it does not"
   - id: WR-03
     severity: warning
-    disposition: open
+    disposition: fixed
     title: "Unregistering a project is no longer guarded against a live launcher run"
   - id: WR-04
     severity: warning
-    disposition: open
+    disposition: fixed
     title: "PR-ledger refusal message cites a \"5-second deadline\" the push step no longer has"
   - id: WR-05
     severity: warning
-    disposition: open
+    disposition: fixed
     title: "SAFE-04 redaction can be bypassed when the captured stderr line exceeds the 4 KiB tail window"
   - id: IN-01
     severity: info
@@ -47,7 +47,7 @@ findings:
     severity: info
     disposition: open
     title: "Release docs and packaging comments retain stale claims"
-open: 11
+open: 6
 total: 11
 recorded: 2026-10-25T07:02:44.875Z
 ---
@@ -56,11 +56,11 @@ recorded: 2026-10-25T07:02:44.875Z
 
 | Finding | Severity | Disposition | Source |
 |---------|----------|-------------|--------|
-| WR-01 | warning | open | - |
-| WR-02 | warning | open | - |
-| WR-03 | warning | open | - |
-| WR-04 | warning | open | - |
-| WR-05 | warning | open | - |
+| WR-01 | warning | fixed | 12b8a1d, 89f4b3b (31-08) |
+| WR-02 | warning | fixed | 89f4b3b (31-08) |
+| WR-03 | warning | fixed | 36e0805 (31-08) |
+| WR-04 | warning | fixed | 21b94df, a51b39a (31-09) |
+| WR-05 | warning | fixed | 21b94df (31-09) |
 | IN-01 | info | open | - |
 | IN-02 | info | open | - |
 | IN-03 | info | open | - |
