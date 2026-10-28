@@ -5,15 +5,15 @@ titles: json
 findings:
   - id: WR-08
     severity: warning
-    disposition: open
+    disposition: deferred
     title: "`DIRECTION.lock` is opened by path with symlink-following and truncating-write semantics, the one run-directory open the hardening still skips"
   - id: WR-09
     severity: warning
-    disposition: open
+    disposition: deferred
     title: "`run_loop`'s guarded read has no size cap, although every other run-directory reader enforces 1 MiB"
   - id: WR-10
     severity: warning
-    disposition: open
+    disposition: deferred
     title: "A give-back `ENOENT` strands the human's newest save at a hidden temp name, where the next launch sweeps it"
   - id: IN-06
     severity: info
@@ -79,7 +79,7 @@ findings:
     severity: info
     disposition: fixed
     title: "The launch form and the launcher read the `control` word with different readers"
-open: 7
+open: 4
 total: 19
 recorded: 2026-10-24T18:41:08.771Z
 ---
@@ -88,9 +88,9 @@ recorded: 2026-10-24T18:41:08.771Z
 
 | Finding | Severity | Disposition | Source |
 |---------|----------|-------------|--------|
-| WR-08 | warning | open | - |
-| WR-09 | warning | open | - |
-| WR-10 | warning | open | - |
+| WR-08 | warning | deferred | still present (lock.rs has no O_NOFOLLOW); destructive write in the T-30-04/T-30-24 model, so deferred not skipped; todo 2026-10-28-direction-lock-nofollow-and-run-file-read-cap.md [inferred — cleanup 2026-10-28] |
+| WR-09 | warning | deferred | still present (read_run_file uncapped); low severity, bundled with WR-08 in todo 2026-10-28-direction-lock-nofollow-and-run-file-read-cap.md [inferred — cleanup 2026-10-28] |
+| WR-10 | warning | deferred | still present; todo 2026-10-28-direction-give-back-enoent-loses-save.md (NOREPLACE rename on ENOENT) [inferred — cleanup 2026-10-28] |
 | IN-06 | info | open | - |
 | IN-08 | info | open | - |
 | IN-09 | info | open | - |

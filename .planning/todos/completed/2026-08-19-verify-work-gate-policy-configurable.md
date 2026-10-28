@@ -6,6 +6,9 @@ severity: major
 files:
   - src/driver/router.rs
   - src/config.rs
+resolution: obsolete
+completed: 2026-10-28
+status: completed
 ---
 
 ## Problem
@@ -64,3 +67,10 @@ selected. Do not weaken the oracle to accommodate the knob.
 
 User decision, 2026-08-19, during the phase 20 autonomous run — in response to 20-04's report
 that `/gsd-verify-work` had been excluded from the safe alphabet by fiat.
+
+## Resolution — obsolete (2026-10-28 cleanup)
+
+Closed as obsolete, not implemented. The drive loop whose router hard-coded the verify-work exclusion was
+deleted in Phase 31; gate policy is now expressed as per-item done-when plus the standing stop rules in
+DIRECTION.md (Phase 29 master prompt), which superseded Phase 23 (Gate Policy & Auto-Validation). User-approved
+in the 2026-10-28 triage.

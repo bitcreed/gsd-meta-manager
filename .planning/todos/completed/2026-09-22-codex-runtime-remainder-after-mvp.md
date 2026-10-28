@@ -21,6 +21,9 @@ files:
   - src/journal/mod.rs
   - src/state_reader/queue_md.rs
   - src/ui/screens/mod.rs
+resolution: obsolete
+completed: 2026-10-28
+status: completed
 ---
 
 ## Problem
@@ -174,3 +177,9 @@ Research assumptions, status after execution:
   `runtime` key): **IMPLEMENTED** as ID-2 and pinned end to end
   (`a_project_with_no_runtime_key_spawns_the_unchanged_claude_argv` plants
   GSD's `runtime: codex` and asserts the Claude argv).
+
+## Resolution — obsolete (2026-10-28 cleanup)
+
+Closed as obsolete. The Codex executor this remainder built on was deleted in Phase 31 plan 31-07, so there is
+no MVP left to extend. A future Codex runtime would start from the Phase 28 launcher, not from this list.
+User-approved in the 2026-10-28 triage.

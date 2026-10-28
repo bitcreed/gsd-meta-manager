@@ -11,6 +11,7 @@ files:
   - src/ui/screens/driver_launch.rs
   - src/ui/screens/driver_run.rs
   - src/driver/direction.rs
+decision: enable
 ---
 
 ## Problem
@@ -31,3 +32,9 @@ Severity `minor` [inferred — audit]: human unavailable at capture; mapped from
 Verify: cross-target clippy for both apple targets; then on the docker-osx VM (`systemctl --user start osx`, `ssh osx`, procedure in `28-UAT.md` test 2) drive TUI `R` -> `[U]` unsandboxed launch and `s` steering end to end.
 
 Risk: the `renameatx_np` swap needs APFS (HFS+ refuses cleanly).
+
+## Decision (2026-10-28)
+
+The user decided to ENABLE TUI launch and steering on macOS: Phase 28 review WR-05 is resolved as
+"enable on macOS". The gate to widen is still `can_steer()` at `src/ui/screens/driver_steer.rs:43-45`
+(`cfg!(target_os = "linux")`). Phase 31 has closed, so the "after Phase 31" precondition above is met.

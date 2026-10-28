@@ -1,8 +1,8 @@
 ---
-status: awaiting_human_verify
+status: resolved
 trigger: "active_phase_number() lets STATE.md current_phase name a phase below the disk frontier, so a Complete phase renders as current (*). Fix with a clamp: active = max(state_md.current_phase, disk_frontier), falling back to completed_phases+1."
 created: 2026-09-10
-updated: 2026-09-10
+updated: 2026-10-28
 ---
 
 # Debug: active phase can fall below the disk frontier
@@ -216,3 +216,10 @@ disk is itself suspicious — phase 19's verification is `HumanNeeded` and phase
 `GapsFound` (consistent with the phase-21 gap-closure loop halted with blockers open). The
 dashboard is now reporting that honestly instead of masking it; the planning state may
 want reconciling independently of this fix.
+
+## Closure (2026-10-28 cleanup)
+
+Resolved. The clamp is in code at `src/state_reader/mod.rs:341-347` (`active_phase_number()` returns
+`declared.max(frontier)`), and it was verified on real data, so the pending human verification is discharged
+by evidence. The "phase 19 label beside a `*` on phase 22" observation above was a symptom of the stale
+planning state: Phases 19/21/22/23 were closed by supersession on 2026-10-28. Moved to `resolved/`.
