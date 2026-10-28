@@ -13,6 +13,12 @@ is gitignored inside the scratch repo; only this host-side tool writes it. Two t
                       tool_use id. The feed therefore moves after the executor has ended and before the
                       verifier reads it; SUMMARY commits do not move it. A watcher restart recounts the
                       spawns from the transcripts and logs no duplicate advance.
+                      `gen` always names the generation on disk: a failed feed write keeps the spawn queued and the
+                      next poll retries it (IN-09). A spawn is counted from its `tool_use` block, not its
+                      `tool_result`: a foreground Agent call's tool_result arrives only when the verifier returns,
+                      after it has read the feed, and D-06 needs the feed to move first. A hook-denied spawn would
+                      still count, but in the driven runs gsd-verifier is spawned inside the worker subagent, and
+                      the driverctl gate exempts such calls (`agent_id` set, src/driverctl/protocol.rs:153-158).
 
 Either way the feed advances between "execute" and "verify" of every GSD round, and each verification
 lists cases the previous one did not.
@@ -369,6 +375,7 @@ class Watcher:
         self.scanner = SpawnScanner(claude_config) if trigger == "verifier" else None
         self.count = None
         self.gen = 0
+        self.pending = []        # verifier spawns read from the transcripts but not yet applied to the feed (IN-09)
         self.seen_hashes = set()
 
     def _log(self, line: str) -> None:
@@ -400,21 +407,30 @@ class Watcher:
                 pass
 
     def _poll_verifier(self) -> None:
-        """Seed v2: each new gsd-verifier spawn raises the generation by one (capped); SUMMARY commits do not."""
-        for ts, tid in self.scanner.scan():
+        """Seed v2: each new gsd-verifier spawn raises the generation by one (capped); SUMMARY commits do not.
+        IN-09: `gen` is assigned only after write_feed returns, so it always names the generation on disk. A
+        failed write propagates to poll_safe and leaves the spawn at the head of `pending` for the next poll."""
+        self.pending.extend(self.scanner.scan())
+        while self.pending:
+            ts, tid = self.pending[0]
             if self.gen >= MAX_GEN:
+                self.pending.pop(0)
                 self._log(f"exhausted spawns={len(self.scanner.spawns)}")
                 continue
-            self.gen += 1
-            titles = write_feed(self.project, self.gen)
+            nxt = self.gen + 1
+            titles = write_feed(self.project, nxt)
+            self.gen = nxt
+            self.pending.pop(0)
             head = (_git(self.project, "rev-parse", "--short=7", "HEAD") or "").strip() or "none"
             self._log(f"gen={self.gen} summaries={count_summaries(self.project) or 0} head={head} "
                       f"titles={titles} trigger=verifier spawn={tid[-8:]} spawn_at={ts}")
 
     def poll(self) -> None:
         if self.trigger == "verifier":
-            self._poll_verifier()
-            self._snapshot_verifications()
+            try:
+                self._poll_verifier()
+            finally:                                  # IN-09: a failed feed write must not delay the snapshot
+                self._snapshot_verifications()
             return
         n = count_summaries(self.project)
         if n is not None and n != self.count:         # WR-02: a git failure (None) is 'no change'
@@ -599,6 +615,59 @@ def _selftest_verifier(tmp: str, me: str) -> None:
     assert PLANTED not in "".join(fx)
 
 
+def _selftest_feed_write_failure(tmp: str) -> None:
+    """IN-09: the verifier generation advances only after the feed write lands; a failed write keeps the
+    spawn queued, the snapshot taken meanwhile carries the generation on disk, and the retry applies once."""
+    p = os.path.join(tmp, "pw")
+    os.makedirs(os.path.join(p, ".planning"))
+    sh = lambda *c: subprocess.run(c, cwd=p, check=True, capture_output=True)  # noqa: E731
+    sh("git", "init", "-q", "-b", "main")
+    sh("git", "config", "user.email", "t@example.invalid")
+    sh("git", "config", "user.name", "t")
+    with open(os.path.join(p, ".gitignore"), "w") as f:
+        f.write("feed/\n")
+    sh("git", "add", ".gitignore")
+    sh("git", "commit", "-qm", "init")
+    cfg = os.path.join(tmp, "cfgw")
+    log, snaps = os.path.join(tmp, "wdrift.log"), os.path.join(tmp, "wsnaps")
+    w = Watcher(p, log, snaps, "verifier", cfg)
+    w.start()
+    feed = lambda: open(os.path.join(p, "feed", "titles.txt")).read().splitlines()  # noqa: E731
+    readlog = lambda: open(log).read()  # noqa: E731
+    vd = os.path.join(p, ".planning", "phases", "01-w")
+    os.makedirs(vd)
+    with open(os.path.join(vd, "01-VERIFICATION.md"), "w") as f:
+        f.write("---\nphase: 01-w\nstatus: gaps_found\n---\nbody w\n")
+    sub = os.path.join(cfg, "projects", "-proj", "sess1", "subagents")
+    os.makedirs(sub)
+    with open(os.path.join(sub, "agent-www.jsonl"), "a") as f:
+        f.write(json.dumps({"type": "assistant", "timestamp": "2026-10-18T04:00:00.000Z", "message": {"content": [
+            {"type": "tool_use", "id": "toolu_wfail00000001", "name": "Agent",
+             "input": {"subagent_type": "gsd-verifier"}}]}}) + "\n")
+    real_write = globals()["write_feed"]
+
+    def failing_write(project, gen):
+        raise OSError("PLANTED-disk-fault")
+    globals()["write_feed"] = failing_write
+    try:
+        w.poll_safe()
+    finally:
+        globals()["write_feed"] = real_write
+    lg = readlog()
+    assert w.gen == 0 and feed() == emit(0)[0], "a failed feed write must not advance gen"
+    assert lg.count(" poll-error OSError\n") == 1 and "PLANTED-disk-fault" not in lg, lg
+    assert " trigger=verifier spawn=" not in lg and len(w.pending) == 1, lg
+    assert "status=gaps_found gen=0" in lg, "the snapshot taken during the failure must carry the on-disk gen"
+    w.poll_safe()
+    lg = readlog()
+    assert w.gen == 1 and feed() == emit(1)[0] and w.pending == [], lg
+    assert lg.count(" trigger=verifier spawn=00000001 ") == 1, lg
+    w.poll_safe()
+    lg = readlog()
+    assert w.gen == 1 and lg.count(" trigger=verifier spawn=00000001 ") == 1 and lg.count("snapshot file=") == 1, lg
+    assert lg.count(" poll-error") == 1, lg
+
+
 def selftest() -> int:
     # determinism and prefix
     assert emit(3) == emit(3)
@@ -743,6 +812,7 @@ def selftest() -> int:
         adv = [ln for ln in lg.splitlines() if " gen=" in ln and " summaries=" in ln]
         assert adv and all(ADV_RE.match(ln) for ln in adv) and "trigger=" not in lg, adv
         _selftest_verifier(tmp, me)
+        _selftest_feed_write_failure(tmp)
     print(f"selftest OK gens={MAX_GEN}")
     return 0
 
