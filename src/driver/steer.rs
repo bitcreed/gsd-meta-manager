@@ -1903,6 +1903,32 @@ pub(crate) mod tests {
         );
     }
 
+    /// WR-09: a DIRECTION.md one byte past the 1 MiB cap fails the steer.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn steer_run_over_a_direction_md_just_past_the_cap_fails() {
+        use crate::state_reader::driver_frontmatter::DIRECTION_READ_MAX_BYTES;
+        let dir = tempfile::tempdir().expect("temp dir");
+        write_run(dir.path(), &clean_body());
+        let path = dir.path().join("DIRECTION.md");
+        let have = std::fs::metadata(&path).unwrap().len();
+        let mut text = std::fs::read_to_string(&path).unwrap();
+        text.push_str(&"x".repeat((DIRECTION_READ_MAX_BYTES + 1 - have) as usize));
+        std::fs::write(&path, &text).unwrap();
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().len(),
+            DIRECTION_READ_MAX_BYTES + 1
+        );
+
+        match steer_run(dir.path(), &SteerOp::SetControl("pause".to_string())) {
+            SteerOutcome::Failed(why) => assert!(why.contains("larger than 1 MiB"), "{why}"),
+            other => panic!("an over-cap DIRECTION.md must fail the steer, got {other:?}"),
+        }
+
+        assert_eq!(live_text(dir.path()), text, "the file is unchanged");
+        assert!(crate::driver::direction::direction_lock(dir.path()).is_ok());
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn launcher_edit_a_temp_that_is_a_symlink_is_refused() {

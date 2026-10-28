@@ -497,6 +497,7 @@ mod imp {
         DIRECTION_FILE, SPLICE_TRIES, TEMP_PREFIX,
     };
     use crate::error::LockError;
+    use crate::state_reader::driver_frontmatter::DIRECTION_READ_MAX_BYTES;
 
     /// Test-only seam: a per-thread callback fired at the instants of the
     /// exchange-verify loop where a human save can race the splice, so a unit
@@ -555,7 +556,8 @@ mod imp {
     const GIVE_BACK_ROUNDS: u32 = 8;
 
     /// One file as seen at a temp name: its inode and its bytes (`None` when
-    /// unreadable). Only this process renames to or from a temp name, so two
+    /// unreadable or over the 1 MiB cap, so such a file is compared by inode
+    /// alone, which still gives back correctly). Only this process renames to or from a temp name, so two
     /// equal `Seen`s are the same file, unchanged (an in-place write into a
     /// displaced inode changes its bytes, so it never compares equal).
     #[derive(PartialEq, Eq)]
@@ -592,13 +594,26 @@ mod imp {
         }
     }
 
-    /// Read a whole run-directory file through the guarded open: no symlink is
-    /// followed and a FIFO opens non-blocking and is refused as not a regular
-    /// file, so a planted entry cannot park the caller under the lock (T-30-04).
+    /// Read a whole run-directory file through the guarded open, bounded to
+    /// [`DIRECTION_READ_MAX_BYTES`] (the cap the display reader enforces): no
+    /// symlink is followed, a FIFO opens non-blocking and is refused as not a
+    /// regular file, and a file over the cap is `InvalidData` "larger than 1 MiB"
+    /// (checked on the open handle, then again on a `take(CAP + 1)` read in case it
+    /// grew), so a planted entry can neither park the caller under the lock nor
+    /// make it allocate without bound (T-30-04, 30-REVIEW WR-09).
     fn read_run_file(path: &Path) -> std::io::Result<Vec<u8>> {
-        let mut file = crate::state_reader::driver_frontmatter::open_run_file(path)?;
+        let too_big =
+            || std::io::Error::new(std::io::ErrorKind::InvalidData, "file is larger than 1 MiB");
+        let file = crate::state_reader::driver_frontmatter::open_run_file(path)?;
+        if file.metadata()?.len() > DIRECTION_READ_MAX_BYTES {
+            return Err(too_big());
+        }
         let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes)?;
+        file.take(DIRECTION_READ_MAX_BYTES + 1)
+            .read_to_end(&mut bytes)?;
+        if bytes.len() as u64 > DIRECTION_READ_MAX_BYTES {
+            return Err(too_big());
+        }
         Ok(bytes)
     }
 
@@ -781,6 +796,19 @@ mod imp {
                 Plan::Keep => return Ok(SpliceOutcome::Ok),
                 Plan::Write(content) => content,
             };
+            // Refuse to place a file over the read cap, before any temp exists
+            // [inferred — cleanup 2026-10-28]. Required, not optional: an over-cap
+            // file of the tool's own would come back from the exchange-back as
+            // `bytes: None`, the own-file check below would miss it, and
+            // `give_back_newest` would put the tool's stale file in place as if it
+            // were a human save. It would also be a DIRECTION.md the tab's reader
+            // refuses to display (30-REVIEW WR-09).
+            if new_content.len() as u64 > DIRECTION_READ_MAX_BYTES {
+                return Err(io_err(
+                    target.display(),
+                    "the new content would be larger than 1 MiB",
+                ));
+            }
             let mode = match std::fs::metadata(&target) {
                 Ok(meta) => meta.permissions().mode() & 0o7777,
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -1212,6 +1240,57 @@ mod tests {
         ) -> SpliceReport {
             let acts: Vec<_> = saves.iter().map(|&(p, n)| (p, Act::Save(n))).collect();
             splice_acting(dir, &acts)
+        }
+
+        /// BODY padded with `x` to exactly `len` bytes.
+        fn padded_to(len: u64) -> String {
+            let mut text = BODY.to_string();
+            text.push_str(&"x".repeat(len as usize - text.len()));
+            assert_eq!(text.len() as u64, len);
+            text
+        }
+
+        fn io_detail(result: Result<SpliceReport, DirectionError>) -> String {
+            match result {
+                Err(DirectionError::Io { detail }) => detail,
+                other => panic!("expected an Io error, got {other:?}"),
+            }
+        }
+
+        /// WR-09: a DIRECTION.md one byte over the cap is refused and left alone.
+        #[test]
+        fn an_over_cap_direction_md_is_refused_and_left_alone() {
+            use crate::state_reader::driver_frontmatter::DIRECTION_READ_MAX_BYTES;
+            let seeded = padded_to(DIRECTION_READ_MAX_BYTES + 1);
+            let dir = run_dir_with(&seeded);
+
+            let detail = io_detail(splice_frontmatter(dir.path(), &block(1)));
+            assert!(detail.contains("larger than 1 MiB"), "{detail}");
+            let detail = io_detail(write_body(dir.path(), |b| {
+                b.replace("control: run", "control: pause")
+            }));
+            assert!(detail.contains("larger than 1 MiB"), "{detail}");
+
+            assert_eq!(read(&dir), seeded, "the file is byte-identical");
+            assert!(no_temps_left(&dir));
+        }
+
+        /// WR-09: a file AT the cap still reads, and a splice that would push it
+        /// past the cap is refused before any temp is created.
+        #[test]
+        fn a_write_that_would_pass_the_cap_is_refused_before_any_temp() {
+            use crate::state_reader::driver_frontmatter::DIRECTION_READ_MAX_BYTES;
+            let seeded = padded_to(DIRECTION_READ_MAX_BYTES);
+            let dir = run_dir_with(&seeded);
+
+            let report =
+                write_body(dir.path(), |b| b.to_string()).expect("a file at the cap reads");
+            assert_eq!(report.outcome, SpliceOutcome::Ok);
+
+            let detail = io_detail(splice_frontmatter(dir.path(), &block(1)));
+            assert!(detail.contains("larger than 1 MiB"), "{detail}");
+            assert_eq!(read(&dir), seeded, "the file is byte-identical");
+            assert!(no_temps_left(&dir));
         }
 
         /// WR-10: the give-back exchange finds DIRECTION.md unlinked. The newest
