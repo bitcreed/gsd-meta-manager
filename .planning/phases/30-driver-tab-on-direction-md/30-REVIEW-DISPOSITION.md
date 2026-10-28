@@ -17,15 +17,15 @@ findings:
     title: "A give-back `ENOENT` strands the human's newest save at a hidden temp name, where the next launch sweeps it"
   - id: IN-06
     severity: info
-    disposition: open
+    disposition: fixed
     title: "macOS exchange failure on a volume without `RENAME_SWAP` surfaces under the Linux syscall name"
   - id: IN-08
     severity: info
-    disposition: open
+    disposition: fixed
     title: "`contended > 0` is satisfied by any busy tool thread, so it does not show the read-to-exchange window was raced"
   - id: IN-09
     severity: info
-    disposition: open
+    disposition: fixed
     title: "Exhausting the give-back leaves the newest save at the temp name and an older one at `DIRECTION.md`"
   - id: IN-05
     severity: info
@@ -33,7 +33,7 @@ findings:
     title: "Body-relative `DIRECTION.md:<line>` in the TUI differs from `driver check` and the launcher's own refusal (carried, unchanged)"
   - id: IN-07
     severity: info
-    disposition: open
+    disposition: skipped
     title: "At a zero row budget both lint popups drop every finding and leave a header that ends in a colon"
   - id: WR-02
     severity: warning
@@ -79,7 +79,7 @@ findings:
     severity: info
     disposition: fixed
     title: "The launch form and the launcher read the `control` word with different readers"
-open: 4
+open: 0
 total: 19
 recorded: 2026-10-24T18:41:08.771Z
 ---
@@ -91,11 +91,11 @@ recorded: 2026-10-24T18:41:08.771Z
 | WR-08 | warning | fixed | fixed by quick 261028-n0z 670e099 (acquire_at opens with O_NOFOLLOW plus O_NONBLOCK and refuses a non-regular or multiply-linked file before flock; launcher.lock too) |
 | WR-09 | warning | fixed | fixed by quick 261028-n0z 0f85617 (read_run_file capped at 1 MiB via take; run_loop refuses a write past the cap) |
 | WR-10 | warning | fixed | fixed by quick 261028-n0z 44eef32 (a give-back ENOENT restores by no-replace rename; EEXIST runs another exchange round) |
-| IN-06 | info | open | - |
-| IN-08 | info | open | - |
-| IN-09 | info | open | - |
+| IN-06 | info | fixed | fixed by quick 261028-n12 886acc8 (exchange failure reports a portable atomic rename exchange label, with a filesystem hint for NOTSUP and INVAL) |
+| IN-08 | info | fixed | fixed by quick 261028-n12 886acc8 (the contended gloss, sample comment and assertion message in driverctl_race.rs say what the counter measures; editor_race_naive_positive_control is the non-vacuity proof) |
+| IN-09 | info | fixed | fixed by quick 261028-n12 886acc8 (the exhaustion error says the newest save is the one left at the temp, that the next launch's stale-temp sweep deletes it, and to copy it out; message only, no extra exchange adopted because eight racing saves within microseconds is not a realistic input) [inferred — cleanup 2026-10-28] |
 | IN-05 | info | deferred | [INFERRED — audit] carried from the 2026-10-21 ledger: same finding re-reported 2026-10-23 with a "(carried, unchanged)" title suffix, which the ledger script read as an id reuse; only visible if DIRECTION.md changes between preflight and launch; body-relative numbering is the D-17/D-18 editor contract; relabel or re-base in a later cleanup (not in the current review) |
-| IN-07 | info | open | - (not in the current review) |
+| IN-07 | info | skipped | thin disclosure, and only at the one or two heights where the list gets zero rows. The count stays in the header, which the review says is not a safety hole. Making y inert on the override would bring back the unconfirmable popup that quick 261021-101 (IN-04) closed [inferred — cleanup 2026-10-28] (not in the current review) |
 | WR-02 | warning | fixed | fixed by quick 261021-101 64f73e7 (run_loop opens DIRECTION.md and the exchanged temp through open_run_file) (not in the current review) |
 | WR-07 | warning | fixed | fixed by quick 261021-101 a3201ba (model_name_ok admits [ and ]; relaunch_prefill shares the predicate) (not in the current review) |
 | IN-04 | info | fixed | fixed by quick 261021-101 ce352c0 (both lint popups skip fit_list at a zero row budget) (not in the current review) |
