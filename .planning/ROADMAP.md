@@ -104,7 +104,7 @@ No formal phases — see `.planning/MILESTONES.md` and `STATE.md`
 - [ ] **Phase 28.1: Sandbox Egress & Agent-Channel Isolation** (INSERTED) - `--unshare-net` + allowlisting egress proxy, `$HOME` allowlist, planted-file guard, agent-tool denies, nested-agent cap check, degraded-mode gap reporting
 - [x] **Phase 29: Master Prompt & Run Templates** - Shipped, versioned master prompt; DIRECTION/LOG templates; explicit stop-rule precedence; reconciliation (completed 2026-10-20)
 - [x] **Phase 30: Driver Tab on DIRECTION.md** - TUI reads the frontmatter (status, caps, heartbeat, crash) and steers by editing `control` (completed 2026-10-24)
-- [ ] **Phase 31: Retire Superseded Envelope & Goal-Layer Code** - Remove or rewire the Phase 19/21/22 code; close their threat ids as superseded
+- [x] **Phase 31: Retire Superseded Envelope & Goal-Layer Code** - Remove or rewire the Phase 19/21/22 code; close their threat ids as superseded (completed 2026-10-28)
 - [ ] **Phase 32: GSD Capabilities: Visibility & Per-Project Control** - See every GSD capability per project and across projects; toggle and configure them per project from the TUI
 
 **Parallelism:** Phase 14 has no dependencies and is parallel-safe throughout.
@@ -1388,7 +1388,7 @@ guard, check which of its threats (exfiltration, credential use, network reach) 
 allowlist as the superseding mechanism, and should be closed only once 28.1 lands
 [inferred — audit].
 
-**Plans**: 9/9 plans executed
+**Plans**: 9/9 plans complete
 
 Plans:
 
@@ -1502,7 +1502,7 @@ Plans:
 | 28. Sandboxed Driver Launcher | 9/9 | Complete    | 2026-10-24 |
 | 29. Master Prompt & Run Templates | 8/8 | Complete    | 2026-10-20 |
 | 30. Driver Tab on DIRECTION.md | 9/9 | Complete    | 2026-10-24 |
-| 31. Retire Superseded Envelope & Goal-Layer Code | 9/9 | In Progress | - |
+| 31. Retire Superseded Envelope & Goal-Layer Code | 9/9 | Complete    | 2026-10-28 |
 | 32. GSD Capabilities: Visibility & Per-Project Control | 0/0 | Not started | - |
 
 ## Backlog

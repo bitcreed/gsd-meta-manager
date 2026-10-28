@@ -287,7 +287,7 @@ Minted 2026-10-24 by the 28.1 discuss step (`28.1-CONTEXT.md` D-01) `[inferred â
 
   The parts that survive are rewired into the launcher or the push step: namespace refusal, secret
   scan, PR ledger, SAFE-04 redaction, the `Untrusted` display type, and the router.
-- [ ] **RETIRE-02**: The Phase 22 plans are archived as superseded, and `bollard` is never added.
+- [x] **RETIRE-02**: The Phase 22 plans are archived as superseded, and `bollard` is never added.
 - [x] **RETIRE-03**: The open Phase 19/21 threat ids and criterion 4 are closed as superseded, each
   with a pointer. `./scripts/pre-tag-check.sh --container` passes on the reduced tree.
 
@@ -407,5 +407,5 @@ the previous milestone (last shipped phase was 13), so v2.0 spans Phases 14-31 (
 | DTAB-03 | Phase 30 | Complete |
 | DTAB-04 | Phase 30 | Complete |
 | RETIRE-01 | Phase 31 | Complete |
-| RETIRE-02 | Phase 31 | Pending |
+| RETIRE-02 | Phase 31 | Complete |
 | RETIRE-03 | Phase 31 | Complete |

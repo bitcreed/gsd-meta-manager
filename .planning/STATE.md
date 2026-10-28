@@ -1,19 +1,20 @@
 ---
 gsd_state_version: "1.0"
 milestone: v1.15.0
-current_phase: 31
-current_phase_name: Retire Superseded Envelope & Goal-Layer Code
-status: executing
-stopped_at: Completed 31-07-PLAN.md
-last_updated: "2026-10-28T05:05:17.440Z"
-last_activity: 2026-10-27
-last_activity_desc: Phase 31 execution started
-state_head: 2e2e3355e3319472ae21bc7a96f9c6d4ef19ed79
+current_phase: "28.1"
+current_phase_name: Sandbox Egress & Agent-Channel Isolation
+status: verifying
+stopped_at: Phase 31 complete, ready to verify Phase 28.1
+last_updated: "2026-10-28T05:14:26.900Z"
+last_activity: 2026-10-28
+last_activity_desc: Phase 31 complete, transitioned to Phase 28.1
+state_head: ccfc6acc37c4348a29792d26d5e71b9c933db52e
 progress:
   total_phases: 10
-  completed_phases: 14
+  completed_phases: 15
   total_plans: 9
   completed_plans: 112
+  percent: 100
 milestone_name: Workstream Visibility
 ---
 
@@ -28,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-10-24)
 
 ## Current Position
 
-Status: Ready to execute
+Status: Phase complete — ready for verification
   Phase 30 (Driver Tab on DIRECTION.md) complete 2026-10-24: 9/9 plans, re-verified 6/6 after quick
   261023-v1s staled the report (direction.rs give-back exchange); UAT 2/2, SECURITY threats_open 0,
   regression gate green apart from the known local git-version witness. Re-review WR-10/WR-08/WR-09
@@ -269,8 +270,8 @@ Carried forward from v1.7.0 (unchanged by this patch):
 
 Active milestone (superseded by the 2026-10-14 re-plan above; resume there):
 Milestone: v2.0 Autonomous Orchestration (Phases 14-31). Phases 19/21/22/23 are superseded.
-Phase: 31 (Retire Superseded Envelope & Goal-Layer Code) — EXECUTING
-Plan: 9 of 9
+Phase: 28.1 — Sandbox Egress & Agent-Channel Isolation
+Plan: 14
   19-11 closed T-19-60 structurally (resolve the effective program by finding the first token
   whose BASENAME is in a closed GOVERNED_PROGRAMS set; NO wrapper-name list added, one DELETED).
   19-12 certifies that closure at the CLASS level rather than at the instance level:
@@ -304,7 +305,7 @@ Status: Ready to execute
   criterion 4 remains PRESENT_BEHAVIOUR_UNVERIFIED and permanently agent-unclosable — it needs
   a human with a live Claude subscription for the 10 #[ignore]d arms. 4/5 is the correct ceiling.
   Phase 19 human-judgement UAT items were deferred by explicit user decision on 2026-08-19, not resolved.
-Last activity: 2026-10-27 — Phase 31 execution started
+Last activity: 2026-10-28 — Phase 31 complete, transitioned to Phase 28.1
 Note (260908-uqq): the D-06 "a capability refusal costs zero tokens and zero quota" guarantee no
 longer holds unconditionally. It holds on the **eager arm** only (CLI announced inside the grace).
 On the **late arm** — 2.1.266's measured shape — the grace releases the prompt first, so a refusal
@@ -433,7 +434,7 @@ verify-phase if the gate is fixed.
 
 **Velocity:**
 
-- Total plans completed: 97
+- Total plans completed: 106
 - Average duration: --
 - Total execution time: 0 hours
 
@@ -454,6 +455,7 @@ verify-phase if the gate is fixed.
 | 29 | 8 | - | - |
 | 28 | 9 | - | - |
 | 30 | 9 | - | - |
+| 31 | 9 | - | - |
 
 **Recent Trend (from v1.1):**
 
@@ -1014,7 +1016,7 @@ Recent decisions affecting current work:
 ## Session Continuity
 
 Last session: 2026-10-28T05:05:15.832Z
-Stopped at: Completed 31-07-PLAN.md
+Stopped at: Phase 31 complete, ready to verify Phase 28.1
 Resume file: None
 
 Next: `/gsd-plan-phase 28.1` (or `/gsd-discuss-phase 28.1`). Phase 30 verified and complete. v1.15.0 is an interim release; the v2.0

@@ -96,7 +96,7 @@
     {
       "number": "31",
       "name": "Retire Superseded Envelope & Goal-Layer Code",
-      "status": "in_progress"
+      "status": "complete"
     },
     {
       "number": "32",
@@ -106,8 +106,8 @@
   ],
   "next": {
     "command": "/gsd-progress --next",
-    "label": "Advance to the next step",
-    "reason": "Phase 20 of 21 · executing"
+    "label": "Advance to the next step (verify)",
+    "reason": "Phase 17 of 21 · 100% · ready to verify"
   },
-  "updated_at": "2026-10-28T05:05:05.043Z"
+  "updated_at": "2026-10-28T05:14:26.930Z"
 }
