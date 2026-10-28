@@ -48,21 +48,14 @@ const LEDGER_FILE: &str = "pr-ledger.ndjson";
 /// module doc.
 const WINDOW_SECS: i64 = 24 * 60 * 60;
 
-/// The seconds of counting time [`MAX_LEDGER_BYTES`] was sized against (`T-19-117`):
-/// the measurements in its doc are read against this figure. It is a sizing input
-/// only; nothing enforces it at runtime, no refusal message names it, and so only the
-/// size-bound tests read it.
-#[cfg(test)]
-const COUNT_BUDGET_SECS: u64 = 5;
-
 /// The largest ledger [`record_and_check_in`] will read before refusing
 /// (`T-19-117`).
 ///
 /// # WHY A BOUND AT ALL, AND WHY IT REFUSES RATHER THAN READS LESS
 ///
 /// [`record_and_check_in`] reads this file WHOLE and [`tally`] walks every line,
-/// on the push step's critical path, which [`MAX_LEDGER_BYTES`] was sized against a
-/// `COUNT_BUDGET_SECS`-second budget for.
+/// on the push step's critical path; this bound was sized against a five-second
+/// counting budget (`COUNT_BUDGET_SECS` in the tests).
 /// **The file is append-only and can be inflated.** Under Phase 28.1 the ledger is
 /// outside the sandbox's `$HOME` allowlist (`T-19-112` closure), so a sandboxed
 /// agent command cannot reach it; any host process with the user's rights still can.
@@ -346,7 +339,7 @@ pub fn record_and_check_in(
     // than the case it was written for: a FIFO at the ledger path STATS AT LENGTH
     // 0, passes the size comparison, and `std::fs::read` below then blocks
     // FOREVER. Measured — **exit 124 after 20.02 s under a hard 20-second
-    // timeout**, against the 5-second `COUNT_BUDGET_SECS`, and against the **18 ms** a
+    // timeout**, against the 5-second counting budget, and against the **18 ms** a
     // 202 MB regular ledger now answers in and the **7.90 s** it answered in
     // before the size bound existed. A bound over SIZE cannot see it, because the
     // failure is over KIND.
@@ -990,6 +983,12 @@ mod tests {
     // `record_and_check_in` itself. They were first written against a PreToolUse
     // guard that no longer exists; the bounds live here, so the pins do too.
     // -----------------------------------------------------------------------
+
+    /// The seconds of counting time `MAX_LEDGER_BYTES` was sized against (`T-19-117`):
+    /// the measurements in its doc are read against this figure. It is a sizing input
+    /// only; nothing enforces it at runtime and no refusal message names it, so it
+    /// lives with the test that checks the refusal is fast against it.
+    const COUNT_BUDGET_SECS: u64 = 5;
 
     /// One ledger line dated outside the 24 h window, so the cap is unaffected and a
     /// measurement is about size and kind alone.
