@@ -675,7 +675,9 @@ enum SessionIdRank {
 ///
 /// This is the same fact fusion establishes one parser later at the producer: a
 /// value that LOOKS like an option is still that option's value. Asserted by
-/// `tests::the_split_forms_successor_is_a_value_by_position_even_when_it_is_option_shaped`.
+/// `tests::an_option_shaped_successor_is_bound_by_session_id_and_refused_by_resume`
+/// (which also records what has since changed for `--resume`: see the
+/// CORRECTED block below).
 /// The option spellings were re-measured at `claude` **2.1.250** — `--help`
 /// still documents `-r, --resume [value]`, an optional-value option — and that
 /// is a DEPENDENCY BEHAVIOUR, not a property of this code. **The measurement
@@ -724,13 +726,26 @@ pub(crate) fn session_id_in_cmdline(cmdline: &[u8]) -> Option<Untrusted> {
             if let Some(suffix) = element.strip_prefix(RESUME_OPTION_FUSED_PREFIX) {
                 Some((suffix, SessionIdRank::Resume))
             } else if element == RESUME_OPTION_NAME || element == RESUME_OPTION_SHORT_NAME {
-                // The split form's value is the NEXT element; step over it so
-                // it is not re-examined as an option in its own right. A
-                // trailing option name with nothing after it yields nothing
-                // and does not panic.
-                let next = args.get(index + 1).copied();
-                index += 1;
-                next.map(|value| (value, SessionIdRank::Resume))
+                // The split form's value is the NEXT element, but this option's
+                // value is OPTIONAL (`-r, --resume [value]`), so an
+                // option-shaped successor is a new option to `claude` and not
+                // the value. It yields nothing and `index` is left alone: the
+                // loop's own increment makes the successor the next element
+                // examined, so an id behind it (`-r -p --session-id <uuid>`)
+                // is not shadowed. Otherwise the successor is the value and is
+                // stepped over. A trailing option name with nothing after it
+                // yields nothing and does not panic.
+                match args.get(index + 1).copied() {
+                    Some(next) if is_option_shaped(next) => None,
+                    Some(next) => {
+                        index += 1;
+                        Some((next, SessionIdRank::Resume))
+                    }
+                    None => {
+                        index += 1;
+                        None
+                    }
+                }
             } else if element.starts_with(RESUME_OPTION_SHORT_NAME)
                 && element.len() > RESUME_OPTION_SHORT_NAME.len()
             {
@@ -801,6 +816,25 @@ pub(crate) fn session_id_in_cmdline(cmdline: &[u8]) -> Option<Untrusted> {
     // uuid is not. See [`SessionIdRank`] for the quoted help text, the
     // enforced premise and the disclosed residual.
     first_resume.or(first_assigned)
+}
+
+/// Does `element` look like an option rather than a value: first byte `-` and
+/// longer than that one byte?
+///
+/// Used for the successor of a bare `--resume` / `-r`. `claude --help` documents
+/// `-r, --resume [value]`, so the value is OPTIONAL and an option-shaped
+/// successor is parsed as a new option (measured at 2.1.312: `claude --resume
+/// -h` prints usage). See `tests::an_option_shaped_successor_is_bound_by_session_id_and_refused_by_resume`
+/// for the transcripts. It is NOT used for `--session-id <uuid>`, whose value is
+/// required and binds whatever follows.
+///
+/// `[inferred — cleanup 2026-10-28]` The single byte `-` is a value, as
+/// commander-style parsers treat it; at 2.1.312 this cannot be probed either
+/// way. `[inferred — cleanup 2026-10-28]` A negative-number-shaped element
+/// (`-5`) counts as option-shaped; if `claude` binds it, the direction is
+/// under-detection, and silent.
+fn is_option_shaped(element: &[u8]) -> bool {
+    element.len() > 1 && element[0] == b'-'
 }
 
 fn read_start_time(pid: u32) -> Option<u64> {
@@ -1661,48 +1695,128 @@ mod tests {
     /// The letter [`FORK_OPTION_HEAD`] is missing. Meaningless alone.
     const FORK_OPTION_TAIL: &str = "n";
 
-    /// **IN-07: the split form's successor is a VALUE BY POSITION** (21-36).
+    /// **R13-CR-01: an option-shaped successor is BOUND by `--session-id` and
+    /// REFUSED by `--resume` / `-r`** (quick 261028-n0v; IN-07 of 21-36 was the
+    /// rule this replaces).
     ///
-    /// The doc above [`session_id_in_cmdline`] said only that *"the leftmost
-    /// id-bearing element wins, deterministically, by argv index"*, which reads
-    /// as if a fused element could outrank a split form's successor. Measured
-    /// against the shipped parser, `["claude", "--resume", "--resume=abc"]`
-    /// returns `Some("--resume=abc")`. The CODE is right and the DOC is what
-    /// changed — so the reading is ASSERTED here rather than reasoned about,
-    /// which is the difference between a pinned fact and an implication a later
-    /// reader may draw either way.
+    /// The rule follows each option's MEASURED arity. `claude --help` documents
+    /// `-r, --resume [value]` — the value is OPTIONAL — and
+    /// `--session-id <uuid>` — the value is REQUIRED. An element after a bare
+    /// optional-value option that looks like an option is parsed by `claude` as
+    /// a new option, so binding it is MIS-detection: a Sessions-tab row offering
+    /// to resume a conversation that does not exist. Stepping over it is the
+    /// shadowing case: `-r -p --session-id <uuid>` would hide the real id. The
+    /// refused successor is therefore left to be examined as an element in its
+    /// own right. A required-value option binds whatever follows, so
+    /// `--session-id` is unchanged.
     ///
-    /// This is the same fact fusion establishes one parser later at the
-    /// producer: a value that LOOKS like an option is still that option's
-    /// value. The option spellings were re-measured at `claude` 2.1.250, and
-    /// that is a DEPENDENCY BEHAVIOUR whose measurement EXPIRES — see the
-    /// standing record in this phase's `deferred-items.md`.
+    /// **Probe transcripts, measured at `claude` 2.1.312 on 2026-10-28 with
+    /// stdin from `/dev/null`, verbatim:**
+    ///
+    /// ```text
+    /// $ claude --version                 -> 2.1.312 (Claude Code)                            exit 0
+    /// $ claude --resume --version        -> 2.1.312 (Claude Code)                            exit 0
+    /// $ claude -r --version              -> 2.1.312 (Claude Code)                            exit 0
+    /// $ claude --resume -h               -> Usage: claude [options] [command] [prompt]       exit 0
+    /// $ claude --session-id --version    -> Error: Invalid session ID. Must be a valid UUID. exit 1
+    /// $ claude -r -5 --version           -> 2.1.312 (Claude Code)                            exit 0
+    /// $ claude --bogus-opt --version     -> 2.1.312 (Claude Code)                            exit 0
+    /// $ claude --help | grep -E -- '-r, --resume|--session-id'
+    ///   -r, --resume [value]                  Resume a conversation by session ID or
+    ///   --session-id <uuid>                   Use a specific session ID for the
+    /// ```
+    ///
+    /// `--resume --version` printing the version means `--version` was parsed as
+    /// an option, not bound as the resume value; `--session-id --version`
+    /// failing on the UUID check means `--version` WAS bound as the id.
+    ///
+    /// **Residuals, disclosed with direction** `[inferred — cleanup 2026-10-28]`:
+    ///
+    /// - The single byte `-` stays a VALUE under `--resume` (commander-style
+    ///   parsers treat it as a positional). At 2.1.312 this cannot be probed
+    ///   either way, because `--version` fires whether or not `-` was bound.
+    /// - A negative-number-shaped successor (`-r -5`) counts as option-shaped.
+    ///   `claude -r -5 --version` does not show whether `-5` was bound, because
+    ///   an unknown option does not stop `--version` either (see the last two
+    ///   transcripts). If `claude` binds it, this is **under-detection, and
+    ///   SILENT**, bounded to ids or titles shaped like negative numbers.
+    ///
+    /// **The measurement EXPIRES.** This is a DEPENDENCY BEHAVIOUR: re-run the
+    /// probes above on any `claude` upgrade rather than inferring forward from a
+    /// version number.
     #[test]
-    fn the_split_forms_successor_is_a_value_by_position_even_when_it_is_option_shaped() {
+    fn an_option_shaped_successor_is_bound_by_session_id_and_refused_by_resume() {
+        // --- `--resume` / `-r`: optional arity, option-shaped successor refused
+        assert_eq!(
+            parsed(&["claude", "--resume", "-h"]),
+            None,
+            "`-h` after a bare `--resume` is an OPTION to `claude` (measured: \
+             `claude --resume -h` prints usage). Binding it as the resume value \
+             is MIS-detection: a row offering to resume a conversation that does \
+             not exist."
+        );
+        assert_eq!(
+            parsed(&["claude", "-r", "--version"]),
+            None,
+            "`--version` after a bare `-r` is an option (measured), not the value."
+        );
+        assert_eq!(
+            parsed(&["claude", "--resume", "--version"]),
+            None,
+            "`--version` after a bare `--resume` is an option (measured), not the value."
+        );
+        assert_eq!(
+            parsed(&["claude", "--resume", "--resume"]),
+            None,
+            "the successor is the option's OWN name, so it is an option and is \
+             then re-examined; ITS successor is the trailing empty element, which \
+             R2 refuses. Reading `--resume` back as an id is MIS-detection."
+        );
+        assert_eq!(
+            parsed(&["claude", "--resume", "--dangerously-skip-permissions"]),
+            None,
+            "a bare `--resume` followed by an unrelated flag resumes nothing. \
+             Reporting the flag as an id is MIS-detection."
+        );
+
+        // --- the refused successor is still SCANNED, not stepped over --------
         assert_eq!(
             parsed(&["claude", "--resume", "--resume=abc"]).as_deref(),
-            Some("--resume=abc"),
-            "the element after a bare `--resume` is that option's VALUE, taken \
-             literally, even when it is itself fused-option-shaped. A parser \
-             that re-examined the successor as an option in its own right would \
-             report `abc` — a DIFFERENT id than the one `claude` bound. The id \
-             this build reports must be the id the receiving program received."
+            Some("abc"),
+            "the refused successor is re-examined as an element in its own \
+             right, and as the fused form it carries `abc`. Stepping over it \
+             would be the SHADOWING case: under-detection, and silent."
         );
         assert_eq!(
-            parsed(&["claude", "--resume", "--resume"]).as_deref(),
-            Some("--resume"),
-            "the successor may even be the option's OWN name, so the id can \
-             impersonate the option it follows. It is still a value by \
-             position; re-examining it would make this build report an id the \
-             receiving program never resumed."
+            parsed(&["claude", "-r", "-p", "--session-id", "u"]).as_deref(),
+            Some("u"),
+            "`-p` is refused as the value of `-r` and is NOT stepped over, so \
+             the assigned id behind it is still found. Binding `-p` would hide \
+             it."
+        );
+
+        // --- what does not change ---------------------------------------------
+        assert_eq!(
+            parsed(&["claude", "--resume", "-"]).as_deref(),
+            Some("-"),
+            "the single byte `-` is a VALUE, not an option (disclosed residual)."
         );
         assert_eq!(
-            parsed(&["claude", "--resume", "-h"]).as_deref(),
+            parsed(&["claude", "--resume", "abc"]).as_deref(),
+            Some("abc")
+        );
+        assert_eq!(parsed(&["claude", "-r", "abc"]).as_deref(), Some("abc"));
+        assert_eq!(
+            parsed(&["claude", "--session-id", "--version"]).as_deref(),
+            Some("--version"),
+            "`--session-id <uuid>` has a REQUIRED value, so it binds whatever \
+             follows (measured: `claude --session-id --version` fails the UUID \
+             check). The reported id is the id `claude` received."
+        );
+        assert_eq!(
+            parsed(&["claude", "--session-id", "-h"]).as_deref(),
             Some("-h"),
-            "a short-option-shaped successor is a value too. This is also why \
-             the PRODUCER fuses: once bound by the argv element itself, an id \
-             whose first byte is `-` is data rather than syntax — measured at \
-             `claude` 2.1.250, and that measurement expires with the dependency."
+            "the required-value successor binds an option-shaped element too."
         );
     }
 
@@ -1892,10 +2006,12 @@ mod tests {
     /// `src/ui/screens/detail.rs` 4, `src/state_reader/git_ops.rs` 1 — and
     /// 21-36 added parser arms to two of them. `src/executor/claude.rs` went
     /// with the in-process executor in Phase 31 (31-07), taking its 5 with it.
+    /// Quick 261028-n0v re-measured `src/session_detector.rs` from 23 to 31: the
+    /// rewritten option-shaped-successor test spells more option literals.
     const CLAUDE_ARGV_SITES: [(&str, usize, SiteDisposition, &str); 3] = [
         (
             "src/session_detector.rs",
-            23,
+            31,
             SiteDisposition::Consumer,
             "this file is the CONSUMER: the option constants themselves plus \
              the parser arms that pin which shapes carry an id. It builds no \

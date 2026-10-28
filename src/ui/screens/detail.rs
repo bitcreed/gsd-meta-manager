@@ -22126,6 +22126,9 @@ mod tests {
              pass over fewer shapes than they claim."
         );
 
+        let mut split_round_tripped = 0_usize;
+        let mut split_option_shaped = 0_usize;
+
         for raw in &corpus {
             // --- FUSED: the real producer's own output ----------------------
             for term in ["kitty", "alacritty", "gnome-terminal", "xterm", "/opt/wat"] {
@@ -22152,18 +22155,48 @@ mod tests {
                 nul_join_cmdline(&[b"claude".as_slice(), b"--resume".as_slice(), raw.as_bytes()]);
             let read_back = crate::session_detector::session_id_in_cmdline(&wire);
 
-            assert_eq!(
-                read_back.as_ref().map(|id| id.as_raw_for_logic_only()),
-                Some(raw.as_str()),
-                "SPLIT form: the id {raw:?} on the wire as \
-                 [\"claude\", \"--resume\", {raw:?}] could not be read back. \
-                 This build no longer EMITS this shape, but it is still what a \
-                 human typing the command by hand produces, and it is the shape \
-                 every session not started by this TUI arrives in. Dropping it \
-                 would delete those sessions from the Sessions tab with no \
-                 message to the operator — under-detection, and SILENT."
-            );
+            // Option-shaped, spelled from bytes here and not imported from the
+            // parser: first byte `-` and longer than one byte.
+            let option_shaped = raw.len() > 1 && raw.as_bytes()[0] == b'-';
+            if option_shaped {
+                split_option_shaped += 1;
+                assert_eq!(
+                    read_back.as_ref().map(|id| id.as_raw_for_logic_only()),
+                    None,
+                    "SPLIT form: the option-shaped id {raw:?} on the wire as \
+                     [\"claude\", \"--resume\", {raw:?}] was bound as the value. \
+                     `claude` itself does not bind it in this form (`--resume` \
+                     takes an OPTIONAL value, so the successor is parsed as an \
+                     option; measured, see the pinning test in \
+                     `session_detector`). Binding it is MIS-detection. The fused \
+                     form this TUI emits is unaffected and is asserted above."
+                );
+            } else {
+                split_round_tripped += 1;
+                assert_eq!(
+                    read_back.as_ref().map(|id| id.as_raw_for_logic_only()),
+                    Some(raw.as_str()),
+                    "SPLIT form: the id {raw:?} on the wire as \
+                     [\"claude\", \"--resume\", {raw:?}] could not be read back. \
+                     This build no longer EMITS this shape, but it is still what a \
+                     human typing the command by hand produces, and it is the shape \
+                     every session not started by this TUI arrives in. Dropping it \
+                     would delete those sessions from the Sessions tab with no \
+                     message to the operator — under-detection, and SILENT."
+                );
+            }
         }
+
+        // Non-vacuity for the partition: both halves are non-empty and add up.
+        assert_eq!(
+            split_round_tripped, 20,
+            "the SPLIT arm round-tripped {split_round_tripped} fixtures, not the 20 \
+             that are not option-shaped"
+        );
+        assert_eq!(
+            split_option_shaped, 8,
+            "the SPLIT arm saw {split_option_shaped} option-shaped fixtures, not 8"
+        );
     }
 
     // ======================================================================
@@ -22343,6 +22376,16 @@ mod tests {
     struct WireForm {
         name: &'static str,
         encode: fn(&[u8]) -> Vec<u8>,
+        /// True when the value travels as the NEXT argv element of an option
+        /// whose value is OPTIONAL, so an option-shaped successor is NOT the
+        /// value: `claude` parses it as a new option (measured at 2.1.312,
+        /// `-r, --resume [value]`; see the pinning test
+        /// `an_option_shaped_successor_is_bound_by_session_id_and_refused_by_resume`).
+        /// False for same-element forms (fused, attached) and for a
+        /// REQUIRED-value successor such as `--session-id <uuid>`, which binds
+        /// an option-shaped successor (measured). This is the per-option arity
+        /// seam: a row states which arity its option has.
+        optional_successor: bool,
     }
 
     /// The FUSED form: one argv element, prefix and value in the same element.
@@ -22408,18 +22451,22 @@ mod tests {
             WireForm {
                 name: "fused",
                 encode: encode_fused,
+                optional_successor: false,
             },
             WireForm {
                 name: "split",
                 encode: encode_split,
+                optional_successor: true,
             },
             WireForm {
                 name: "short-split",
                 encode: encode_short_split,
+                optional_successor: true,
             },
             WireForm {
                 name: "short-attached",
                 encode: encode_short_attached,
+                optional_successor: false,
             },
         ]
     }
@@ -22459,9 +22506,11 @@ mod tests {
     /// property in TWO distinct classes at once, and a test that panicked on
     /// the first one would show a reader only whichever class the corpus
     /// happened to reach first — the second would stay invisible until the
-    /// first was fixed. So one exemplar per (class × wire form) is collected,
+    /// first was fixed. So one exemplar per violation class is collected,
     /// with the rest counted, and the whole report is emitted in a single
-    /// panic. Bounded by construction: at most six exemplars.
+    /// panic. Bounded by construction: one exemplar per violation class, and
+    /// there are six classes (four on the value, two on the option-shaped
+    /// successor of an optional-value option), so at most six exemplars.
     #[test]
     fn the_round_trip_property_holds_for_every_generated_byte_string() {
         let corpus = generated_session_id_bytes(GENERATOR_SEED, GENERATOR_CASES);
@@ -22496,6 +22545,60 @@ mod tests {
 
                 let name = form.name;
                 let escaped = s.escape_ascii().to_string();
+
+                // --- THE THIRD, NAMED OUTCOME: an option-shaped successor ----
+                // Spelled from bytes HERE, not imported from the parser: first
+                // byte `-` and longer than one byte (the single `-` is a value).
+                // In a form whose value is the successor of an OPTIONAL-value
+                // option, `claude` parses such an element as a new option, so it
+                // must NOT come back as the value (measured, 2.1.312). The first
+                // half is the independent oracle. The second half is a
+                // METAMORPHIC relation between two parser outputs: the refused
+                // successor is re-examined as an element in its own right, so
+                // the argv must read back exactly what the argv WITHOUT the bare
+                // option reads back.
+                let option_shaped = s.len() > 1 && s.first() == Some(&b'-');
+                if form.optional_successor && option_shaped {
+                    if read_back.as_deref() == Some(s.as_slice()) {
+                        record(
+                            "bound-an-option-shaped-successor-as-the-value",
+                            format!(
+                                "wire form {name:?}: the byte string {s:?} \
+                                 (escaped: \"{escaped}\") is option-shaped and \
+                                 follows a bare option whose value is OPTIONAL. \
+                                 `claude` parses it as a new option (measured), \
+                                 so it is not the value, and the parser returned \
+                                 it as the id anyway. That is MIS-detection: a \
+                                 Sessions-tab row offering to resume a \
+                                 conversation that does not exist."
+                            ),
+                        );
+                    } else {
+                        let without =
+                            crate::session_detector::session_id_in_cmdline(&nul_join_cmdline(&[
+                                b"claude".as_slice(),
+                                s.as_slice(),
+                            ]))
+                            .map(|id| id.as_raw_for_logic_only().as_bytes().to_vec());
+                        if read_back != without {
+                            record(
+                                "option-shaped-successor-not-re-examined-as-an-option",
+                                format!(
+                                    "wire form {name:?}: the byte string {s:?} \
+                                     (escaped: \"{escaped}\") is option-shaped, so \
+                                     it is refused as the value and must be \
+                                     examined as an element in its own right. The \
+                                     argv read back {read_back:?} but the same \
+                                     argv without the bare option reads back \
+                                     {without:?}. A refused successor that is \
+                                     stepped over can hide an id behind it: \
+                                     under-detection, and SILENT."
+                                ),
+                            );
+                        }
+                    }
+                    continue;
+                }
 
                 match read_back {
                     None if !r1 && !r2 => record(
@@ -22755,6 +22858,48 @@ mod tests {
              is certified by nothing. Either the generator stopped producing \
              whitespace-only inputs or the parser stopped refusing them."
         );
+
+        // --- The option-shaped branch of the property, per form -------------
+        // Only valid UTF-8 inputs that are non-empty after trim are counted:
+        // an ill-formed option-shaped input reads back None under ANY parser,
+        // so counting it would let this floor pass vacuously against the
+        // unfixed one.
+        let optional_forms: Vec<WireForm> = wire_forms()
+            .into_iter()
+            .filter(|form| form.optional_successor)
+            .collect();
+        assert!(
+            !optional_forms.is_empty(),
+            "no registered wire form has `optional_successor` set, so the \
+             option-shaped branch of the property is certified over no form at \
+             all."
+        );
+        for form in &optional_forms {
+            let option_shaped_not_bound = corpus
+                .iter()
+                .filter(|s| s.len() > 1 && s.first() == Some(&b'-'))
+                .filter(|s| std::str::from_utf8(s).is_ok_and(|text| !text.trim().is_empty()))
+                .filter(|s| {
+                    let read_back =
+                        crate::session_detector::session_id_in_cmdline(&(form.encode)(s));
+                    read_back
+                        .as_ref()
+                        .map(|id| id.as_raw_for_logic_only().as_bytes())
+                        != Some(s.as_slice())
+                })
+                .count();
+            assert!(
+                option_shaped_not_bound >= 1,
+                "wire form {:?} read back {option_shaped_not_bound} option-shaped, \
+                 valid, non-empty inputs as something other than the input \
+                 itself, below the floor of 1. Either the generator stopped \
+                 producing that class or the parser binds an option-shaped \
+                 successor of an optional-value option again, and the branch of \
+                 the property that certifies the refusal is then passing over \
+                 nothing.",
+                form.name
+            );
+        }
     }
 
     /// **`launch_terminal_argv` pinned rather than changed** (D-21-49).
