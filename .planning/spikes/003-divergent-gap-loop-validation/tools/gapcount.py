@@ -15,6 +15,9 @@ Rule (strict, float seconds, no rounding or truncation):
 The status of a VERIFICATION.md is read by one definition too, `STATUS_RE` / `fm_status(raw)` below: the
 `status:` key of the leading frontmatter, with the value optionally quoted. The fork launcher's live scan
 and drift.py's snapshots both call it, so a `status: "gaps_found"` write is counted and scored alike (WR-03).
+The value must end at a non-word, non-hyphen character, the match stays on one line, and a UTF-8 BOM is
+accepted (IN-06). src/driverctl/counters.rs ports the pattern this replaced; that residue is tracked in
+.planning/todos/pending/2026-10-28-driverctl-fm-status-port-value-boundary-and-bom.md.
 The state lives in the `caps.gap_rounds` dict (`seen`, `per_phase`, `last_write`, `coalesced`) so a
 relaunch that reloads state.json keeps the window. spike 002's gate and trip read only `per_phase`.
 
@@ -60,14 +63,20 @@ VERIF_PATH = re.compile(r"[^\s'\"]*-VERIFICATION\.md")
 WRITE_TOOLS = ("Write", "Edit")
 
 
-STATUS_RE = re.compile(r"""^status:\s*["']?([A-Za-z_]+)""", re.M)
+STATUS_RE = re.compile(r"""^status:[ \t]*["']?([A-Za-z_]+)(?![\w-])""", re.M)
 
 
 def fm_status(raw):
-    """The one status definition (WR-03): the `status:` value in the leading frontmatter of a VERIFICATION.md
-    (bytes or str), or None. The frontmatter is the text before the first `\\n---`, and only when the text
-    starts with `---`; a `status:` line in the body does not count, and the value may be quoted."""
-    text = raw.decode(errors="replace") if isinstance(raw, (bytes, bytearray)) else raw
+    """The one status definition (WR-03, IN-06): the `status:` value in the leading frontmatter of a
+    VERIFICATION.md (bytes or str), or None. The frontmatter is the text before the first `\\n---`, and only
+    when the text starts with `---`; a `status:` line in the body does not count, and the value may be quoted.
+    The value is a whole token: the match fails if the letters run on into a word character or a hyphen.
+    Only spaces and tabs may follow the colon, so an empty `status:` never reads the next line. A UTF-8 BOM
+    is dropped before the `---` check, for bytes and str alike; UTF-16 is not decoded."""
+    if isinstance(raw, (bytes, bytearray)):
+        text = raw.decode("utf-8-sig", errors="replace")
+    else:
+        text = raw.removeprefix("\ufeff")
     fm = text.split("\n---", 1)[0] if text.startswith("---") else ""
     m = STATUS_RE.search(fm)
     return m.group(1) if m else None
@@ -336,7 +345,17 @@ def selftest():
     assert fm_status("status: gaps_found\n") is None                       # no leading frontmatter
     assert fm_status("---\nphase: x\n---\nstatus: gaps_found\n") is None  # status only in the body
     assert fm_status(b"\xff\xfe---\nstatus: gaps_found\n") is None
-    assert STATUS_RE.pattern == r"""^status:\s*["']?([A-Za-z_]+)"""
+    assert STATUS_RE.pattern == r"""^status:[ \t]*["']?([A-Za-z_]+)(?![\w-])"""
+    # IN-06: the value is a whole token, the match stays on one line, a UTF-8 BOM is accepted
+    assert fm_status("---\nstatus: gaps_found2\n---\n") is None
+    assert fm_status("---\nstatus: gaps-found\n---\n") is None
+    assert fm_status('---\nstatus: "gaps_found2"\n---\n') is None
+    assert fm_status("---\nstatus:\nphase: x\n---\n") is None
+    assert fm_status("---\nstatus: \t\nphase: x\n---\n") is None
+    assert fm_status(b"\xef\xbb\xbf---\nstatus: gaps_found\n---\n") == "gaps_found"
+    assert fm_status("\ufeff---\nstatus: gaps_found\n---\n") == "gaps_found"
+    assert fm_status("---\r\nstatus: gaps_found\r\n---\r\n") == "gaps_found"
+    assert fm_status("---\nstatus:\tgaps_found # note\n---\n") == "gaps_found"
 
     with tempfile.TemporaryDirectory() as td:
         # extract-writes: planted marker in message text and in the Bash command must not reach the output

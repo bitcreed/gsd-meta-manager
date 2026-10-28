@@ -450,7 +450,7 @@ class Watcher:
                 self.seen_hashes.add(h8)
                 if any(x.endswith(f"-{h8}.md") for x in os.listdir(self.snapshots)):
                     continue                        # watcher restart: already snapshotted
-                status = gapcount.fm_status(raw) or "unknown"      # WR-03: one definition (quote-tolerant)
+                status = gapcount.fm_status(raw) or "unknown"      # WR-03/IN-06: one definition (quote-tolerant)
                 nn = len(os.listdir(self.snapshots)) + 1
                 name = f"{nn:02d}-{utc_compact()}-{h8}.md"
                 shutil.copyfile(path, os.path.join(self.snapshots, name))
@@ -725,6 +725,20 @@ def selftest() -> int:
         with open(log) as f:
             lg = f.read()
         assert lg.count("status=gaps_found") == 3 and "status=unknown" not in lg, lg
+        # IN-06: the snapshot line uses the bounded, single-line, BOM-tolerant status
+        for nm, body, mode in (
+                ("04-b", b"\xef\xbb\xbf---\nphase: 04-b\nstatus: gaps_found\n---\nbody 04-b\n", "wb"),
+                ("05-n", b"---\nphase: 05-n\nstatus: gaps_found2\n---\nbody 05-n\n", "wb"),
+                ("06-e", b"---\nstatus:\nphase: 06-e\n---\nbody 06-e\n", "wb")):
+            qd = os.path.join(p, ".planning", "phases", nm)
+            os.makedirs(qd)
+            with open(os.path.join(qd, nm[:2] + "-VERIFICATION.md"), mode) as f:
+                f.write(body)
+        w.poll()
+        with open(log) as f:
+            lg = f.read()
+        assert lg.count("status=gaps_found ") == 4 and lg.count("status=unknown ") == 2 \
+            and "status=phase" not in lg, lg
         # summary-mode advance lines match acceptance's GEN_RE too, and the start line carries no trigger field
         adv = [ln for ln in lg.splitlines() if " gen=" in ln and " summaries=" in ln]
         assert adv and all(ADV_RE.match(ln) for ln in adv) and "trigger=" not in lg, adv
