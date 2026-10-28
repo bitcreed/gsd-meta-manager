@@ -1870,6 +1870,39 @@ pub(crate) mod tests {
         assert!(crate::driver::direction::direction_lock(dir.path()).is_ok());
     }
 
+    /// WR-08: a symlinked DIRECTION.lock is refused and its target left alone.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn steer_run_with_a_symlinked_direction_lock_fails_and_leaves_the_target_alone() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("temp dir");
+        write_run(dir.path(), &clean_body());
+        let other = tempfile::tempdir().expect("temp dir");
+        let sentinel = other.path().join("sentinel");
+        std::fs::write(&sentinel, b"sentinel\n").unwrap();
+        std::fs::set_permissions(&sentinel, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let lock = dir.path().join("DIRECTION.lock");
+        std::os::unix::fs::symlink(&sentinel, &lock).unwrap();
+        let before = live_text(dir.path());
+
+        match steer_run(dir.path(), &SteerOp::SetControl("pause".to_string())) {
+            SteerOutcome::Failed(why) => assert!(why.contains("not a regular file"), "{why}"),
+            other => panic!("a symlinked DIRECTION.lock must fail the steer, got {other:?}"),
+        }
+
+        assert_eq!(std::fs::read(&sentinel).unwrap(), b"sentinel\n");
+        let mode = std::fs::metadata(&sentinel).unwrap().permissions().mode() & 0o7777;
+        assert_eq!(mode, 0o600, "the sentinel keeps its mode");
+        assert_eq!(live_text(dir.path()), before, "DIRECTION.md is unchanged");
+        assert!(
+            std::fs::symlink_metadata(&lock)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "DIRECTION.lock is still the planted symlink"
+        );
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn launcher_edit_a_temp_that_is_a_symlink_is_refused() {

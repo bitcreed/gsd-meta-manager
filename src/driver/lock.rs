@@ -53,6 +53,7 @@
 
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, Write};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -145,6 +146,12 @@ impl RunLock {
 ///    truncate. Truncating on open would destroy the holder's record the moment
 ///    a second process merely *tried*; forbidding truncate-on-open on both the
 ///    winning and the losing path is cheaper than remembering which is which.
+///    The open also carries `O_NOFOLLOW | O_NONBLOCK`, and the handle must be a
+///    regular file with exactly one link before anything else happens: a symlink,
+///    a FIFO or a hard link planted at the name is
+///    [`LockError::Unavailable`] and is never truncated, chmodded or created
+///    through (30-REVIEW WR-08, quick 261028-n0z). `launcher.lock` goes through
+///    this same function and gets the same protection.
 /// 2. `flock` with the **non-blocking** exclusive operation. A blocking acquire
 ///    is explicitly wrong here: it would turn a duplicate start into a hang
 ///    (D-20.4). On `EWOULDBLOCK` the losing path reads the holder's record and
@@ -158,15 +165,57 @@ pub fn acquire_at(path: &Path, run_id: &str, pgid: u32) -> Result<RunLock, LockE
     // form of "never `.truncate(true)` here" (step 1 above), and clippy's
     // `suspicious_open_options` asks for a truncate decision beside `create`
     // anyway — so the one place the answer matters states it.
+    //
+    // WR-08 (quick 261028-n0z): the open never follows a link and never blocks.
+    // `O_NOFOLLOW` makes a symlink at the name (live or dangling) fail with ELOOP
+    // instead of being truncated, chmodded or created through; `O_NONBLOCK` keeps
+    // a planted FIFO from parking the caller in `open`. It does nothing to a
+    // regular file, so the `flock` below is still the one non-blocking operation.
+    let flags = rustix::fs::OFlags::NOFOLLOW.bits() | rustix::fs::OFlags::NONBLOCK.bits();
+    let custom = i32::try_from(flags).map_err(|_| LockError::Unavailable {
+        detail: format!("could not open {}: invalid open flags", path.display()),
+    })?;
     let mut file = OpenOptions::new()
         .create(true)
         .read(true)
         .write(true)
         .truncate(false)
+        .custom_flags(custom)
         .open(path)
-        .map_err(|err| LockError::Unavailable {
-            detail: format!("could not open {}: {err}", path.display()),
+        .map_err(|err| {
+            if err.raw_os_error() == Some(rustix::io::Errno::LOOP.raw_os_error()) {
+                LockError::Unavailable {
+                    detail: format!("{} is a symbolic link, not a regular file", path.display()),
+                }
+            } else {
+                LockError::Unavailable {
+                    detail: format!("could not open {}: {err}", path.display()),
+                }
+            }
         })?;
+
+    // The type check runs on the open handle, before `flock`, `set_len` or the
+    // chmod can touch anything. A hard link is a regular file, so only the link
+    // count stops `set_len(0)` truncating a user's file through one
+    // [inferred — cleanup 2026-10-28]. A link added after this check only aliases
+    // the inode this process created; the danger is a pre-planted one.
+    let meta = file.metadata().map_err(|err| LockError::Unavailable {
+        detail: format!("could not stat {}: {err}", path.display()),
+    })?;
+    if !meta.file_type().is_file() {
+        return Err(LockError::Unavailable {
+            detail: format!("{} is not a regular file", path.display()),
+        });
+    }
+    if meta.nlink() != 1 {
+        return Err(LockError::Unavailable {
+            detail: format!(
+                "{} has {} hard links, not exactly one",
+                path.display(),
+                meta.nlink()
+            ),
+        });
+    }
 
     match flock(&file, FlockOperation::NonBlockingLockExclusive) {
         Ok(()) => {}
@@ -431,5 +480,92 @@ mod tests {
             run_lock_path(Path::new("/r/run-1")),
             Path::new("/r/run-1/launcher.lock")
         );
+    }
+
+    /// A sentinel file (mode 0600) in its own temp dir, holding `sentinel\n`.
+    fn sentinel_in(dir: &tempfile::TempDir, name: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.path().join(name);
+        std::fs::write(&path, b"sentinel\n").expect("sentinel");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).expect("chmod 600");
+        path
+    }
+
+    fn assert_sentinel_untouched(path: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::read(path).expect("read sentinel"),
+            b"sentinel\n",
+            "the sentinel keeps its bytes"
+        );
+        let mode = std::fs::metadata(path).expect("stat").permissions().mode() & 0o7777;
+        assert_eq!(mode, 0o600, "the sentinel keeps its mode");
+    }
+
+    fn unavailable_detail(result: Result<RunLock, LockError>) -> String {
+        match result {
+            Err(LockError::Unavailable { detail }) => detail,
+            Err(other) => panic!("expected Unavailable, got {other:?}"),
+            Ok(_) => panic!("expected Unavailable, but the lock was taken"),
+        }
+    }
+
+    /// WR-08: a symlink at the lock path is never followed.
+    #[test]
+    fn a_symlinked_lock_path_is_refused_and_its_target_is_untouched() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let other = tempfile::TempDir::new().expect("sentinel dir");
+        let sentinel = sentinel_in(&other, "sentinel");
+        let path = run_lock_path(dir.path());
+        std::os::unix::fs::symlink(&sentinel, &path).expect("symlink");
+
+        let detail = unavailable_detail(acquire_at(&path, "r1", 1));
+
+        assert!(detail.contains("not a regular file"), "detail: {detail}");
+        assert_sentinel_untouched(&sentinel);
+    }
+
+    /// WR-08: O_CREAT must not create a dangling symlink's target.
+    #[test]
+    fn a_dangling_symlinked_lock_path_creates_nothing() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let other = tempfile::TempDir::new().expect("target dir");
+        let target = other.path().join("never-created");
+        let path = run_lock_path(dir.path());
+        std::os::unix::fs::symlink(&target, &path).expect("symlink");
+
+        unavailable_detail(acquire_at(&path, "r1", 1));
+
+        assert!(!target.exists(), "the dangling target is never created");
+    }
+
+    /// WR-08 [inferred, cleanup 2026-10-28]: a hard link is a regular file, so
+    /// only the link count stops `set_len(0)` truncating the user's file.
+    #[test]
+    fn a_hard_linked_lock_file_is_refused_and_its_other_name_is_untouched() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let other = tempfile::TempDir::new().expect("sentinel dir");
+        let sentinel = sentinel_in(&other, "sentinel");
+        let path = run_lock_path(dir.path());
+        std::fs::hard_link(&sentinel, &path).expect("hard link");
+
+        let detail = unavailable_detail(acquire_at(&path, "r1", 1));
+
+        assert!(detail.contains("link"), "detail names the links: {detail}");
+        assert_sentinel_untouched(&sentinel);
+    }
+
+    /// WR-08: a FIFO is refused as not a regular file, without blocking.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_fifo_at_the_lock_path_is_refused_without_blocking() {
+        use crate::state_reader::driver_frontmatter::fifo_test_support::{mkfifo, within_5s};
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let path = run_lock_path(dir.path());
+        mkfifo(&path);
+
+        let detail = unavailable_detail(within_5s(move || acquire_at(&path, "r1", 1)));
+
+        assert!(detail.contains("not a regular file"), "detail: {detail}");
     }
 }
