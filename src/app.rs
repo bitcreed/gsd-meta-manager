@@ -4723,7 +4723,7 @@ mod tests {
     /// The interactive removal path cleans the driver maps immediately, rather
     /// than leaving them to the periodic backstop.
     #[tokio::test]
-    async fn removing_a_project_interactively_clears_its_driver_maps() {
+    async fn removing_a_project_interactively_clears_its_per_alias_maps() {
         use crate::ui::screens::delete_confirm::DeleteConfirmScreen;
         use crate::ui::screens::Screen;
         use crossterm::event::{KeyCode, KeyModifiers};
@@ -4770,7 +4770,7 @@ mod tests {
     /// the Phase 16 leak under a new name, which is precisely what the
     /// carry-forward exists to prevent.
     #[tokio::test]
-    async fn every_per_alias_driver_map_is_pruned() {
+    async fn every_per_alias_map_is_pruned() {
         const GONE: &str = "gone";
 
         let dir = tempfile::tempdir().expect("temp dir");
