@@ -3,6 +3,30 @@ phase: 31
 review: 31-REVIEW.md
 titles: json
 findings:
+  - id: IN-03
+    severity: info
+    disposition: open
+    title: "Opt-in toggle popup dims the dashboard even though it is only reachable from the Driver tab"
+  - id: IN-05
+    severity: info
+    disposition: open
+    title: "Leftover naming and attributes from retired code"
+  - id: IN-07
+    severity: info
+    disposition: open
+    title: "`DriverOptIn` docs in `config.rs` still say the drift check runs at the spawn gate and that drift re-confirms"
+  - id: IN-08
+    severity: info
+    disposition: open
+    title: "`delete_confirm.rs` re-implements the \"driver is live\" predicate that `detail.rs` already has"
+  - id: IN-09
+    severity: info
+    disposition: open
+    title: "`OVERLONG_STDERR_NOTE` hard-codes the window size as a literal"
+  - id: IN-10
+    severity: info
+    disposition: open
+    title: "The unregister guard is advisory: it covers the cached scan only, and its limits are not stated to the user"
   - id: WR-01
     severity: warning
     disposition: fixed
@@ -31,42 +55,38 @@ findings:
     severity: info
     disposition: open
     title: "Slow-tick comments still reference the deleted reconciliation probe, inbox and journal"
-  - id: IN-03
-    severity: info
-    disposition: open
-    title: "Opt-in toggle popup dims the dashboard even though it is only reachable from the Driver tab"
   - id: IN-04
     severity: info
     disposition: open
     title: "User-visible Preferences text names an internal phase number"
-  - id: IN-05
-    severity: info
-    disposition: open
-    title: "Leftover naming and attributes from retired code"
   - id: IN-06
     severity: info
     disposition: open
     title: "Release docs and packaging comments retain stale claims"
-open: 6
-total: 11
-recorded: 2026-10-25T07:02:44.875Z
+open: 10
+total: 15
+recorded: 2026-10-28T03:11:09.144Z
 ---
 
 # Phase 31: Code Review Disposition
 
 | Finding | Severity | Disposition | Source |
 |---------|----------|-------------|--------|
-| WR-01 | warning | fixed | 12b8a1d, 89f4b3b (31-08) |
-| WR-02 | warning | fixed | 89f4b3b (31-08) |
-| WR-03 | warning | fixed | 36e0805 (31-08) |
-| WR-04 | warning | fixed | 21b94df, a51b39a (31-09) |
-| WR-05 | warning | fixed | 21b94df (31-09) |
-| IN-01 | info | open | - |
-| IN-02 | info | open | - |
 | IN-03 | info | open | - |
-| IN-04 | info | open | - |
 | IN-05 | info | open | - |
-| IN-06 | info | open | - |
+| IN-07 | info | open | - |
+| IN-08 | info | open | - |
+| IN-09 | info | open | - |
+| IN-10 | info | open | - |
+| WR-01 | warning | fixed | 12b8a1d, 89f4b3b (31-08) (not in the current review) |
+| WR-02 | warning | fixed | 89f4b3b (31-08) (not in the current review) |
+| WR-03 | warning | fixed | 36e0805 (31-08) (not in the current review) |
+| WR-04 | warning | fixed | 21b94df, a51b39a (31-09) (not in the current review) |
+| WR-05 | warning | fixed | 21b94df (31-09) (not in the current review) |
+| IN-01 | info | open | - (not in the current review) |
+| IN-02 | info | open | - (not in the current review) |
+| IN-04 | info | open | - (not in the current review) |
+| IN-06 | info | open | - (not in the current review) |
 
 Dispositions: `open` (recorded, not yet triaged), `fixed`, `skipped`, `deferred`.
 Set `deferred` by hand and put the reason in the Source cell; both are preserved. A `|` in the reason is kept as prose and escaped on the next run.
