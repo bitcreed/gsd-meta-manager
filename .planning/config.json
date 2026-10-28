@@ -27,7 +27,8 @@
     "discuss_mode": "discuss",
     "skip_discuss": false,
     "_auto_chain_active": false,
-    "use_worktrees": true
+    "use_worktrees": true,
+    "ai_integration_phase": true
   },
   "hooks": {
     "context_warnings": true
