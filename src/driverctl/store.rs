@@ -467,8 +467,13 @@ fn driver_connection(state: &mut RunState) -> Option<&mut Connection> {
         .find(|c| c.role == "driver" && c.state == "connected")
 }
 
+/// The host's nodename from `uname(2)`, so the launcher connection record carries a
+/// host on macOS as on Linux (28 WR-05; the old `/proc` file read returned `None` on
+/// Darwin). A non-UTF-8 or empty nodename gives `None`.
 fn host_name() -> Option<String> {
-    fs::read_to_string("/proc/sys/kernel/hostname")
+    rustix::system::uname()
+        .nodename()
+        .to_str()
         .ok()
         .map(|s| s.trim().to_owned())
         .filter(|s| !s.is_empty())
@@ -1802,6 +1807,25 @@ fn apply_event(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn host_name_is_the_uname_nodename() {
+        let host = host_name().expect("a host name");
+        assert!(!host.is_empty());
+        assert!(!host.contains('\0') && !host.contains('\n'), "{host:?}");
+    }
+
+    // Linux only: it compares against the kernel's hostname file.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn host_name_on_linux_matches_the_kernel_hostname() {
+        let file = std::fs::read_to_string("/proc/sys/kernel/hostname")
+            .map(|s| s.trim().to_owned())
+            .unwrap_or_default();
+        if !file.is_empty() {
+            assert_eq!(host_name().as_deref(), Some(file.as_str()));
+        }
+    }
+
     use super::*;
     use crate::driver::lock::{acquire_at_with_retry, run_lock_path, ACQUIRE_RETRY_BUDGET};
 

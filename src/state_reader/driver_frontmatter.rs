@@ -1263,7 +1263,7 @@ mod tests {
         ));
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn the_plain_run_id_pattern_is_the_one_serve_uses() {
         assert_eq!(PLAIN_RUN_ID_RE, crate::driverctl::serve::RUN_ID_RE);

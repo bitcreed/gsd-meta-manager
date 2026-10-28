@@ -1586,6 +1586,8 @@ mod tests {
         drop(listener);
     }
 
+    // Linux-only: it reads the umask from `/proc/self/status`, which macOS lacks.
+    #[cfg(target_os = "linux")]
     #[test]
     fn cr01_bind_private_never_touches_the_process_umask_and_binds_concurrently() {
         use std::os::unix::fs::PermissionsExt;

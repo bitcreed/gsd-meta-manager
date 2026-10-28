@@ -5874,6 +5874,7 @@ mod tests {
         }
     }
 
+    // Linux-only: the FIFO helper needs mknodat, which macOS does not expose.
     #[cfg(target_os = "linux")]
     #[test]
     fn read_log_delta_skips_a_fifo_log_without_blocking() {

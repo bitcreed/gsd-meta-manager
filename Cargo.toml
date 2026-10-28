@@ -62,7 +62,9 @@ tui-textarea = { version = "0.7", features = ["ratatui"] }
 # transitively via ratatui/crossterm, so it adds zero new compilation units to
 # the graph. It is pure Rust with no libc linkage, which matches the deliberate
 # no-`nix`/no-`libc` posture the process-group code in `src/driver/kill.rs` keeps.
-rustix = { version = "1.1", features = ["process", "fs"] }
+# `system` is for `uname()` in `driverctl::store::host_name` (28 WR-05); like the
+# original add it adds no crate, because rustix 1.1.5 is already locked.
+rustix = { version = "1.1", features = ["process", "fs", "system"] }
 # SHA-256 for the driver opt-in's re-confirmation digest (C-4). A maintained
 # RustCrypto implementation rather than a third hand-rolled hash in this tree:
 # `journal::argv_digest` is already an inline FNV-1a, and "don't hand-roll" is

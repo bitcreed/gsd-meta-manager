@@ -1043,7 +1043,7 @@ pub(crate) mod tests {
     // ── steer_run: the write goes through write_body (Linux) ────────────────
 
     /// A run dir holding an emitted frontmatter block and `body`; returns the block.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub(crate) fn write_run(dir: &Path, body: &str) -> String {
         let fm = crate::state_reader::driver_frontmatter::parse_driver_frontmatter(include_str!(
             "../../tests/fixtures/driverctl/direction/s003-run1b.md"
@@ -1054,7 +1054,7 @@ pub(crate) mod tests {
         block
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn launcher_steer_a_control_write_changes_only_the_body() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -1090,14 +1090,14 @@ pub(crate) mod tests {
     }
 
     /// `(inode, mtime)` of the run's DIRECTION.md, and whether any splice temp is left.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn file_identity(dir: &Path) -> (u64, std::time::SystemTime) {
         use std::os::unix::fs::MetadataExt;
         let meta = std::fs::metadata(dir.join("DIRECTION.md")).unwrap();
         (meta.ino(), meta.modified().unwrap())
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn no_splice_temp(dir: &Path) -> bool {
         std::fs::read_dir(dir).unwrap().all(|entry| {
             !entry
@@ -1108,7 +1108,7 @@ pub(crate) mod tests {
         })
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn steer_run_unchanged_and_refused_leave_the_inode_alone() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -1154,7 +1154,7 @@ pub(crate) mod tests {
         assert_ne!(file_identity(dir.path()).0, before.0);
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn apply_edit_conflict_leaves_the_inode_alone() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -1200,7 +1200,7 @@ pub(crate) mod tests {
         assert_eq!(read_items(&freed)[0].hold.as_deref(), Some("false"));
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn launcher_steer_a_missing_file_and_an_insane_body_are_not_written() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -1465,7 +1465,7 @@ pub(crate) mod tests {
         );
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn launcher_steer_answer_lifts_hold_and_keeps_every_item() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -1530,7 +1530,7 @@ pub(crate) mod tests {
     /// The lock-timeout case (orchestrator decision 3): another writer holds
     /// `DIRECTION.lock` past the 2 s budget, the write goes ahead without it, lands
     /// exactly once, leaves the tool block byte-identical, and is reported.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn launcher_steer_a_held_lock_past_the_budget_still_writes_once_and_says_so() {
         use crate::driver::direction::direction_lock;
@@ -1594,7 +1594,7 @@ pub(crate) mod tests {
     // (`tests/spawn_seam_guard.rs`).
 
     /// A body that lints clean: the template with its placeholders filled in.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub(crate) fn clean_body() -> String {
         DIRECTION_TEMPLATE
             .replace("{run-id}", "20261020-edit")
@@ -1618,7 +1618,7 @@ pub(crate) mod tests {
             )
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn live_text(dir: &Path) -> String {
         std::fs::read_to_string(dir.join("DIRECTION.md")).unwrap()
     }
@@ -1646,7 +1646,7 @@ pub(crate) mod tests {
         assert!(dir.path().join(EDIT_TEMP_NAME).exists());
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn launcher_edit_prepare_then_rewrite_then_apply_applies_and_keeps_the_tool_block() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -1676,7 +1676,7 @@ pub(crate) mod tests {
         assert_eq!(body, edited);
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn launcher_edit_an_unchanged_save_writes_nothing_and_removes_the_temp() {
         // Edge E8.
@@ -1690,7 +1690,7 @@ pub(crate) mod tests {
         assert_eq!(live_text(dir.path()), before);
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn launcher_edit_a_change_made_while_editing_is_never_overwritten() {
         // Edge E7: a base that differs by a single byte is a conflict.
@@ -1728,7 +1728,7 @@ pub(crate) mod tests {
     /// (If the scheduler delays the apply past the save, the pre-check reports the same
     /// conflict, so the assertion cannot flake; it only exercises the inner check in
     /// the common case.)
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn launcher_edit_a_save_landing_while_the_write_waits_for_the_lock_is_kept() {
         use crate::driver::direction::direction_lock;
@@ -1769,7 +1769,7 @@ pub(crate) mod tests {
         assert_eq!(text, format!("{block}{racing}"), "the racing save stands");
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn launcher_edit_an_insane_edit_and_a_lint_problem_edit_keep_the_temp() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -1813,7 +1813,7 @@ pub(crate) mod tests {
         assert!(live_text(dir.path()).ends_with(DIRECTION_TEMPLATE));
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn launcher_edit_a_pre_existing_temp_is_never_overwritten() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -1830,6 +1830,7 @@ pub(crate) mod tests {
         );
     }
 
+    // Linux-only: the FIFO helper needs mknodat, which macOS does not expose.
     #[cfg(target_os = "linux")]
     #[test]
     fn read_direction_refuses_a_fifo_without_blocking() {
@@ -1854,6 +1855,7 @@ pub(crate) mod tests {
         assert!(live_body(linked.path()).is_err());
     }
 
+    // Linux-only: the FIFO helper needs mknodat, which macOS does not expose.
     #[cfg(target_os = "linux")]
     #[test]
     fn steer_run_refuses_a_fifo_direction_without_blocking() {
@@ -1871,7 +1873,7 @@ pub(crate) mod tests {
     }
 
     /// WR-08: a symlinked DIRECTION.lock is refused and its target left alone.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn steer_run_with_a_symlinked_direction_lock_fails_and_leaves_the_target_alone() {
         use std::os::unix::fs::PermissionsExt;
@@ -1904,7 +1906,7 @@ pub(crate) mod tests {
     }
 
     /// WR-09: a DIRECTION.md one byte past the 1 MiB cap fails the steer.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn steer_run_over_a_direction_md_just_past_the_cap_fails() {
         use crate::state_reader::driver_frontmatter::DIRECTION_READ_MAX_BYTES;
@@ -1929,7 +1931,7 @@ pub(crate) mod tests {
         assert!(crate::driver::direction::direction_lock(dir.path()).is_ok());
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn launcher_edit_a_temp_that_is_a_symlink_is_refused() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -1951,7 +1953,7 @@ pub(crate) mod tests {
         assert!(temp.symlink_metadata().is_ok(), "the link is kept");
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn launcher_edit_a_planted_symlink_is_a_stale_temp_and_never_followed() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -1979,7 +1981,7 @@ pub(crate) mod tests {
         assert_eq!(live_text(dir.path()), before);
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn launcher_edit_the_temp_is_private_and_a_huge_or_binary_temp_is_refused() {
         use std::os::unix::fs::PermissionsExt;
@@ -2013,7 +2015,7 @@ pub(crate) mod tests {
         assert!(prepared.temp.exists(), "a refused temp is kept");
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn launcher_edit_prepare_reports_an_unreadable_file_and_discard_removes_only_the_temp() {
         let dir = tempfile::tempdir().expect("temp dir");

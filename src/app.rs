@@ -4538,7 +4538,7 @@ mod tests {
             .flatten()
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
     async fn launcher_stop_requested_runs_the_shared_stop_and_reports_through_launcher_stopped() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -4562,7 +4562,7 @@ mod tests {
         assert_eq!(report, "the run is not running");
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
     async fn launcher_stop_of_a_run_that_is_not_there_reports_the_error() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -6085,7 +6085,7 @@ mod tests {
     /// Wait for the next action `pick` accepts, skipping the others (refreshes the
     /// earlier steps scheduled arrive in between). Linux-only with every caller, so
     /// it is not dead code under `-D warnings` elsewhere.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     async fn next_matching(
         rx: &mut tokio::sync::mpsc::UnboundedReceiver<Action>,
         pick: impl Fn(&Action) -> bool,
@@ -6101,7 +6101,7 @@ mod tests {
 
     /// A launcher run that is `running` in its frontmatter, with the template body, so
     /// `control: run` is both written and echoed.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn write_live_run(root: &std::path::Path) -> (std::path::PathBuf, String) {
         use crate::state_reader::driver_frontmatter::{
             parse_driver_frontmatter, RunStatus, DRIVER_RUNS_REL,
@@ -6130,7 +6130,7 @@ mod tests {
     /// writes `control: pause` into the body through `write_body`, the tool block is
     /// untouched, the status line says it was WRITTEN, and the header reads
     /// `pause (pending)` until the driver echoes it. Nothing says `paused`.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
     async fn launcher_steer_c_then_p_shows_pending() {
         use crate::driver::lock::{acquire_at, run_lock_path};
@@ -6228,7 +6228,7 @@ mod tests {
 
     /// With no event channel the result could not be reported, so the request is
     /// refused visibly and nothing is written (S4).
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
     async fn launcher_steer_without_an_event_channel_refuses_visibly() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -6256,7 +6256,7 @@ mod tests {
     }
 
     /// A run id that is not a plain directory name never names a directory.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
     async fn launcher_steer_a_run_id_with_a_separator_is_refused() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -6275,7 +6275,7 @@ mod tests {
     /// Enter writes `- answer:` and `- hold: false` into that item's segment through
     /// `write_body`, every item survives, and when the LOG recorded a park rule an
     /// answer does not lift, the status says so.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
     async fn launcher_steer_a_then_enter_answers_the_parked_item_and_warns_about_the_rule() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -6356,7 +6356,7 @@ mod tests {
     }
 
     /// `u` writes `hold: false` at once for the held cursor item, with no screen between.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
     async fn launcher_steer_u_takes_the_held_item_off_hold() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -6399,7 +6399,7 @@ mod tests {
 
     /// A failed write is shown as an error that says nothing changed (the UI error
     /// row): here the item vanished from the body between the key and the write.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
     async fn launcher_steer_a_refused_write_is_an_error_not_a_success() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -6425,7 +6425,7 @@ mod tests {
     // ── 30-04: editing DIRECTION.md in the user's editor ────────────────────
 
     /// The path of run `LAUNCHER_RUN`'s edit temp under `root`.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn edit_temp(root: &std::path::Path) -> PathBuf {
         root.join(crate::state_reader::driver_frontmatter::DRIVER_RUNS_REL)
             .join(LAUNCHER_RUN)
@@ -6434,7 +6434,7 @@ mod tests {
 
     /// A launcher run holding a lint-clean body (so an edit applies without the
     /// confirmation), the tab open on it with its detail loaded.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     async fn edit_fixture(
         root: &std::path::Path,
     ) -> (
@@ -6459,7 +6459,7 @@ mod tests {
 
     /// `e`, through the key handler and the App, until the editor would open: the
     /// temp exists, holds the body, and `pending_editor` names it.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     async fn open_the_editor(
         app: &mut App,
         rx: &mut tokio::sync::mpsc::UnboundedReceiver<Action>,
@@ -6474,7 +6474,7 @@ mod tests {
         temp
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
     async fn launcher_edit_e_hands_the_body_only_temp_to_the_editor_and_applies_a_clean_save() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -6516,7 +6516,7 @@ mod tests {
         ));
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
     async fn launcher_edit_a_save_that_changed_nothing_writes_nothing() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -6538,7 +6538,7 @@ mod tests {
         );
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
     async fn launcher_edit_a_failed_editor_keeps_the_temp_and_writes_nothing() {
         for exit in [
@@ -6582,7 +6582,7 @@ mod tests {
         }
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
     async fn launcher_edit_a_path_that_is_not_a_session_is_only_refreshed() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -6596,7 +6596,7 @@ mod tests {
         assert!(app.ctx.error_message.is_none());
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
     async fn launcher_edit_a_conflict_opens_the_chooser_and_reopen_rebases_on_the_live_body() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -6662,7 +6662,7 @@ mod tests {
         assert!(!temp.exists());
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
     async fn launcher_edit_discard_removes_only_the_temp() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -6696,7 +6696,7 @@ mod tests {
         );
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
     async fn launcher_edit_lint_problems_ask_first_and_y_applies() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -6749,7 +6749,7 @@ mod tests {
         assert!(app.edit_sessions.is_empty());
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
     async fn launcher_edit_declining_the_lint_confirmation_opens_the_chooser_and_keeps_the_temp() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -6781,7 +6781,7 @@ mod tests {
             .ends_with(&clean));
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
     async fn launcher_edit_an_edit_without_the_section_headers_is_not_applied() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -6805,7 +6805,7 @@ mod tests {
             .ends_with(&clean));
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
     async fn launcher_edit_a_temp_left_by_a_crashed_tui_is_never_overwritten() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -6832,7 +6832,7 @@ mod tests {
         );
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
     async fn launcher_edit_apply_for_an_unknown_session_is_refused_visibly() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -6866,14 +6866,14 @@ mod tests {
     /// What the fake `launch` seam was given, per call: the options and the `--config`
     /// path. A `static` because the seam is a `fn` pointer and the call happens on a
     /// `spawn_blocking` thread; tests tell their own calls apart by the project path.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     type RecordedLaunch = (crate::launcher::run::LaunchOptions, Option<PathBuf>);
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     static RECORDED_LAUNCHES: std::sync::Mutex<Vec<RecordedLaunch>> =
         std::sync::Mutex::new(Vec::new());
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn fake_launch(
         options: &crate::launcher::run::LaunchOptions,
         config: Option<&Path>,
@@ -6886,7 +6886,7 @@ mod tests {
     }
 
     /// A host that passes every check, with the minimum claude.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn fake_detect_ready() -> crate::launcher::host::HostCaps {
         crate::launcher::host::HostCaps {
             missing: Vec::new(),
@@ -6896,7 +6896,7 @@ mod tests {
     }
 
     /// The launches the fake seam recorded for the project at `root`.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn launches_for(root: &Path) -> Vec<RecordedLaunch> {
         RECORDED_LAUNCHES
             .lock()
@@ -6909,7 +6909,7 @@ mod tests {
 
     /// An `App` on the Driver tab over a crashed-looking launcher run holding a lint-clean
     /// body, with the fake launch seam and a host that passes, the run listed.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     async fn launch_fixture(
         root: &Path,
     ) -> (App, tokio::sync::mpsc::UnboundedReceiver<Action>, PathBuf) {
@@ -6931,7 +6931,7 @@ mod tests {
         (app, rx, run_dir)
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn top_screen_name(app: &App) -> String {
         app.screen_stack
             .last()
@@ -6940,7 +6940,7 @@ mod tests {
     }
 
     /// `R`, through the key handler and the App, until the form has its host check.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     async fn open_the_launch_form(
         app: &mut App,
         rx: &mut tokio::sync::mpsc::UnboundedReceiver<Action>,
@@ -6961,7 +6961,7 @@ mod tests {
     /// the run, the host check arrives through the injected `detect`, and `y` relaunches
     /// the SAME run id through the injected `launch` with the recorded caps, sandboxed,
     /// the registry path travelling with it. The status names the run.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
     async fn launcher_launch_r_then_y_relaunches_the_same_run_through_the_seam() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -7035,7 +7035,7 @@ mod tests {
     }
 
     /// A failed launch is an error that names the run and says nothing was started.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
     async fn launcher_launch_a_failed_launch_says_nothing_was_started() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -7071,7 +7071,7 @@ mod tests {
     }
 
     /// A host that lacks `bwrap` but has a new enough claude.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn fake_detect_degraded() -> crate::launcher::host::HostCaps {
         crate::launcher::host::HostCaps {
             missing: vec!["bwrap".to_string()],
@@ -7081,7 +7081,7 @@ mod tests {
     }
 
     /// A host whose claude is older than the hook field the gate relies on.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn fake_detect_old_claude() -> crate::launcher::host::HostCaps {
         crate::launcher::host::HostCaps {
             missing: Vec::new(),
@@ -7091,7 +7091,7 @@ mod tests {
     }
 
     /// Whether any `DriverLaunchRequested` is waiting on the channel.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn no_launch_requested(rx: &mut tokio::sync::mpsc::UnboundedReceiver<Action>) -> bool {
         let mut none = true;
         while let Ok(action) = rx.try_recv() {
@@ -7103,7 +7103,7 @@ mod tests {
     /// D-20 end to end through the App: on a host missing `bwrap`, `y` launches nothing
     /// and says why; `U` then `n` launches nothing; only `U` then `y` launches, with
     /// `unsandboxed`, once; and the next form is sandboxed again (nothing is remembered).
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
     async fn launcher_launch_a_degraded_host_launches_unsandboxed_only_through_the_second_confirmation(
     ) {
@@ -7168,7 +7168,7 @@ mod tests {
     }
 
     /// A claude older than the minimum is refused in both postures: no `[U]`, no launch.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
     async fn launcher_launch_an_old_claude_is_refused_without_an_unsandboxed_offer() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -7190,7 +7190,7 @@ mod tests {
 
     /// The template's unfilled placeholders are `driver check` problems: they show in
     /// the form and block `y`, exactly as the launcher's own preflight would refuse.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
     async fn launcher_launch_template_placeholders_block_y() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -7211,7 +7211,7 @@ mod tests {
 
     /// A body that says `control: pause` blocks `y`; `c` closes the form and opens the
     /// control chooser, and nothing is written for the user.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
     async fn launcher_launch_a_paused_body_blocks_y_and_c_opens_the_chooser() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -7238,7 +7238,7 @@ mod tests {
 
     /// `R` on a run that is running, whose liveness is unknown, or that is done opens no
     /// form and says why; a run that was never launched opens the form with the defaults.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
     async fn launcher_launch_r_refuses_a_running_run_and_opens_the_defaults_for_a_new_one() {
         use crate::driver::lock::{acquire_at, run_lock_path};
@@ -7266,7 +7266,7 @@ mod tests {
     }
 
     /// `R` on a never-launched run opens the same form with the CLI defaults.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
     async fn launcher_launch_r_on_a_new_run_opens_the_form_with_the_defaults() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -7323,14 +7323,14 @@ mod tests {
     // ── 30-05: a new run from the Driver tab (D-18) ─────────────────────────
 
     /// Today's UTC date, as the run id the slug input previews.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn today() -> String {
         chrono::Utc::now().format("%Y%m%d").to_string()
     }
 
     /// A GSD project (`.planning/` exists) on the Driver tab, nothing listed yet, with
     /// the fake launch seams.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn new_run_app(root: &Path) -> (App, tokio::sync::mpsc::UnboundedReceiver<Action>) {
         std::fs::create_dir_all(root.join(".planning")).unwrap();
         let (mut app, rx) = app_on_the_driver_tab(root);
@@ -7344,7 +7344,7 @@ mod tests {
     /// `s`, a slug, Enter, and the App's answer: the run exists, the slug input is gone
     /// and the editor is about to open on the new run's body. Returns the run id and the
     /// edit temp's path.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     async fn create_a_run(
         app: &mut App,
         rx: &mut tokio::sync::mpsc::UnboundedReceiver<Action>,
@@ -7375,7 +7375,7 @@ mod tests {
 
     /// The editor "exits" with the temp as it is, and the apply and the check are driven
     /// to their answers.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     async fn finish_the_editor(
         app: &mut App,
         rx: &mut tokio::sync::mpsc::UnboundedReceiver<Action>,
@@ -7393,7 +7393,7 @@ mod tests {
     /// an unedited template fails `driver check` and opens `Check DIRECTION.md`; `y`
     /// re-opens the editor; a clean body opens the launch form, whose `y` launches the
     /// new run through the fake seam. Zero spend.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
     async fn launcher_new_run_s_creates_edits_checks_and_launches() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -7485,7 +7485,7 @@ mod tests {
     }
 
     /// `n` on the popup leaves the run created and unlaunched, says so and ends the flow.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
     async fn launcher_new_run_n_leaves_the_run_unlaunched() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -7508,7 +7508,7 @@ mod tests {
 
     /// A second `s` with the same slug on the same day finds the run: the input stays
     /// open with the buffer, says so, and the existing run is not touched.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
     async fn launcher_new_run_the_same_slug_twice_says_the_run_exists_and_keeps_the_buffer() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -7568,7 +7568,7 @@ mod tests {
     }
 
     /// Any other creation failure closes the input and says why.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn launcher_new_run_another_failure_closes_the_input_and_says_why() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -7591,7 +7591,7 @@ mod tests {
     /// IN-02: a new-run request the App refuses before it starts (an alias that is no
     /// longer registered, a session with no event channel) closes the slug input and
     /// says why; the input is never left pending with Enter dead.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn launcher_new_run_a_refused_request_closes_the_slug_input() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -7634,7 +7634,7 @@ mod tests {
 
     /// WR-04: the new-run check numbers its findings from the first body line, the way
     /// the body-only edit temp shows them in the editor.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
     async fn launcher_new_run_check_numbers_lint_lines_like_the_editor() {
         use crate::driver::direction::split_frontmatter;
@@ -7678,7 +7678,7 @@ mod tests {
 
     /// A project that is not a GSD project (no `.planning/`) is refused by the creation
     /// itself, with nothing created.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
     async fn launcher_new_run_a_directory_that_is_not_a_gsd_project_creates_nothing() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -7710,7 +7710,7 @@ mod tests {
     }
 
     /// A failed editor ends the flow with the run left unlaunched.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
     async fn launcher_new_run_an_editor_failure_ends_the_flow() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -7729,7 +7729,7 @@ mod tests {
 
     /// The footer names `[R]elaunch` on a crashed row and `[R]launch` on a never-launched
     /// one, and `s` never opens the legacy start flow.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
     async fn launcher_new_run_the_footer_names_launch_or_relaunch_for_the_selected_row() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -7770,7 +7770,7 @@ mod tests {
     /// on the tabs that already bind them (the Roadmap's wave brackets are pinned in
     /// `detail.rs`, where its fixtures live), and lower-case `r` never opens the launch
     /// form.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
     async fn launcher_view_driver_keys_shadow_no_global_key() {
         use crate::ui::screens::detail::DetailScreen;

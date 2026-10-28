@@ -20552,7 +20552,7 @@ mod tests {
     /// Give launcher run `index` a cached detail whose body says `control`.
     ///
     /// Linux-only, like every caller: the steering tests need `write_body`.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn give_control(ctx: &mut AppContext, index: usize, control: Option<&str>) {
         give_items(ctx, index);
         let cache = ctx.view_cache.entry(TEST_ALIAS.to_string()).or_default();
@@ -20561,7 +20561,7 @@ mod tests {
         }
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn launcher_steer_c_opens_the_chooser_for_a_readable_run() {
         let (mut screen, mut ctx, mut rx) = launcher_fixture(2);
@@ -20583,7 +20583,7 @@ mod tests {
         assert!(rx.try_recv().is_err(), "pause is already the body's word");
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn launcher_steer_c_on_an_unreadable_run_opens_nothing() {
         let (mut screen, mut ctx, mut rx) = launcher_fixture(1);
@@ -20643,7 +20643,7 @@ mod tests {
         super::super::driver_run::settle_item_cursor(cache);
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn launcher_steer_a_opens_the_answer_screen_for_a_parked_or_a_held_item() {
         // The cursor starts on the first parked item.
@@ -20666,7 +20666,7 @@ mod tests {
         );
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn launcher_steer_a_says_why_when_there_is_nothing_to_answer() {
         let (mut screen, mut ctx, mut rx) = launcher_fixture(1);
@@ -20694,7 +20694,7 @@ mod tests {
         assert!(ctx.status_message.is_some());
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn launcher_steer_u_dispatches_an_unhold_for_a_held_item_and_says_why_otherwise() {
         let (mut screen, mut ctx, mut rx) = launcher_fixture(1);
@@ -20793,7 +20793,7 @@ mod tests {
         assert!(tight.contains("[a]nswer"), "{tight:?}");
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn launcher_edit_e_asks_the_app_for_the_edit_temp_and_writes_nothing() {
         let (mut screen, mut ctx, mut rx) = launcher_fixture(2);

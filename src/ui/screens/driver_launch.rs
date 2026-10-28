@@ -1835,7 +1835,7 @@ mod tests {
         assert_eq!(form.defaulted, LaunchDefaulted::default());
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn launcher_launch_options_mirror_what_driver_launch_builds() {
         let mut args = launch_defaults();
@@ -1864,7 +1864,7 @@ mod tests {
     }
 
     /// The golden argv: the daemon is started with exactly this vector.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn launcher_launch_the_default_options_produce_the_golden_argv() {
         let mut args = launch_defaults();
@@ -2347,7 +2347,7 @@ mod tests {
     }
 
     /// The eight words of the vocabulary, as the preflight copies them.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn all_eight() -> Vec<String> {
         crate::launcher::host::PROTECTIONS
             .iter()
@@ -2355,7 +2355,7 @@ mod tests {
             .collect()
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn launcher_launch_preflight_lists_the_protections_the_launch_would_lack() {
         use crate::launcher::host::HostCaps;
@@ -2953,7 +2953,7 @@ mod tests {
 
     /// IN-03: the form reads `control` with the launcher's reader and blocks exactly
     /// when the launcher would.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn launcher_launch_preflight_reads_control_like_the_launcher() {
         use crate::launcher::host::HostCaps;
@@ -2996,7 +2996,7 @@ mod tests {
 
     /// WR-04: a finding's `DIRECTION.md:<line>:` counts from the first body line, the
     /// numbering the body-only edit temp shows in the editor.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn launcher_launch_preflight_numbers_lint_lines_like_the_editor() {
         use crate::driver::direction::split_frontmatter;
@@ -3037,7 +3037,7 @@ mod tests {
     }
 
     /// The preflight over real files: the same lint and control the launcher applies.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn launcher_launch_preflight_reads_the_lint_and_the_control_word() {
         use crate::launcher::host::HostCaps;
@@ -3213,7 +3213,7 @@ mod tests {
     }
 
     /// The input never offers an id `driver new` would refuse.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn launcher_new_run_the_preview_agrees_with_the_id_driver_new_mints() {
         use chrono::TimeZone;
