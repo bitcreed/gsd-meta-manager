@@ -1388,7 +1388,7 @@ guard, check which of its threats (exfiltration, credential use, network reach) 
 allowlist as the superseding mechanism, and should be closed only once 28.1 lands
 [inferred — audit].
 
-**Plans**: 6/7 plans executed
+**Plans**: 6/9 plans executed
 
 Plans:
 
@@ -1408,6 +1408,12 @@ Plans:
 **Wave 5** *(blocked on 31-05; 31-06 and 31-07 touch disjoint files)*
 - [x] 31-06-PLAN.md — Phase 19 threat closure table, Phase 21 criterion 4 closure and CR-01 owner, SAFE rows, Phase 22 archived as superseded (RETIRE-02, RETIRE-03)
 - [ ] 31-07-PLAN.md — [droppable, D-04] the Codex executor and the in-process Claude transport removed, `process-wrap` dropped, container gate re-run on the final tree (RETIRE-01, RETIRE-03)
+
+**Gap closure, wave 1** *(SC4 container gate and 31-REVIEW WR-01..05; neither gap plan depends on the held 31-07)*
+- [ ] 31-08-PLAN.md — [gap] unregistering refused during a live launcher run (WR-03); the opt-in popup and prompts state only the PR caps (WR-01, WR-02) (RETIRE-01)
+
+**Gap closure, wave 2** *(blocked on 31-08: its container gate certifies both plans' code)*
+- [ ] 31-09-PLAN.md — [gap] planted-file walk name-ordered and the sandbox test host-independent (SC4); the stderr tail cannot leak a cut token (WR-05); truthful ledger refusal (WR-04); container gate re-run to exit 0 (RETIRE-01, RETIRE-03)
 
 ### Phase 32: GSD Capabilities: Visibility & Per-Project Control
 
