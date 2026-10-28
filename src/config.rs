@@ -939,6 +939,59 @@ mod tests {
         );
     }
 
+    /// T-19-73 / D-18: `CredentialSource` has exactly two variants, and the
+    /// absent third one ("a literal token in the registry file") is the
+    /// decision, not an omission. Two layers pin it. The exhaustive `match`
+    /// below is the compile-time pin against ANY new variant (E0004 in the
+    /// test build). The serde probes are the runtime pin against a
+    /// literal-token shape. They check for `unknown variant` and not a bare
+    /// `is_err()`, because a new variant whose field is named differently
+    /// would reject a probe with a missing-field error and still pass that.
+    #[test]
+    fn a_credential_source_has_no_literal_token_variant() {
+        fn tag(source: &CredentialSource) -> &'static str {
+            // Adding a variant here is a security decision (SAFE-05, D-18),
+            // not a mechanical arm.
+            match source {
+                CredentialSource::Env { .. } => "env",
+                CredentialSource::Command { .. } => "command",
+            }
+        }
+
+        let values = [
+            CredentialSource::Env {
+                var: "GSD_MM_GIT_TOKEN".to_string(),
+            },
+            CredentialSource::Command {
+                argv: vec!["gh".to_string(), "auth".to_string(), "token".to_string()],
+            },
+        ];
+        let mut tags = Vec::new();
+        for value in &values {
+            let json = serde_json::to_value(value).expect("serialises");
+            assert_eq!(
+                json["source"],
+                tag(value),
+                "the witness tag drifted from serde's tag for {value:?}"
+            );
+            tags.push(tag(value));
+        }
+        assert_eq!(tags, ["env", "command"]);
+
+        for probe in [
+            r#"{"source":"literal","token":"x"}"#,
+            r#"{"source":"token","token":"x"}"#,
+            r#"{"source":"plaintext","value":"x"}"#,
+        ] {
+            let err = serde_json::from_str::<CredentialSource>(probe)
+                .expect_err(&format!("a literal-token shape parsed: {probe}"));
+            assert!(
+                err.to_string().contains("unknown variant"),
+                "probe {probe} must be rejected as an unknown variant, got: {err}"
+            );
+        }
+    }
+
     #[test]
     fn the_migration_is_idempotent() {
         let mut config: Config =
