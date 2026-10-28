@@ -119,6 +119,28 @@ impl Screen for DeleteConfirmScreen {
 }
 
 fn do_remove_project(ctx: &mut AppContext, alias: &str) {
+    // WR-03 (D-13): refuse to unregister a project whose launcher run still
+    // holds its run lock. After an unregister the project drops out of
+    // `launcher_markers_for`, so the Driven badge and the Driver tab vanish
+    // while the detached launcher and its sandbox scope keep running. The
+    // marker is the cached one (at most one slow tick stale, and `None` until
+    // the first scan lands); like every driver surface it is gated on the
+    // experimental flag, which is also the only time the scan populates it.
+    let has_live_run = ctx.experimental
+        && ctx
+            .view_cache
+            .get(alias)
+            .and_then(|cache| cache.launcher_marker)
+            .is_some_and(|marker| marker.any_live);
+    if has_live_run {
+        ctx.error_message = Some(format!(
+            "'{}' has a live driver run. Stop it from its Driver tab (x) first.",
+            crate::text::render_for_terminal(alias)
+        ));
+        ctx.needs_redraw = true;
+        return;
+    }
+
     let project_path = ctx.config.projects.get(alias).map(|p| p.path.clone());
 
     // Wrapped at the CALL, not stored: this is a registry key being looked up
@@ -279,6 +301,74 @@ mod tests {
             "an ordinary removal reports no error, got: {:?}",
             ctx.error_message
         );
+    }
+
+    /// A view cache entry carrying only the given launcher marker.
+    fn cache_with_marker(
+        marker: crate::ui::screens::driver_run::LauncherMarker,
+    ) -> crate::ui::screens::ProjectViewCache {
+        crate::ui::screens::ProjectViewCache {
+            launcher_marker: Some(marker),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn unregistering_a_project_with_a_live_launcher_run_is_refused() {
+        use crate::ui::screens::driver_run::{LauncherMarker, MarkerClass};
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut ctx, _rx) = ctx_with_project(dir.path());
+        ctx.view_cache.insert(
+            ALIAS.to_string(),
+            cache_with_marker(LauncherMarker {
+                class: Some(MarkerClass::Driven),
+                any_live: true,
+            }),
+        );
+
+        let act = confirm_removal(&mut ctx);
+
+        assert!(matches!(act, ScreenAction::Pop));
+        assert!(
+            ctx.config.projects.contains_key(ALIAS),
+            "a project with a live launcher run must stay registered"
+        );
+        let msg = ctx.error_message.as_deref().expect("a refusal is reported");
+        assert!(msg.contains("has a live driver run"), "got: {msg}");
+        assert!(msg.contains(ALIAS), "the refusal names the alias: {msg}");
+        assert!(
+            !ctx.config_path.exists(),
+            "a refused removal must not write the config"
+        );
+    }
+
+    #[test]
+    fn a_project_whose_launcher_runs_are_not_live_is_still_removed() {
+        use crate::ui::screens::driver_run::{LauncherMarker, MarkerClass};
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut ctx, _rx) = ctx_with_project(dir.path());
+        ctx.view_cache.insert(
+            ALIAS.to_string(),
+            cache_with_marker(LauncherMarker {
+                class: Some(MarkerClass::Crashed),
+                any_live: false,
+            }),
+        );
+
+        confirm_removal(&mut ctx);
+
+        assert!(
+            !ctx.config.projects.contains_key(ALIAS),
+            "a crashed run holds no lock, so the project is removable"
+        );
+        assert_eq!(ctx.error_message, None);
+        let (status, _) = ctx
+            .status_message
+            .as_ref()
+            .expect("a removal reports what it did");
+        assert!(status.contains("Removed \"proj\""), "got: {status}");
     }
 
     #[test]
