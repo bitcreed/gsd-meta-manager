@@ -94,9 +94,10 @@ pub fn project_last_activity(project_root: &Path) -> Option<chrono::DateTime<chr
 
 /// A project's current git `HEAD` commit sha, in full.
 ///
-/// Synchronous by design, matching `git_last_commit_time` above: its consumer
-/// is the run snapshot in `src/executor/outcome.rs`, which calls it from the
-/// same blocking closure as `parse_project_state`. Passes the repository root
+/// Synchronous by design, matching `git_last_commit_time` above. The run snapshot
+/// that called it from a blocking closure was retired in Phase 31, and its only
+/// remaining callers are tests, a retirement candidate tracked in todo
+/// 2026-10-28-retire-test-only-executor-remnants.md. Passes the repository root
 /// as an argument (`-C`) rather than setting a working directory, consistently
 /// with [`is_dirty`].
 ///
@@ -162,9 +163,8 @@ pub fn is_dirty(project_root: &Path) -> Option<bool> {
 // These extend this module rather than starting a second git wrapper, and they
 // follow the conventions the module already documents: `-C <root>` rather than
 // `current_dir`, plain values rather than `Result`, never panics. They are
-// synchronous for the same reason `head_sha` is, and inherit the discipline
-// `src/executor/outcome.rs:60` states: a caller on an async runtime puts them on
-// a blocking thread. The dry-run path is a CLI foreground invocation (D-24), so
+// synchronous for the same reason `head_sha` is, and follow the same rule: a
+// caller on an async runtime puts them on a blocking thread (`spawn_blocking`). The dry-run path is a CLI foreground invocation (D-24), so
 // it calls them directly.
 // ============================================================================
 

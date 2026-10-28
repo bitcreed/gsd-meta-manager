@@ -242,8 +242,8 @@ pub fn process_group(pid: u32) -> Option<u32> {
 /// Whether `pid` is a **zombie** — exited, but not yet reaped by its parent.
 ///
 /// This exists because the repository's existing liveness helper cannot answer
-/// the question. `tests/executor_lifecycle.rs`'s `alive()` uses the zero signal
-/// (`kill -0`), which succeeds for a zombie: a zombie still owns a pid and still
+/// the question. The retired executor lifecycle test's `alive()` used the zero
+/// signal (`kill -0`), which succeeds for a zombie: a zombie still owns a pid and still
 /// has a process table entry, so `kill -0` reports it **alive**. ROADMAP success
 /// criterion #1 requires that stopping a run leaves *"no zombie behind — verified
 /// 15s later"*, and that half of the criterion is therefore untestable with

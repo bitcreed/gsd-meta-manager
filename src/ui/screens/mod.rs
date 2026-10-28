@@ -383,8 +383,7 @@ pub enum DefaultsEditTarget {
 /// roughly 400 KB.
 ///
 /// 2000 is a defensible starting value with **no tuning data behind it**
-/// (the [`crate::main_loop::EXEC_BATCH`] idiom). It is a named constant so
-/// tuning is a one-line change.
+/// It is a named constant so tuning is a one-line change.
 pub const DRIVER_OUTPUT_RING_LINES: usize = 2_000;
 
 /// How many launcher runs the Driver tab lists (28-07, D-30): the newest twenty.

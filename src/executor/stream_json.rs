@@ -148,7 +148,7 @@ pub struct TurnMessage {
     /// and nothing else. A body that arrives as some shape other than an object
     /// would still be a hard parse error, and a hard parse error here does not
     /// degrade to a missing field — it fails the whole envelope and lands the
-    /// line in `ExecutionEvent::Unparseable`.
+    /// line in the retired executor's unparseable-line event.
     #[serde(default, deserialize_with = "tolerant_message_body")]
     pub message: Option<MessageBody>,
 }
@@ -351,7 +351,7 @@ pub struct ResultMessage {
     /// rejection, no panicking accessor, no `unwrap` on a wire field.
     ///
     /// **Read this off the TERMINAL `result` envelope**, the one
-    /// `derive_run_outcome_from_envelopes` already selects with `last`, and
+    /// the retired executor's outcome derivation selected with `last`, and
     /// never by indexing a turns vector. The CLI populates the field from the
     /// **last** structured-output call rather than the first, and this repo has
     /// already proved that a `result` envelope is a *turn* boundary rather than
@@ -975,7 +975,7 @@ mod tests {
     fn a_content_block_shape_no_build_has_seen_degrades_to_a_label_not_a_parse_failure() {
         // The whole reason every added field is `Option` + `#[serde(default)]`:
         // an unknown block must not fail the envelope and land the line in
-        // `ExecutionEvent::Unparseable`.
+        // the retired executor's unparseable-line event.
         let turn = turn(
             r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"holographic_projection","frames":9}]}}"#,
         );

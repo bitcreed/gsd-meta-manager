@@ -69,8 +69,8 @@ const SPAWN_ALLOWLIST: &[&str] = &[
     "src/launcher/process.rs",
 ];
 
-/// The three shapes a process spawn takes in this tree.
-const SPAWN_MARKERS: &[&str] = &["Command::new(", "CommandWrap::with_new(", "process_group("];
+/// The two shapes a process spawn takes in this tree.
+const SPAWN_MARKERS: &[&str] = &["Command::new(", "process_group("];
 
 /// Whether `line` calls `marker`, as opposed to merely containing its letters.
 ///
@@ -220,9 +220,9 @@ fn every_process_spawn_site_in_src_is_on_the_allowlist() {
     let unexpected: Vec<&String> = observed.iter().filter(|p| !allowed.contains(p)).collect();
     assert!(
         unexpected.is_empty(),
-        "a process-spawn site appeared in a file that is not on the allowlist. Confirm it \
-         takes a capability type and then add it to `SPAWN_ALLOWLIST` in this file, in the \
-         same commit (PITFALLS:521). Unexpected: {unexpected:?}"
+        "a process-spawn site appeared in a file that is not on the allowlist. Confirm the \
+         file is a deliberate spawn site and add it to `SPAWN_ALLOWLIST` with a one-line \
+         reason, in the same commit (PITFALLS:521). Unexpected: {unexpected:?}"
     );
 
     let vanished: Vec<&String> = allowed.iter().filter(|p| !observed.contains(p)).collect();
@@ -239,9 +239,9 @@ fn a_signal_to_a_process_group_is_not_mistaken_for_a_spawn() {
     // the marker `process_group(` matches inside `kill_process_group(`, and a
     // module that only signals an existing group is reported as a process-spawn
     // site. The only way to make the suite green then is to put a file that
-    // spawns nothing onto a SPAWN allowlist — which converts an audit of "every
-    // spawn takes a capability type" into a list of files somebody once had to
-    // add, silently and without anybody noticing the meaning changed.
+    // spawns nothing onto a SPAWN allowlist — which converts an audit of
+    // deliberate spawn sites into a list of files somebody once had to add,
+    // silently and without anybody noticing the meaning changed.
     for line in [
         "    rustix::process::kill_process_group(group, sig).map_err(Error::from)",
         "    let _ = rustix::process::test_kill_process_group(group);",

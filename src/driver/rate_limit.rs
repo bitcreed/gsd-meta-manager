@@ -15,7 +15,7 @@
 //! source tree, and grepped for), no panicking accessor, and no `unwrap` on a
 //! wire field. `status` and `rateLimitType` are matched as `&str` with an
 //! explicit fallback arm that carries the observed value, following
-//! `src/executor/stream_json.rs:14-18` and `src/executor/outcome.rs:9-12`: this
+//! `src/executor/stream_json.rs:14-18` and the retired executor's outcome module: this
 //! CLI shipped **three** new `rateLimitType` values on one version line
 //! (`seven_day_opus`, `seven_day_sonnet`, `seven_day_overage_included`), and a
 //! typed parse pinned at the version this repository's captures were taken from

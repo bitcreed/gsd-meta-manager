@@ -278,8 +278,10 @@ fn validate_egress_host(raw: &str) -> Result<String, EgressConfigError> {
 ///
 /// **Phase 21 is that phase, and it has landed.** The record now carries
 /// [`DriverOptIn::prompt_inputs`] — the files whose bytes can reach a model
-/// prompt, each with a `sha256:` digest — and the drift check runs at the spawn
-/// gate. Reason 3 above paid off exactly as intended: no user's `config.json`
+/// prompt, each with a `sha256:` digest. The digests are recorded at opt-in, and
+/// nothing on the launcher path compares them, because
+/// `registry::check_prompt_input_drift` has no caller in this build (its one
+/// caller, the legacy executor gate, went in Phase 31). Reason 3 above paid off exactly as intended: no user's `config.json`
 /// needed a migration, because the record was already a struct.
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct DriverOptIn {
@@ -303,7 +305,7 @@ pub struct DriverOptIn {
     /// migration: an older binary that loads and re-saves this file still finds
     /// the field it expects. Nothing reads it as an integrity check — a record
     /// carrying only this key has an empty `prompt_inputs`, and an empty
-    /// `prompt_inputs` re-confirms.
+    /// `prompt_inputs` re-confirms (the retired executor gate only).
     pub claude_md_digest: Option<String>,
     /// The files whose bytes can reach a model prompt, each with the digest it
     /// had when the user opted in.
@@ -312,14 +314,15 @@ pub struct DriverOptIn {
     /// list, an entry that does not parse, an entry whose digest prefix names a
     /// hash family this binary does not compute, an entry whose digest no longer
     /// matches the file on disk, and an entry for a file that has appeared or
-    /// vanished since opt-in **all mean the same thing: re-confirm.** That is
+    /// vanished since opt-in **all mean the same thing: re-confirm** (the retired
+    /// executor gate only; no gate on the launcher path acts on it). That is
     /// deliberately the same register as
     /// [`DriverOptIn::branch_namespace`]'s "an absent value and a rejected value
     /// therefore mean the same thing, which is the safe thing" — a gate with one
     /// answer for every unclear state has no unclear state left to get wrong.
     ///
     /// `#[serde(default)]` so every pre-Phase-21 `config.json` loads unchanged,
-    /// coming back with an empty list — which re-confirms, which is correct: a
+    /// coming back with an empty list — which re-confirmed (the retired executor gate only), which was correct: a
     /// record written before this field existed never disclosed anything to the
     /// user, so it cannot stand as an informed approval of what reaches a prompt.
     #[serde(default)]
@@ -341,7 +344,7 @@ pub struct DriverOptIn {
     ///
     /// **The failure mode was fail-safe, not a vulnerability**, and the
     /// distinction is worth keeping: a deleted `prompt_inputs` reads as absent,
-    /// absent re-confirms, so the cost was a spurious re-confirmation after a
+    /// absent re-confirmed (the retired executor gate only), so the cost was a spurious re-confirmation after a
     /// version downgrade rather than a silent approval. It is fixed anyway,
     /// because "annoying" is not a reason to leave a user-owned file lossy.
     #[serde(flatten)]
@@ -410,8 +413,8 @@ pub struct PromptInput {
     /// `None` is a recorded fact, not a missing one, and conflating the two
     /// would open the hole this field exists to close: if an absent file were
     /// simply left out of the list, a `CLAUDE.md` that appears *after* opt-in
-    /// would reach the executor's prompt with no digest to contradict and no
-    /// re-confirmation. Recorded as `None`, its later appearance is a mismatch
+    /// would have reached the retired executor's prompt with no digest to contradict
+    /// and no re-confirmation. Recorded as `None`, its later appearance is a mismatch
     /// like any other, and mismatches re-confirm.
     pub digest: Option<String>,
     /// Every field of this entry that this build does not model.

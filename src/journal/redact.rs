@@ -393,7 +393,7 @@ pub fn redact_value(v: &mut Value) {
 ///
 /// Byte slicing (`&s[..max]`) **panics** on a multi-byte boundary, so the cut is
 /// found with `char_indices`. The marker mirrors the field shape of the
-/// executor's `ExecutionEvent::LineTruncated { bytes, prefix }` so truncation is
+/// retired executor's truncated-line event (`bytes`, `prefix`) so truncation is
 /// visible in the file rather than silent.
 fn cap_payload(v: &mut Value, max: usize) {
     match v {

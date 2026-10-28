@@ -38,8 +38,9 @@ use crate::bounded_output::{stdout_within, stdout_within_with_stderr, BoundedOut
 /// * The environment is cleared and then set to `env`: the full child
 ///   environment is decided by the pure [`super::sandbox::child_env`], so the
 ///   scrub is golden-testable rather than a loop around a command builder.
-///   `[inferred — audit]`: this deviates from the `env_remove` analog in
-///   `src/executor/claude.rs`, which removes keys from an inherited environment.
+///   `[inferred — audit]`: this deviates from the `env_remove` approach of
+///   the retired in-process executor, which removed keys from an inherited
+///   environment.
 /// * `stdin` is `/dev/null` and `stdout`/`stderr` are `out` (LNCH-08).
 /// * `process_group(0)` makes the child a group leader, so the launcher can
 ///   signal the whole group (and `die-with-parent` is not the only defence).
@@ -144,8 +145,7 @@ const STDERR_TAIL_BYTES: u64 = 4096;
 
 /// What [`run_bounded_with_stderr`] returns when the last stderr line is not wholly
 /// inside the read-back window (WR-05): a fixed note, never a fragment of the line.
-const OVERLONG_STDERR_NOTE: &str =
-    "(the last stderr line was longer than 4096 bytes and is not kept)";
+const OVERLONG_STDERR_NOTE: &str = "(the last stderr line was too long to keep and is not shown)";
 
 /// The `GIT_*` variables that would point a host `git` at a repository other than
 /// the one the argv names. Removed from every `git` this module starts: the push
