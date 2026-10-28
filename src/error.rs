@@ -455,8 +455,11 @@ pub enum OptInError {
     /// approved a specific set of files with specific contents; if either has
     /// moved, the approval no longer describes what would run.
     ///
-    /// Not a failure — a re-confirmation. The remedy is to opt in again, having
-    /// seen the new disclosure.
+    /// Not a failure. The remedy is to withdraw and record the opt-in again,
+    /// which refreshes the recorded digests. Produced only by the legacy
+    /// executor gate (`DrivableProject::from_registry`), which has no production
+    /// caller; nothing on the launcher path consults the recorded digests and no
+    /// popup shows them any more.
     PromptInputsDrifted {
         /// The alias whose disclosed inputs no longer match.
         ///
@@ -513,8 +516,8 @@ impl fmt::Display for OptInError {
                 let alias = escaped(alias);
                 write!(
                     f,
-                    "the driver opt-in for `{alias}` needs re-confirming: {}. \
-                     Opt in again to review what reaches a prompt and approve it",
+                    "the driver opt-in for `{alias}` was recorded against different file \
+                     contents: {}. Withdraw and record the opt-in again to refresh it",
                     drift.describe()
                 )
             }

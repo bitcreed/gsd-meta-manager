@@ -753,6 +753,9 @@ pub fn record_opt_in(config: &mut Config, alias: &str) -> Result<()> {
 
 /// Which spawn profile reads a disclosed file.
 ///
+/// **Historical (WR-01).** The digests this labels are recorded at opt-in, but
+/// nothing on the launcher path consults them and no popup shows them any more.
+///
 /// A **disclosure label**, deliberately not [`crate::executor::SpawnProfile`]:
 /// that type carries a JSON schema and exists to shape an argv, while this one
 /// exists to tell a user which of the two spawns will read a file. Keeping them
@@ -769,7 +772,13 @@ pub enum PromptProfile {
     Executor,
 }
 
-/// Every file whose bytes can reach a model prompt, and which profile reads it.
+/// Every file whose bytes could reach a model prompt, and which profile reads it.
+///
+/// **Recorded, not consulted (WR-01).** The digests of these files are recorded
+/// at opt-in, but nothing on the launcher path consults them and no popup shows
+/// them any more; the only reader is the legacy executor gate
+/// (`crate::executor::DrivableProject::from_registry`), which has no production
+/// caller.
 ///
 /// **This list is the disclosure, and its membership is a correctness property.**
 /// The plan's own prohibition rates an under-broad list as exactly as dishonest
@@ -808,6 +817,10 @@ fn file_digest(project_root: &Path, relative: &str) -> Option<String> {
 
 /// The disclosed file set with each file's digest as it stands right now.
 ///
+/// Used by `record_opt_in` to snapshot the digests at opt-in. Nothing on the
+/// launcher path compares that snapshot with the files later, and no popup shows
+/// it (WR-01).
+///
 /// Reads bytes rather than a `String` so a file that is not valid UTF-8 still
 /// digests instead of silently reading as absent — "unreadable" should mean the
 /// filesystem refused, not that the content surprised us.
@@ -823,6 +836,9 @@ pub fn current_prompt_inputs(project_root: &Path) -> Vec<PromptInput> {
 }
 
 /// Why a recorded opt-in no longer covers what would reach a prompt.
+///
+/// Produced only by [`check_prompt_input_drift`], whose one caller has no
+/// production caller (WR-01): nothing on the launcher path consults it.
 ///
 /// Every variant means the same thing to the gate — **re-confirm** — and the
 /// variants exist only so the reason can be shown to the user. A gate with one
@@ -874,10 +890,12 @@ impl OptInDrift {
 /// `None` means the recorded approval is still good. `Some(drift)` means
 /// re-confirm.
 ///
-/// **Called at the spawn gate, not at render time.** A confirmation screen left
-/// open while a `git pull` rewrites `CLAUDE.md` must not be able to approve
-/// bytes that changed underneath it, so the question is asked where the opt-in
-/// is consulted before a spawn — `crate::executor::DrivableProject::from_registry`.
+/// **Its one caller has no production caller (WR-01).** It is asked only by
+/// `crate::executor::DrivableProject::from_registry`, the legacy executor gate;
+/// nothing on the launcher path consults it. Were it consulted, it would have to
+/// be at the spawn gate rather than at render time, so that a confirmation
+/// screen left open while a `git pull` rewrites `CLAUDE.md` cannot approve
+/// bytes that changed underneath it.
 pub fn check_prompt_input_drift(project_root: &Path, opt_in: &DriverOptIn) -> Option<OptInDrift> {
     if opt_in.prompt_inputs.is_empty() {
         return Some(OptInDrift::NothingDisclosed);

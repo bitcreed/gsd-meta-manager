@@ -11,9 +11,11 @@
 //! `ctx.status_message`, and the same `ScreenAction::Pop` on both arms.
 //!
 //! **What the opt-in record does now.** The launcher's push step reads its PR caps
-//! and branch namespace from it (`launcher::push::policy_for`) and falls back to
-//! the defaults when there is none. The prompts say that and nothing more: no
-//! safety claim the code does not back (T-17-48).
+//! from it (`launcher::push::policy_for`) and falls back to the defaults when
+//! there is none. A configured `branch_namespace` is parsed and validated but
+//! not consulted: every run pushes to its own `refs/heads/gsd-auto/<alias>/<run-id>`
+//! (`launcher::push::dest_ref`). The prompts say the PR caps and nothing more: no
+//! safety claim the code does not back (T-17-48, WR-02).
 //!
 //! Driver state is read from the **sibling maps on `AppContext`** — never from
 //! `ProjectState`, whose derived `PartialEq` drives the v1.4 unchanged-state
@@ -81,9 +83,12 @@ impl DriverConfirmScreen {
 /// the direction of a toggle. Free function rather than a method so the whole
 /// prompt matrix is testable without constructing a screen.
 ///
-/// **Both opt-in directions say only what the record feeds** (C12, T-17-48): the
-/// push step reads its PR caps and branch namespace from it
-/// (`launcher::push::policy_for`) and uses the defaults without one. Neither
+/// **Both opt-in directions say only what the record feeds** (C12, T-17-48,
+/// WR-02): the push step reads its PR caps from it (`launcher::push::policy_for`)
+/// and uses the defaults without one. A configured namespace is accepted
+/// and validated but not consulted (every run pushes to its own
+/// `refs/heads/gsd-auto/<alias>/<run-id>`, `launcher::push::dest_ref`), so the
+/// prompts do not mention one. Neither
 /// claims a gate or says that a run can or cannot start, because nothing
 /// here gates a run — and a safety claim the implementation does not back is
 /// worse than no claim at all.
@@ -110,8 +115,8 @@ fn prompt_text(alias: &str, action: DriverAction, opted_in: bool, run_id: &str) 
     let alias = &crate::text::render_for_terminal(alias);
     match action {
         DriverAction::ToggleOptIn if opted_in => format!(
-            "Withdraw the driver opt-in for \"{alias}\"? Its PR caps and branch namespace stop \
-             applying; the push step falls back to the defaults. [y/n]"
+            "Withdraw the driver opt-in for \"{alias}\"? Its PR caps stop applying; the push \
+             step falls back to the defaults. [y/n]"
         ),
         DriverAction::StopLauncher => {
             // The run id is a directory name and so third-party text: both classes
@@ -124,8 +129,8 @@ fn prompt_text(alias: &str, action: DriverAction, opted_in: bool, run_id: &str) 
             )
         }
         DriverAction::ToggleOptIn => format!(
-            "Record a driver opt-in for \"{alias}\"? The push step reads its PR caps and \
-             branch namespace from it; without one it uses the defaults. [y/n]"
+            "Record a driver opt-in for \"{alias}\"? The push step reads its PR caps from it; \
+             without one it uses the defaults. [y/n]"
         ),
     }
 }
@@ -720,30 +725,30 @@ pub(crate) mod tests {
         assert_eq!(prompt_color(DriverAction::ToggleOptIn, false), Color::Reset);
     }
 
-    /// C12 / D-13 (T-31-04): neither opt-in prompt claims a gate or says a
+    /// C12 / D-13 (T-31-04, WR-02): neither opt-in prompt claims a gate or says a
     /// run can or cannot start. Each states what the record feeds now, which is
-    /// what `launcher::push::policy_for` reads, and each still names the alias
-    /// (through `render_for_terminal`).
+    /// the PR caps `launcher::push::policy_for` reads and nothing else, and each
+    /// still names the alias (through `render_for_terminal`).
     #[test]
     fn the_opt_in_prompts_say_what_the_record_feeds_and_claim_no_gate() {
         let withdraw = prompt_text(ALIAS, DriverAction::ToggleOptIn, true, "");
         assert_eq!(
             withdraw,
             format!(
-                "Withdraw the driver opt-in for \"{ALIAS}\"? Its PR caps and branch namespace \
-                 stop applying; the push step falls back to the defaults. [y/n]"
+                "Withdraw the driver opt-in for \"{ALIAS}\"? Its PR caps stop applying; \
+                 the push step falls back to the defaults. [y/n]"
             )
         );
         let allow = prompt_text(ALIAS, DriverAction::ToggleOptIn, false, "");
         assert_eq!(
             allow,
             format!(
-                "Record a driver opt-in for \"{ALIAS}\"? The push step reads its PR caps and \
-                 branch namespace from it; without one it uses the defaults. [y/n]"
+                "Record a driver opt-in for \"{ALIAS}\"? The push step reads its PR caps \
+                 from it; without one it uses the defaults. [y/n]"
             )
         );
         for prompt in [&withdraw, &allow] {
-            for claim in ["gate", "new run", "be driven"] {
+            for claim in ["namespace", "gate", "new run", "be driven"] {
                 assert!(
                     !prompt.to_lowercase().contains(&claim.to_lowercase()),
                     "an opt-in prompt claims {claim:?}, which nothing backs any more: {prompt}"

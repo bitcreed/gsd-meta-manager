@@ -346,8 +346,16 @@ pub struct DriverOptIn {
     /// because "annoying" is not a reason to leave a user-owned file lossy.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
-    /// The push namespace this project's driven runs are confined to, or
-    /// `None` for the default `refs/heads/gsd-auto/<alias>/` (D-30).
+    /// A configured push namespace, or `None` for the default
+    /// `refs/heads/gsd-auto/<alias>/` (D-30). **The launcher's push step does not
+    /// consult it** (WR-02): its destination is always the run's own branch under
+    /// the default namespace (`launcher::push::dest_ref`). The field stays so a
+    /// user's config round-trips.
+    ///
+    /// The value is still read and validated
+    /// (`envelope::policy::validate_namespace`), and
+    /// `envelope::policy::EnvelopePolicy::resolve` degrades an invalid one to the
+    /// default.
     ///
     /// **Never trusted raw.** `envelope::policy::validate_namespace` refuses
     /// every shape that would disable the control — a bare `refs/heads/`, a

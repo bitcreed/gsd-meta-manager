@@ -141,10 +141,11 @@ Two things are deliberately **not** affected by it:
   `gsd-meta-manager driver …` directly: that command line is not gated, and
   neither is the sandbox the launcher runs a run in.
 - **`driver_opt_in` is not a launch gate.** The record, written from the Driver
-  tab's `o` key, carries the per-project PR caps and branch
-  namespace the push step reads (`launcher::push::policy_for`). A project
-  without one pushes under the defaults; nothing refuses a launch for lacking
-  it. There is no manager-wide concurrency cap either.
+  tab's `o` key, carries the per-project PR caps the push step reads
+  (`launcher::push::policy_for`). A `branch_namespace` key in it is accepted and
+  validated but not used: every run pushes to `refs/heads/gsd-auto/<alias>/<run-id>`.
+  A project without a record pushes under the defaults; nothing refuses a launch
+  for lacking it. There is no manager-wide concurrency cap either.
 
 The legacy `drive` subcommand and the dashboard's `r` / `x` / `o` keys that
 started and stopped it were removed in Phase 31, together with the startup
