@@ -450,6 +450,10 @@ const RESUME_OPTION_FUSED_PREFIX: &[u8] = b"--resume=";
 /// Two shapes carry a value under this name, and both are read below:
 ///
 /// - **bare short** — `-r <id>`, the value being the NEXT argv element;
+///   **CORRECTED 2026-10-28 (quick 261028-n0v, R13-CR-01): unless that element
+///   is option-shaped** — see [`is_option_shaped`]. `-r, --resume [value]` has
+///   an OPTIONAL value, so an option-shaped successor is a new option and not
+///   the id;
 /// - **attached short** — `-r<id>`, the value being everything after these two
 ///   bytes.
 ///
@@ -542,7 +546,10 @@ enum SessionIdRank {
 /// - **Split** — an element equal to [`RESUME_OPTION_NAME`], the value being
 ///   the element after it. This is what a human typing the command by hand, or
 ///   any launcher that is not this TUI, still produces. Dropping it would
-///   re-break detection for every session not started here.
+///   re-break detection for every session not started here. **CORRECTED
+///   2026-10-28 (quick 261028-n0v, R13-CR-01): unless that element is
+///   option-shaped** — see [`is_option_shaped`]; the block on the IN-07
+///   paragraph below carries the detail.
 ///
 /// The leftmost id-bearing element wins, deterministically, by argv index.
 ///
@@ -684,6 +691,31 @@ enum SessionIdRank {
 /// expires**: see the standing record in this phase's `deferred-items.md`, which
 /// requires the probes to be re-run on any CLI upgrade rather than inferred from
 /// a version number.
+///
+/// ## CORRECTED 2026-10-28 (quick 261028-n0v, R13-CR-01): the split form's successor is a value by position — for `--session-id` only
+///
+/// **The sentences this corrects, verbatim:** *"The split form's successor is a
+/// **value by position** — taken literally even when it is itself option-shaped,
+/// and never re-examined as an option in its own right."* and *"Measured against
+/// this parser, `["claude", "--resume", "--resume=abc"]` returns
+/// `Some("--resume=abc")`, not `Some("abc")`."* Both stand unreworded above;
+/// this block is beside them, not instead of them.
+///
+/// **What stands.** Leftmost-wins within a rank. The `--session-id` split
+/// successor is still a value by position, because that option's value is
+/// REQUIRED (`--session-id <uuid>`) and `claude` binds whatever follows.
+///
+/// **What is retracted.** For `--resume` and `-r` the value is OPTIONAL
+/// (`-r, --resume [value]`), so an option-shaped successor is NOT the value: it
+/// is a new option to `claude` and IS re-examined here. That same argv now
+/// reads back `Some("abc")`, and `["claude", "--resume", "-h"]` reads back
+/// `None`. Binding it was MIS-detection (a row offering to resume a conversation
+/// that does not exist); stepping over it would be the shadowing case
+/// (`-r -p --session-id <uuid>` hiding the real id). The single byte `-` stays a
+/// value. The probe transcripts are in
+/// `tests::an_option_shaped_successor_is_bound_by_session_id_and_refused_by_resume`,
+/// and the residual (a negative-number-shaped successor, **under-detection,
+/// silent**, if `claude` binds it) is disclosed there.
 ///
 /// # What is added here is WIRE-FORMAT PARSING, never value validation
 ///

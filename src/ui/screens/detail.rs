@@ -22111,6 +22111,12 @@ mod tests {
     /// still produces. Inferring it from the fused arm would assert *about* the
     /// claim rather than asserting it, and dropping it would silently re-break
     /// detection for every session not started here (D-21-66).
+    ///
+    /// An option-shaped value is not bound in the SPLIT form: `--resume` takes
+    /// an OPTIONAL value, so `claude` parses such a successor as an option
+    /// (`an_option_shaped_successor_is_bound_by_session_id_and_refused_by_resume`).
+    /// The SPLIT arm therefore asserts 20 fixtures round-trip and 8 read back
+    /// `None`; the FUSED form this TUI emits is unaffected and round-trips all 28.
     #[test]
     fn a_session_id_survives_the_round_trip_in_both_wire_forms() {
         let corpus = hostile_session_ids();
@@ -22218,6 +22224,14 @@ mod tests {
     // asserted over a deterministic GENERATOR rather than a list. The 28
     // fixtures are retained and are consumed by the generator as a seed
     // corpus — nothing that reads them today stops doing so.
+    //
+    // CORRECTED 2026-10-28 (quick 261028-n0v, R13-CR-01): "no third outcome"
+    // had one. For the forms whose value is the successor of an OPTIONAL-value
+    // option (`WireForm.optional_successor`), an option-shaped input is not the
+    // value `claude` binds, so it has a third, named outcome with its own
+    // oracle branch in the property. The two-class claim stands for every other
+    // input and form. The encoders and the parser used to share the wrong model
+    // by construction, which is why the certificate could not fail on it.
     // ======================================================================
 
     /// The fixed seed. A generator whose inputs vary run to run makes a green
@@ -22400,6 +22414,8 @@ mod tests {
     }
 
     /// The SPLIT form: bare option name, then the value as the next element.
+    /// An option-shaped value is not bound in this form (the option's value is
+    /// OPTIONAL), see `an_option_shaped_successor_is_bound_by_session_id_and_refused_by_resume`.
     ///
     /// The bare name is DERIVED from the fused prefix by removing the fusion
     /// character, so this file still spells the option exactly once.
@@ -22427,7 +22443,9 @@ mod tests {
     /// short encoders derived from it rather than respelling it twice.
     const RESUME_OPTION_SHORT_NAME: &str = "-r";
 
-    /// The BARE SHORT form: `-r`, then the value as the next element.
+    /// The BARE SHORT form: `-r`, then the value as the next element. An
+    /// option-shaped value is not bound in this form (the option's value is
+    /// OPTIONAL), see `an_option_shaped_successor_is_bound_by_session_id_and_refused_by_resume`.
     fn encode_short_split(s: &[u8]) -> Vec<u8> {
         nul_join_cmdline(&[b"claude".as_slice(), RESUME_OPTION_SHORT_NAME.as_bytes(), s])
     }
@@ -22511,6 +22529,19 @@ mod tests {
     /// panic. Bounded by construction: one exemplar per violation class, and
     /// there are six classes (four on the value, two on the option-shaped
     /// successor of an optional-value option), so at most six exemplars.
+    ///
+    /// # CORRECTED 2026-10-28 (quick 261028-n0v, R13-CR-01): "no third outcome" had a third outcome
+    ///
+    /// **The phrase this corrects, verbatim:** *"stated so it has no third
+    /// outcome"*. It stands above unreworded. For a [`WireForm`] with
+    /// `optional_successor` set, an option-shaped input has a third, NAMED
+    /// outcome: it is not the value and must not read back as `Some(s)`
+    /// (`bound-an-option-shaped-successor-as-the-value`), and it must read back
+    /// exactly what the argv without the bare option reads back
+    /// (`option-shaped-successor-not-re-examined-as-an-option`). The encoders
+    /// and the parser used to agree with the wrong model BY CONSTRUCTION: both
+    /// treated the successor as a value, so the byte-identity branch certified
+    /// the mis-detection (R13-CR-01 consequence 3).
     #[test]
     fn the_round_trip_property_holds_for_every_generated_byte_string() {
         let corpus = generated_session_id_bytes(GENERATOR_SEED, GENERATOR_CASES);

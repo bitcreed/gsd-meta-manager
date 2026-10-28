@@ -38,3 +38,19 @@ for the `-h`, `--resume` and `--version` successors under `--resume`/`-r`, keep 
 record the re-measured probe transcripts beside it. Exclude option-shaped values from the `split` and `short-split`
 arms of the generated property (or give those forms their own oracle branch), so the certificate stops agreeing with
 the wrong model by construction. Re-run the probes on any `claude` upgrade, since the arity is a dependency behaviour.
+
+## Resolution
+
+Closed 2026-10-28 by quick 261028-n0v, fix commit `3103f5e` (docs corrections in the following commit).
+
+- `session_id_in_cmdline` refuses an option-shaped successor (first byte `-`, longer than one byte) of a bare
+  `--resume`/`-r` and does not step over it, so it is re-examined as an element. `--session-id` binds unconditionally.
+- Probes re-measured at `claude` 2.1.312: `--resume --version`, `-r --version` and `--resume -h` print version/usage
+  with exit 0; `--session-id --version` exits 1 with `Invalid session ID`. Transcripts are recorded verbatim in
+  `tests::an_option_shaped_successor_is_bound_by_session_id_and_refused_by_resume`.
+- The generated round-trip property gained a `WireForm.optional_successor` oracle branch; the enumerated SPLIT arm is
+  partitioned 20 round-trip / 8 option-shaped reading back `None`.
+- Standing requirement: re-run the probes on any `claude` upgrade; the arity is a dependency behaviour.
+- Disclosed residuals `[inferred — cleanup 2026-10-28]`: (I2) the single byte `-` stays a value under `--resume`, not
+  probeable at 2.1.312; (I3) a negative-number-shaped successor (`-r -5`) counts as option-shaped, and if `claude`
+  binds it the direction is under-detection, silent.
