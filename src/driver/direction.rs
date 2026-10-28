@@ -31,6 +31,11 @@
 //!    **exchange**, never a plain rename, which would revert a still newer save
 //!    landing at that instant (fact 2). The exchange repeats while what comes
 //!    back is not, unchanged, the older file it displaced (quick 261023-v1s).
+//!    A give-back that finds `DIRECTION.md` absent (an unlink-then-create save,
+//!    a git checkout) restores the newer file by a no-replace rename
+//!    (`RENAME_NOREPLACE` on Linux, `RENAME_EXCL` on macOS), which cannot
+//!    overwrite a file created in between; if one was created, the exchange
+//!    runs again (30-REVIEW WR-10, quick 261028-n0z).
 //! 4. **An insane body is never written back (D-12).** An in-place editor save
 //!    (truncate, then write) can be observed half done. A body missing either
 //!    `## Direction` or `## Items` is [`SpliceOutcome::SkippedInsaneBody`] and the
@@ -510,6 +515,11 @@ mod imp {
             AfterExchange,
             /// A mismatch was just exchanged back.
             AfterExchangeBack,
+            /// A give-back round is about to exchange the newer file in.
+            BeforeGiveBack,
+            /// The give-back exchange found no `DIRECTION.md`; the no-replace
+            /// rename is next.
+            BeforeRestore,
         }
 
         type Hook = Box<dyn FnMut(Point)>;
@@ -682,15 +692,48 @@ mod imp {
         mut placing: Seen,
     ) -> Result<(), DirectionError> {
         for _ in 0..GIVE_BACK_ROUNDS {
-            if let Err(errno) = exchange(dir, temp_name, DIRECTION_FILE) {
-                // Never unlink here: the temp name holds a human's bytes.
-                return Err(io_err(
-                    format!(
-                        "could not put a newer save back; a displaced file was left at {}",
-                        temp_path.display()
-                    ),
-                    errno,
-                ));
+            #[cfg(test)]
+            race_hook::fire(race_hook::Point::BeforeGiveBack);
+
+            match exchange(dir, temp_name, DIRECTION_FILE) {
+                Ok(()) => {}
+                // DIRECTION.md is absent (an unlink-then-create save, a git
+                // checkout). Restore the newer file by a NO-REPLACE rename: it
+                // cannot overwrite a file created in the meantime (WR-10, quick
+                // 261028-n0z). There is no plain-rename fallback (fact 2).
+                Err(errno) if errno == rustix::io::Errno::NOENT => {
+                    #[cfg(test)]
+                    race_hook::fire(race_hook::Point::BeforeRestore);
+
+                    match renameat_with(dir, temp_name, dir, DIRECTION_FILE, RenameFlags::NOREPLACE)
+                    {
+                        // The older displaced file was unlinked by whoever
+                        // removed DIRECTION.md; it is not ours to restore.
+                        Ok(()) => return Ok(()),
+                        // A file was created in between: exchange with it.
+                        Err(e) if e == rustix::io::Errno::EXIST => continue,
+                        // Never unlink here: the temp holds a human's bytes.
+                        Err(e) => {
+                            return Err(io_err(
+                                format!(
+                                    "could not restore a newer save; a displaced file was left at {}",
+                                    temp_path.display()
+                                ),
+                                e,
+                            ));
+                        }
+                    }
+                }
+                Err(errno) => {
+                    // Never unlink here: the temp name holds a human's bytes.
+                    return Err(io_err(
+                        format!(
+                            "could not put a newer save back; a displaced file was left at {}",
+                            temp_path.display()
+                        ),
+                        errno,
+                    ));
+                }
             }
             let back = seen(temp_path).map_err(|e| io_err(temp_path.display(), e))?;
             if expect.as_ref() == Some(&back) {
@@ -1129,24 +1172,89 @@ mod tests {
             )
         }
 
+        /// What a racing test does at a hook point.
+        #[derive(Clone, Copy)]
+        enum Act {
+            Save(u32),
+            Unlink,
+        }
+
+        /// Install a hook that performs each listed action at the FIRST firing of
+        /// its point, then splice once and return the report.
+        fn splice_acting(
+            dir: &tempfile::TempDir,
+            acts: &[(super::super::imp::race_hook::Point, Act)],
+        ) -> SpliceReport {
+            use super::super::imp::race_hook;
+            let run_dir = dir.path().to_path_buf();
+            let mut pending: Vec<_> = acts.to_vec();
+            race_hook::set(move |point| {
+                if let Some(i) = pending.iter().position(|&(p, _)| p == point) {
+                    match pending.remove(i).1 {
+                        Act::Save(n) => rename_save(&run_dir, &save(n)),
+                        Act::Unlink => {
+                            std::fs::remove_file(run_dir.join(DIRECTION_FILE))
+                                .expect("unlink DIRECTION.md");
+                        }
+                    }
+                }
+            });
+            let report = splice_frontmatter(dir.path(), &block(1));
+            race_hook::clear();
+            report.expect("splice")
+        }
+
         /// Install a hook that lands `save(n)` at the FIRST firing of each listed
         /// point, then splice once and return the report.
         fn splice_racing(
             dir: &tempfile::TempDir,
             saves: &[(super::super::imp::race_hook::Point, u32)],
         ) -> SpliceReport {
-            use super::super::imp::race_hook;
-            let run_dir = dir.path().to_path_buf();
-            let mut pending: Vec<_> = saves.to_vec();
-            race_hook::set(move |point| {
-                if let Some(i) = pending.iter().position(|&(p, _)| p == point) {
-                    let (_, n) = pending.remove(i);
-                    rename_save(&run_dir, &save(n));
-                }
-            });
-            let report = splice_frontmatter(dir.path(), &block(1));
-            race_hook::clear();
-            report.expect("splice")
+            let acts: Vec<_> = saves.iter().map(|&(p, n)| (p, Act::Save(n))).collect();
+            splice_acting(dir, &acts)
+        }
+
+        /// WR-10: the give-back exchange finds DIRECTION.md unlinked. The newest
+        /// save (2) must be restored at DIRECTION.md, not stranded at a temp.
+        #[test]
+        fn a_give_back_that_finds_direction_md_unlinked_restores_the_newest_save() {
+            use super::super::imp::race_hook::Point;
+
+            let dir = run_dir_with(BODY);
+            let report = splice_acting(
+                &dir,
+                &[
+                    (Point::BeforeExchange, Act::Save(1)),
+                    (Point::AfterExchange, Act::Save(2)),
+                    (Point::BeforeGiveBack, Act::Unlink),
+                ],
+            );
+
+            assert_eq!(report.outcome, SpliceOutcome::Ok);
+            assert_eq!(read(&dir), format!("{}{}", block(1), save(2)));
+            assert!(no_temps_left(&dir), "the restored temp is gone");
+        }
+
+        /// WR-10: a file created after the ENOENT, before the no-replace rename,
+        /// is never overwritten; the loop exchanges with it and it wins.
+        #[test]
+        fn a_file_created_before_the_no_replace_restore_is_kept_and_wins() {
+            use super::super::imp::race_hook::Point;
+
+            let dir = run_dir_with(BODY);
+            let report = splice_acting(
+                &dir,
+                &[
+                    (Point::BeforeExchange, Act::Save(1)),
+                    (Point::AfterExchange, Act::Save(2)),
+                    (Point::BeforeGiveBack, Act::Unlink),
+                    (Point::BeforeRestore, Act::Save(3)),
+                ],
+            );
+
+            assert_eq!(report.outcome, SpliceOutcome::Ok);
+            assert_eq!(read(&dir), format!("{}{}", block(1), save(3)));
+            assert!(no_temps_left(&dir));
         }
 
         /// Quick 261023-v1s, the lost rename-save. Save 1 lands between the
