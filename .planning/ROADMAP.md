@@ -9,7 +9,7 @@
 - ✅ **v1.4 Live Sessions & Document Browsing** - 4 quick tasks (shipped 2026-05-12)
 - ✅ **v1.5.0 Sub-phase Artifact Detection** - 2 quick tasks (shipped 2026-05-15)
 - ✅ **v1.6.0 GSD 1.8.0 Catch-up** - 1 quick task + 2 fast tasks (shipped 2026-07-22)
-- 🚧 **v2.0 Autonomous Orchestration** - Phases 14-32 (in progress; re-planned 2026-10-14: Phases 19, 21, 22, 23 superseded by spikes 001/002, replaced by Phases 26-31)
+- 🚧 **v2.0 Autonomous Orchestration** - Phases 14-31 (in progress; re-planned 2026-10-14: Phases 19, 21, 22, 23 superseded by spikes 001/002, replaced by Phases 26-31; closed by supersession 2026-10-28; Phase 32 deferred to backlog 999.8 on 2026-10-28)
 
 ## Phases
 
@@ -83,7 +83,7 @@ No formal phases — see `.planning/MILESTONES.md` and `STATE.md`
 
 </details>
 
-### v2.0 Autonomous Orchestration (Phases 14-32)
+### v2.0 Autonomous Orchestration (Phases 14-31)
 
 - [x] **Phase 14: UI Fixes** - Four display defects that misreport project state (completed 2026-07-29)
 - [x] **Phase 15: Transport Foundation** - Duplex `stream-json` executor with envelope-derived outcomes (completed 2026-07-29)
@@ -105,7 +105,6 @@ No formal phases — see `.planning/MILESTONES.md` and `STATE.md`
 - [x] **Phase 29: Master Prompt & Run Templates** - Shipped, versioned master prompt; DIRECTION/LOG templates; explicit stop-rule precedence; reconciliation (completed 2026-10-20)
 - [x] **Phase 30: Driver Tab on DIRECTION.md** - TUI reads the frontmatter (status, caps, heartbeat, crash) and steers by editing `control` (completed 2026-10-24)
 - [x] **Phase 31: Retire Superseded Envelope & Goal-Layer Code** - Remove or rewire the Phase 19/21/22 code; close their threat ids as superseded (completed 2026-10-28)
-- [ ] **Phase 32: GSD Capabilities: Visibility & Per-Project Control** - See every GSD capability per project and across projects; toggle and configure them per project from the TUI
 
 **Parallelism:** Phase 14 has no dependencies and is parallel-safe throughout.
 Phase 22 depends only on Phase 15 and may run alongside Phases 17-21, but must land
@@ -119,7 +118,7 @@ it has no dependency on Phases 15-23 and is parallel-safe.
 **Re-plan (2026-10-14):** the constraints above that involve Phases 19-23 no longer bind, because
 those phases are superseded. Phase 26 gates the rest (since 2026-10-17: Phase 26.1, after 26 came back INCONCLUSIVE). Phases 28 and 29 both depend only on 27 and
 can run in parallel. Phase 30 needs 27, 28 and 29. Phase 31 runs last.
-Phase 32 (added 2026-10-19) is TUI-only and independent of Phases 28-31; it is gated only by the
+Phase 32 (added 2026-10-19; deferred to backlog 999.8 on 2026-10-28 by user decision) was TUI-only and independent of Phases 28-31; it is gated only by the
 quick fix that makes `config.json` writes atomic and lock-aware, and is parallel-safe.
 
 ## Phase Details
@@ -1415,71 +1414,6 @@ Plans:
 **Gap closure, wave 2** *(blocked on 31-08: its container gate certifies both plans' code)*
 - [x] 31-09-PLAN.md — [gap] planted-file walk name-ordered and the sandbox test host-independent (SC4); the stderr tail cannot leak a cut token (WR-05); truthful ledger refusal (WR-04); container gate re-run to exit 0 (RETIRE-01, RETIRE-03)
 
-### Phase 32: GSD Capabilities: Visibility & Per-Project Control
-
-**Goal**: From the TUI, users can see which GSD capabilities exist for each project and across
-all projects, and switch them on or off and configure them per project, without leaving the TUI.
-
-**Depends on**: No roadmap phase. Hard prerequisite is the separate quick bug-fix that makes
-`config.json` writes atomic and `.planning/.lock`-aware and fixes the
-`capabilities.strict_known_registries` type; Tier 2 must not start before it lands. TUI-only and
-independent of the driver work (Phases 28-31), so parallel-safe like Phases 24 and 25
-[inferred — the add-phase tool defaulted this to "Phase 31"].
-
-**Requirements**: TBD (to be derived in discuss/plan; no REQUIREMENTS.md ids minted yet [inferred])
-
-**Scope**:
-
-- *Tier 1 — see.* Per project: capability id, version, kind (built-in / global / project),
-  state (active / off in this project / incompatible / inactive with no consent) and the reason.
-  Plus a dashboard matrix of capabilities × projects.
-- *Tier 2 — toggle and configure.*
-  - Flip the per-project switch, i.e. the manifest's `activationKey` (e.g. `musk.enabled`), in
-    `.planning/config.json`.
-  - Turn capability-contributed config keys (`ponytail.*`, `musk.*`, `mempalace.*`,
-    `refactor.*`, …) from read-only pass-through rows into editable typed rows, driven
-    generically by each manifest's declared config keys, defaults and descriptions, with no
-    per-capability code.
-  - Machine-wide enable/disable (`.gsd-surface.json` `disabledClusters`), if exposed at all, is
-    labelled "affects all projects".
-
-**Background (gsd-core 1.18.0)**:
-
-- The 46 built-ins are frozen in `bin/lib/capability-registry.cjs` and switched by config keys.
-- Third-party capabilities live in `$GSD_HOME/.gsd/capabilities/<id>/` (global) or
-  `<repo>/.gsd/capabilities/` (project); each scope has a ledger `.gsd-capabilities.json`.
-  Project scope needs a consent record in `~/.gsd/consent.json`.
-- Precedence: first-party, then global, then project. A project install cannot shadow a global one.
-- `gsd-tools capability list|state|set|enable|disable --json` exist; `set --gate` writes
-  `config.json` under `.planning/.lock`.
-
-**Decision to make in discuss/research (open)**:
-
-- *Reads:* parse ledgers, manifests and config directly (fast across N projects; fits the
-  "read from files" constraint), or call `gsd-tools capability list --json` (authoritative status
-  semantics, but a Node startup per project)? A hybrid is possible.
-- *Writes:* direct `config.json` edits through the app's own locked atomic write path, or
-  `gsd-tools capability set` / `config-set`?
-- The user has authorised running mutating GSD commands from the app.
-
-**Out of scope (backlog)**: capability lifecycle — outdated/update/remove/install-by-URL
-(Phase 999.5); registry browsing (Phase 999.6).
-
-**Success Criteria** (draft, to be firmed up in discuss/plan [inferred]):
-
-  1. For any registered project, a capability view lists every capability with id, version,
-     kind, state and reason, and the dashboard shows a capabilities × projects matrix.
-  2. Toggling a capability's `activationKey` from the TUI changes `.planning/config.json` safely
-     (locked, atomic) and the new state is reflected without restarting.
-  3. Capability-contributed config keys render as editable typed rows generated from the
-     manifest, with no per-capability code.
-  4. Any machine-wide control is visibly labelled "affects all projects".
-
-**Plans**: 0 plans
-
-Plans:
-- [ ] TBD (run /gsd-plan-phase 32 to break down)
-
 ## Progress
 
 | Phase | Plans Complete | Status | Completed |
@@ -1503,7 +1437,6 @@ Plans:
 | 29. Master Prompt & Run Templates | 8/8 | Complete    | 2026-10-20 |
 | 30. Driver Tab on DIRECTION.md | 9/9 | Complete    | 2026-10-24 |
 | 31. Retire Superseded Envelope & Goal-Layer Code | 9/9 | Complete    | 2026-10-28 |
-| 32. GSD Capabilities: Visibility & Per-Project Control | 0/0 | Not started | - |
 
 ## Backlog
 
@@ -1648,8 +1581,8 @@ Plans:
 
 - [ ] TBD (promote with /gsd-review-backlog when ready)
 
-Captured 2026-10-19, deferred out of Phase 32 (which covers only see / toggle / configure).
-Builds on Phase 32's capability model. Global vs project scope, the per-scope
+Captured 2026-10-19, deferred out of Phase 32 (now backlog 999.8; which covers only see / toggle / configure).
+Builds on Phase 32's (now backlog 999.8) capability model. Global vs project scope, the per-scope
 `.gsd-capabilities.json` ledgers and the `~/.gsd/consent.json` record all apply; a project install
 cannot shadow a global one.
 
@@ -1664,7 +1597,7 @@ Plans:
 
 - [ ] TBD (promote with /gsd-review-backlog when ready)
 
-Captured 2026-10-19, deferred out of Phase 32. **Trigger:** worth doing once the registry ships
+Captured 2026-10-19, deferred out of Phase 32 (now backlog 999.8). **Trigger:** worth doing once the registry ships
 with GSD or has more entries; until then a network fetch buys little.
 
 ### Phase 999.7: Master prompt 1.1 — reconcile-first refusal routing + IN-01 (BACKLOG)

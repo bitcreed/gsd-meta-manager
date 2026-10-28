@@ -97,17 +97,12 @@
       "number": "31",
       "name": "Retire Superseded Envelope & Goal-Layer Code",
       "status": "complete"
-    },
-    {
-      "number": "32",
-      "name": "GSD Capabilities: Visibility & Per-Project Control",
-      "status": "pending"
     }
   ],
   "next": {
     "command": "/gsd-progress --next",
     "label": "Advance to the next step (verify)",
-    "reason": "Phase 17 of 21 · 100% · ready to verify"
+    "reason": "Phase 17 of 20 · ready to verify"
   },
-  "updated_at": "2026-10-28T05:14:26.930Z"
+  "updated_at": "2026-10-28T21:25:42.329Z"
 }
