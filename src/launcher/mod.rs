@@ -28,7 +28,8 @@
 //! 6. **The argv builders are pure ([`sandbox`], D-20).** They take every host fact
 //!    as a parameter, so the bwrap, systemd-run and claude command lines are
 //!    golden-testable on any runner, one without bwrap or a user systemd
-//!    included. `sandbox` is therefore the one submodule that is not gated to Linux and macOS.
+//!    included. `sandbox` is therefore not gated to Linux and macOS, and neither
+//!    are `home` and `prompt`.
 //! 7. **The token never leaves the child's environment (D-19, D-22).** It is not
 //!    in any argv, in `state.json`, in `LOG.md`, in the launch log or in any file
 //!    the launcher writes; [`auth::LaunchToken`]'s `Debug` redacts it.

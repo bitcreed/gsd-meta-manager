@@ -171,8 +171,10 @@ prereg_gate() {
 }
 
 # ---------------------------------------------------------------------------------------------- mode table
-# mode_config CASE: sets MODEL_D PROMPT DIRECTION SETUP CAP_D CAP_M CAP_G BUDGET WRITER WRITES WRITE_S WATCH.
-# WRITES/WRITE_FIRST/WRITE_S pace the host-side gap writer (count, first delay, interval seconds). The interval must
+# mode_config CASE: sets MODEL_D PROMPT DIRECTION SETUP CAP_D CAP_M CAP_G BUDGET WRITER WRITES WRITE_FIRST WRITE_S WATCH.
+# WRITES/WRITE_FIRST/WRITE_S pace the host-side gap writer (count, first delay, interval seconds).
+# gap-writer.sh <project> <count> <interval> [first] takes them in that order, which is why the call passes
+# WRITE_S before WRITE_FIRST. The interval must
 # stay above COALESCE_S (45 s, src/driverctl/counters.rs) or the writes coalesce into one round. l3 writes exactly 3
 # rounds at ~10/57/104 s so count 3 lands well inside a ~150 s driver (8 x sleep-12 + dispatch) and later dispatches
 # are still attempted; the first l3 run at 4x50 s put count 3 one second before the driver finished, so the deny was

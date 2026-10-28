@@ -1078,9 +1078,6 @@ impl RunStore {
     /// is refused under a human `control: pause|stop` (D-19), until the items a
     /// crashed launch left `running` have each been recovered once (D-17), or for
     /// a second `recovered` of one item in a launch.
-    ///
-    /// An awaiting id the human has since removed from `DIRECTION.md` cannot be
-    /// recovered (the protocol only accepts listed items), so it no longer blocks.
     fn recovery_rejection(
         &self,
         event: &ValidatedEvent,
