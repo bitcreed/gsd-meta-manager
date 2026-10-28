@@ -32,130 +32,6 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::Frame;
 
-/// The disclosed-file-set heading (**pinned contract** — see
-/// [`SECTION_RESIDUAL_EXPOSURE`]).
-///
-/// The list that follows it is the one **recorded on the `DriverOptIn`**, never
-/// a set recomputed at render time, so what the user reads is what was actually
-/// approved. A file that did not exist at opt-in is shown as absent rather than
-/// omitted — its later appearance is drift, and a list that quietly dropped it
-/// would be the under-broad disclosure this text exists to avoid.
-pub const SECTION_PROMPT_INPUTS: &str = "== Files whose bytes can reach a model prompt ==\n\
-    These are the files this build reads from the project, and the digest each\n\
-    had when the opt-in was recorded. The digest is a snapshot of that moment.";
-
-/// What the two model seams actually see (**pinned contract** — see
-/// [`SECTION_RESIDUAL_EXPOSURE`]).
-///
-/// **Deliberately narrower than the file list above**, because disclosing a
-/// broader set than is true is as dishonest as disclosing a narrower one. The
-/// seam spawn suppresses `CLAUDE.md` auto-discovery and carries an empty tool
-/// set, so the repository's `CLAUDE.md` does not enter the seams' prompts; what
-/// does enter is the enumerated third-party strings, inside a labelled untrusted
-/// boundary.
-pub const SECTION_MODEL_SEAM: &str = "== What the two model seams see ==\n\
-    The goal-decomposition and ambiguity seams run with an empty tool set and\n\
-    with CLAUDE.md auto-discovery suppressed, so this project's CLAUDE.md does\n\
-    NOT enter their prompts. What does enter is a fixed set of enumerated\n\
-    strings read from STATE.md, ROADMAP.md and HANDOFF — phase names, statuses\n\
-    and summaries — passed inside a labelled untrusted-content boundary and\n\
-    never concatenated into instructions.";
-
-/// The residual-exposure statement, and the pinned-contract rule for all three.
-///
-/// **These three constants are a contract, not decoration**, in exactly the
-/// register the retired dry-run preview's section constants established:
-/// `the_disclosure_names_the_file_set_the_seams_and_what_is_not_closed` asserts
-/// all three appear in this order by comparing byte offsets, so there is exactly
-/// **one** place pinning the order rather than two that can disagree.
-///
-/// **This block says what the phase does NOT close, and that is its whole job.**
-/// The executor profile — the spawn that actually runs a GSD command — does
-/// still load the target repository's `CLAUDE.md`, because GSD commands are
-/// skills and suppressing it would degrade every honest run in order to defend
-/// against a dishonest one. It is disclosed rather than fixed quietly or
-/// omitted (research Q2).
-///
-/// It also states that the seam-side suppression has **no behavioural proof on
-/// this transport**: no field in the init envelope reports whether it took
-/// effect. Claiming a verified control here would be the overstated safety
-/// claim D-27 refuses.
-pub const SECTION_RESIDUAL_EXPOSURE: &str = "== What this does NOT close ==\n\
-    The executor profile — the spawn that actually runs the GSD command — DOES\n\
-    still load this project's CLAUDE.md. This phase does not change that, and\n\
-    that exposure is the reason the digest and the re-confirmation above exist.\n\
-    The seam-side suppression is also asserted on the spawn's arguments only:\n\
-    nothing on this transport reports back whether it took effect, so it is not\n\
-    a verified control. Treat this boundary as incomplete.";
-
-/// Render the full opt-in disclosure: the recorded file set, what the seams
-/// see, and what this does not close.
-///
-/// `prompt_inputs` is the list **recorded on the record** (or, when granting a
-/// fresh opt-in, the list that is about to be recorded). It is never recomputed
-/// from disk here — a disclosure that recomputed would show a set the user never
-/// approved, which is the replay hazard research Q4 names.
-///
-/// An empty list renders as an explicit statement that it is empty, never as an
-/// absent section: a blank space where a file list belongs reads as "nothing
-/// enters a prompt", which is the opposite of what an empty list means.
-pub fn render_disclosure(prompt_inputs: &[crate::config::PromptInput]) -> String {
-    let mut out = String::new();
-    out.push_str(SECTION_PROMPT_INPUTS);
-    out.push('\n');
-
-    if prompt_inputs.is_empty() {
-        out.push_str("  (this opt-in recorded no file list)\n");
-    } else {
-        for input in prompt_inputs {
-            // The profile label comes from the code that does the reading, not
-            // from the record — see `config::PromptInput`.
-            let profile = registry::DISCLOSED_PROMPT_INPUTS
-                .iter()
-                .find(|(path, _)| *path == input.path)
-                .map(|(_, profile)| match profile {
-                    registry::PromptProfile::ModelSeam => "model seam",
-                    registry::PromptProfile::Executor => "executor",
-                })
-                // A recorded path this build no longer reads is shown rather
-                // than hidden: the user approved it, so it belongs in the list.
-                .unwrap_or("not read by this build");
-
-            let digest = input
-                .digest
-                .as_deref()
-                .unwrap_or("(absent at opt-in — appearing later re-confirms)");
-
-            // Two classes, two predicates, composed (WR-06) — the same shape
-            // `prompt_text` uses 100 lines below, and for the same
-            // reason: `sanitize_render_line` answers the CONTROL class, and the
-            // invisible-formatting class (`Cf` union `Default_Ignorable`) is a
-            // different question that neither predicate subsumes. This screen is
-            // the last thing an operator reads before an irreversible act.
-            //
-            // Held by a CALL, not by a type: `PromptInput::path` and `digest`
-            // are bare `String`s in `src/config.rs`, outside this plan's wave
-            // fence, so a NEW render of either would not fail to compile.
-            // **Under-protection, silent** — see
-            // `the_disclosure_escapes_both_classes_over_the_path_and_the_digest`,
-            // which is the committed control, and which also records why this
-            // one is at the function rather than at the screen.
-            out.push_str(&format!(
-                "  {} [{}]\n    {}\n",
-                crate::text::display_identity(&super::sanitize_render_line(&input.path)),
-                profile,
-                crate::text::display_identity(&super::sanitize_render_line(digest)),
-            ));
-        }
-    }
-
-    out.push('\n');
-    out.push_str(SECTION_MODEL_SEAM);
-    out.push_str("\n\n");
-    out.push_str(SECTION_RESIDUAL_EXPOSURE);
-    out
-}
-
 /// Which of the two driver actions this confirmation is for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DriverAction {
@@ -271,8 +147,9 @@ crate::ui::screens::adjudicate_screen!(
     crate::ui::screens::RENDERS_ATTACKER_INFLUENCED_IDENTITY,
     "Draws the registry key into three prompts — kill launcher run, grant opt-in, \
      withdraw opt-in — each of which precedes an irreversible act, and draws the \
-     launcher run id and the recorded prompt-input paths and digests of the \
-     opt-in disclosure. Fixture states: all three prompts.",
+     launcher run id into the kill prompt. Nothing else is drawn: the recorded \
+     prompt-input paths and digests are no longer shown. Fixture states: all \
+     three prompts.",
 );
 
 impl Screen for DriverConfirmScreen {
@@ -312,26 +189,11 @@ impl Screen for DriverConfirmScreen {
             super::normal::NormalScreen::new().render(frame, area, ctx);
         }
         super::confirm_popup::dim_background(frame, area);
+        // The body is the consent prompt and nothing else (WR-01): Phase 31 deleted
+        // the goal layer, so the file list, seam description and re-confirmation
+        // promise the grant popup used to carry described controls that no longer
+        // exist.
         let mut body: Vec<Line<'static>> = Vec::new();
-        let mut disclosure: Option<String> = None;
-
-        // The disclosure is shown only when GRANTING an opt-in. Withdrawing one
-        // takes a capability away, and reading a file list is not something a
-        // user needs to do in order to revoke.
-        if matches!(self.action, DriverAction::ToggleOptIn)
-            && !registry::is_opted_in(&ctx.config, &self.alias)
-        {
-            // What is about to be recorded, so the user approves the same list
-            // `record_opt_in` will write.
-            let prompt_inputs = ctx
-                .config
-                .projects
-                .get(&self.alias)
-                .map(|entry| registry::current_prompt_inputs(&entry.path))
-                .unwrap_or_default();
-            // Rendered after the prompt below (disclosure is supporting text).
-            disclosure = Some(render_disclosure(&prompt_inputs));
-        }
 
         // The opt-in state comes from the registry, which is the same read the
         // toggle itself performs — so the prompt cannot describe a direction
@@ -343,15 +205,6 @@ impl Screen for DriverConfirmScreen {
             super::confirm_popup::strip_key_hint(&prompt).to_string(),
             Style::default().fg(color),
         )));
-        if let Some(text) = disclosure {
-            body.push(Line::from(""));
-            body.extend(text.lines().map(|l| {
-                Line::from(Span::styled(
-                    l.to_string(),
-                    Style::default().fg(Color::DarkGray),
-                ))
-            }));
-        }
         let (title, accent) = match self.action {
             DriverAction::StopLauncher => ("Kill driver run", Color::Red),
             DriverAction::ToggleOptIn if opted_in => ("Withdraw driver opt-in", Color::Red),
@@ -582,8 +435,8 @@ pub(crate) mod tests {
         (ctx, rx)
     }
 
-    /// Two entries, one present and one absent, so both digest renderings are
-    /// exercised.
+    /// A recorded prompt-input list for `granted_record`. The digests are
+    /// recorded at opt-in but no popup draws them any more (WR-01).
     fn two_inputs() -> Vec<crate::config::PromptInput> {
         vec![
             crate::config::PromptInput {
@@ -597,204 +450,6 @@ pub(crate) mod tests {
                 extra: Default::default(),
             },
         ]
-    }
-
-    /// **WR-06: the disclosure composes BOTH classes over both values it draws
-    /// from its argument** (21-28 T3).
-    ///
-    /// `render_disclosure` drew `input.path` and `digest` through
-    /// `sanitize_render_line` alone, which answers only the CONTROL class — so
-    /// `U+202E`, `U+00AD` and the `U+E0000..U+E007F` tag block passed through
-    /// into the `Paragraph` on the screen an operator reads immediately before
-    /// an irreversible act. This is the committed control for that, and it was
-    /// observed RED against the one-class code (the panic is quoted in
-    /// `21-28-SUMMARY.md`).
-    ///
-    /// # Why this control is at the FUNCTION and not at the screen — a
-    /// correction to what 21-28's plan assumed
-    ///
-    /// The plan expected a probe fixture on `DriverConfirmScreen` to go red
-    /// here, on the premise that `input.path` and `digest` are "read out of the
-    /// recorded opt-in block in the user's `config.json`". **Measured, that is
-    /// not what the live screen path does.** `DriverConfirmScreen::render` calls
-    /// `registry::current_prompt_inputs(&entry.path)`, which builds every
-    /// `path` from the authored `&'static str`s in
-    /// [`registry::DISCLOSED_PROMPT_INPUTS`] and every `digest` from
-    /// `sha256_digest`, i.e. hex. **Neither value on the currently rendered path
-    /// can carry an invisible-class character**, so no fixture on that screen
-    /// could go red, and one that appeared to would be proving something else.
-    ///
-    /// The untrusted vector is this function's ARGUMENT, which is exactly what
-    /// its own doc contracts for: *"the list **recorded on the record**"* — the
-    /// opt-in block in a `config.json` this build does not exclusively own. The
-    /// function is `pub`, and its recorded-list caller is the one the doc
-    /// describes. So the control belongs where the value enters: here.
-    ///
-    /// **Residual, with its direction.** This bounds `render_disclosure` for any
-    /// caller. It does NOT bound a future caller that formats a `PromptInput`
-    /// somewhere else. **Under-detection, silent** — what would bound that is
-    /// retyping `PromptInput::path`/`digest` as `crate::text::Untrusted`, which
-    /// this plan could not do because `src/config.rs` is outside its wave fence.
-    #[test]
-    fn the_disclosure_escapes_both_classes_over_the_path_and_the_digest() {
-        for (clean, hostile) in crate::test_support::LOOK_ALIKE_PAIRS {
-            let rendered = render_disclosure(&[crate::config::PromptInput {
-                path: hostile.to_string(),
-                digest: Some(hostile.to_string()),
-                extra: Default::default(),
-            }]);
-            assert!(
-                !rendered
-                    .chars()
-                    .any(crate::text::is_invisible_formatting_char),
-                "no invisible-class character may survive into the disclosure — \
-                 this is the screen an operator reads immediately before an \
-                 irreversible act. clean={clean:?} hostile={hostile:?} \
-                 rendered={rendered:?}"
-            );
-        }
-
-        // NON-VACUITY: the escaped spelling must actually be present, or an
-        // implementation that dropped both values entirely would pass above.
-        let rendered = render_disclosure(&[crate::config::PromptInput {
-            path: "demo\u{e0041}".to_string(),
-            digest: Some("sha256:d\u{202e}f".to_string()),
-            extra: Default::default(),
-        }]);
-        assert!(
-            rendered.contains("demoU+E0041"),
-            "the path must be shown in its ESCAPED form, not dropped: {rendered:?}"
-        );
-        assert!(
-            rendered.contains("sha256:dU+202Ef"),
-            "and so must the digest: {rendered:?}"
-        );
-    }
-
-    #[test]
-    fn the_disclosure_names_the_file_set_the_seams_and_what_is_not_closed() {
-        let rendered = render_disclosure(&two_inputs());
-
-        // Byte offsets, so ONE place pins the order rather than two that can
-        // disagree — following `dry_run`'s section-ordering assertion.
-        let files = rendered
-            .find(SECTION_PROMPT_INPUTS)
-            .expect("the disclosed file set must appear");
-        let seams = rendered
-            .find(SECTION_MODEL_SEAM)
-            .expect("what the seams see must appear");
-        let residual = rendered
-            .find(SECTION_RESIDUAL_EXPOSURE)
-            .expect("what this does not close must appear");
-
-        assert!(
-            files < seams && seams < residual,
-            "the three blocks must render in declaration order: file set, then \
-             what the seams see, then what is not closed. Got offsets \
-             {files}/{seams}/{residual}"
-        );
-    }
-
-    #[test]
-    fn the_residual_block_says_the_executor_still_loads_claude_md_and_is_not_verified() {
-        let rendered = render_disclosure(&two_inputs());
-
-        assert!(
-            rendered.contains("executor profile"),
-            "the residual block must name the profile that is still exposed"
-        );
-        assert!(
-            rendered.contains("still load this project's CLAUDE.md"),
-            "the load-bearing admission must be present verbatim, not implied"
-        );
-        assert!(
-            rendered.contains("This phase does not change that"),
-            "the text must say the exposure is open, not merely describe it"
-        );
-        assert!(
-            rendered.contains("not\na verified control"),
-            "the seam-side suppression has no behavioural proof on this \
-             transport, and the text must say so rather than implying the \
-             control is verified"
-        );
-
-        // The weaker predecessor wording, spelled out VERBATIM rather than
-        // referenced. A test comparing the constant with itself could not
-        // detect the stale claim's return — that is the Phase 20 Critical.
-        for stale in [
-            "this project's CLAUDE.md never reaches the model",
-            "CLAUDE.md is never loaded",
-            "the boundary is complete",
-            "CLAUDE.md suppression is verified",
-        ] {
-            assert!(
-                !rendered.contains(stale),
-                "the disclosure must never claim `{stale}` — the executor profile \
-                 does load it, and the seam-side suppression is unproven"
-            );
-        }
-    }
-
-    #[test]
-    fn the_disclosure_renders_every_recorded_path_and_digest() {
-        let rendered = render_disclosure(&two_inputs());
-
-        assert!(rendered.contains("CLAUDE.md"));
-        assert!(rendered.contains("sha256:aaaa"));
-        assert!(rendered.contains(".planning/STATE.md"));
-        assert!(rendered.contains("sha256:bbbb"));
-
-        // The profile attribution distinguishes the two spawns, because the
-        // exposure is different and a list that flattened them would mislead.
-        assert!(
-            rendered.contains("[executor]"),
-            "CLAUDE.md is executor-side"
-        );
-        assert!(
-            rendered.contains("[model seam]"),
-            "STATE.md is read by the seams"
-        );
-    }
-
-    #[test]
-    fn an_empty_recorded_list_says_so_rather_than_rendering_silence() {
-        let rendered = render_disclosure(&[]);
-
-        assert!(
-            rendered.contains("recorded no file list"),
-            "an empty section reads as 'nothing enters a prompt', which is the \
-             opposite of what an empty list means. Got:\n{rendered}"
-        );
-        // The other two blocks are still present — an empty file list does not
-        // excuse dropping the residual-exposure statement.
-        assert!(rendered.contains(SECTION_RESIDUAL_EXPOSURE));
-    }
-
-    #[test]
-    fn the_rendered_list_is_the_recorded_one_not_a_recomputed_set() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        std::fs::write(dir.path().join("CLAUDE.md"), b"original").expect("write");
-
-        let recorded = registry::current_prompt_inputs(dir.path());
-        let before = render_disclosure(&recorded);
-
-        // Change the file the recomputed set would cover. If the disclosure
-        // recomputed at render time, the digest on screen would move — and the
-        // user would be shown a set they never approved.
-        std::fs::write(dir.path().join("CLAUDE.md"), b"rewritten by a git pull").expect("write");
-
-        let after = render_disclosure(&recorded);
-        assert_eq!(
-            before, after,
-            "the disclosure renders the RECORDED list; recomputing it at render \
-             time would show bytes the user never approved"
-        );
-        assert_ne!(
-            recorded,
-            registry::current_prompt_inputs(dir.path()),
-            "precondition: the on-disk set really did change, so the assertion \
-             above is not vacuous"
-        );
     }
 
     #[test]
@@ -1265,6 +920,45 @@ pub(crate) mod tests {
                 "{action:?}: buttons missing"
             );
             assert!(!text.contains("[y/n]"), "{action:?}: legacy hint remains");
+        }
+    }
+
+    /// WR-01 (T-31-26): the grant popup shows only the consent prompt. Phase 31
+    /// deleted the goal layer, so a list of "files whose bytes can reach a model
+    /// prompt", a description of the retired seams and a promised re-confirmation
+    /// would each describe a control nothing performs. Single words are asserted
+    /// because the popup wraps at word boundaries.
+    #[test]
+    fn the_grant_popup_shows_no_disclosure_of_retired_seams() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let dir = tempfile::tempdir().expect("temp dir");
+        // A CLAUDE.md on disk makes the old disclosure list a file.
+        std::fs::write(dir.path().join("CLAUDE.md"), b"x").expect("write");
+        let (ctx, _rx) = ctx_with_project(dir.path());
+        let screen = DriverConfirmScreen::new(ALIAS.to_string(), DriverAction::ToggleOptIn);
+        let mut t = Terminal::new(TestBackend::new(110, 40)).unwrap();
+        t.draw(|f| screen.render(f, f.area(), &ctx)).unwrap();
+        let buf = t.backend().buffer();
+        let text: String = (0..40u16)
+            .map(|y| {
+                (0..110u16)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("Allow driver"), "title missing:\n{text}");
+        assert!(text.contains(ALIAS), "alias missing:\n{text}");
+        assert!(
+            text.contains("[ Yes ]") && text.contains("[ No ]"),
+            "buttons missing:\n{text}"
+        );
+        for retired in ["seam", "digest", "CLAUDE.md", "=="] {
+            assert!(
+                !text.contains(retired),
+                "the grant popup still discloses a retired control ({retired:?}):\n{text}"
+            );
         }
     }
 

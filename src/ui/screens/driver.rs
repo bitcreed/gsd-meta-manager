@@ -168,7 +168,7 @@ fn local_date_time(started_at: &str) -> (String, String) {
 /// It read as a statement that the conversion was complete. It was not: three
 /// sites in THIS file were never converted — the output pane at `output_line`,
 /// the injection rows, and the dry-run preview — plus two in
-/// `driver_confirm.rs`. A completeness claim is exactly the sentence that stops
+/// `driver_confirm.rs` (since deleted with its disclosure renderer). A completeness claim is exactly the sentence that stops
 /// a reader re-checking, which is how those five survived a round whose whole
 /// subject was this composition.
 ///
@@ -379,7 +379,7 @@ mod tests {
     /// **Why this replaces the obvious "look at nearby lines" version.** The
     /// first draft of this census joined FORWARD and BACKWARD until it found a
     /// composer. That version did not go red against a planted unconverted call:
-    /// `render_disclosure` composes correctly two statements above the plant, so
+    /// a since-deleted disclosure renderer composed correctly two statements above the plant, so
     /// the backward walk found `display_identity` belonging to a DIFFERENT
     /// statement and reported the plant as composed. A census that cannot go red
     /// is the exact failure this census exists to replace, so proximity was
@@ -842,9 +842,17 @@ mod tests {
         // 31-03 re-measured after the legacy run renderer left this file: (2, 3, 4)
         // UNCHANGED. That renderer carried no needle call (`shown_capped` is the one
         // production call here), so deleting it moves none of the three numbers.
-        const PRODUCTION_NEEDLE_UNITS: usize = 2;
-        const PRODUCTION_NEEDLE_OCCURRENCES: usize = 3;
-        const WHOLE_FILE_NEEDLE_LINES: usize = 4;
+        //
+        // Moved from (2, 3, 4) to (1, 1, 2) by 31-08: the opt-in disclosure renderer
+        // was deleted from `driver_confirm.rs` (WR-01), taking its one path-and-digest
+        // unit (2 occurrences, 2 whole-file lines) with it. `driver_confirm.rs` holds
+        // no needle call any more but stays in `CENSUS_FILES`: the census guards
+        // against an unconverted call being re-introduced, and dropping a file would
+        // only narrow that. Two sites removed, none moved; the `driver.rs` figures
+        // (1 unit, 1 occurrence, the test-module call at whole-file) are as before.
+        const PRODUCTION_NEEDLE_UNITS: usize = 1;
+        const PRODUCTION_NEEDLE_OCCURRENCES: usize = 1;
+        const WHOLE_FILE_NEEDLE_LINES: usize = 2;
 
         let mut units = 0usize;
         let mut occurrences = 0usize;

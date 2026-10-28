@@ -354,9 +354,8 @@ mod tests {
     /// leaving the distribution is as much a red as a file entering it. That
     /// is deliberate — the shrink is the property the census's doc discloses,
     /// and a disclosed property that cannot go red when it happens is prose.
-    const MEASURED_REACH: [(&str, usize); 3] = [
+    const MEASURED_REACH: [(&str, usize); 2] = [
         ("src/ui/screens/driver.rs", 1),
-        ("src/ui/screens/driver_confirm.rs", 2),
         ("src/ui/screens/render_escape_guard.rs", 3),
     ];
 
@@ -395,15 +394,17 @@ mod tests {
     /// and removed two composed calls from `driver_confirm.rs` with the start prompt's
     /// command and the goal row, taking it from 4 to 2; 31-03 re-measured after trimming
     /// the legacy run renderer out of `driver.rs` and found the table UNCHANGED: the one
-    /// call left there is `shown_capped`'s own, and no file was added or removed):
+    /// call left there is `shown_capped`'s own, and no file was added or removed; 31-08
+    /// deleted the opt-in disclosure renderer, whose two composed calls were the last in
+    /// `driver_confirm.rs`, so that file left the distribution and the total fell from
+    /// 6 to 4 — one non-exempt, in **one of twenty-two files**):
     ///
     /// | File | Executable needle occurrences |
     /// |---|---|
-    /// | `src/ui/screens/driver_confirm.rs` | 2 |
     /// | `src/ui/screens/driver.rs` | 1 |
     /// | `src/ui/screens/render_escape_guard.rs` | 3 (the exempt probe module — all three are oracles, not render sites; 30-03 added the third, the escaped form its SUMMARY-row and MEDIUM-token-row test expects) |
-    /// | the other **19** files, incl. `detail.rs`, `normal.rs` and `driver_run.rs` | 0 |
-    /// | **total** | **6** — three non-exempt, in **two of twenty-two files** |
+    /// | the other **20** files, incl. `detail.rs`, `normal.rs`, `driver_run.rs` and `driver_confirm.rs` | 0 |
+    /// | **total** | **4** — one non-exempt, in **one of twenty-two files** |
     ///
     /// **These numbers are PINNED, not asserted here.** [`MEASURED_REACH`] and
     /// [`UI_SOURCE_FLOOR`] are checked by this test below, as a `Vec` equality
@@ -672,8 +673,8 @@ mod tests {
             !compositions.is_empty(),
             "no in-tree composition was found to drive this arm, so a green \
              result would prove nothing. The deliberate second composition lives \
-             in `screens/driver.rs` and `screens/driver_confirm.rs`, which cap \
-             agent prose as well as escaping it."
+             in `screens/driver.rs`, which caps agent prose as well as escaping \
+             it."
         );
 
         for site in &compositions {

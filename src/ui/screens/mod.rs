@@ -740,10 +740,10 @@ pub struct LauncherLogTail {
 /// * The **output pane is held by a TYPE.** [`DriverOutputLine::text`] is
 ///   [`crate::text::Untrusted`], so its render site does not compile until it is
 ///   `shown()`. A new render of that value is a compile error.
-/// * The **remaining sites are held by a CALL** — `driver.rs`'s `shown_capped`
-///   and the same composition in `driver_confirm.rs`'s `render_disclosure`.
+/// * The **remaining site is held by a CALL** — `driver.rs`'s `shown_capped`.
 ///   (The injection rows and the dry-run preview that used to be two more were
-///   retired in Phase 31.) Their carriers are bare `String`s, so a NEW render of
+///   retired in Phase 31, and `driver_confirm.rs`'s opt-in disclosure
+///   renderer in 31-08.) Their carriers are bare `String`s, so a NEW render of
 ///   one would not fail to compile. What bounds that is the render-escape probe
 ///   and a census, not the compiler — **under-protection, silent** (D-21-39).
 ///

@@ -157,27 +157,23 @@
 //!    sentence below replaces the rest of it.
 //!
 //!    **What REMAINS after 21-28, and it is a different kind of residual.** The
-//!    four Driver-tab sites are now all composed, but they are NOT all held the
-//!    same way, and a reader who assumes the whole path is compiler-held is
-//!    wrong about three quarters of it:
+//!    Driver-tab sites were all composed, but they were NOT all held the same
+//!    way. What is left of that table after Phase 31 and 31-08:
 //!
 //!    | Site | Value | Held by |
 //!    |---|---|---|
 //!    | output pane | `DriverOutputLine::text` | **the TYPE** — `crate::text::Untrusted`; a new render is a compile error |
-//!    | opt-in disclosure | `PromptInput::path`, `digest` | a CALL + this probe |
 //!
-//!    The last two carriers are still bare `String`s, because they reach
-//!    `src/journal/inbox.rs` and `src/app.rs`, which no plan in this wave owns —
-//!    retyping them would have been a wave conflict, not a closure (D-21-39).
-//!    **The failure direction is under-protection, and it is SILENT**: a NEW
-//!    render of any of those three values compiles, draws, and is caught only if
-//!    a probe state happens to reach it. Nothing goes red at the moment the new
-//!    site is written.
+//!    The output pane is the one site left on this path, and it is held by the
+//!    type. (The grant popup's file list, which drew `PromptInput::path` and `digest`
+//!    through a call held only by this probe, was deleted in 31-08 with the
+//!    renderer; those two bare `String` carriers have no render site now.)
+//!    **A NEW render of any bare-`String` value still fails silently**: it
+//!    compiles, draws, and is caught only if a probe state happens to reach it.
 //!
-//!    **What would force the promote to a type:** a third render of either
-//!    value, or any change to `src/journal/inbox.rs` or `src/app.rs` already
-//!    open for another reason — at which point retyping the carrier costs almost
-//!    nothing and removes the last call-held sites on this path.
+//!    **What would force the promote to a type:** a render of either value, or
+//!    any change to `src/journal/inbox.rs` or `src/app.rs` already open for
+//!    another reason — at which point retyping the carrier costs almost nothing.
 //!
 //!    Two smaller residuals, named rather than left implicit. The injection
 //!    fixture leaves its message in the `Queued` state, so the `Delivered`,
@@ -2388,7 +2384,7 @@ fn fixture_for(type_name: &str) -> Option<Fixture> {
                     )),
                 ),
                 one_state(
-                    "opt-in grant prompt, with the disclosure",
+                    "opt-in grant prompt",
                     probe_ctx(identity),
                     Box::new(DriverConfirmScreen::new(
                         identity.to_string(),

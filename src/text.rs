@@ -478,8 +478,8 @@ impl From<Rendered> for String {
 ///
 /// **The deliberate second composition, named so it is not mistaken for drift.**
 /// `ui::screens::sanitize_render_line` is this same control class plus the
-/// `DRIVER_OUTPUT_LINE_CELLS` display cap, and `driver.rs` / `driver_confirm.rs`
-/// compose `display_identity(&sanitize_render_line(..))` because they draw agent
+/// `DRIVER_OUTPUT_LINE_CELLS` display cap, and `driver.rs` composes
+/// `display_identity(&sanitize_render_line(..))` because it draws agent
 /// prose that must be capped. The ONLY difference between that composition and
 /// this one is the cap, which is pinned by
 /// `ui::screens::tests::the_capped_and_uncapped_compositions_agree_below_the_cap`
