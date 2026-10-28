@@ -1,25 +1,25 @@
-# Phase 30 — UI Review (re-audit after gap-closure plans 30-06..30-09)
+# Phase 30 — UI Review (re-audit at HEAD, master, after 28.1, Phase 31 and quick 261028-n0u)
 
-**Audited:** 2026-10-21
+**Audited:** 2026-10-28
 **Baseline:** 30-UI-SPEC.md (approved, terminal/ratatui medium)
-**Screenshots:** not captured (TUI, no dev server). Evidence is the TestBackend render tests, which assert on drawn buffer text and cell styles at 50x24, 60x16, 80x12, 80x24, 100x30, 120x40 and 160x40. `cargo test --no-fail-fast --lib ui::screens::confirm_popup ui::screens::driver_` ran 259 passed, 0 failed. No throwaway files were written.
+**Screenshots:** not captured (TUI, no dev server). Evidence is the ratatui TestBackend render tests. `rtk proxy cargo test --no-fail-fast --lib ui::screens` ran 853 passed, 0 failed. That includes the orphan-rule sweep (`driver_run::tests::launcher_orphan_sweep_no_rule_or_header_without_content_at_any_height`) and the popup, steer and launch width-matrix tests. The tmux-driven binary was not used. No temporary files were written.
 **Interaction captures:** off (workflow.ui_interaction_capture is false). Interaction findings come from key-driven unit tests and code.
 
 ---
 
-## Prior findings status
+## Prior findings status (re-checked at HEAD)
 
-| ID | Prior finding | Status | Evidence |
-|----|---------------|--------|----------|
-| D1 | BLOCKER: polite-stop popup clips "Nothing is killed." | FIXED | `confirm_popup.rs` `wrapped_rows` now uses `Paragraph::line_count` with `Wrap{trim:false}`, the same wrapper the body is drawn with. `driver_steer::launcher_steer_the_polite_stop_sentence_survives_every_width` asserts the full prompt and a blank spacer row at 50, 60, 80x12, 80x24, 100, 120 and 160 columns. It passes. |
-| D2 | False Yellow "(no control line)" while the body loads | FIXED | `driver_run::launcher_view_full_header_says_loading_until_the_detail_arrives` asserts `control Loading...` in DarkGray with the heartbeat kept. `..._flags_a_body_without_a_control_line` keeps Yellow for the real case. |
-| D3 | D-16 answer warning clipped at 80-120 | FIXED | `launcher_steer_the_answer_warning_wraps_to_its_last_word` asserts the warning ends in `[R].` at 80, 100 and 120 columns, and the Red error row wraps too. |
-| D4 | Injection-retired, answer and left-unlaunched copies lose their key hints | PARTIALLY FIXED | The three named copies were shortened, with fit tests (`..._retired_copy_fits_an_80_column_status_bar`, `..._park_answer_copy_fits_the_status_bar`, `..._unlaunched_copy_fits_the_status_bar`). The other contract strings still run about 90 characters (see Pillar 1). |
-| D5 | Popups at short heights hide decision content while `y` stays live | FIXED | `confirm_popup::confirm_unless_clipped` makes `y` and Enter-on-Yes inert while clipped. The hint row reads `Cut off: enlarge the terminal to confirm`. The launch form orders its rows spend, sandbox, blockers, fields, then findings. At 80x12 the spend and sandbox rows survive and the form is non-confirmable (`launcher_launch_a_form_cut_off_at_80x12_launches_nothing`). The lint popup keeps `Edit it again now?` and a `… k more` row (`..._lint_popup_keeps_its_question_at_80x12`). |
-| D6 | Kill confirm repaints the dashboard behind it | FIXED | `driver_confirm.rs:445-452` routes `StopLauncher` to `DetailScreen::render_main_only`. `launcher_kill_confirm_keeps_the_driver_tab_behind_it` passes. |
-| D7 | Popup background re-lays out to a different height tier | STILL OPEN (cosmetic) | Not changed. The background is dimmed. Not scored down. |
-| D8 | Slug not-usable row clipped at 80 columns | FIXED | The row now wraps. `launcher_new_run_the_not_usable_copy_wraps_to_its_last_word` passes, and the spec string was updated. |
-| Not observed | Stale heartbeat, MISMATCH, UNSANDBOXED, legacy section, edit conflict chooser | Covered by unit tests per the SUMMARYs. Not re-driven visually. |
+| ID | Prior finding | Status at HEAD | Evidence |
+|----|---------------|----------------|----------|
+| D1 | Polite-stop popup clips "Nothing is killed." | Still fixed | Width-matrix test in `driver_steer` passes. |
+| D2 | False Yellow "(no control line)" while the body loads | Still fixed | `driver_run` Loading/no-control-line tests pass. |
+| D3 | D-16 answer warning clipped | Still fixed | The wrap test passes. The copy is now shorter: `"{item} answered; {rule} parks it: [e] budget, [R] caps."` (`driver_steer.rs:125-129`). It was shortened to fit the 62-cell status room. |
+| D4 | Contract copies lose key hints | Partly fixed, unchanged | See Pillar 1. |
+| D5 | Clipped popups keep a live `y` | Still fixed | The `confirm_unless_clipped` guard tests pass. |
+| D6 | Kill confirm repaints the dashboard | Still fixed | `driver_confirm.rs` routes the kill confirm to `render_main_only`. The test passes. |
+| D7 | Popup background re-lays out to a different height tier | Still open, cosmetic | Not changed. |
+| D8 | Slug not-usable row clipped | Still fixed | The wrap test passes. |
+| Legacy section | Collapsed legacy runs, `L` key, legacy detail (WR-05 height rule) | OBSOLETE, code deleted by Phase 31 (D-03) | `driver_run.rs:3033` doc comment; the negative tests `detail.rs:20978` ("no legacy section") and `help.rs:759-777` pass. |
 
 ---
 
@@ -27,69 +27,83 @@
 
 | Pillar | Score | Key Finding |
 |--------|-------|-------------|
-| 1. Copywriting | 3/4 | All prior clipped-copy defects are closed. The four generic success messages (about 90 chars) still exceed the 62-cell status room at 80 columns. |
-| 2. Visuals | 4/4 | Tiers, glyph triples, no-orphan rule and popup layering conform. The kill popup now sits over the Driver tab. |
-| 3. Color | 4/4 | Cyan is selection-only. The false warning is gone. Footer keys are BOLD default. |
-| 4. Typography | 4/4 | Two weights only, no `Wrap` in scroll panes. Popup bodies wrap, as the spec allows. |
-| 5. Spacing | 3/4 | Label column, indents and tiers hold. The LOG-line clip without `…` and the popup-background tier mismatch remain, both minor. |
-| 6. Experience Design | 4/4 | A cut-off confirmation cannot be confirmed. The launch form leads with spend and sandbox. Loading is distinct from "no control line". |
+| 1. Copywriting | 3/4 | Four success messages of roughly 90 characters are cut by `fit_cells` in the tab-bar title row. |
+| 2. Visuals | 4/4 | Tiers, glyph triples, popup layering and the orphan sweep pass. |
+| 3. Color | 4/4 | Cyan is selection-only. There is no false warning. |
+| 4. Typography | 4/4 | Two weights only. There is no `Wrap` in scroll panes. |
+| 5. Spacing | 3/4 | LOG lines are cut without `…`, and the popup background tier mismatch remains. Both are minor. |
+| 6. Experience Design | 4/4 | A cut-off confirmation cannot be confirmed. Loading is distinct from "no control line". |
 
-**Overall: 22/24**
+**Overall: 22/24** (unchanged from the prior review). Two pillars sit at 3, so there is no BLOCKER, and no pillar is below 3.
 
 ---
 
 ## Top 3 Priority Fixes
 
-No BLOCKER or pillar score of 1 remains. All remaining items are WARNING or minor.
+1. **Shorten or wrap the long success messages** (WARNING).
+   - `driver_steer.rs:132` ("Answer written to {} and hold set to false. The driver re-reads it before its next dispatch.") and `driver_steer.rs:147` run about 90 characters.
+   - `driver_steer.rs:615` ("DIRECTION.md updated. The driver re-reads it before its next dispatch.") runs about 70.
+   - The control-written strings at `driver_steer.rs:105,108` run 80 to 95.
+   - They are drawn in `detail.rs::tab_bar_block` (about line 1301-1318). That function applies `fit_cells(.., room)` and truncates to `width - project - 3`, so the tail is lost. The tail is "before its next dispatch" and "It applies at the next launch".
+   - The head carries the key fact, so this is not a blocker.
+   - Fix: apply the treatment used on the D-16 copy and add a fit test per string.
+   - The spec fixes some of these strings, so the change is `[inferred — cleanup 2026-10-28]`.
+2. **Mark the clipped end of long LOG lines with `…`.** The spec says long values are ellipsised. LOG lines in the no-Wrap output pane are hard-cut. Minor. Either ellipsise, or record the deviation in the UI-SPEC.
+3. **Update 30-UI-SPEC.md to match Phase 31.** The spec still documents the deleted legacy section (`L` key, `▸ legacy runs` rows, the legacy height rule, the `L` help row, the `[L]egacy` footer token). The code and tests now assert the opposite. This is contract drift, not a UI defect. Mark the legacy items superseded by Phase 31 D-03.
 
-1. **Shorten the generic success copies, or let the status bar wrap or marquee them** (WARNING). "control written", "Answer written", "hold set to false" and "DIRECTION.md updated" run about 90 characters (`driver_steer.rs:102,127,142,610`). At 80 columns they are cut at about 62 cells, so the tail "...before its next dispatch" is lost. The key facts are in the head, so this is not a blocker. Fix: apply the 30-06/07/09 treatment, with a fit test per string. Note the spec fixes these strings, so the change is `[inferred — audit]`.
-2. **Mark the clipped end of long LOG lines** (minor, D8 remnant). LOG lines are hard-cut without `…` where the spec says long values are ellipsised. This matches the shipped no-Wrap output pane and was accepted before. If kept, record it as a deliberate deviation in the UI-SPEC.
-3. **Render popup backgrounds at the screen's own height tier** (minor, D7). At 80x24 the Driver tab behind the popup is in a different tier than the tab itself. It is dimmed and cosmetic. Defer.
+(Cosmetic, deferred: D7, rendering the popup background at the screen's own height tier.)
 
 ---
 
 ## Detailed Findings
 
 ### Pillar 1: Copywriting (3/4)
-- Every prior blocker and warning is verified closed (see the status table), each with a width-matrix test.
-- WARNING: the four generic success strings listed in fix 1 exceed the status room at 80 columns. This is the only remaining copy defect.
-- Minor: the footer CTAs stay verb-only (`[s]tart`). This is the UI-checker FLAG, unchanged. At 80 columns `[s]tart` is dropped first when a run is selected, per the spec priority table.
-- Conformant: the Cut-off hint, the spend line (a documented deviation), the polite-stop vs kill copy and the sandbox rows.
+- The prior blocker and warning copy defects stay closed, each with a width-matrix test.
+- WARNING: the success messages in fix 1 exceed the status room at 80 columns. The shortened D-16 copy shows the approach that works.
+- Minor: the footer CTAs stay verb-only (`[s]tart`), as in the spec's own contract. The spec tokens drop by priority, and that behaviour is unchanged.
+- No generic labels ("Submit", "Click here", "Something went wrong") were found in the Driver screens. The refusal copy is specific.
 
 ### Pillar 2: Visuals (4/4)
-- Kill popup over the Driver tab (D6). The polite-stop popup is complete at every tested size. The status glyph/word/colour triples, the item cursor idiom and the width and height tiers are unchanged from the prior audit, which found no orphan rules.
+- The orphan sweep passes at heights 1 to 40.
+- Status glyph/word/colour triples are intact.
+- The legacy-section visual surface is gone, so nothing in the tab now diverges from the new run-list model.
 - Residual: D7, cosmetic.
 
 ### Pillar 3: Color (4/4)
-- Cyan appears only on the selected run row, the item cursor row and the launch-form field cursor. The header control row renders DarkGray `Loading...` while the body loads, and Yellow only for a genuinely missing control line. Yellow accents on the polite-stop and launch popups and Red on kill are as contracted.
+- Cyan appears only on selection rows, as in the spec's reserved list.
+- Yellow, Red and Magenta follow the semantic table.
+- The Loading state is DarkGray, not Yellow.
+- No colour is chosen from LOG content.
 
 ### Pillar 4: Typography (4/4)
-- Regular and BOLD only. The answer footer and the slug row now wrap in a footer input, not in a scrolling pane, so the no-`Wrap` rule is not violated.
+- Regular and BOLD only. REVERSED stays on the tab label and the popup button.
+- No `Wrap` in scrolling panes.
+- Popup and footer-input wrapping is spec-permitted.
 
 ### Pillar 5: Spacing (3/4)
-- The 10-cell label column, 2-cell indents, the 4-cell LOG continuation and the cap rows at the 39-cell floor hold. The clipped answer warning and slug rows are fixed. Remaining: D7 and the un-ellipsised LOG clip.
+- The 10-cell label column, 2-cell indents and the 39-cell floor are covered by the passing tests.
+- Remaining: the un-ellipsised LOG clip (fix 2) and D7.
 
 ### Pillar 6: Experience Design (4/4)
-- The 30-06 guard makes the cut-off state structural: `y`, Enter-on-Yes and a Yes click are inert, while `n` and Esc still cancel. Tests cover the polite stop (`launcher_steer_a_clipped_polite_stop_writes_nothing_on_y`) and the launch form.
-- The launch form holds the D-19/D-20 essentials in view before findings. Findings are clipped first, with a `… k more` count.
-- Retired `i` names the replacement keys. Held-run refusals, `Loading...` states, default focus No and the inert `y` before the host check are intact.
-- The 30-08 `$EDITOR`-with-arguments and ETXTBSY fixes remove an editing dead-end. They were verified by their unit tests only.
+- The clipped-popup guard keeps `y` and Enter-on-Yes inert while cut off, and `n` and Esc still cancel.
+- Held-run and unknown-liveness refusals, the default focus No, and the Loading states are covered by passing tests.
+- The retired `i` key shows a message and opens nothing.
+- Phase 31 removed the legacy read-only dead branch, and the key-handling tests still pass.
 
 ---
 
-## Needs human (subjective or unobservable only)
+## Needs human (subjective only)
 - Density of the FULL tier at 100x30.
-- DarkGray label contrast on the user's terminal theme.
-- Glyph rendering of ‖ ◈ ⚑ ◇ in the user's font.
+- DarkGray and DIM label contrast on the user's terminal theme.
+- Glyph rendering of ‖ ◈ ⚑ ◇ ⧫ ⬖ in the user's font.
 
 ## Registry Safety
 Not applicable (Rust/ratatui, no `components.json`).
 
 ## Files Audited
-- src/ui/screens/confirm_popup.rs (wrapped_rows, popup_rect, on_key, clip guard)
-- src/ui/screens/driver_steer.rs (polite stop, answer warning, success copies at 102-142 and 610)
-- src/ui/screens/driver_launch.rs (launch form, lint popup, slug row, 80x12 tests)
-- src/ui/screens/driver_run.rs (FULL header Loading/no-control-line tests)
-- src/ui/screens/driver_confirm.rs (kill confirm background, 436-452)
-- src/ui/screens/detail.rs (retired-key copy test)
-- 30-UI-SPEC.md, the prior 30-UI-REVIEW.md, and `git log 8035409..HEAD`
+- src/ui/screens/driver_steer.rs (success copy, 100-150 and 615)
+- src/ui/screens/detail.rs (`tab_bar_block`, status message at 1295-1320; legacy-absence test at 20978)
+- src/ui/screens/driver_run.rs (the Phase 31 legacy deletion note at 3033, the orphan sweep)
+- src/ui/screens/driver_confirm.rs and confirm_popup.rs (guards, background)
+- src/ui/screens/help.rs (legacy-absence tests, 759-777)
+- 30-UI-SPEC.md and the prior 30-UI-REVIEW.md
