@@ -9,6 +9,9 @@ files:
   - .planning/spikes/003-divergent-gap-loop-validation/tools/drift.py:453
   - scripts/launcher-acceptance.sh:900
   - scripts/prompt-acceptance.sh:1122
+completed: 2026-10-28
+status: completed
+resolved_by: quick 261028-n0y (ee4d054, 61fd1bc), batch 261028-n0u; Rust port residue in todos/pending/2026-10-28-driverctl-fm-status-port-value-boundary-and-bom.md
 ---
 
 ## Problem
@@ -34,3 +37,9 @@ scripts use; check it while you are in there.
 `STATUS_RE = re.compile(r"""^status:[ \t]*["']?([A-Za-z_]+)(?![\w-])""", re.M)`, decode with `utf-8-sig`,
 update the pinned `assert STATUS_RE.pattern == ...` selftest line, and add a selftest case per shape. Then run
 `tools/drift.py selftest` and both acceptance scripts' selftest modes.
+
+## Resolution
+
+- IN-06 fixed as specified (ee4d054): bounded value, single-line whitespace class, UTF-8 BOM accepted, one selftest case per shape.
+- IN-09 fixed for the generation ordering (61fd1bc): gen advances only after the feed write lands, a failed write keeps the spawn queued. The tool_result half is not adopted: a foreground Agent call's tool_result arrives after the verifier has read the feed, and the driverctl gate exempts calls made inside a subagent.
+- Closed into `completed/` rather than `done/`, because GSD's todo tooling reads `completed/` and `done/` is empty and untracked [inferred — cleanup 2026-10-28].
