@@ -4,11 +4,11 @@ milestone: v1.15.0
 current_phase: 31
 current_phase_name: Retire Superseded Envelope & Goal-Layer Code
 status: executing
-stopped_at: Completed 31-09-PLAN.md
-last_updated: "2026-10-28T03:04:09.303Z"
+stopped_at: Completed 31-07-PLAN.md
+last_updated: "2026-10-28T05:05:17.440Z"
 last_activity: 2026-10-27
 last_activity_desc: Phase 31 execution started
-state_head: 69d371d66cecd0c3f990e31e2fdc7fd47a11047c
+state_head: 2e2e3355e3319472ae21bc7a96f9c6d4ef19ed79
 progress:
   total_phases: 10
   completed_phases: 14
@@ -566,6 +566,7 @@ verify-phase if the gate is fixed.
 | Phase 31 P06 | 35 min | 3 tasks | 12 files |
 | Phase 31 P08 | 40 min | 3 tasks | 11 files |
 | Phase 31 P09 | about 2h | 3 tasks | 6 files |
+| Phase 31 P07 | 45min | 3 tasks | 42 files |
 
 ## Accumulated Context
 
@@ -815,6 +816,7 @@ Recent decisions affecting current work:
 - [Phase 31]: 31-08: WR-01 drops the grant-popup disclosure entirely; WR-02 corrects claims (branch_namespace stays validated but unused); WR-03 unregister guard gated on ctx.experimental reading the cached launcher marker; driver_confirm.rs kept in driver.rs CENSUS_FILES [inferred - audit]
 - [Phase 31]: 31-09: planted-file walks are name-ordered and listing-bounded in production code (not a test-only fix); Snapshot::VERSION not bumped, in-flight baseline residual accepted [inferred - audit]
 - [Phase 31]: 31-09: a stderr tail window cut inside a line never returns that fragment (fixed note instead); redact_captured caps at 512 chars after redaction [inferred - audit]
+- [Phase 31]: [31-07] DriverOutputLine/DriverOutput kept: live via driver_run.rs launcher tail; uuid dropped as a direct dep (MSRV floor unchanged, still transitive); MIN_ASYNC_BODY_LINES stays 800 (measured 2380 to 1229); runtime::claude_command deleted as callerless [inferred - audit]
 
 ### Roadmap Evolution
 
@@ -1011,8 +1013,8 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-10-28T03:04:07.817Z
-Stopped at: Completed 31-09-PLAN.md
+Last session: 2026-10-28T05:05:15.832Z
+Stopped at: Completed 31-07-PLAN.md
 Resume file: None
 
 Next: `/gsd-plan-phase 28.1` (or `/gsd-discuss-phase 28.1`). Phase 30 verified and complete. v1.15.0 is an interim release; the v2.0
