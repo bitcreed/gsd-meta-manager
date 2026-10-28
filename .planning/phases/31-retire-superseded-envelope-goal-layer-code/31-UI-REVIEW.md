@@ -1,10 +1,11 @@
-# Phase 31 — UI Review
+# Phase 31 — UI Review (re-audit after 31-08)
 
-**Audited:** 2026-10-25
-**Baseline:** abstract 6-pillar standards (no UI-SPEC.md), interpreted for a ratatui TUI (colour = style semantics, typography = bold/dim/heading hierarchy and glyph+label legends, spacing = layout, popup sizing and blank-line structure)
-**Screenshots:** not captured (terminal UI, no dev server; code-only audit). Plan 31-07 is HELD and not scored as missing.
-**Registry audit:** skipped (no `components.json`; not a web UI).
-**Method note:** the standing code review (`31-REVIEW.md`) was read first. Every UI-relevant finding in it (WR-01, WR-02, WR-03, IN-03, IN-04) was re-verified against the source here, not copied. Findings marked `[inferred — audit]` are judgments from the artifacts, with no human in the loop.
+**Audited:** 2026-10-27 (supersedes the 2026-10-25 review, 16/24)
+**Baseline:** abstract 6-pillar standards (no UI-SPEC.md), read for a ratatui TUI (colour = style semantics, typography = bold/dim hierarchy, spacing = layout, popup sizing and blank-line structure)
+**Screenshots:** not captured (terminal UI, no dev server; code-only audit). Plan 31-07 is HELD and is not scored as missing.
+**Interaction captures:** off (`interaction_capture: false`); interaction findings are code-derived.
+**Registry audit:** skipped (no `components.json`).
+**Method:** read the prior review, then `git diff 36e0805^..5078bf5 -- src/ui` and the current source. Judgments marked `[inferred — audit]` have no human behind them.
 
 ---
 
@@ -12,98 +13,85 @@
 
 | Pillar | Score | Key Finding |
 |--------|-------|-------------|
-| 1. Copywriting | 2/4 | The opt-in disclosure and both opt-in prompts still describe controls that no longer exist (model seams, re-confirmation, branch namespace); an internal phase number is shown to users |
-| 2. Visuals | 3/4 | The Driver tab and dashboard closed cleanly around the removed sections; the Preferences screen is now a placeholder panel, and the opt-in popup dims the wrong background |
-| 3. Color | 3/4 | Red = destructive, Yellow = grant, consistent across the surviving confirm popups; the consent disclosure is DarkGray, the lowest-contrast style, on the text that matters most |
-| 4. Typography | 3/4 | Heading, bold-key and dim-gloss hierarchy intact; help rows were removed with their blank-line invariants preserved; leftover `DRY_RUN_LOADING` naming is cosmetic |
-| 5. Spacing | 3/4 | No layout gaps from the deleted legacy section; the grant popup's body is far taller than a normal terminal, and the Preferences placeholder is hand-wrapped at fixed columns |
-| 6. Experience Design | 2/4 | The live-run guard on project removal was deleted and not re-aimed at launcher runs; the opt-in grant popup is probably unconfirmable on ordinary terminal heights; `o` is not in the Driver footer |
+| 1. Copywriting | 3/4 | WR-01 and WR-02 are fixed: the grant popup is now the single consent sentence and no longer claims a branch namespace. Internal vocabulary remains: "Phase 31" on Preferences, "driver seam" in an error, `INJECTION_RETIRED`. |
+| 2. Visuals | 3/4 | The popup is a clean one-sentence body. The opt-in popup still dims the dashboard instead of the Driver tab. The Preferences panel is still a dead block. `o` is still missing from the Driver footer. |
+| 3. Color | 4/4 | The DarkGray consent text was deleted with the disclosure. Red = destructive and Yellow = grant, with no hardcoded RGB in the touched screens. |
+| 4. Typography | 3/4 | The hierarchy is intact. Stale names remain (`DRY_RUN_LOADING`, "legacy needs-a-human predicate" in `help.rs:105`). |
+| 5. Spacing | 3/4 | The 43-row clipping risk is gone with the disclosure. The Preferences placeholder is still hand-wrapped at fixed columns. |
+| 6. Experience Design | 3/4 | The live-run guard on unregister is restored (WR-03) with tests. It is not airtight (see below), and the footer omission persists. |
 
-**Overall: 16/24**
+**Overall: 19/24** (was 16/24)
+
+---
+
+## Prior findings: resolved vs open
+
+| Prior finding | Status |
+|---|---|
+| WR-01: grant popup showed retired seam, re-confirmation and file-list text | RESOLVED. `render_disclosure` and the three `SECTION_*` constants are deleted. The body is only `strip_key_hint(prompt)`. A new test (`the_grant_popup_shows_no_disclosure_of_retired_seams`, `driver_confirm.rs:937`) pins the absence of "seam", "digest", "CLAUDE.md" and "==". |
+| Popup unconfirmable at ordinary heights (about 48 rows) | RESOLVED as a side effect. The body is now 1 to 2 wrapped rows, so the `CLIPPED_HINT` guard cannot trip. `[inferred — audit]`: I did not render a frame. By construction the popup is small, but no 80x24 `clipped == false` assertion was added. |
+| WR-02: "branch namespace" claimed by the prompts | RESOLVED in the code. `prompt_text` now says "PR caps" only, and the module doc states the namespace is parsed but not consulted. `docs/CONFIGURATION.md` was not re-verified. |
+| DarkGray contrast on the consent text | RESOLVED (text deleted). |
+| WR-03: unregister had no live-run guard | RESOLVED with caveats. `delete_confirm.rs:121-142` refuses when `ctx.experimental` and the cached `launcher_marker.any_live` hold. Two tests cover refusal, an unchanged config, and the not-live case. |
+| IN-03: opt-in popup dims the dashboard | STILL OPEN. `driver_confirm.rs:187-195` fixed it for the kill popup only (DetailScreen behind `StopLauncher`). `ToggleOptIn` is reachable only from the Driver tab `o`, yet it still renders `NormalScreen`. The comment calls this deliberate, which is wrong since 31-02 removed the dashboard entry. |
+| IN-04: "legacy driver, removed in Phase 31" on Preferences | STILL OPEN (`preferences.rs:89`). |
+| `driver seam` jargon in an error | STILL OPEN (`driver_confirm.rs:267`). |
+| `INJECTION_RETIRED`, `DRY_RUN_LOADING`, `help.rs:105` wording | STILL OPEN (cosmetic). |
+| `o` missing from the Driver footer | STILL OPEN. |
 
 ---
 
 ## Top 3 Priority Fixes
 
-1. **The opt-in grant popup shows retired consent text and, by my estimate, cannot be confirmed on ordinary terminals** — a user is asked to consent on the strength of controls that do not exist, and then may be unable to press Yes — in `src/ui/screens/driver_confirm.rs`, delete `SECTION_MODEL_SEAM`, `SECTION_RESIDUAL_EXPOSURE` and the per-file list from `render_disclosure` (or replace them with one sentence stating what the record feeds: PR caps only). Remove "branch namespace" from `prompt_text` (lines 237, 252), the module doc (:14) and `docs/CONFIGURATION.md`. Add a render test that asserts the grant popup is not `clipped` at 80x24 (the current test at :1250 renders at 110x40 and only checks that the button labels are drawn, which happens even when clipped). Covers WR-01, WR-02 and the clipping risk in one change.
-2. **Removing a project with a live launcher run is unguarded** — the `d` + `y` path drops the project from the launcher-marker scan while the detached launcher and its sandbox scope keep running, and the TUI then shows nothing about it — re-aim the deleted guard in `src/ui/screens/delete_confirm.rs:121` (`do_remove_project`) at `launcher_marker.any_live`, as drafted in `31-REVIEW.md` WR-03, and restore a refusal test. Alternatively record an explicit decision that removal with a live run is allowed. (WR-03; this is the only destructive-action confirmation that regressed.)
-3. **Sweep user-visible copy that names retired or internal things** — a first-time user sees "legacy driver, removed in Phase 31" on Preferences, "Injection is retired" on `i`, and "Cannot reach the driver seam" on a closed channel; docs still describe the legacy `drive`. Concretely: `preferences.rs:86-89` becomes "(none: this build has no manager-wide settings)" or drops the section (IN-04); `driver_run.rs:2640` `INJECTION_RETIRED` is reworded or the `i` key is simply unbound; `driver_confirm.rs:409` loses "seam"; the `docs/CONFIGURATION.md:149` paragraph is trimmed to a one-line changelog note.
-
-Further fixes, lower priority (detail below): add `[o]` to the Driver footer or document its absence; render `DetailScreen` behind the opt-in popup (IN-03); rename `DRY_RUN_LOADING`; replace the "legacy needs-a-human predicate" wording in `help.rs:105`.
+1. **Make the unregister guard airtight and accurate** — a live run can still be orphaned, and the refusal text points at the wrong key. Handle the three cases below in `src/ui/screens/delete_confirm.rs:121-142`:
+   - The guard fails open: the marker is `None` before the first scan lands. It is also gated on `ctx.experimental`, so a run left over from an earlier session with the flag off passes silently.
+   - It fires after the user has already pressed `y`. Disable the `y` path, or show the live-run state in the popup text, so the refusal arrives as the prompt rather than after it.
+   - The text says "Stop it from its Driver tab (x)", but `x` opens a kill confirmation. The gentler path is `[c]` then stop.
+2. **Render the Driver tab behind the opt-in popup** — grant and withdraw flip the user from the Driver tab to the dashboard for the duration of the prompt. In `src/ui/screens/driver_confirm.rs:187-195`, use `DetailScreen::render_main_only` for both actions and drop the stale "as it did when the dashboard also opened it" comment.
+3. **Sweep leftover internal vocabulary and add `[o]` to the footer** — new users see phase numbers and retired-feature names. Replace `preferences.rs:86-89` with "(none: this build has no manager-wide settings)", reword `driver_confirm.rs:267` to drop "seam", unbind or reword `INJECTION_RETIRED`, add `[o]pt-in` to the Driver footer (`detail.rs` footer builder), and rename `DRY_RUN_LOADING`.
 
 ---
 
 ## Detailed Findings
 
-### Pillar 1: Copywriting (2/4)
-
-**What is clean (verified):**
-- The help screen has no `Injected Message States` legend, no `i` row, no `r`/`x`/`o` dashboard rows and no legacy-runs toggle. The comment at `help.rs:236-237` says why, and `help.rs:763-799` and `:1089-1097` pin it with the flag on and off.
-- The Driver footer names no retired token. `detail.rs:11171-11250` builds only tokens whose key is live for the current selection, and `detail.rs:18050-18073` asserts the absence of `[i]nject`, `[X]`, `[{/}]`, `[x]stop` and `[L]egacy`.
-- The kill prompt (`driver_confirm.rs:240-249`) is accurate, names the run and alias, and points at the gentler `[c]` then stop path.
-- The Driver empty state (`driver_run.rs:3012-3032`) is actionable ("Press [s] to start one: name it, edit its DIRECTION, check it, then launch.") and has a non-Linux variant.
-
-**Defects:**
-- **BLOCKER-class copy (WR-01, verified).** `driver_confirm.rs:43-89` `SECTION_PROMPT_INPUTS`, `SECTION_MODEL_SEAM` and `SECTION_RESIDUAL_EXPOSURE` are still rendered by the grant popup (`:333`, `:352-366`). They state that "the goal-decomposition and ambiguity seams" exist and that "the digest and the re-confirmation above exist". Phase 31 deleted the goal layer (D-07) and `drive`; the re-confirmation has no caller. The file's own doc (`:15-16`, T-17-48) says "no safety claim the code does not back". This is the last text read before recording consent. It also contradicts the one-line prompt directly above it.
-- **Unbacked claim (WR-02, verified).** `driver_confirm.rs:237` ("Its PR caps and branch namespace stop applying"), `:252` ("reads its PR caps and branch namespace from it") and `:14`. `31-REVIEW.md` shows `push.rs` reads only the PR caps. The failure direction is safe (stricter default namespace), but a user who sets a namespace is told it applies. `docs/CONFIGURATION.md:144-145` repeats it.
-- **Internal phase number shown to users (IN-04, verified).** `preferences.rs:89`: "legacy driver, removed in Phase 31)". Users have no frame of reference for it, and it will go stale. The two-line placeholder is also split by hand with an unbalanced closing parenthesis across the lines.
-- **Retired-feature vocabulary persists.** `driver_run.rs:2640` `INJECTION_RETIRED` = "Injection is retired: use [c]ontrol, [a]nswer, [e]dit." Deliberate (Phase 30 D-02) and tested, but the injection screen is now gone from the codebase entirely, so the message refers to something a new user never saw. `[inferred — audit]`: acceptable for one release as a pointer for existing users; drop it at the next opportunity.
-- **Jargon in an error.** `driver_confirm.rs:409` "Cannot reach the driver seam for ... the event channel is closed". "Seam" is internal vocabulary.
-- **Docs.** `docs/CONFIGURATION.md:149-152` is a changelog entry, not configuration documentation, and names Phase 31.
+### Pillar 1: Copywriting (3/4)
+- The grant prompt, "Record a driver opt-in for "{alias}"? The push step reads its PR caps from it; without one it uses the defaults. [y/n]", is short and accurate. The withdraw prompt matches ("Its PR caps stop applying"). Both are free of unbacked safety claims (T-17-48).
+- The refusal message ("'{alias}' has a live driver run. Stop it from its Driver tab (x) first.") names the alias and renders it through `render_for_terminal`. It is actionable, but see fix 1: `x` is the kill key, not a plain stop.
+- Open: `preferences.rs:89` internal phase number, `driver_confirm.rs:267` "driver seam", `driver_run.rs` `INJECTION_RETIRED`, and the docs changelog paragraph. The earlier "Copywriting" blocker (retired consent text) is gone, hence 2 to 3.
 
 ### Pillar 2: Visuals (3/4)
+- The popup is a compact prompt plus buttons, with an accent colour per direction. The earlier wall of text is gone.
+- The kill popup keeps the Driver tab behind it (good). The opt-in popup does not (IN-03, open).
+- The "MANAGER PREFERENCES" block is still a heading plus "(none...)" with nothing interactive (`[inferred — audit]`: collapse it).
+- `o` is not in the Driver footer, though help documents it.
 
-- **Driver tab (good).** `render_launcher_tab` (`driver_run.rs:3035+`) now has exactly three states: Loading, empty ("No driver runs yet ..."), and list + detail. Removing the legacy section left no orphan header, divider or blank band; the list and detail panes own the full area. The `Loading...` state is deliberately distinct from the empty state, so it does not claim there are no runs before the first scan lands.
-- **Focal point / hierarchy.** Run list, then selected run header, then item rows. Preserved by 31-03; the shared helpers Phase 30 imports (`driver_panes`, `pane_header_line`, `follow_indicator`) were kept.
-- **Defect, background mismatch (IN-03, verified).** `driver_confirm.rs:309-313` renders `NormalScreen` (the dashboard) dimmed behind the opt-in popup. After 31-02 the only entry to that popup is `detail.rs:5987-5991` (Driver tab `o`), so the user's Driver tab is replaced by the dashboard for the duration of the prompt. One-line fix: use `DetailScreen::render_main_only` for both actions.
-- **Defect, placeholder panel.** `preferences.rs:77-107`: the "MANAGER PREFERENCES" section is now a heading plus a "(none ...)" note, kept at the top of the screen, with nothing to interact with. It is honest (the tests pin that no key edits anything), but it is a dead block. The G key description in help ("Global settings: the GSD global template") already describes the only live part. `[inferred — audit]`: collapse the manager section.
-- **Defect, discoverability.** `o` (opt-in toggle) is documented in help (`help.rs:370`) but is not a Driver footer token (`detail.rs:11171-11250`). It is the only live Driver-tab key missing from the footer.
-- **Cosmetic.** The generic loading string is still named `DRY_RUN_LOADING` (`driver.rs:98`, used at `driver_run.rs:990, 1724, 2101, 3075, 3191`) after the dry-run preview was deleted (IN-05).
-
-### Pillar 3: Color (3/4)
-
-Terminal styling, not a web palette. Counts are for the surviving confirm popups and help legends.
-
-- **Semantic use is consistent.** `Color::Red` for removal (kill launcher run, withdraw opt-in, remove project: `delete_confirm.rs` and `driver_confirm.rs:261-266`), `Color::Yellow` accent for the one additive action (grant: `:358`), `Color::Reset` for the prompt body when granting. Magenta = driven badge, Red = needs-a-human or crashed, Yellow = stale or unknown (`normal.rs:202-209`). No hardcoded hex or RGB values in the touched screens.
-- **Defect, contrast on the consent text.** `driver_confirm.rs:349-353` renders the whole disclosure in `Color::DarkGray`. DarkGray is the lowest-contrast style in the palette, used here for text the module calls "the last thing an operator reads before an irreversible act". An open todo covers DarkGray ambiguity project-wide (`2026-10-21-ambiguous-wide-typography-borders-and-darkgray.md`, out of phase scope), so this is flagged, not scored down further. If fix 1 removes the disclosure, this finding disappears with it.
-- **Accent not overused.** The destructive red is confined to the three confirm directions and the badge set; no new colours were introduced by the phase.
+### Pillar 3: Color (4/4)
+- Red covers kill, withdraw and remove-project. Yellow marks the one additive action (grant). No new colours were introduced by 31-08, and the lowest-contrast DarkGray text on the consent step is deleted.
+- The open project-wide DarkGray todo is out of phase scope. No contract defect remains in the touched screens.
 
 ### Pillar 4: Typography (3/4)
-
-- Hierarchy is intact and stable: bold headings (`help.rs:189-194`), a fixed `{key:<13}` key column (`:196-198`), dim footer lines, and a glyph+label legend where no meaning rides on colour alone (`help.rs:33-37`).
-- **Removed rows did not break structure.** The help body keeps "exactly one blank row" between sections (comments at `:266-270, :292-295, :306-309, :330-333`), and the Driver section block is the only thing the flag gates. Verified by reading `help_lines(experimental)` end to end.
-- The Driver section's Pitfall-7 continuation of the `e` row uses three key-less rows (`help.rs:356-358`), which render as an indented block. It is correct but is the only wrapped description in the section; the others are unwrapped single rows. Cosmetic.
-- Stale vocabulary only: `help.rs:105` "the legacy needs-a-human predicate" (the predicate is the non-driver one, not a removed legacy feature), and the `DRY_RUN_LOADING` constant name.
+- The bold heading, key-column and dim-gloss hierarchy is intact. The confirm popup title and body use the same pattern as the other confirms.
+- Stale names only: `DRY_RUN_LOADING`, and "legacy needs-a-human predicate" at `help.rs:105`.
 
 ### Pillar 5: Spacing (3/4)
+- The popup no longer depends on the 72-column and `body_rows + 5` sizing edge cases. Removed sections left no gaps (31-03 behaviour retained).
+- Open: the Preferences placeholder is hand-wrapped with an unbalanced parenthesis across two lines (`preferences.rs:85-89`), so it will not reflow on narrow terminals.
 
-- **Removed sections left no gaps.** Driver tab: see Pillar 2. Help: blank-line invariants preserved. Dashboard: the `r`/`x`/`o` row-less footer is simply shorter. `31-03-SUMMARY` re-measured the UI census pins (`MEASURED_REACH`, `UI_SOURCE_FLOOR`) and they hold.
-- **Defect, popup height.** `confirm_popup.rs:169-184` caps the popup at 72 columns wide and `body_rows + 5` tall, and refuses confirmation when the body is cut off (`:283-285`, `CLIPPED_HINT`: "Cut off: enlarge the terminal to confirm"). The grant popup body is: prompt (2 rows) + blank + file-set header (about 5) + 5 files at 2 rows each (10) + blank + model-seam block (about 11) + blank + residual block (about 12), which I estimate at about 43 body rows and about 48 popup rows at 72 columns. That is taller than 24, 30 and 40-row terminals. `[inferred — audit]`: the figure comes from a word-wrap estimate of the shipped constants, not a rendered frame; confirm with a TestBackend render at 80x24 and 110x40 asserting `clipped == false`. Note the existing test `every_driver_confirmation_renders_as_a_popup_with_buttons` (`driver_confirm.rs:1250-1275`) renders the grant popup at 110x40 and asserts the buttons exist, which does not detect clipping: the buttons are drawn whenever two inner rows exist (`confirm_popup.rs:270-279`).
-- **Preferences placeholder** is hand-wrapped at roughly 62 columns (`preferences.rs:85-89, 97-104`) rather than relying on `Paragraph::wrap`, so it will not reflow on narrow terminals. Minor.
-
-### Pillar 6: Experience Design (2/4)
-
-State coverage that survived and is good: Loading vs empty vs list on the Driver tab; refusal copy for unreadable runs and non-Linux steering (`driver_run.rs:2747-2758`); retired keys (`L`, `i`, dashboard `r`/`x`/`o`) are inert with regression tests that select a project and run with the flag on and off (`normal.rs:2312`, `detail.rs:20804`); the kill confirm names the run and the whole scope and offers the gentler alternative; the clipped-popup guard exists in principle.
-
-**Defects:**
-- **Destructive-action guard lost (WR-03, verified by diff).** `delete_confirm.rs` previously refused removal when the project had an observed run whose liveness was not `Dead` (CR-06/D-11/D-27, tests `unregistering_a_project_with_a_live_run_is_refused_and_leaves_every_map_intact`). 31-03 deleted it because the TUI "can no longer observe a legacy run", but the replacement signal exists: `launcher_marker.any_live` / `MarkerClass::Driven`, already used by the dashboard badge. Today `d` then `y` unregisters a project, which drops it out of the launcher-marker scan (`launcher_markers_for` iterates `config.projects`), while the detached launcher and its sandbox scope keep running with push rights and no badge anywhere. Only `driver stop <path>` from a shell recovers it. The help text for `d` ("Delete project") carries no warning either.
-- **Likely-unconfirmable consent step.** See Pillar 5. The grant popup's success path (`y`) is blocked below roughly 48 rows, and the only on-screen signal is a yellow hint line at the bottom of a popup whose body is cut off. Because the disclosure text is also factually stale (Pillar 1), the best fix is removal rather than scrolling.
-- **Operator note not surfaced.** 31-03's summary records that a legacy `drive` process still running at upgrade is invisible to the TUI and cannot be stopped from it. That is recorded only in a planning document. `[inferred — audit]`: acceptable for a hidden, experimental, flag-gated surface, but it belongs in the release notes.
-- **Footer omits a live key.** `o` (see Pillar 2).
-- **Loading and error states** on the touched screens: not regressed; no new async path was added by this phase.
+### Pillar 6: Experience Design (3/4)
+- Restored: the refusal guard, tested for both live (refused, config untouched, nothing written) and not-live (removed, status reported). It also respects the `Crashed` marker, which holds no lock.
+- Gaps, all `[inferred — audit]` from reading the diff:
+  - The guard reads a cached marker that is at most one slow tick stale, and is `None` before the first scan.
+  - It is skipped when the experimental flag is off.
+  - The refusal fires after the confirm popup rather than before it.
+  - Help's `d` row ("Delete project", `help.rs:231`) carries no warning.
+- Unchanged and good: Loading, empty and list states on the Driver tab, and inert retired keys with regression tests.
+- Still open: the `o` footer omission, and the note that a legacy `drive` process running at upgrade is invisible to the TUI. The note lives only in a planning document and belongs in release notes.
 
 ---
 
 ## Files Audited
-
-- `src/ui/screens/driver_confirm.rs` (prompts, disclosure, render, background choice, tests)
-- `src/ui/screens/confirm_popup.rs` (popup sizing and clipped-guard)
-- `src/ui/screens/help.rs` (help body, legends, badge legend, retired-row tests)
-- `src/ui/screens/detail.rs` (Driver footer builder, `i`/`o`/`c` key handlers, retired-key tests)
-- `src/ui/screens/driver_run.rs` (launcher tab, empty state, steer refusal, `INJECTION_RETIRED`)
-- `src/ui/screens/driver.rs` (remaining shared helpers, `DRY_RUN_LOADING`)
-- `src/ui/screens/normal.rs` (`row_badge`, badge ranking, retired-key regression)
-- `src/ui/screens/delete_confirm.rs` (`do_remove_project`, diff against `81c2ad7`)
-- `src/ui/screens/preferences.rs` (placeholder panel)
-- `docs/CONFIGURATION.md`, `README.md` (user-facing claims about the opt-in and the retired keys)
-- Phase artifacts: `31-CONTEXT.md`, `31-01` through `31-06` SUMMARY files, `31-REVIEW.md`, `31-REVIEW-DISPOSITION.md`
+- `src/ui/screens/driver_confirm.rs` (prompts, render, background choice, 31-08 diff, new test)
+- `src/ui/screens/delete_confirm.rs` (31-08 refusal and its tests)
+- `src/ui/screens/preferences.rs`, `help.rs`, `detail.rs`, `driver_run.rs`, `driver.rs`, `confirm_popup.rs`, `normal.rs` (carried over from the prior review; spot-checked for changes)
+- `src/ui/mod.rs`, `render_escape_guard.rs` (census pins only, bookkeeping)
+- Phase artifacts: the prior `31-UI-REVIEW.md`, plus the SUMMARY, PLAN and CONTEXT files listed in the request
