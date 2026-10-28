@@ -1,89 +1,107 @@
 ---
 phase: 28
 phase_name: Sandboxed Driver Launcher
-audited: 2026-10-23
+audited: 2026-10-28
 baseline: abstract 6-pillar standards (TUI-adapted; no UI-SPEC.md for Phase 28)
-screenshots: not captured (ratatui TUI, no dev server; code + test-source audit only)
+screenshots: not captured (ratatui TUI, no dev server; code audit only)
 interaction_capture: false
 overall_score: 18/24
 blockers: 0
+re_audit_of: ee65618
 ---
 
-# Phase 28 — UI Review
+# Phase 28 — UI Review (re-audit at HEAD)
 
-**Overall: 18/24** — no BLOCKER findings; all findings are WARNING.
+**Overall: 18/24** — no BLOCKER findings; all findings are WARNING. Score unchanged from ee65618; most prior findings persist, the Phase 28.1 work added useful posture detail but also more Yellow load and a longer confirmation paragraph.
 
 ## Scope
 
-Phase 28's own Driver-tab section from 28-07 (`Launcher runs (n)  [{/}]select  [X]stop`) was retired by Phase 30 (retired keys asserted gone at `src/ui/screens/detail.rs:18181`). The surviving Phase-28 UI surface audited here:
+Surviving Phase-28 UI surface (Phase 30 retired the 28-07 section; Phase 31-03 made the Driver tab list launcher runs only):
 
-- `UNSANDBOXED` posture badge and `!` row marker — `src/ui/screens/driver_run.rs`
-- `Launch UNSANDBOXED` confirmation — `src/ui/screens/driver_launch.rs`
-- `Kill driver run` prompt — `src/ui/screens/driver_confirm.rs`
-- CLI refusal text — `src/launcher/mod.rs:154`
+- `UNSANDBOXED` token, `!` row marker, header row 4 (`PLANTED`, `absent:`, `missing:`) — `src/ui/screens/driver_run.rs`
+- Launch form sandbox block and `Launch UNSANDBOXED` confirmation — `src/ui/screens/driver_launch.rs`
+- Kill prompt — `src/ui/screens/driver_confirm.rs`; launch success line — `src/app.rs:1311`
 
-`[INFERRED — audit]` Audited the current re-hosted surface rather than the 28-07 excerpt, since Phase 30 replaced it.
+`[inferred — cleanup 2026-10-28]` MacOS enablement (76a9ecb) only widened `cfg(target_os)` gates in `driver_launch.rs`; it changed no rendered copy or style, so it has no visual score impact.
 
-## Pillar Summary
+## Pillar Scores
 
 | Pillar | Score | Key finding |
 |--------|-------|-------------|
-| Copywriting | 3/4 | Refusals are specific and actionable; launch-success line is silent about posture; `!` and "bwrap + systemd scope" are jargon |
-| Visuals | 3/4 | Posture shown at three levels (row, token, header); `!` is not a real column and has no help legend |
-| Color | 3/4 | Yellow Bold matches D-30; Yellow carries ~8 meanings; severity flips Red (asking) to Yellow (running) |
-| Typography | 3/4 | BOLD/DarkGray roles consistent; load-bearing `missing:` list is de-emphasised; label casing inconsistent |
-| Spacing | 3/4 | Width tiers protect the badge; `!` hugs the id; unsandboxed popup is one long paragraph |
-| Experience Design | 3/4 | Strong guard rails (double confirm, default No, nothing remembered, clipped popup keeps `y` inert); state-feedback gaps |
+| Copywriting | 3/4 | Form now names what an unsandboxed run would lack; success line still silent about posture; confirm prompt still one long paragraph |
+| Visuals | 3/4 | Posture hierarchy intact and richer; `!` still unlegended and not a padded column |
+| Color | 3/4 | Yellow now 38x in `driver_run.rs`, 4x in `driver_launch.rs`; duplicate style helpers remain |
+| Typography | 3/4 | `missing:` list still drawn in the quietest style |
+| Spacing | 3/4 | One cell reserved for the posture column, but a short id still abuts `!` |
+| Experience Design | 3/4 | Guard rails intact; `[U]` still missing from key row; no hung-preflight state |
 
 ## Findings by Pillar
 
 ### Copywriting (3/4)
-- Good: CLI refusal "sandbox unavailable: missing X; rerun with --unsandboxed" (`src/launcher/mod.rs:154`); form "Sandbox unavailable: missing …" with "[U] launch UNSANDBOXED instead (asks again)" (`driver_launch.rs:832`); kill prompt honestly states in-flight work is not reported and points to `[c]` then stop.
-- WARNING: `UnsandboxedConfirmScreen` prompt (`driver_launch.rs:1085`) is a single ~230-char sentence in one Red paragraph.
-- WARNING: `finish_launch` (`src/app.rs:1762`) reports "launched <id>. It runs detached…" even for unsandboxed launches — the posture is not restated.
-- WARNING: "Stop launcher run" (28-07), "Stop driver run" (legacy `Stop`), "Kill driver run" (`StopLauncher`, `driver_confirm.rs:510`) — wording drift across two distinct actions.
+- Good: form copy "Sandbox unavailable: missing …" plus "A sandboxed launch is refused on this host." plus "Unsandboxed, the run would lack: …" plus "[U] launch UNSANDBOXED instead (asks again)" (`driver_launch.rs:~846-865`). This consequence line is new since ee65618 and a clear improvement.
+- WARNING: `UnsandboxedConfirmScreen::prompt` (`driver_launch.rs:1148-1155`) is still one sentence in a single Red `Line` (`:1186-1190`), now also interpolating the absent-protection list, so it is longer than before.
+- WARNING: `finish_launch` message `"{}: launched {}. It runs detached…"` (`src/app.rs:1311`) is unchanged and never says UNSANDBOXED.
+- WARNING: "Stop" / "Kill" naming drift (`driver_confirm.rs`) not addressed.
 
 ### Visuals (3/4)
-- Good: escalating posture hierarchy — `!` row cell (`driver_run.rs:327`), `UNSANDBOXED` token (`:2140`), header row 4 with `missing:` list (`:1048`).
-- WARNING: `!` is not a fixed column — id is cut by `fit_cells` but not padded, so a short id renders `20261020-x!` and reads as part of the id (comment at `:276` calls it a "posture column").
-- WARNING: `!`, `UNSANDBOXED`, `cap!`, `stale` absent from the help legend (`help.rs:387` documents only `RUN_STATES_LEGEND` and `ITEM_STATES_LEGEND`).
+- Good: three-level posture hierarchy retained (`!` cell `driver_run.rs:~327`, `UNSANDBOXED` token `:2245`, header row 4 `:1041-1084` now with `PLANTED`, `absent:`, `missing:`).
+- WARNING: `!` (`POSTURE_DEGRADED`, `:90`) has no help-legend entry; grep of the help screen finds no `UNSANDBOXED`/`PLANTED`/`!` documentation.
+- WARNING: the id is `fit_cells`-clamped to `room` but not padded (`:~318`), so a short id still renders `id!`. Only the non-degraded case pads with a space.
 
 ### Color (3/4)
-- `Color::Yellow` used 33x in `driver_run.rs` and 5x in `driver_launch.rs`/`driver_confirm.rs` — posture, stale, cap, paused, unreadable, unknown word, custom prompt, clipped hint, lint warnings, launch cost warning.
-- WARNING: `posture_style()` (`driver_run.rs:261`) and `flag_style()` (`:2046`) are byte-identical — drift risk; no palette/theme module in `src/ui`.
-- WARNING: unsandboxed launch confirm is Red, persistent posture afterwards is Yellow. `[INFERRED — audit]` Accepted as the D-30 "warning style" contract; flagged only as a severity-consistency risk.
-- Meaning never carried by color alone (word `UNSANDBOXED` always present), except the lone `!`.
+- Yellow usage: 38 in `driver_run.rs`, 4 in `driver_launch.rs`; it now also carries `PLANTED`, `absent:` and the unsandboxed-would-lack line.
+- WARNING: `posture_style()` (`driver_run.rs:254`) and `flag_style()` (`:2151`) remain byte-identical (Yellow + BOLD).
+- WARNING: Red (asking, `driver_launch.rs:1189`) vs Yellow (persistent) severity flip unchanged; accepted as the D-30 warning-style contract `[inferred — cleanup 2026-10-28]`.
 
 ### Typography (3/4)
-- Good: BOLD reserved for flags/selection/titles; DarkGray for labels, consistently.
-- WARNING: `missing: bwrap, systemd-run` drawn in `label_style()` (`driver_run.rs:1063`) — the one actionable posture fact is the quietest text on the row.
-- WARNING: "Sandbox:" (`driver_launch.rs:506`) vs lowercase "sandbox" (`driver_run.rs:1049`).
+- Good: BOLD/DarkGray roles consistent.
+- WARNING: `missing:` still uses `label_style()` (`driver_run.rs:1077`, `:1082`) while the less critical `PLANTED` token gets Yellow.
+- WARNING: "Sandbox:" (`driver_launch.rs:526-528`) vs lowercase "sandbox" in the run header.
 
 ### Spacing (3/4)
-- Good: `fit_cells` + `SUMMARY_ID_MIN_CELLS` (12) and `RUN_ROW_WORD_MIN_CELLS` (36) keep the badge unclipped; tested at 30, 40 and wider.
+- Good: width tiers still protect the badge; 28.1-13 (8cea0d7) keeps absent protections visible on narrow Driver tabs, and the row reserves one posture cell (`driver_run.rs:~314`).
 - WARNING: unpadded `!` (see Visuals).
-- WARNING: launch-form essentials stack without separators; on short terminals the popup clips and `y` goes inert, dead-ending at "Cut off: enlarge the terminal" (by design, `confirm_popup.rs:67`; safe but user-visible).
+- WARNING: form stack grew by up to three lines in the degraded case (missing, refusal, would-lack, `[U]`), raising clip risk on short terminals where the popup goes inert by design.
 
 ### Experience Design (3/4)
-- Good: second confirmation for unsandboxed launch; focus defaults to No; `Replace` leaves no submittable form; choice not remembered (`args.unsandboxed` set only on confirm); hostile identity escaped and guarded by `render_escape_guard`; row status from the run lock, not the written word; preflight "Sandbox: Loading..." state exists.
-- WARNING: `U` missing from `KEY_ROW` ("[j/k] field  [e] edit field", `driver_launch.rs:509`) — discoverable only from the Red line.
-- WARNING (unverified): no timeout/error state found for a preflight that never arrives; row could read "Loading..." indefinitely. Whether `y` is inert in that state was not confirmed.
+- Good: double confirmation, focus defaults to No, nothing remembered (`args.unsandboxed = true` only on confirm, `driver_launch.rs:1177-1180`), escape guards, run-lock-derived status.
+- WARNING: `KEY_ROW` is still `"[j/k] field  [e] edit field"` (`driver_launch.rs:531`); `U` is discoverable only from the Yellow line.
+- WARNING (unverified): a preflight that never arrives still shows `Sandbox: Loading...` (`:526`) with no timeout state; whether `y` is inert there was not confirmed.
+- No regression from macOS enablement: the same screens render on both platforms.
 
-## Top Fixes
+## Top 3 Fixes
 
-1. **Cryptic, unlegended `!`** — pad the id so `!` sits in a fixed last column; add a "Run row marks" legend line to `help.rs` covering `!`, `UNSANDBOXED`, `cap!`, `stale`; or replace `!` with `U`/`⚠` via width-safe `glyphs.rs`.
-2. **De-emphasised `missing:` list** — render in default style or Yellow non-bold in `header_row_4` (`driver_run.rs:1063`).
-3. **Silent unsandboxed launch success** — `finish_launch` (`app.rs:1762`) should say "launched <id> UNSANDBOXED", threading `args.unsandboxed` through `DriverLaunched`.
-4. **Wall-of-text confirmation** — split `UnsandboxedConfirmScreen::render` into three Red lines: headline, consequence ("full user permissions, no bwrap, no scope"), "Missing: …".
-5. **Overloaded Yellow / duplicate helpers** — collapse `posture_style` and `flag_style` into one or a small named palette (warn, flag, label); reconsider sharing Yellow between persistent security posture and transient `stale`.
+1. **Unlegended, unpadded `!`** — pad so `!` sits in a fixed last column (`driver_run.rs:~318`); add a run-row marks legend (`!`, `UNSANDBOXED`, `PLANTED`, `cap!`, `stale`) to the help screen.
+2. **Wall-of-text unsandboxed confirm and silent success** — split `prompt()` (`driver_launch.rs:1148`) into headline, consequence and Missing/absent lines; make `app.rs:1311` say "launched <id> UNSANDBOXED" by threading `args.unsandboxed` through `DriverLaunched`.
+3. **De-emphasised `missing:`** — render in default or Yellow non-bold (`driver_run.rs:1077/1082`); also collapse `posture_style`/`flag_style` and add `[U]` to `KEY_ROW` when the host cannot sandbox.
 
-### Minor
-- Add `[U]` to the form key row when the host cannot sandbox.
-- Reconcile "Stop" vs "Kill" naming across confirmations.
-- Add/verify a failure state for a hung preflight.
-- Align "Sandbox:" / "sandbox" casing.
+Minor: Stop vs Kill naming; hung-preflight failure state; "Sandbox:" casing.
+
+## Delta vs prior audit (ee65618)
+
+| Pillar | Prior | Now | Change |
+|--------|-------|-----|--------|
+| Copywriting | 3 | 3 | none (form copy better, prompt longer) |
+| Visuals | 3 | 3 | none |
+| Color | 3 | 3 | none (Yellow load up) |
+| Typography | 3 | 3 | none |
+| Spacing | 3 | 3 | none |
+| Experience Design | 3 | 3 | none |
+| **Overall** | 18 | 18 | 0 |
+
+**Regressions (minor, no score change):**
+- `driver_launch.rs:1148-1155` confirm prompt lengthened by the absent-protection list, worsening the wall-of-text finding.
+- `driver_run.rs` Yellow count 33 to 38 (`PLANTED`/`absent:`), deepening overload of one color.
+- Degraded form block is up to three lines taller (`driver_launch.rs:~846-865`), raising popup-clip risk.
+
+**Prior findings resolved / improved:**
+- Reader was told only what was missing; the form now also states the consequence ("Unsandboxed, the run would lack: …") and that a sandboxed launch is refused (28.1-06, 8a35d8d).
+- Header row 4 now surfaces `PLANTED` and `absent:` protections ahead of `missing:`, and narrow tabs keep them (28.1-13).
+- Posture column is now explicitly reserved one cell in the row layout (partial fix for the `!` crowding).
+- Phase 31-03 removed the legacy scan paths; no leftover legacy Driver-tab copy found in the two audited files.
+
+**Still open from prior:** unlegended `!`, `finish_launch` silence, single-paragraph confirm, duplicate Yellow helpers, `missing:` de-emphasis, `[U]` absent from key row, "Sandbox:" casing, Stop/Kill drift, hung-preflight state.
 
 ## Method Notes
-- No `cargo test` run (concurrent timing-sensitive tests); rendered output read from test source and the 28-07 SUMMARY.
-- Gitignore/screenshot gate skipped — no screenshots captured.
-- Report authored by gsd-ui-auditor; file written by the orchestrator from the auditor's returned text because the auditor's harness disallowed writing report files.
+- Code-only audit (no TUI run, no `cargo test`); diff inspected for ee65618..HEAD on both files (12 commits).
+- Line numbers marked `~` were read from snippets and may be off by a few lines.
