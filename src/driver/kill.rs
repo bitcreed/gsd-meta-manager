@@ -21,25 +21,19 @@ use std::time::Duration;
 use rustix::process::{Pid, Signal};
 
 /// How long the launcher waits after the terminate signal before escalating to
-/// the uncatchable one (D-06 step 4).
+/// the uncatchable one (D-06 step 4). The real consumer is the SIGTERM-to-SIGKILL
+/// wait in `launcher::run::stop_group`.
 ///
-/// **This value is wedged between two other numbers and both bounds are
-/// asserted by unit tests rather than left as a comment**, because changing
-/// either neighbour re-opens this one:
+/// **One bound is asserted by a unit test: it must be strictly less than fifteen
+/// seconds, including the SIGKILL reap window**, which is where ROADMAP success
+/// criterion #1 verifies - *"leaves no `claude` process, no grandchild build or
+/// server process, and no zombie behind - verified 15 seconds later"*. Even the
+/// escalation path has to have completed and been reaped before that check, or the
+/// criterion is unverifiable by construction.
 ///
-/// * **It must exceed the `claude` group's own grace** — ten seconds,
-///   `src/executor/claude.rs:107` — **plus teardown slack.** The driver spends
-///   that entire grace *inside* `Executor::cancel` before it can journal its
-///   ending and exit, so escalating sooner would SIGKILL the driver mid-teardown
-///   and orphan the very `claude` tree the stop exists to remove. That is the
-///   failure the two-layer design was built to avoid, reintroduced by a number.
-/// * **It must be strictly less than fifteen seconds**, which is where ROADMAP
-///   success criterion #1 verifies — *"leaves no `claude` process, no grandchild
-///   build or server process, and no zombie behind — verified 15 seconds
-///   later"*. Even the escalation path has to have completed and been reaped
-///   before that check, or the criterion is unverifiable by construction.
-///
-/// Twelve seconds satisfies both with two seconds of slack below and three above.
+/// Twelve seconds was sized against the in-process executor's ten-second group
+/// grace, which Phase 31 retired, so no lower bound is tied to another constant any
+/// more.
 pub const DRIVER_TEARDOWN_GRACE: Duration = Duration::from_secs(12);
 
 /// Send `sig` to every process in the group led by `pgid`.
@@ -87,18 +81,6 @@ pub(crate) fn signal_group(pgid: u32, sig: Signal) -> std::io::Result<()> {
 mod tests {
     use super::*;
 
-    /// The `claude` process group's own SIGTERM→SIGKILL grace, as an
-    /// **observable** copy of a constant that is private to the executor
-    /// (`src/executor/claude.rs:107`).
-    ///
-    /// The convention is `tests/executor_lifecycle.rs:43-46`'s: a private
-    /// constant whose value a caller must reason about is mirrored where the
-    /// reasoning happens, and the mirror is what the bound is asserted against.
-    /// If the executor's value moves,
-    /// `the_driver_grace_exceeds_the_claude_group_grace_plus_slack` is where the
-    /// consequence surfaces.
-    const CLAUDE_GROUP_GRACE: Duration = Duration::from_secs(10);
-
     /// How long a SIGKILL is given to take effect, mirrored from the legacy stop
     /// path that owned the figure (it was `KILL_REAP_BOUND` in the retired
     /// `stop_run`). SIGKILL cannot be caught, so this is a reap window rather
@@ -109,24 +91,6 @@ mod tests {
     /// The point at which ROADMAP success criterion #1 verifies, verbatim from
     /// the criterion: *"verified 15 seconds later"*.
     const CRITERION_VERIFICATION_POINT: Duration = Duration::from_secs(15);
-
-    #[test]
-    fn the_driver_grace_exceeds_the_claude_group_grace_plus_slack() {
-        assert!(
-            DRIVER_TEARDOWN_GRACE > CLAUDE_GROUP_GRACE,
-            "the driver's grace ({DRIVER_TEARDOWN_GRACE:?}) must exceed the claude \
-             group's own grace ({CLAUDE_GROUP_GRACE:?}): the driver spends that whole \
-             grace inside Executor::cancel before it can journal and exit, so \
-             escalating sooner SIGKILLs the driver mid-teardown and ORPHANS the very \
-             claude tree the stop exists to remove (D-06)"
-        );
-        assert!(
-            DRIVER_TEARDOWN_GRACE >= CLAUDE_GROUP_GRACE + Duration::from_secs(2),
-            "the margin above the claude group's grace must be slack for the journal \
-             finish and the process exit, not a rounding difference: {DRIVER_TEARDOWN_GRACE:?} \
-             vs {CLAUDE_GROUP_GRACE:?}"
-        );
-    }
 
     #[test]
     fn the_driver_grace_is_strictly_below_the_fifteen_second_verification_point() {
