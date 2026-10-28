@@ -1,10 +1,11 @@
-# Phase 31 — UI Review (re-audit after 31-08)
+# Phase 31 — UI Review (post-31-07 re-audit, final tree at HEAD b9990c0)
 
-**Audited:** 2026-10-27 (supersedes the 2026-10-25 review, 16/24)
+**Audited:** 2026-10-28 (post-31-07 re-audit; supersedes the 2026-10-27 post-31-08 review, 19/24, and the 2026-10-25 review, 16/24)
 **Baseline:** abstract 6-pillar standards (no UI-SPEC.md), read for a ratatui TUI (colour = style semantics, typography = bold/dim hierarchy, spacing = layout, popup sizing and blank-line structure)
-**Screenshots:** not captured (terminal UI, no dev server; code-only audit). Plan 31-07 is HELD and is not scored as missing.
+**Screenshots:** not captured (terminal UI, no dev server; code-only audit). Plan 31-07 (D-04, commits a23d1d4, 2e2e335, b9990c0) has now executed; the former hold note is obsolete.
 **Interaction captures:** off (`interaction_capture: false`); interaction findings are code-derived.
 **Registry audit:** skipped (no `components.json`).
+**Post-31-07 re-audit:** 31-07 retired the Codex executor and the in-process Claude transport and removed the TUI's dead exec-event channel (`AppContext::run_states`/`exec_tx`, `App::apply_exec_event`, the `main_loop` ExecEvent arm), and retargeted some screen tests to `registry::is_opted_in`. Every finding and file:line citation below was re-checked against HEAD. A grep of `src` for `run_states`, `exec_tx`, `apply_exec_event` and `ExecEvent` finds only two unrelated test names in `help.rs` (`the_driver_run_states_legend...`). No finding cited removed code. `DriverOutputLine` stays and is live through the launcher tail in `driver_run.rs`, so nothing was dropped. The 31-07 change is rendering-neutral: it removed no visible surface, so no score moved. Citations that shifted: the render block in `driver_confirm.rs` now starts at line 186, not 187.
 **Method:** read the prior review, then `git diff 36e0805^..5078bf5 -- src/ui` and the current source. Judgments marked `[inferred — audit]` have no human behind them.
 
 ---
@@ -20,7 +21,7 @@
 | 5. Spacing | 3/4 | The 43-row clipping risk is gone with the disclosure. The Preferences placeholder is still hand-wrapped at fixed columns. |
 | 6. Experience Design | 3/4 | The live-run guard on unregister is restored (WR-03) with tests. It is not airtight (see below), and the footer omission persists. |
 
-**Overall: 19/24** (was 16/24)
+**Overall: 19/24** (unchanged by 31-07; 16/24 in the first review)
 
 ---
 
@@ -33,7 +34,7 @@
 | WR-02: "branch namespace" claimed by the prompts | RESOLVED in the code. `prompt_text` now says "PR caps" only, and the module doc states the namespace is parsed but not consulted. `docs/CONFIGURATION.md` was not re-verified. |
 | DarkGray contrast on the consent text | RESOLVED (text deleted). |
 | WR-03: unregister had no live-run guard | RESOLVED with caveats. `delete_confirm.rs:121-142` refuses when `ctx.experimental` and the cached `launcher_marker.any_live` hold. Two tests cover refusal, an unchanged config, and the not-live case. |
-| IN-03: opt-in popup dims the dashboard | STILL OPEN. `driver_confirm.rs:187-195` fixed it for the kill popup only (DetailScreen behind `StopLauncher`). `ToggleOptIn` is reachable only from the Driver tab `o`, yet it still renders `NormalScreen`. The comment calls this deliberate, which is wrong since 31-02 removed the dashboard entry. |
+| IN-03: opt-in popup dims the dashboard | STILL OPEN. `driver_confirm.rs:186-195` fixed it for the kill popup only (DetailScreen behind `StopLauncher`). `ToggleOptIn` is reachable only from the Driver tab `o`, yet it still renders `NormalScreen`. The comment calls this deliberate, which is wrong since 31-02 removed the dashboard entry. |
 | IN-04: "legacy driver, removed in Phase 31" on Preferences | STILL OPEN (`preferences.rs:89`). |
 | `driver seam` jargon in an error | STILL OPEN (`driver_confirm.rs:267`). |
 | `INJECTION_RETIRED`, `DRY_RUN_LOADING`, `help.rs:105` wording | STILL OPEN (cosmetic). |
@@ -47,7 +48,7 @@
    - The guard fails open: the marker is `None` before the first scan lands. It is also gated on `ctx.experimental`, so a run left over from an earlier session with the flag off passes silently.
    - It fires after the user has already pressed `y`. Disable the `y` path, or show the live-run state in the popup text, so the refusal arrives as the prompt rather than after it.
    - The text says "Stop it from its Driver tab (x)", but `x` opens a kill confirmation. The gentler path is `[c]` then stop.
-2. **Render the Driver tab behind the opt-in popup** — grant and withdraw flip the user from the Driver tab to the dashboard for the duration of the prompt. In `src/ui/screens/driver_confirm.rs:187-195`, use `DetailScreen::render_main_only` for both actions and drop the stale "as it did when the dashboard also opened it" comment.
+2. **Render the Driver tab behind the opt-in popup** — grant and withdraw flip the user from the Driver tab to the dashboard for the duration of the prompt. In `src/ui/screens/driver_confirm.rs:186-195`, use `DetailScreen::render_main_only` for both actions and drop the stale "as it did when the dashboard also opened it" comment.
 3. **Sweep leftover internal vocabulary and add `[o]` to the footer** — new users see phase numbers and retired-feature names. Replace `preferences.rs:86-89` with "(none: this build has no manager-wide settings)", reword `driver_confirm.rs:267` to drop "seam", unbind or reword `INJECTION_RETIRED`, add `[o]pt-in` to the Driver footer (`detail.rs` footer builder), and rename `DRY_RUN_LOADING`.
 
 ---
@@ -84,6 +85,7 @@
   - It is skipped when the experimental flag is off.
   - The refusal fires after the confirm popup rather than before it.
   - Help's `d` row ("Delete project", `help.rs:231`) carries no warning.
+- Post-31-07: removing the dead exec-event channel leaves the pump with two arms (actions, redraw timer), so no UI state can be driven by an orphaned event source. This is a structural plus, but it changes no user-visible behaviour, so the score stays 3. `[inferred — audit]`
 - Unchanged and good: Loading, empty and list states on the Driver tab, and inert retired keys with regression tests.
 - Still open: the `o` footer omission, and the note that a legacy `drive` process running at upgrade is invisible to the TUI. The note lives only in a planning document and belongs in release notes.
 
@@ -94,4 +96,5 @@
 - `src/ui/screens/delete_confirm.rs` (31-08 refusal and its tests)
 - `src/ui/screens/preferences.rs`, `help.rs`, `detail.rs`, `driver_run.rs`, `driver.rs`, `confirm_popup.rs`, `normal.rs` (carried over from the prior review; spot-checked for changes)
 - `src/ui/mod.rs`, `render_escape_guard.rs` (census pins only, bookkeeping)
+- Re-verified at HEAD for the post-31-07 pass: `driver_confirm.rs:186-195, 267`, `delete_confirm.rs:121-142`, `preferences.rs:85-89`, `help.rs:105, 370`, `detail.rs` footer tokens (`[c]`, `[x]` present; no `[o]`), `driver_run.rs:2640`
 - Phase artifacts: the prior `31-UI-REVIEW.md`, plus the SUMMARY, PLAN and CONTEXT files listed in the request
