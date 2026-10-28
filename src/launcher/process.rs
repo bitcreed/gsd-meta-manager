@@ -198,7 +198,7 @@ fn last_line_of_tail(tail: &[u8], window_cut: bool) -> String {
 /// block the child), and only its final [`STDERR_TAIL_BYTES`] are read back. The
 /// partial first line of a cut window is never returned, because a token cut there
 /// has lost the prefix the SAFE-04 patterns anchor on; a final line longer than the
-/// window yields [`OVERLONG_STDERR_NOTE`] (see [`last_line_of_tail`], WR-05). The
+/// window yields `OVERLONG_STDERR_NOTE` (see `last_line_of_tail`, WR-05). The
 /// caller decides what to do with the line: it can carry a URL with credentials in
 /// it, so it must be redacted before it is printed or logged. For `git`, the
 /// repository-selecting `GIT_*` variables are removed from the inherited
