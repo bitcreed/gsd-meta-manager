@@ -4,11 +4,11 @@ milestone: v1.15.0
 current_phase: 31
 current_phase_name: Retire Superseded Envelope & Goal-Layer Code
 status: executing
-stopped_at: Completed 31-06-PLAN.md
-last_updated: "2026-10-28T02:34:24.051Z"
+stopped_at: Completed 31-08-PLAN.md
+last_updated: "2026-10-28T02:41:27.328Z"
 last_activity: 2026-10-27
 last_activity_desc: Phase 31 execution started
-state_head: 0db916d9e9c8416fe80a97a937d9265bf508fc2b
+state_head: 89f4b3b6f89e3c60ac4652e8eb66303a9ddc1150
 progress:
   total_phases: 10
   completed_phases: 14
@@ -269,8 +269,8 @@ Carried forward from v1.7.0 (unchanged by this patch):
 
 Active milestone (superseded by the 2026-10-14 re-plan above; resume there):
 Milestone: v2.0 Autonomous Orchestration (Phases 14-31). Phases 19/21/22/23 are superseded.
-Phase: 31 (Retire Superseded Envelope & Goal-Layer Code) — READY TO EXECUTE
-Plan: 7 of 7
+Phase: 31 (Retire Superseded Envelope & Goal-Layer Code) — EXECUTING
+Plan: 8 of 9
   19-11 closed T-19-60 structurally (resolve the effective program by finding the first token
   whose BASENAME is in a closed GOVERNED_PROGRAMS set; NO wrapper-name list added, one DELETED).
   19-12 certifies that closure at the CLASS level rather than at the instance level:
@@ -304,7 +304,7 @@ Status: Ready to execute
   criterion 4 remains PRESENT_BEHAVIOUR_UNVERIFIED and permanently agent-unclosable — it needs
   a human with a live Claude subscription for the 10 #[ignore]d arms. 4/5 is the correct ceiling.
   Phase 19 human-judgement UAT items were deferred by explicit user decision on 2026-08-19, not resolved.
-Last activity: 2026-10-27 - Completed quick task 261027-184: Sync against gsd-core v1.19.0 (git.repo_tagging, synced constants, README, GSD-CORE-SYNC doc)
+Last activity: 2026-10-27 — Phase 31 execution started
 Note (260908-uqq): the D-06 "a capability refusal costs zero tokens and zero quota" guarantee no
 longer holds unconditionally. It holds on the **eager arm** only (CLI announced inside the grace).
 On the **late arm** — 2.1.266's measured shape — the grace releases the prompt first, so a refusal
@@ -564,6 +564,7 @@ verify-phase if the gate is fixed.
 | Phase 31 P04 | 30 min | 3 tasks | 77 files |
 | Phase 31 P05 | 30min | 3 tasks | 51 files |
 | Phase 31 P06 | 35 min | 3 tasks | 12 files |
+| Phase 31 P08 | 40 min | 3 tasks | 11 files |
 
 ## Accumulated Context
 
@@ -809,6 +810,7 @@ Recent decisions affecting current work:
 - [Phase 31]: 31-05: ParkReason pruned to {PushOutsideNamespace, SecretDetected, PrCapExceeded}; journal trimmed to is_plain_path_component, classify_change, digests, redact, tail reader; RedactedLine kept under allow(dead_code) [inferred — audit]
 - [Phase 31]: 31-06: T-19-72 and T-19-73 stay open (K class, low) with a backlog owner; Phase 19 threats_open is 0; CR-01 and CR-02 of 21-VERIFICATION are not closed as superseded
 - [Phase 31]: 31-07 (D-04: Codex executor / in-process Claude transport / process-wrap removal) HELD pending user decision; not executed. 31-07-PLAN.md left in place unexecuted; verification treats D-04 as deferred. Executor code remains callerless with a narrow dead_code allow on DrivableProject::with_runtime.
+- [Phase 31]: 31-08: WR-01 drops the grant-popup disclosure entirely; WR-02 corrects claims (branch_namespace stays validated but unused); WR-03 unregister guard gated on ctx.experimental reading the cached launcher marker; driver_confirm.rs kept in driver.rs CENSUS_FILES [inferred - audit]
 
 ### Roadmap Evolution
 
@@ -1005,8 +1007,8 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-10-25T06:53:33.954Z
-Stopped at: Completed 31-06-PLAN.md
+Last session: 2026-10-28T02:41:25.844Z
+Stopped at: Completed 31-08-PLAN.md
 Resume file: None
 
 Next: `/gsd-plan-phase 28.1` (or `/gsd-discuss-phase 28.1`). Phase 30 verified and complete. v1.15.0 is an interim release; the v2.0
