@@ -142,6 +142,11 @@ pub fn run_interactive(program: &str, args: &[&str]) -> std::io::Result<ExitStat
 /// How much of the end of a command's stderr is read back.
 const STDERR_TAIL_BYTES: u64 = 4096;
 
+/// What [`run_bounded_with_stderr`] returns when the last stderr line is not wholly
+/// inside the read-back window (WR-05): a fixed note, never a fragment of the line.
+const OVERLONG_STDERR_NOTE: &str =
+    "(the last stderr line was longer than 4096 bytes and is not kept)";
+
 /// The `GIT_*` variables that would point a host `git` at a repository other than
 /// the one the argv names. Removed from every `git` this module starts: the push
 /// step names its repositories explicitly (`--git-dir`, `-C`), and an inherited
@@ -156,10 +161,44 @@ const GIT_REPO_ENV: &[&str] = &[
     "GIT_NAMESPACE",
 ];
 
+/// The last non-empty trimmed line of `tail`, the final bytes of a command's stderr.
+///
+/// `window_cut` says the read-back window began inside the stream. Its first line
+/// is then a fragment, so everything up to and including the first `\n` is
+/// discarded before the selection (WR-05): a token cut there has lost the prefix
+/// the SAFE-04 patterns anchor on, and a fragment handed to the redactor would be
+/// persisted half-redacted. If the cut window holds no complete line after that,
+/// the last line was the cut one, and [`OVERLONG_STDERR_NOTE`] is returned instead
+/// of any of its bytes.
+fn last_line_of_tail(tail: &[u8], window_cut: bool) -> String {
+    let whole = if window_cut {
+        match tail.iter().position(|b| *b == b'\n') {
+            Some(at) => &tail[at + 1..],
+            None => return OVERLONG_STDERR_NOTE.to_owned(),
+        }
+    } else {
+        tail
+    };
+    let line = String::from_utf8_lossy(whole)
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or_default()
+        .to_owned();
+    if window_cut && line.is_empty() {
+        return OVERLONG_STDERR_NOTE.to_owned();
+    }
+    line
+}
+
 /// [`run_bounded`], plus the last non-empty line of the command's stderr.
 ///
 /// stderr goes to a private temporary file (never a pipe, so it cannot fill and
 /// block the child), and only its final [`STDERR_TAIL_BYTES`] are read back. The
+/// partial first line of a cut window is never returned, because a token cut there
+/// has lost the prefix the SAFE-04 patterns anchor on; a final line longer than the
+/// window yields [`OVERLONG_STDERR_NOTE`] (see [`last_line_of_tail`], WR-05). The
 /// caller decides what to do with the line: it can carry a URL with credentials in
 /// it, so it must be redacted before it is printed or logged. For `git`, the
 /// repository-selecting `GIT_*` variables are removed from the inherited
@@ -194,12 +233,68 @@ pub fn run_bounded_with_stderr(
         .ok()?;
     let mut tail = Vec::new();
     sink.take(STDERR_TAIL_BYTES).read_to_end(&mut tail).ok()?;
-    let line = String::from_utf8_lossy(&tail)
-        .lines()
-        .rev()
-        .map(str::trim)
-        .find(|line| !line.is_empty())
-        .unwrap_or_default()
-        .to_owned();
+    let line = last_line_of_tail(&tail, len > STDERR_TAIL_BYTES);
     Some((output, line))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A token-shaped secret, assembled at runtime so this file holds no literal.
+    const SECRET: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZ012345";
+
+    #[test]
+    fn a_cut_window_with_no_line_break_yields_the_note_and_no_fragment() {
+        let tail = format!("{SECRET}{SECRET}");
+        let line = last_line_of_tail(tail.as_bytes(), true);
+        assert_eq!(line, OVERLONG_STDERR_NOTE);
+        assert!(!line.contains(&SECRET[..8]), "{line}");
+        // A cut window whose only line break ends the fragment has no whole line either.
+        assert_eq!(
+            last_line_of_tail(format!("{SECRET}\n").as_bytes(), true),
+            OVERLONG_STDERR_NOTE
+        );
+    }
+
+    #[test]
+    fn the_partial_first_line_of_a_cut_window_is_dropped() {
+        let tail = format!("{SECRET} fragment\nfatal: the real error\n\n");
+        assert_eq!(
+            last_line_of_tail(tail.as_bytes(), true),
+            "fatal: the real error"
+        );
+    }
+
+    #[test]
+    fn an_uncut_tail_keeps_its_last_line() {
+        assert_eq!(last_line_of_tail(b"one\n  two  \n\n", false), "two");
+        // No line break at all is a whole line when the window was not cut.
+        assert_eq!(last_line_of_tail(b"only", false), "only");
+        assert_eq!(last_line_of_tail(b"", false), "");
+    }
+
+    #[test]
+    fn run_bounded_with_stderr_never_returns_a_token_cut_by_the_window() {
+        // WR-05: 100 'x', a space, a 36-byte token, then 4070 'y', no newline. The sink
+        // is 4207 bytes, so the 4096-byte window starts 10 bytes into the token: its
+        // `ghp_` prefix is gone and the SAFE-04 patterns could no longer anchor on it.
+        let payload = format!("{} ghp_{SECRET}{}", "x".repeat(100), "y".repeat(4070));
+        assert_eq!(payload.len(), 100 + 1 + 36 + 4070);
+        let args = [
+            OsString::from("-c"),
+            OsString::from("printf '%s' \"$1\" >&2"),
+            OsString::from("sh"),
+            OsString::from(payload),
+        ];
+        let (_, line) = run_bounded_with_stderr("sh", &args, None, &[], Duration::from_secs(20))
+            .expect("sh runs");
+        for run in SECRET.as_bytes().windows(8) {
+            let run = std::str::from_utf8(run).expect("ascii");
+            assert!(
+                !line.contains(run),
+                "a token fragment {run:?} leaked: {line}"
+            );
+        }
+    }
 }

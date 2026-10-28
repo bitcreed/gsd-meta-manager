@@ -48,10 +48,12 @@ const LEDGER_FILE: &str = "pr-ledger.ndjson";
 /// module doc.
 const WINDOW_SECS: i64 = 24 * 60 * 60;
 
-/// The seconds the push step may spend establishing the count before the size bound
-/// refuses (`T-19-117`); the budget the retired Phase 19 guard allowed, kept as
-/// the push step's own bound.
-const COUNT_DEADLINE_SECS: u64 = 5;
+/// The seconds of counting time [`MAX_LEDGER_BYTES`] was sized against (`T-19-117`):
+/// the measurements in its doc are read against this figure. It is a sizing input
+/// only; nothing enforces it at runtime, no refusal message names it, and so only the
+/// size-bound tests read it.
+#[cfg(test)]
+const COUNT_BUDGET_SECS: u64 = 5;
 
 /// The largest ledger [`record_and_check_in`] will read before refusing
 /// (`T-19-117`).
@@ -59,18 +61,19 @@ const COUNT_DEADLINE_SECS: u64 = 5;
 /// # WHY A BOUND AT ALL, AND WHY IT REFUSES RATHER THAN READS LESS
 ///
 /// [`record_and_check_in`] reads this file WHOLE and [`tally`] walks every line,
-/// on the push step's critical path against a [`COUNT_DEADLINE_SECS`]-second budget.
-/// **The file is append-only and a command the agent can run may inflate it** — an
-/// append whose target arrives after a redirection operator was exit 0 under the
-/// retired guard, and any shell the agent runs can still do it. Measured on this
-/// machine:
+/// on the push step's critical path, which [`MAX_LEDGER_BYTES`] was sized against a
+/// `COUNT_BUDGET_SECS`-second budget for.
+/// **The file is append-only and can be inflated.** Under Phase 28.1 the ledger is
+/// outside the sandbox's `$HOME` allowlist (`T-19-112` closure), so a sandboxed
+/// agent command cannot reach it; any host process with the user's rights still can.
+/// Measured on this machine:
 ///
 /// ```text
 ///   ledger bytes     `gh pr create`     `git push --force`
 ///   0                        49 ms                  44 ms
 ///   1,010,000                96 ms                  47 ms
 ///   20,200,000            1,008 ms                  46 ms
-///   202,000,000           7,900 ms                  46 ms      <- past a 5 s deadline
+///   202,000,000           7,900 ms                  46 ms      <- past the 5 s budget
 /// ```
 ///
 /// **The forge/non-forge split is the shape of the finding**: the cost falls only
@@ -90,11 +93,11 @@ const COUNT_DEADLINE_SECS: u64 = 5;
 /// whole-file read to answer a one-byte question is the sort of thing that turns
 /// a push step into a hang"* — and the read beneath it was unbounded until now.
 ///
-/// # THE DERIVATION: FROM THE DEADLINE, NEVER FROM THE CAPS
+/// # THE DERIVATION: FROM THE BUDGET, NEVER FROM THE CAPS
 ///
 /// From the curve above, [`tally`] costs roughly **41 ms per megabyte**. At
-/// **8 MiB** that is about **340 ms**, under **7%** of a five-second deadline,
-/// which leaves the rest of the budget for the rest of the push step.
+/// **8 MiB** that is about **340 ms**, under **7%** of the five-second budget,
+/// which leaves the rest of it for the rest of the push step.
 ///
 /// **A CAP-DERIVED BOUND WOULD BE A BOUND THE AGENT STEERS.** `pr_cap_per_24h`
 /// and `pr_cap_per_run` are UNCLAMPED and are read from a file the driven agent
@@ -119,7 +122,7 @@ const COUNT_DEADLINE_SECS: u64 = 5;
 ///
 /// **It bounds SIZE. It does not bound KIND, and the difference was reachable.**
 /// This value closed unbounded WORK — a real ledger too large to count inside the
-/// deadline — and left unbounded WAIT, which is strictly worse than the case it
+/// budget — and left unbounded WAIT, which is strictly worse than the case it
 /// was written for: a FIFO at the ledger path stats at length **0**, passes this
 /// comparison, and the `std::fs::read` below then never returns. Measured at exit
 /// **124** after **20.02 s**, against the **18 ms** a 202 MB regular ledger now
@@ -329,7 +332,7 @@ pub fn record_and_check_in(
 
     // **THE SIZE BOUND, BEFORE THE APPEND AND BEFORE THE READ** (`T-19-117`).
     // A ledger this large is one whose count cannot be established inside the
-    // push step's `COUNT_DEADLINE_SECS` budget, so the push step says so rather
+    // push step's size bound, so the push step says so rather
     // than establishing a smaller count from a partial read — see `MAX_LEDGER_BYTES` for the
     // derivation, why it refuses rather than reads less, and the over-refusal
     // disclosed from both sides. The check is a `stat`, not a read: one syscall
@@ -343,7 +346,7 @@ pub fn record_and_check_in(
     // than the case it was written for: a FIFO at the ledger path STATS AT LENGTH
     // 0, passes the size comparison, and `std::fs::read` below then blocks
     // FOREVER. Measured — **exit 124 after 20.02 s under a hard 20-second
-    // timeout**, against the 5-second `COUNT_DEADLINE_SECS`, and against the **18 ms** a
+    // timeout**, against the 5-second `COUNT_BUDGET_SECS`, and against the **18 ms** a
     // 202 MB regular ledger now answers in and the **7.90 s** it answered in
     // before the size bound existed. A bound over SIZE cannot see it, because the
     // failure is over KIND.
@@ -433,13 +436,12 @@ pub fn record_and_check_in(
             // verdict is not a verdict.
             return Err(anyhow!(
                 "the pull-request ledger at {} is {size} bytes, past the {MAX_LEDGER_BYTES}-byte \
-                 bound the push step can count inside its {}-second deadline, so how \
-                 many pull requests this run has already opened cannot be established and the \
-                 attempt is refused rather than counted from a partial read. To proceed: \
-                 archive or remove that file — it is the envelope's own record and no other \
-                 command is affected by this refusal",
-                path.display(),
-                COUNT_DEADLINE_SECS
+                 bound up to which the push step counts a ledger, so how many pull requests \
+                 this run has already opened cannot be established and the attempt is refused \
+                 rather than counted from a partial read. To proceed: archive or remove that \
+                 file — it is the envelope's own record and no other command is affected by \
+                 this refusal",
+                path.display()
             ));
         }
     }
@@ -550,13 +552,11 @@ fn saturating_bump(count: u32) -> u32 {
 
 /// Count the ledger's lines against the window and the run.
 ///
-/// **A line this function cannot parse is COUNTED, not skipped**, and that
-/// inverts the disposition `crate::journal::reader` takes for the run journal.
-/// The inversion is deliberate and the reason is the consumer, not the format:
-/// a malformed line in a *journal* is skipped because dropping one observation
-/// is cheaper than failing a read, while a malformed line in a *cap ledger* is
-/// an attempt that demonstrably happened — forgetting it under-counts, and
-/// under-counting is the one failure this file exists to prevent.
+/// **A line this function cannot parse is COUNTED, not skipped.** The reason is the
+/// consumer, not the format: skipping a malformed line would be the cheap choice for
+/// a log read for display, but a malformed line in a *cap ledger* is an attempt that
+/// demonstrably happened — forgetting it under-counts, and under-counting is the one
+/// failure this file exists to prevent.
 ///
 /// An unparseable line counts toward the **window** only, never toward the
 /// per-run bound. A line whose run cannot be read cannot be attributed to one,
@@ -987,8 +987,8 @@ mod tests {
 
     // -----------------------------------------------------------------------
     // The size bound (T-19-117) and the kind bound (T-19-120), pinned over
-    // `record_and_check_in` itself. They were first written against the retired
-    // retired PreToolUse guard; the bounds live here, so the pins do too.
+    // `record_and_check_in` itself. They were first written against a PreToolUse
+    // guard that no longer exists; the bounds live here, so the pins do too.
     // -----------------------------------------------------------------------
 
     /// One ledger line dated outside the 24 h window, so the cap is unaffected and a
@@ -1086,8 +1086,8 @@ mod tests {
 
     #[test]
     fn t_19_117_unbounded_work_is_bounded() {
-        // A 202,000,000-byte ledger took `gh pr create` 7.9 s to count, against a
-        // 5 s deadline, before the bound existed. Past the bound it is refused from
+        // A 202,000,000-byte ledger took `gh pr create` 7.9 s to count, against the
+        // 5 s budget the bound was sized for, before the bound existed. Past the bound it is refused from
         // the `stat` alone, before the append and before the read, so the length is
         // all the check sees; a sparse file of that length is the same input to it.
         let root = tempfile::tempdir().unwrap();
@@ -1103,14 +1103,19 @@ mod tests {
 
         let text = refusal.to_string();
         assert!(text.contains("bytes, past the"), "{text}");
+        assert!(text.contains("-byte bound"), "{text}");
+        // WR-04: the refusal states its real reason, the size bound, and names no time
+        // limit, because nothing enforces one at runtime.
+        for word in [concat!("dead", "line"), "second", "timeout", "time limit"] {
+            assert!(
+                !text.contains(word),
+                "the refusal must not name a time limit ({word:?}): {text}"
+            );
+        }
         assert!(
-            text.contains(&format!("{COUNT_DEADLINE_SECS}-second deadline")),
-            "the refusal names the ledger's own deadline constant: {text}"
-        );
-        assert!(
-            millis * 4 < u128::from(COUNT_DEADLINE_SECS) * 1000,
+            millis * 4 < u128::from(COUNT_BUDGET_SECS) * 1000,
             "the refusal must be fast, which is the point of a stat before the read: \
-             {millis} ms against a {COUNT_DEADLINE_SECS} s deadline"
+             {millis} ms against a {COUNT_BUDGET_SECS} s budget"
         );
         assert_eq!(
             std::fs::metadata(&path).unwrap().len(),

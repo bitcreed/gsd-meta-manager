@@ -75,6 +75,9 @@ pub const REASON_PLANTED_GIT: &str = "planted_git_config";
 /// The mirror config key that pins the push URL.
 const PUSH_URL_KEY: &str = "gsdmm.pushUrl";
 
+/// The most characters of one captured child stderr line that are persisted.
+const MAX_CAPTURED_LINE_CHARS: usize = 512;
+
 /// The transports a launcher `git` may use. `ext::` (run a command) is not one.
 const ALLOWED_PROTOCOLS: &str = "file:git:http:https:ssh";
 
@@ -243,9 +246,13 @@ pub fn redact_urls(text: &str) -> String {
 
 /// A captured child stderr line, made safe to persist to LOG.md: URL userinfo first
 /// ([`redact_urls`]), then the SAFE-04 token and path table
-/// ([`crate::journal::redact::redact`]).
+/// ([`crate::journal::redact::redact`]), then capped at [`MAX_CAPTURED_LINE_CHARS`].
+///
+/// Redaction runs first because a cap could cut a token's body and leave a prefix
+/// the patterns no longer match (WR-05).
 fn redact_captured(line: &str) -> String {
-    crate::journal::redact::redact(&redact_urls(line))
+    let redacted = crate::journal::redact::redact(&redact_urls(line));
+    redacted.chars().take(MAX_CAPTURED_LINE_CHARS).collect()
 }
 
 fn is_hex_sha(text: &str) -> bool {
@@ -1163,6 +1170,24 @@ mod tests {
         assert!(out.contains("[REDACTED:github-token]"), "{out}");
         assert!(!out.contains(secret), "{out}");
         assert!(!out.contains("user:pw@"), "{out}");
+    }
+
+    #[test]
+    fn a_long_captured_line_is_redacted_before_it_is_capped() {
+        // WR-05: a cap applied first would cut the token's body and leave a prefix the
+        // SAFE-04 patterns no longer match. Assembled here so this file holds no
+        // token-shaped literal.
+        let secret = "ABCDEFGHIJKLMNOPQRSTUVWXYZ012345";
+        let line = format!("{} ghp_{secret} tail", "x".repeat(500));
+        let out = redact_captured(&line);
+        // 500 'x', a space and the 4-char prefix leave 7 of the 512 for the secret: a cap
+        // applied first would keep exactly those 7 and no pattern would match them.
+        assert!(out.chars().count() <= MAX_CAPTURED_LINE_CHARS, "{out}");
+        assert!(out.starts_with(&"x".repeat(500)), "{out}");
+        assert!(!out.contains(&secret[..7]), "{out}");
+        assert!(!out.contains("ghp_"), "{out}");
+        // A line that needs no cap passes through unchanged.
+        assert_eq!(redact_captured("fatal: nope"), "fatal: nope");
     }
 
     #[test]
