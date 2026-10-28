@@ -6,6 +6,8 @@ score: 5/5 must-haves verified (ROADMAP success criteria), 6/6 review blockers c
 behavior_unverified: 0
 overrides_applied: 0
 re_verification: no — initial verification, executed after the 17-08 gap-closure pass
+retired_in_part_by: phase-31
+retired_note: "2026-10-28 cleanup; see body section 'Retired in part by Phase 31'"
 ---
 
 # Phase 17: Supervisor — Detach, Kill Switch, Dry-Run, Opt-In Gate — Verification Report
@@ -182,3 +184,7 @@ with the pre-existing 5-lint `--all-targets` delta unchanged.
 ---
 _Verified: 2026-07-29T22:30:00Z_
 _Verifier: Claude (gsd-verifier)_
+
+## Retired in part by Phase 31 (note added 2026-10-28)
+
+31-04 deleted `drive`, the inbox core and the legacy kill/lock entry points; the Phase 28 launcher owns the outside lock and hard caps. The phase stays closed (passed).

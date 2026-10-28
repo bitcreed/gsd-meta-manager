@@ -1,5 +1,33 @@
 ---
 phase: 21-llm-goal-layer-prompt-injection-hardening
+verified: 2026-10-28T00:00:00Z
+status: passed
+closure: superseded
+superseded_by: "the master driver as goal layer, DIRECTION.md as the approved plan, and sandbox containment (Phases 26-30)"
+not_a_verification: true
+verified_by: none
+recorded_by: cleanup 2026-10-28 (user-approved triage)
+---
+
+# Phase 21: Closed by supersession — NOT a verification pass
+
+> **`status: passed` here means "closed", not "verified".** gsd-tools has no superseded phase status; a
+> `passed` canonical VERIFICATION.md is the only on-disk state `roadmap.analyze` treats as closed. The
+> frontmatter flags `closure: superseded`, `not_a_verification: true` and `verified_by: none` keep this record
+> distinguishable from a real verification by any later reader. [inferred — cleanup 2026-10-28]
+
+**Superseded by:** the master driver as goal layer, DIRECTION.md as the approved plan, and sandbox containment (Phases 26-30); Phase 31 deleted the goal-layer seams and closed criterion 4 (31-04, 31-06).
+
+The Phase 21 gap-closure loop (paused at 4/5 after round 13, the hard ceiling) is **closed by supersession, not resumed**. Surviving session-detector defects already have todos: `2026-10-24-session-detector-resume-optional-arity.md` (CR-01 resume arity) and `2026-10-25-session-detector-wire-forms-omit-session-id.md` (CR-02 wire_forms session-id).
+
+User-approved outcome from the 2026-10-28 read-only triage. See `21-SUPERSEDED.md` and ROADMAP.md (Phase 21).
+
+---
+
+## Original verification report (preserved verbatim; frontmatter moved here)
+
+```yaml
+phase: 21-llm-goal-layer-prompt-injection-hardening
 verified: 2026-08-28T05:33:06Z
 head: 89285fd
 status: gaps_found
@@ -114,7 +142,8 @@ behavior_unverified_items:
     test: "With an authenticated `claude` CLI available, run `cargo test --test driver_injection_corpus -- --ignored --nocapture` from the repository root and record the CLI version beside the result."
     expected: "10 passed, 0 failed."
     why_human: "All ten spawn the real `claude` binary and need an authenticated subscription; cannot run inside verification. Permanently agent-unclosable; 4/5 is the correct ceiling."
----
+```
+
 
 # Phase 21: LLM Goal Layer & Prompt-Injection Hardening Verification Report
 

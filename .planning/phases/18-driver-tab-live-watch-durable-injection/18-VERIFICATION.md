@@ -48,6 +48,8 @@ deferred:
   - truth: "WR-05 — at the 8 <= area.height < 14 tier the pipeline row paints an empty line and the steps section a bare rule"
     addressed_in: "Next UI pass on the Driver tab (no phase number assigned)"
     evidence: "18-REVIEW.md `### Deferred: WR-05` — carry-forward obligation recorded: add height-tier render tests at 8/13/14 plus the producer-ordering fix, with the UI-SPEC height tables in hand."
+retired_in_part_by: phase-31
+retired_note: "2026-10-28 cleanup; see body section 'Retired in part by Phase 31'"
 ---
 
 # Phase 18: Driver Tab, Live Watch & Durable Injection — Verification Report
@@ -505,3 +507,11 @@ Carried forward rather than dropped:
 - Live start→watch→inject→review at a real terminal; the ○→◐→● injection progression across
   the ~55s dequeue gap; help popup at 80×24; Driver tab visual composition.
   These remain worth a human pass before the milestone ships.
+
+## Retired in part by Phase 31 (note added 2026-10-28)
+
+31-02 and 31-03 removed the injection UI and the Driver tab's legacy runs section; Phase 30 drives the tab from DIRECTION.md. The phase stays closed (passed).
+
+**Obsolete human items** (the code they would exercise is gone): SC1 live watch of `drive` runs (`behavior_unverified_items[0]` and `human_verification[0]`), the 18-09 D11 Driver-tab header, and the 18-10 D6 injection glyph.
+
+**Surviving human item:** 18-11 D6, whether the help popup reads as a scannable page at 80x24. Tracked as todo `.planning/todos/pending/2026-10-28-help-popup-scannable-at-80x24.md`. The WR-05 height-tier item is tracked by `2026-07-29-driver-tab-layout-at-medium-terminal-heights.md` (left pending; a later re-verify settles it).

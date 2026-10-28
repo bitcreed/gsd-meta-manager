@@ -86,18 +86,18 @@ No formal phases — see `.planning/MILESTONES.md` and `STATE.md`
 ### v2.0 Autonomous Orchestration (Phases 14-31)
 
 - [x] **Phase 14: UI Fixes** - Four display defects that misreport project state (completed 2026-07-29)
-- [x] **Phase 15: Transport Foundation** - Duplex `stream-json` executor with envelope-derived outcomes (completed 2026-07-29)
+- [x] **Phase 15: Transport Foundation** - Duplex `stream-json` executor with envelope-derived outcomes (completed 2026-07-29; retired in part by Phase 31)
 - [x] **Phase 16: Run Journal & State Substrate** - Durable, redacted, cheap-to-read run record (completed 2026-07-29)
-- [x] **Phase 17: Supervisor** - Detach, kill switch, dry-run, single-run lock, opt-in gate (completed 2026-07-29)
-- [x] **Phase 18: Driver Tab, Live Watch & Durable Injection** - Manual ship point: run and steer from the TUI
-- [ ] ~~**Phase 19: GITSAFE — Git & Blast-Radius Envelope**~~ - SUPERSEDED 2026-10-14 by spikes 001/002 (sandbox without push credentials, plus a gsd-mm push step outside it). Halted after 13 gap rounds; code kept until Phase 31
+- [x] **Phase 17: Supervisor** - Detach, kill switch, dry-run, single-run lock, opt-in gate (completed 2026-07-29; retired in part by Phase 31)
+- [x] **Phase 18: Driver Tab, Live Watch & Durable Injection** - Manual ship point: run and steer from the TUI (completed 2026-07-29; retired in part by Phase 31)
+- [x] ~~**Phase 19: GITSAFE — Git & Blast-Radius Envelope**~~ - SUPERSEDED 2026-10-14 by spikes 001/002 (sandbox without push credentials, plus a gsd-mm push step outside it). Gap loop closed by supersession, not resumed; Phase 31 deleted the code (closed 2026-10-28)
 - [x] **Phase 20: Deterministic Decision Router & Run Bounds** - Rules pick the next command; runs stop themselves (verified 5/5 on 2026-08-19; kept as the advisory `next --json` hint) [inferred: completion marked at re-plan]
-- [ ] ~~**Phase 21: LLM Goal Layer & Prompt-Injection Hardening**~~ - SUPERSEDED 2026-10-14. The master driver is the goal layer, DIRECTION.md is the approved plan, and injection is contained by the sandbox. Paused at 4/5 (hard ceiling); the gap loop must not be resumed. Code kept until Phase 31
-- [ ] ~~**Phase 22: Container Execution Target**~~ - SUPERSEDED 2026-10-14 by bwrap + `systemd-run --user --scope` (Phase 28). 0/4 plans executed, no code landed
-- [ ] ~~**Phase 23: Gate Policy & Auto-Validation**~~ - SUPERSEDED 2026-10-14 by per-item done-when plus standing rules in DIRECTION.md (Phase 29). Never planned
+- [x] ~~**Phase 21: LLM Goal Layer & Prompt-Injection Hardening**~~ - SUPERSEDED 2026-10-14. The master driver is the goal layer, DIRECTION.md is the approved plan, and injection is contained by the sandbox. Paused at 4/5 (hard ceiling); gap loop closed by supersession, not resumed; Phase 31 deleted the code (closed 2026-10-28)
+- [x] ~~**Phase 22: Container Execution Target**~~ - SUPERSEDED 2026-10-14 by bwrap + `systemd-run --user --scope` (Phase 28). 0/4 plans executed, no code landed (closed 2026-10-28)
+- [x] ~~**Phase 23: Gate Policy & Auto-Validation**~~ - SUPERSEDED 2026-10-14 by per-item done-when plus standing rules in DIRECTION.md (Phase 29). Never planned (closed 2026-10-28)
 - [x] **Phase 24: Roadmap Tab Redesign & Detail-Tab Consolidation** - Master/detail roadmap with a selection cursor; eight detail tabs instead of ten (completed 2026-09-23)
 - [x] **Phase 25: Running Agents & Live Wave View** - Per-project view of running GSD agents and executor wave progress, read from worktrees and Claude subagent metadata (completed 2026-09-25)
-- [x] **Phase 26: Driver Validation Spike 003** - Prove gap rounds 1-2, divergence parking and no-respawn on a real GSD phase before any Rust (completed 2026-10-16)
+- [x] **Phase 26: Driver Validation Spike 003** - Prove gap rounds 1-2, divergence parking and no-respawn on a real GSD phase before any Rust (completed 2026-10-16; superseded by 26.1, closed 2026-10-28 without re-verification)
 - [x] **Phase 26.1: Driver Validation Spike 003 Re-run** (INSERTED) - Fix gap-round counting, headless-driver liveness and T-26-11, then re-run Opus to prove VALID-01/02 (completed 2026-10-18)
 - [x] **Phase 27: driverctl & Driver Frontmatter** - Rust single writer of run state; exchange-splice frontmatter on DIRECTION.md (completed 2026-10-19)
 - [x] **Phase 28: Sandboxed Driver Launcher** - bwrap + cgroup scope, outside lock and hard caps, per-run config and auth, push outside the sandbox, macOS degraded mode (completed 2026-10-24)
@@ -158,6 +158,8 @@ Plans:
 **UI hint**: yes
 
 ### Phase 15: Transport Foundation — Duplex stream-json Executor
+
+> **Retired in part by Phase 31 (2026-10-28).** Phase stays closed (passed). 31-07 removed the in-process Claude stream-json transport and the Codex executor; the Phase 28 launcher runs the driver now.
 
 **Goal**: The tool can run a GSD command through `claude -p` over a structured two-way protocol and know exactly how it ended
 **Depends on**: Nothing (v2.0 foundation — everything else stands on this)
@@ -256,6 +258,8 @@ phase's scope.
 
 ### Phase 17: Supervisor — Detach, Kill Switch, Dry-Run, Opt-In Gate
 
+> **Retired in part by Phase 31 (2026-10-28).** Phase stays closed (passed). 31-04 deleted `drive` and the legacy kill/lock entry points; the Phase 28 launcher owns the outside lock and caps.
+
 **Goal**: A run is stoppable, survivable, single-instance, previewable, and impossible to start against a project that did not opt in
 **Depends on**: Phase 15, Phase 16
 **Requirements**: CTRL-01, CTRL-02, CTRL-03, CTRL-04, CTRL-05
@@ -308,6 +312,8 @@ Plans:
 - [x] 17-08-PLAN.md — Close the six review blockers: a stop during agent startup is acted on (CR-01), the kill switch signals a kernel-confirmed group (CR-02), the detached spawn carries the TUI's config (CR-03), a run that cannot be identified is refused (CR-04), an undeterminable liveness never reads as "gone" or "crashed" (CR-05), and unregistering cannot abandon a live agent (CR-06)
 
 ### Phase 18: Driver Tab, Live Watch & Durable Injection
+
+> **Retired in part by Phase 31 (2026-10-28).** Phase stays closed (passed). 31-02/31-03 removed the injection UI and the Driver tab's legacy runs section; Phase 30 drives the tab from DIRECTION.md. Obsolete with that code: SC1 live watch of `drive` runs, the 18-09 D11 header, the 18-10 D6 injection glyph. The one surviving human item, the help popup at 80x24 (18-11), is todo `2026-10-28-help-popup-scannable-at-80x24.md`.
 
 **Goal**: A human can run and steer a GSD project from the TUI and see exactly what it is doing — the manual ship point, before any autonomy exists
 **Depends on**: Phase 16, Phase 17
@@ -363,6 +369,8 @@ Plans:
 - [x] 18-11-PLAN.md — Help screen, dry-run preview, mechanical close-out
 
 ### Phase 19: GITSAFE — Git & Blast-Radius Envelope
+
+> **CLOSED 2026-10-28 by supersession.** The gap-closure loop is **closed by supersession, not resumed**; Phase 31 deleted the code. Live residue: todo `2026-10-25-phase-19-surviving-pin-gaps-scan-and-credential-source.md` (T-19-72/73). Closure record: `19-VERIFICATION.md` (`closure: superseded`, `not_a_verification: true`).
 
 > **SUPERSEDED 2026-10-14.** Replaced by capability removal: the sandbox holds no push credentials, and gsd-mm pushes outside it
 > (`.planning/spikes/001-queue-driven-master-agent/`, `.planning/spikes/002-launcher-caps-and-tool-frontmatter/`).
@@ -527,6 +535,8 @@ Plans:
 - [x] 20-05-PLAN.md — Quota park: observe the rate-limit signal on the transport, name the window and reset, and stop without retrying (CTRL-07, DRIVE-06)
 
 ### Phase 21: LLM Goal Layer & Prompt-Injection Hardening
+
+> **CLOSED 2026-10-28 by supersession.** The gap-closure loop is **closed by supersession, not resumed**; Phase 31 deleted the code. Live residue: todos `2026-10-24-session-detector-resume-optional-arity.md` (CR-01) and `2026-10-25-session-detector-wire-forms-omit-session-id.md` (CR-02). Closure record: `21-VERIFICATION.md` (`closure: superseded`, `not_a_verification: true`).
 
 > **SUPERSEDED 2026-10-14.** The Opus master driver is the goal layer, and the human-owned DIRECTION.md is the approved plan.
 > Prompt injection is contained by the sandbox (blast radius), not prevented (spikes 001/002). The phase is paused at 4/5,
@@ -703,6 +713,8 @@ Gap closure, round 13 (verification pass 13 scored **98/100 must-haves, 4/5 ROAD
 
 ### Phase 22: Container Execution Target
 
+> **CLOSED 2026-10-28 by supersession.** Closure record: `22-VERIFICATION.md` (`closure: superseded`, `not_a_verification: true`).
+
 > **SUPERSEDED 2026-10-14.** On Linux, bwrap plus `systemd-run --user --scope` replaces it, verified with auth in spikes 001/002;
 > see Phase 28. The 4 plans were never executed, so no code landed and `bollard` was never added. The plans and research are kept
 > for provenance. macOS is covered by Phase 28's degraded mode, not by containers `[inferred]`.
@@ -743,6 +755,8 @@ Plans:
 - [ ] 22-04-PLAN.md — **The verified target, the durable record, and the TUI's stop.** The selection becomes a `VerifiedRuntime`-carrying target through the pre-flight or the run **refuses** rather than falling back to the host; the durable `target` string stops being a `Debug` rendering and gets one total label function with the reader accepting **both** spellings (which is what discharges D-22-16's `one-way` rating by design change rather than by re-rating); `container_id` and `egress` land on the run record with the scope word their own census demands; and stop reaches the container through the API before the process-group teardown. Plus the contract test that stops the singular host assumption returning (CTNR-01, CTNR-04, CTNR-05)
 
 ### Phase 23: Gate Policy & Auto-Validation
+
+> **CLOSED 2026-10-28 by supersession.** Directory created only to hold the closure record. Closure record: `23-VERIFICATION.md` (`closure: superseded`, `not_a_verification: true`).
 
 > **SUPERSEDED 2026-10-14.** Each item's done-when plus the DIRECTION.md standing rules replace the gate policy (spike 001), in Phase 29.
 > Auto-validation by driving a real surface (DRIVE-07) is deferred to Future Requirements `[inferred]`.
@@ -890,6 +904,8 @@ The interim releases v1.7.x-v1.13.0 already sit inside this milestone.
     the driver's rules come from its prompt (spike 002, A2.1). `[inferred]`
 
 ### Phase 26: Driver Validation Spike 003
+
+> **CLOSED 2026-10-28: superseded by Phase 26.1** (which re-ran the spike and passed 2026-10-18). Not re-verified; the stale original report is preserved inside `26-VERIFICATION.md` under the closure frontmatter.
 
 **Goal**: Before any Rust is written, prove on a real GSD phase that the spike-002 driver handles a gap
 that looks closable but cannot be closed. It must run gap rounds 1 and 2, detect divergence, park, and
@@ -1423,14 +1439,14 @@ Plans:
 | 16. Run Journal & State Substrate | 6/6 | Complete    | 2026-07-29 |
 | 17. Supervisor | 8/8 | Complete    | 2026-07-29 |
 | 18. Driver Tab, Live Watch & Durable Injection | 11/11 | Complete    | 2026-07-29 |
-| 19. GITSAFE — Git & Blast-Radius Envelope | 33/33 | Superseded | 2026-10-14 |
+| 19. GITSAFE — Git & Blast-Radius Envelope | 33/33 | Superseded (closed) | 2026-10-28 |
 | 20. Deterministic Decision Router & Run Bounds | 5/5 | Complete    | 2026-08-19 |
-| 21. LLM Goal Layer & Prompt-Injection Hardening | 37/37 | Superseded | 2026-10-14 |
-| 22. Container Execution Target | 0/4 | Superseded | 2026-10-14 |
-| 23. Gate Policy & Auto-Validation | 0/0 | Superseded | 2026-10-14 |
+| 21. LLM Goal Layer & Prompt-Injection Hardening | 37/37 | Superseded (closed) | 2026-10-28 |
+| 22. Container Execution Target | 0/4 | Superseded (closed) | 2026-10-28 |
+| 23. Gate Policy & Auto-Validation | 0/0 | Superseded (closed) | 2026-10-28 |
 | 24. Roadmap Tab Redesign & Detail-Tab Consolidation | 7/7 | Complete    | 2026-09-23 |
 | 25. Running Agents & Live Wave View | 7/7 | Complete    | 2026-09-25 |
-| 26. Driver Validation Spike 003 | 3/3 | Complete    | 2026-10-16 |
+| 26. Driver Validation Spike 003 | 3/3 | Superseded by 26.1 (closed) | 2026-10-28 |
 | 26.1. Driver Validation Spike 003 Re-run | 11/11 | Complete    | 2026-10-18 |
 | 27. driverctl & Driver Frontmatter | 6/6 | Complete    | 2026-10-19 |
 | 28. Sandboxed Driver Launcher | 9/9 | Complete    | 2026-10-24 |

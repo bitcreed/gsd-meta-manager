@@ -1,5 +1,33 @@
 ---
 phase: 19-gitsafe-git-blast-radius-envelope
+verified: 2026-10-28T00:00:00Z
+status: passed
+closure: superseded
+superseded_by: "spikes 001/002 (sandbox without push credentials plus a gsd-mm push step outside it) and Phases 26-31"
+not_a_verification: true
+verified_by: none
+recorded_by: cleanup 2026-10-28 (user-approved triage)
+---
+
+# Phase 19: Closed by supersession — NOT a verification pass
+
+> **`status: passed` here means "closed", not "verified".** gsd-tools has no superseded phase status; a
+> `passed` canonical VERIFICATION.md is the only on-disk state `roadmap.analyze` treats as closed. The
+> frontmatter flags `closure: superseded`, `not_a_verification: true` and `verified_by: none` keep this record
+> distinguishable from a real verification by any later reader. [inferred — cleanup 2026-10-28]
+
+**Superseded by:** spikes 001/002 (sandbox without push credentials plus a gsd-mm push step outside it) and Phases 26-31; Phase 31 deleted the Phase 19 guard, classifier and corpora (31-05) and closed its threat ids (31-06).
+
+The Phase 19 gap-closure loop (halted after round 13) is **closed by supersession, not resumed**. Surviving defects already have todos: `2026-10-25-phase-19-surviving-pin-gaps-scan-and-credential-source.md` (T-19-72/73).
+
+User-approved outcome from the 2026-10-28 read-only triage. See `19-SUPERSEDED.md` and ROADMAP.md (Phase 19).
+
+---
+
+## Original verification report (preserved verbatim; frontmatter moved here)
+
+```yaml
+phase: 19-gitsafe-git-blast-radius-envelope
 verified: 2026-08-29T00:00:00Z
 status: human_needed
 score: 6/7 must-haves verified
@@ -17,7 +45,8 @@ human_verification:
   - test: "Read the shipped SECTION_ENVELOPE (src/envelope/advisory.rs:239-262, quoted in full below) and confirm it now reads as legible candour — the specific defect the UAT raised was legibility, not accuracy, and the delivered text (200 tokens against a corrected 215 cap) differs from the ~161-word draft the user reviewed during the UAT conversation, so the final shipped wording has not itself been shown to the user."
     expected: "One opening sentence stating the ceiling, then the guaranteed case with visibly indented examples, then the not-guaranteed case with visibly indented examples, then the server-side branch-protection recommendation as the closing conclusion — matching the shape the user asked for verbatim ('One sentence, then an explanation for both cases and examples?'). All nine residual disclosures must read as still present and un-softened."
     why_human: "19-09-SUMMARY.md's own coverage table (D1) records this as human_judgment: true — a token count and a pin list prove the parts are present, not that the layout is now actually legible or that the text still reads as candour rather than a hedge. This is the identical axis PITFALLS names as most dangerous: an overstated or under-communicated safety claim is worse than a stated limitation, because it gets trusted."
----
+```
+
 
 # Phase 19: GITSAFE — Git & Blast-Radius Envelope Verification Report
 

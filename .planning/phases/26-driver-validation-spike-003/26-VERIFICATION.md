@@ -1,5 +1,33 @@
 ---
 phase: 26-driver-validation-spike-003
+verified: 2026-10-28T00:00:00Z
+status: passed
+closure: superseded
+superseded_by: "Phase 26.1 (Driver Validation Spike 003 Re-run), which re-ran the spike after 26 came back INCONCLUSIVE and passed on 2026-10-18"
+not_a_verification: true
+verified_by: none
+recorded_by: cleanup 2026-10-28 (user-approved triage)
+---
+
+# Phase 26: Closed by supersession — NOT a verification pass
+
+> **`status: passed` here means "closed", not "verified".** gsd-tools has no superseded phase status; a
+> `passed` canonical VERIFICATION.md is the only on-disk state `roadmap.analyze` treats as closed. The
+> frontmatter flags `closure: superseded`, `not_a_verification: true` and `verified_by: none` keep this record
+> distinguishable from a real verification by any later reader. [inferred — cleanup 2026-10-28]
+
+**Superseded by:** Phase 26.1 (Driver Validation Spike 003 Re-run), which re-ran the spike after 26 came back INCONCLUSIVE and passed on 2026-10-18.
+
+Not re-verified. The original 26-VERIFICATION.md (status passed on the plan contract, empirical claim NOT proven) had gone stale because 26.1 changed the shared spike files it fingerprinted.
+
+User-approved outcome from the 2026-10-28 read-only triage. See `26-SUPERSEDED.md` and ROADMAP.md (Phase 26).
+
+---
+
+## Original verification report (preserved verbatim; frontmatter moved here)
+
+```yaml
+phase: 26-driver-validation-spike-003
 verified: 2026-10-17T04:00:00Z
 status: passed
 score: "plan contract 4/4 requirement IDs accounted for and all plan must-haves verified; roadmap empirical claim NOT proven (SC1, SC2 undemonstrated; SC3, SC4 demonstrated)"
@@ -23,7 +51,8 @@ covered_files:
 covered_digest: "v3:sha256:c1ef74702a9dd64637df7963bd0ca7df8865e43986128e6347b5b6251b3ee090"
 behavior_unverified: 0
 overrides_applied: 0
----
+```
+
 
 # Phase 26: Driver Validation Spike 003 Verification Report
 

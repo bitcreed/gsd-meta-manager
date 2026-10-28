@@ -14,6 +14,8 @@ re_verification:
   gaps_remaining: []
   regressions: []
 deferred: []
+retired_in_part_by: phase-31
+retired_note: "2026-10-28 cleanup; see body section 'Retired in part by Phase 31'"
 ---
 
 # Phase 15: Transport Foundation Verification Report
@@ -140,3 +142,7 @@ One administrative note, not a gap: `.planning/REQUIREMENTS.md`'s checkboxes for
 
 _Verified: 2026-07-29_
 _Verifier: Claude (gsd-verifier)_
+
+## Retired in part by Phase 31 (note added 2026-10-28)
+
+31-07 removed the in-process Claude stream-json transport and the Codex executor; the Phase 28 launcher now runs the driver. The phase stays closed (passed); its verification describes code that no longer exists in full.
