@@ -797,8 +797,6 @@ impl App {
             status_message: None,
             error_message: None,
             event_tx: None,
-            exec_tx: None,
-            run_states: HashMap::new(),
             reparse_dispatches: 0,
             agent_views: HashMap::new(),
             agents_scan_in_flight: false,
@@ -833,53 +831,6 @@ impl App {
             mouse_capture,
             click_tracker: crate::ui::mouse::ClickTracker::default(),
         }
-    }
-
-    /// Apply one executor event to the per-alias driver state (D-17, D-19).
-    ///
-    /// This is the executor arm's whole handler. It touches only the sibling
-    /// map on `AppContext` and the redraw flag — never `ProjectState`, whose
-    /// derived equality suppresses status-bar spam.
-    ///
-    /// Note what it deliberately does *not* do: `ExecutionEvent::Exited` moves
-    /// the alias to `Stopping`, **not** to `Finished(outcome)`. A `RunOutcome`
-    /// cannot be derived from an exit status alone — D-26's matrix needs the
-    /// collected turns and the disk delta as well — so fabricating one here
-    /// would be a lie the UI then renders. The driver that owns the run
-    /// (Phase 17) is what closes the state out.
-    ///
-    /// Nor does `ExecutionEvent::EventsDropped` move the state at all. The
-    /// count is carried for the journal (plan 16-06) and for a future Phase 18
-    /// surface, and it is deliberately not allowed to move a run's state: it is
-    /// emitted in the terminal path, after the process has stopped producing,
-    /// so letting it reach the catch-all below would let a diagnostic
-    /// manufacture liveness (D-33).
-    pub fn apply_exec_event(&mut self, event: crate::main_loop::ExecEvent) {
-        use crate::executor::{ExecutionEvent, RunState};
-
-        let crate::main_loop::ExecEvent { alias, event } = event;
-        let state = self.ctx.run_states.entry(alias).or_default();
-
-        match event {
-            ExecutionEvent::SessionStarted { .. } => *state = RunState::Running,
-            ExecutionEvent::Exited(_) => *state = RunState::Stopping,
-            // A diagnostic about what the stream *lost*, not evidence that
-            // anything is still running. Explicit rather than left to the
-            // catch-all, which would promote an idle alias on reasoning that
-            // does not apply to a terminal-path event (D-19, D-33).
-            ExecutionEvent::EventsDropped { .. } => {}
-            // Any other observed line means the process is alive and talking.
-            // If we somehow never saw the gated `system/init` (a torn first
-            // line, say), record that a run is at least under way rather than
-            // leaving the alias reading `Idle` while output streams.
-            _ => {
-                if *state == RunState::Idle {
-                    *state = RunState::Starting;
-                }
-            }
-        }
-
-        self.needs_redraw = true;
     }
 
     /// **The only place a full project re-parse is scheduled.**
@@ -2631,13 +2582,12 @@ impl App {
 
     /// Drop driver state the registry no longer justifies (D-27).
     ///
-    /// **The leak this closes.** `run_states` is keyed by alias and
-    /// `registry::remove_project` does not touch it (it has no access to
+    /// **The leak this closes.** The alias-keyed maps are keyed by alias and
+    /// `registry::remove_project` does not touch them (it has no access to
     /// `AppContext`; see its doc, which names the cleanup sites), so an unregistered
-    /// alias would otherwise keep its entry for the whole life of the process. The
-    /// same holds for every other alias-keyed map below. A project that is no longer
-    /// a key in `config.projects` cannot produce another run state or another view,
-    /// so every entry it owns is dead weight.
+    /// alias would otherwise keep its entries for the whole life of the process. A
+    /// project that is no longer a key in `config.projects` cannot produce another
+    /// refresh or another view, so every entry it owns is dead weight.
     ///
     /// (Phase 31 removed the journal-cursor and live-output maps, and with them the
     /// second pass that kept the newest `RETAIN_RUNS` run ids per alias: nothing in
@@ -2647,9 +2597,6 @@ impl App {
     /// (D-13, D-27).
     fn prune_driver_maps(&mut self) {
         let registered = &self.ctx.config.projects;
-        self.ctx
-            .run_states
-            .retain(|alias, _| registered.contains_key(alias));
         // `view_cache` joins the pass too, and plan 18-09 is what makes that
         // necessary rather than tidy. It is keyed by alias and was never pruned,
         // which cost little while it held browse listings and git logs for
@@ -3581,46 +3528,6 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(format_phase_display(&state), "Live State");
-    }
-
-    #[test]
-    fn a_drop_report_does_not_move_a_runs_state() {
-        use crate::executor::{ExecutionEvent, RunState};
-        use crate::main_loop::ExecEvent;
-
-        let mut app = App::new_for_test();
-        app.ctx
-            .run_states
-            .insert("busy".to_string(), RunState::Running);
-
-        app.apply_exec_event(ExecEvent::new(
-            "busy",
-            ExecutionEvent::EventsDropped { count: 40 },
-        ));
-
-        assert_eq!(
-            app.ctx.run_states.get("busy"),
-            Some(&RunState::Running),
-            "a drop report is a diagnostic; it must not disturb a state the \
-             stream already established"
-        );
-
-        // The load-bearing half. The catch-all arm promotes an `Idle` alias to
-        // `Starting` on the reasoning that any observed line means the process
-        // is alive and talking — but this report is emitted in the terminal
-        // path, *after* the process stopped producing. If this assertion ever
-        // reads `Starting`, the catch-all has reclaimed the variant and a
-        // diagnostic is manufacturing liveness again (D-19, D-33).
-        app.apply_exec_event(ExecEvent::new(
-            "quiet",
-            ExecutionEvent::EventsDropped { count: 40 },
-        ));
-
-        assert_eq!(
-            app.ctx.run_states.get("quiet"),
-            Some(&RunState::Idle),
-            "a drop report must not promote an idle alias to Starting"
-        );
     }
 
     // ── OBS-06: counting the re-parses ───────────────────────────────────
@@ -4826,8 +4733,8 @@ mod tests {
         app.ctx.config_path = dir.path().join("config.json");
 
         app.ctx
-            .run_states
-            .insert(OBS_ALIAS.to_string(), crate::executor::RunState::Running);
+            .last_refresh
+            .insert(OBS_ALIAS.to_string(), std::time::Instant::now());
 
         let mut screen = DeleteConfirmScreen::new(OBS_ALIAS.to_string());
         screen.handle_key(KeyCode::Char('y'), KeyModifiers::NONE, &mut app.ctx);
@@ -4842,8 +4749,8 @@ mod tests {
             app.ctx.error_message
         );
         assert!(
-            !app.ctx.run_states.contains_key(OBS_ALIAS),
-            "run_states leaked past an interactive removal"
+            !app.ctx.last_refresh.contains_key(OBS_ALIAS),
+            "last_refresh leaked past an interactive removal"
         );
     }
 
@@ -4862,8 +4769,6 @@ mod tests {
     /// carry-forward exists to prevent.
     #[tokio::test]
     async fn every_per_alias_driver_map_is_pruned() {
-        use crate::executor::RunState;
-
         const GONE: &str = "gone";
 
         let dir = tempfile::tempdir().expect("temp dir");
@@ -4873,9 +4778,6 @@ mod tests {
         // alias the registry has never heard of, so each assertion below has a
         // control arm and none of them can pass by emptying the map.
         for alias in [GONE, OBS_ALIAS] {
-            app.ctx
-                .run_states
-                .insert(alias.to_string(), RunState::Running);
             // The launcher payloads live inside `view_cache`, so they inherit that
             // map's prune rather than needing their own — and this test is where
             // that inheritance is checked rather than assumed.
@@ -4905,7 +4807,6 @@ mod tests {
         let crate::ui::screens::AppContext {
             // Alias-keyed: every one of these must be pruned, and each is asserted
             // below.
-            run_states,
             view_cache,
             last_refresh,
             archive_cache,
@@ -4939,7 +4840,6 @@ mod tests {
             status_message: _,
             error_message: _,
             event_tx: _,
-            exec_tx: _,
             reparse_dispatches: _,
             sort_mode: _,
             watcher: _,
@@ -4950,7 +4850,6 @@ mod tests {
             active_sessions: _,
         } = &app.ctx;
 
-        assert!(!run_states.contains_key(GONE), "run_states leaked");
         assert!(!view_cache.contains_key(GONE), "view_cache leaked");
         assert!(!last_refresh.contains_key(GONE), "last_refresh leaked");
         assert!(!archive_cache.has_alias(GONE), "archive_cache leaked");
@@ -4958,7 +4857,6 @@ mod tests {
         // The control arm for all of them at once: the registered alias kept
         // everything, so none of the assertions above passed because the prune
         // cleared the map.
-        assert!(run_states.contains_key(OBS_ALIAS));
         assert!(last_refresh.contains_key(OBS_ALIAS));
         assert!(archive_cache.get(OBS_ALIAS, "v1.0").is_some());
         let kept = view_cache

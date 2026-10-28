@@ -8,9 +8,7 @@ use event::EventBus;
 use gsd_meta_manager::app::App;
 use gsd_meta_manager::cli::{Cli, Commands, EnvelopeAction};
 use gsd_meta_manager::config::{load_config, save_config, Config};
-use gsd_meta_manager::main_loop::{
-    pump, ExecEvent, PumpOutcome, EXEC_BATCH, EXEC_CHANNEL_CAPACITY,
-};
+use gsd_meta_manager::main_loop::{pump, PumpOutcome};
 use gsd_meta_manager::registry::{add_project, list_projects, remove_project};
 use gsd_meta_manager::watcher::FileWatcher;
 
@@ -467,24 +465,8 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
 
             let event_bus = EventBus::new();
 
-            // The executor event channel is created ONCE for the process
-            // lifetime, is SEPARATE from the Action FIFO, and is BOUNDED
-            // (D-17). Each of those three properties guards a distinct failure:
-            //
-            // * once-for-the-lifetime + the sender clone stashed below means it
-            //   never closes, so its `select!` arm can never permanently
-            //   disable itself between runs (Pitfall C, T-15-27);
-            // * separate means bulk stream traffic cannot starve control keys
-            //   behind the biased-first Action arm (TRANS-03, T-15-25);
-            // * bounded means a render loop parked in the blocking editor
-            //   shell-out applies backpressure to the reader instead of growing
-            //   without limit (T-15-26).
-            let (exec_tx, mut exec_rx) =
-                tokio::sync::mpsc::channel::<ExecEvent>(EXEC_CHANNEL_CAPACITY);
-
             // Store event_tx on App context so creation flow can send actions back
             app.ctx.event_tx = Some(event_bus.tx.clone());
-            app.ctx.exec_tx = Some(exec_tx.clone());
 
             // Initialize file watcher for all registered projects
             let mut watcher = FileWatcher::new(event_bus.tx.clone())?;
@@ -537,14 +519,9 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
 
             let mut rx = event_bus.rx;
 
-            let result = run_tui_loop(&mut terminal, &mut app, &mut rx, &mut exec_rx).await;
+            let result = run_tui_loop(&mut terminal, &mut app, &mut rx).await;
 
             tui::restore();
-
-            // Held to here on purpose: this binding plus the clone on
-            // `app.ctx` are what keep the executor channel open for the whole
-            // process lifetime.
-            drop(exec_tx);
 
             result?;
         }
@@ -563,7 +540,6 @@ async fn run_tui_loop(
     terminal: &mut ratatui::DefaultTerminal,
     app: &mut App,
     rx: &mut tokio::sync::mpsc::UnboundedReceiver<gsd_meta_manager::action::Action>,
-    exec_rx: &mut tokio::sync::mpsc::Receiver<ExecEvent>,
 ) -> anyhow::Result<()> {
     loop {
         // Apply the desired mouse capture (quick 260926-dyf, I-14). This is
@@ -592,8 +568,8 @@ async fn run_tui_loop(
             app.needs_redraw = false;
         }
 
-        if pump(app, rx, exec_rx, EXEC_BATCH).await == PumpOutcome::Idle {
-            // Every arm disabled: both channels are closed, so no further
+        if pump(app, rx).await == PumpOutcome::Idle {
+            // Every arm disabled: the action channel is closed, so no further
             // message can ever arrive and continuing would spin. Unreachable
             // while the redraw timer arm exists, but breaking is the only
             // non-spinning response if that ever changes.

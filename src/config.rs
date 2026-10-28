@@ -457,7 +457,7 @@ pub enum CredentialSource {
     /// `pass show …`, `op read …`.
     Command {
         /// argv, **never a shell string**. The same rule
-        /// `executor::claude::build_argv` records for the agent spawn: with no
+        /// the agent spawn follows: with no
         /// shell in the path, a value containing a flag-shaped token or a `;`
         /// cannot become a second command.
         argv: Vec<String>,

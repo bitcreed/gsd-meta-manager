@@ -19707,8 +19707,6 @@ mod tests {
             status_message: None,
             error_message: None,
             event_tx: None,
-            exec_tx: None,
-            run_states: HashMap::new(),
             reparse_dispatches: 0,
             agent_views: HashMap::new(),
             agents_scan_in_flight: false,
@@ -21248,8 +21246,9 @@ mod tests {
     /// CTRL-03 end to end: the affordance moved, the gate did not.
     ///
     /// The pair that carries the proof is the **first** and **last**
-    /// assertions — the seam refusing, then the seam accepting — with nothing
-    /// between them but the keypress and the confirmation. `name()` cannot do
+    /// assertions — the opt-in gate (`registry::is_opted_in`) refusing, then
+    /// accepting — with nothing between them but the keypress and the
+    /// confirmation. `name()` cannot do
     /// this on its own: `DriverConfirmScreen` returns `"driver_confirm"` for
     /// every `DriverAction`, so a name assertion cannot tell a `Stop` from a
     /// `ToggleOptIn`. The effect has to be observed.
@@ -21259,14 +21258,8 @@ mod tests {
         let (mut screen, mut ctx, _rx) = driver_optin_fixture(dir.path());
 
         assert!(
-            matches!(
-                crate::executor::DrivableProject::from_registry(
-                    TEST_ALIAS,
-                    &ctx.config.projects[TEST_ALIAS],
-                ),
-                Err(crate::error::OptInError::NotOptedIn { .. })
-            ),
-            "the fixture must start REFUSED by the spawn seam, or the rest of \
+            !crate::registry::is_opted_in(&ctx.config, TEST_ALIAS),
+            "the fixture must start REFUSED by the opt-in gate, or the rest of \
              this test proves nothing"
         );
 
@@ -21298,14 +21291,9 @@ mod tests {
         );
 
         assert!(
-            crate::executor::DrivableProject::from_registry(
-                TEST_ALIAS,
-                &saved.projects[TEST_ALIAS],
-            )
-            .is_ok(),
-            "read off the RELOADED entry, so this is about the bytes on disk \
-             and not about in-memory state; the registered path is the tempdir \
-             root, a real directory, so `RootUnusable` cannot fire and mask it"
+            crate::registry::is_opted_in(&saved, TEST_ALIAS),
+            "read off the RELOADED config, so this is about the bytes on disk \
+             and not about in-memory state"
         );
     }
 

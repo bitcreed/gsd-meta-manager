@@ -2,10 +2,10 @@
 // The mechanical spawn-seam audit (D-17, PITFALLS:521)
 //
 // One rule governs every assertion below: **a comment is not a guard; the test
-// is.** `src/executor/mod.rs` says the opt-in escape hatch has no production
-// call site, and `src/journal/` has claimed since Phase 16 that the strict
-// unknown-field attribute is kept out by a grep. Prose cannot enforce either.
-// This file does.
+// is.** `src/journal/` has claimed since Phase 16 that the strict
+// unknown-field attribute is kept out by a grep, and the spawn allowlist below
+// claims to list every process-spawn site. Prose cannot enforce either. This
+// file does.
 //
 // It is an integration test rather than an in-source one because it reads the
 // source tree, and a test that walks `src/` has no business living inside it.
@@ -22,13 +22,8 @@
 use std::path::{Path, PathBuf};
 
 /// The tree under audit. Resolved at compile time, so the test is
-/// cwd-independent — the idiom `tests/executor_lifecycle.rs:26-29` already uses.
+/// cwd-independent.
 const SRC_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src");
-
-/// The identifier that bypasses the opt-in gate, and the one file allowed to
-/// mention it.
-const ESCAPE_HATCH: &str = "for_testing_bypassing_opt_in";
-const ESCAPE_HATCH_HOME: &str = "src/executor/mod.rs";
 
 /// Every file under `src/` permitted to contain a process-spawn site.
 ///
@@ -37,10 +32,6 @@ const ESCAPE_HATCH_HOME: &str = "src/executor/mod.rs";
 /// nobody had to think about is how an agent comes to be launched against a
 /// directory the user never opted in.
 const SPAWN_ALLOWLIST: &[&str] = &[
-    // The agent spawn. The one that takes the capability type.
-    "src/executor/claude.rs",
-    // Git shell-out inside this module's own in-source test helper. No agent.
-    "src/executor/outcome.rs",
     // A `sleep` child inside this module's own in-source tests, so the "already
     // gone" path can be pointed at a REAL pid that has been reaped rather than
     // at a number chosen to be implausible. The module's production surface
@@ -204,111 +195,6 @@ fn render(hits: &[(String, usize, String)]) -> String {
 }
 
 #[test]
-fn the_escape_hatch_has_no_call_site_in_src() {
-    let files = source_files();
-    let hits = executable_hits(&files, ESCAPE_HATCH);
-
-    let offenders: Vec<_> = hits
-        .iter()
-        .filter(|(path, _, _)| path != ESCAPE_HATCH_HOME)
-        .cloned()
-        .collect();
-    assert!(
-        offenders.is_empty(),
-        "`{ESCAPE_HATCH}` bypasses the user's opt-in. A production call site means the \
-         compiler is no longer what enforces the gate, and CTRL-03's \"never\" stops being \
-         literally true (D-17, PITFALLS:521). Offending lines:{}",
-        render(&offenders)
-    );
-
-    assert_eq!(
-        hits.len(),
-        1,
-        "the escape hatch must appear on exactly one executable line — its own \
-         definition in {ESCAPE_HATCH_HOME}. Found:{}",
-        render(&hits)
-    );
-    assert!(
-        hits[0].2.contains("pub fn"),
-        "the single occurrence must be the `pub fn` definition, not a use of it. \
-         Found:{}",
-        render(&hits)
-    );
-}
-
-#[test]
-fn drivable_project_has_exactly_two_constructors_and_private_fields() {
-    let files = source_files();
-    let executor = files
-        .iter()
-        .find(|(path, _)| path == ESCAPE_HATCH_HOME)
-        .unwrap_or_else(|| panic!("{ESCAPE_HATCH_HOME} must exist"));
-
-    let production: Vec<_> = executable_lines(executor)
-        .filter(|(_, line)| line.contains("pub fn from_registry"))
-        .collect();
-    assert_eq!(
-        production.len(),
-        1,
-        "there is exactly one production constructor for the capability token (D-16); \
-         found {} in {ESCAPE_HATCH_HOME}",
-        production.len()
-    );
-
-    let hatch: Vec<_> = executable_lines(executor)
-        .filter(|(_, line)| line.contains(&format!("pub fn {ESCAPE_HATCH}")))
-        .collect();
-    assert_eq!(
-        hatch.len(),
-        1,
-        "there is exactly one escape hatch, and a second would be a second way to \
-         bypass the gate; found {}",
-        hatch.len()
-    );
-
-    // The struct body, from its opening line to the first line that is a bare
-    // closing brace at column zero.
-    let mut body = Vec::new();
-    let mut inside = false;
-    for (number, line) in &executor.1 {
-        if line.starts_with("pub struct DrivableProject {") {
-            inside = true;
-            continue;
-        }
-        if inside {
-            if line == "}" {
-                break;
-            }
-            body.push((*number, line.clone()));
-        }
-    }
-    assert!(
-        !body.is_empty(),
-        "the audit could not locate the `DrivableProject` struct body, so it is \
-         checking nothing"
-    );
-
-    let public: Vec<_> = body
-        .iter()
-        .filter(|(_, line)| line.trim_start().starts_with("pub "))
-        .map(|(number, line)| {
-            (
-                ESCAPE_HATCH_HOME.to_string(),
-                *number,
-                line.trim().to_string(),
-            )
-        })
-        .collect();
-    assert!(
-        public.is_empty(),
-        "every field of `DrivableProject` must be private: private fields are what stop \
-         a caller assembling the token without passing a constructor, which is the whole \
-         reason it is a type rather than a bool. Public fields:{}",
-        render(&public)
-    );
-}
-
-#[test]
 fn every_process_spawn_site_in_src_is_on_the_allowlist() {
     let files = source_files();
 
@@ -344,16 +230,6 @@ fn every_process_spawn_site_in_src_is_on_the_allowlist() {
         vanished.is_empty(),
         "an allowlisted file no longer spawns anything, so the allowlist is now wider than \
          the truth it describes. Remove the stale entry: {vanished:?}"
-    );
-
-    let claude = files
-        .iter()
-        .find(|(path, _)| path == "src/executor/claude.rs")
-        .expect("the agent spawn seam must exist");
-    assert!(
-        executable_lines(claude).any(|(_, line)| line.contains("project: &DrivableProject")),
-        "the agent spawn seam must still take the capability type and never a bare path — \
-         that signature is what makes the opt-in gate a compile-time property (D-16)"
     );
 }
 
@@ -413,9 +289,12 @@ fn no_executable_line_in_src_opts_into_strict_unknown_field_rejection() {
 }
 
 // ============================================================================
-// The model-seam profile's controls, coupled by tests rather than by convention
+// The hook-disabling flag stays out of src/, coupled by a test not a convention
 //
-// Four guards, each in this file's house style: scan `executable_lines` so a doc
+// (The argv-profile guards that used to sit beside this one, for the in-process
+// executor's seam and MCP flags, went with that executor in Phase 31.)
+//
+// Two guards, each in this file's house style: scan `executable_lines` so a doc
 // comment naming a declined alternative does not trip the scan, assert
 // non-vacuity so a rename that empties a scan fails rather than passes, and diff
 // observed against declared in BOTH directions wherever a set is involved.
@@ -428,91 +307,6 @@ fn no_executable_line_in_src_opts_into_strict_unknown_field_rejection() {
 /// start reporting itself. The halves are meaningless apart.
 const HOOK_DISABLING_HEAD: &str = "--safe";
 const HOOK_DISABLING_TAIL: &str = "-mode";
-
-/// The flag that would resume a prior session on a seam spawn.
-const RESUME_FLAG: &str = "--resume";
-
-/// Any inline JSON object serves as the seam schema: the properties under test
-/// are that the seam profile carries a schema beside the empty tool set and that
-/// both profiles keep the MCP set empty, not what the schema says. (The goal
-/// layer that used to build the real one was retired in Phase 31.)
-fn seam_test_schema() -> String {
-    serde_json::json!({"type": "object"}).to_string()
-}
-
-#[test]
-fn the_seam_profile_couples_the_empty_tool_set_to_the_schema() {
-    // Guard one. It calls `build_argv` and inspects the vector it RETURNS. It
-    // does not assert about a constant that `build_argv` also reads: a test that
-    // compares a constant with itself cannot detect its return, which is exactly
-    // the Critical Phase 20's code review found (`src/driver/dry_run.rs:582-584`
-    // is the counter-pattern this codebase wrote for itself).
-    use gsd_meta_manager::executor::claude::build_argv;
-    use gsd_meta_manager::executor::{ExecutionOptions, SpawnProfile};
-
-    let seam = ExecutionOptions {
-        profile: SpawnProfile::ModelSeam {
-            json_schema: seam_test_schema(),
-        },
-        ..ExecutionOptions::default()
-    };
-    let words: Vec<String> = build_argv(&seam)
-        .iter()
-        .map(|word| word.to_string_lossy().into_owned())
-        .collect();
-
-    assert!(!words.is_empty(), "build_argv returned nothing to examine");
-
-    let tools_at = words
-        .iter()
-        .position(|word| word == "--tools")
-        .unwrap_or_else(|| panic!("the seam profile must carry the tool flag; argv was {words:?}"));
-    assert_eq!(
-        words.get(tools_at + 1).map(String::as_str),
-        Some(""),
-        "the tool flag must carry an EMPTY value. With it present and empty the \
-         CLI advertises exactly the structured-output tool; with it absent it \
-         advertises everything, and the OQ1 measurement — and every later \
-         injection assertion — is confounded by a seam that quietly had file \
-         access. argv was {words:?}"
-    );
-    assert!(
-        words.iter().any(|word| word == "--json-schema"),
-        "the seam profile must carry the schema flag together with the empty \
-         tool set: they are one control, not two. argv was {words:?}"
-    );
-
-    // And the executor profile is byte-identical to what it produces today, so
-    // the new discriminant cannot silently change an existing run.
-    let executor: Vec<String> = build_argv(&ExecutionOptions::default())
-        .iter()
-        .map(|word| word.to_string_lossy().into_owned())
-        .collect();
-    let expected: Vec<&str> = vec![
-        "-p",
-        "--input-format",
-        "stream-json",
-        "--output-format",
-        "stream-json",
-        "--verbose",
-        "--replay-user-messages",
-        "--session-id",
-        "<uuid>",
-        "--setting-sources",
-        "project",
-        "--permission-mode",
-        "dontAsk",
-        "--strict-mcp-config",
-    ];
-    assert_eq!(executor.len(), expected.len(), "argv was {executor:?}");
-    for (index, want) in expected.iter().enumerate() {
-        if *want == "<uuid>" {
-            assert_eq!(executor[index].len(), 36, "argv was {executor:?}");
-            continue;
-        }
-        assert_eq!(&executor[index], want, "argv was {executor:?}");
-    }
-}
 
 #[test]
 fn no_executable_line_in_src_passes_the_hook_disabling_flag() {
@@ -563,8 +357,7 @@ fn the_hook_disabling_scan_fires_on_code_and_not_on_a_comment() {
     );
 
     // The declined alternative must remain DOCUMENTABLE in a comment — that is
-    // what the rationale-in-code convention requires, and `src/executor/mod.rs`
-    // really does name it in a doc comment today.
+    // what the rationale-in-code convention requires.
     let commented =
         format!("/// The declined alternative: the CLI's `{flag}` flag disables hooks.");
     let synthetic_comment: SourceFile =
@@ -574,127 +367,6 @@ fn the_hook_disabling_scan_fires_on_code_and_not_on_a_comment() {
         "the scanner must NOT report a doc comment naming the flag, or a guard \
          whose whole point is a documented rationale would forbid documenting \
          it: {commented}"
-    );
-}
-
-#[test]
-fn the_permitted_mcp_set_stays_empty_on_both_profiles() {
-    // Guard three, both directions: losing the strict flag fails, and gaining a
-    // config path fails.
-    use gsd_meta_manager::executor::claude::build_argv;
-    use gsd_meta_manager::executor::{ExecutionOptions, SpawnProfile};
-
-    for (name, options) in [
-        ("executor", ExecutionOptions::default()),
-        (
-            "seam",
-            ExecutionOptions {
-                profile: SpawnProfile::ModelSeam {
-                    json_schema: seam_test_schema(),
-                },
-                ..ExecutionOptions::default()
-            },
-        ),
-    ] {
-        let words: Vec<String> = build_argv(&options)
-            .iter()
-            .map(|word| word.to_string_lossy().into_owned())
-            .collect();
-        assert!(!words.is_empty(), "{name}: build_argv returned nothing");
-
-        assert!(
-            words.iter().any(|word| word == "--strict-mcp-config"),
-            "the {name} profile lost --strict-mcp-config. With it present and no \
-             config path supplied the permitted MCP server set is EMPTY; without \
-             it, a project-local .mcp.json in a cloned third-party repository \
-             introduces tools into a driven run. argv was {words:?}"
-        );
-        assert!(
-            !words.iter().any(|word| word == "--mcp-config"),
-            "the {name} profile supplied an MCP config path. With none supplied \
-             the permitted set is empty; supplying one moves it from empty to \
-             whatever that file names, which is a widening wearing a control's \
-             clothing. argv was {words:?}"
-        );
-
-        // Each consultation is a fresh single-turn spawn. The empty-tool and
-        // schema flags were never exercised in composition with a resumed
-        // session, and the seams are single-turn BY CONSTRUCTION — this
-        // assertion is what keeps that true rather than incidental.
-        assert!(
-            !words.iter().any(|word| word == RESUME_FLAG),
-            "the {name} profile carried a session-resume flag. A resumed seam \
-             would carry prior turns into a consultation whose bounds were \
-             measured on a fresh one. argv was {words:?}"
-        );
-    }
-
-    // And no executable line under src/ supplies a config path either, so the
-    // absence above cannot be reintroduced through a different construction.
-    let files = source_files();
-    let hits = executable_hits(&files, "--mcp-config");
-    assert!(
-        hits.is_empty(),
-        "an executable line under src/ supplies an MCP config path:{}",
-        render(&hits)
-    );
-    assert!(
-        !executable_hits(&files, "--strict-mcp-config").is_empty(),
-        "no executable line under src/ emits --strict-mcp-config at all, so the \
-         absence assertions above are about a flag nothing produces"
-    );
-}
-
-#[test]
-fn the_spawn_closure_comment_no_longer_claims_one_variable_is_set() {
-    // The pinned-honesty guard, in the shape `src/driver/dry_run.rs:580-595`
-    // establishes. The stale claim is spelled out here VERBATIM rather than
-    // referenced, because a test that compared the comment with itself could not
-    // detect its return.
-    //
-    // What was falsified: the closure used to set one variable and its comment
-    // said so. It now sets three, two of them under the seam profile only, and a
-    // user-facing — here, maintainer-facing — statement the code has falsified is
-    // worse than having said nothing.
-    let files = source_files();
-    let claude = files
-        .iter()
-        .find(|(path, _)| path == "src/executor/claude.rs")
-        .expect("the agent spawn seam must exist");
-    let text: String = claude
-        .1
-        .iter()
-        .map(|(_, line)| format!("{line}\n"))
-        .collect();
-
-    assert!(
-        !text.contains("then set the one we mean to set"),
-        "the spawn closure sets three variables now, so the comment claiming it \
-         sets one is false. Rewrite it in the same commit as the code that \
-         falsified it (the `dry_run.rs:78-83` precedent)"
-    );
-    assert!(
-        text.contains("set the ones we mean to set"),
-        "and the replacement must state the plural rather than merely being \
-         vaguer than what it replaced"
-    );
-
-    // The honesty the phase actually owes: there is NO field on this transport
-    // reporting whether CLAUDE.md suppression took effect. Claiming otherwise —
-    // or saying nothing and letting a reader assume the init envelope covers it
-    // the way it covers the tool set and the MCP list — is the unearned
-    // assurance this codebase's conventions exist to prevent.
-    assert!(
-        text.contains("There is NO on-the-wire signal that either took effect."),
-        "the spawn closure must state that no init-envelope field reports \
-         whether CLAUDE.md suppression took effect, and name what guards it \
-         instead (the argv/env source scan plus the 21-05 corpus fixture)"
-    );
-    assert!(
-        text.contains("CLAUDE_CODE_DISABLE_CLAUDE_MDS")
-            && text.contains("MAX_STRUCTURED_OUTPUT_RETRIES"),
-        "and it must still name both variables, or the statement above is about \
-         code that is no longer there"
     );
 }
 

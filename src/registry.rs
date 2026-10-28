@@ -756,11 +756,10 @@ pub fn record_opt_in(config: &mut Config, alias: &str) -> Result<()> {
 /// **Historical (WR-01).** The digests this labels are recorded at opt-in, but
 /// nothing on the launcher path consults them and no popup shows them any more.
 ///
-/// A **disclosure label**, deliberately not [`crate::executor::SpawnProfile`]:
-/// that type carries a JSON schema and exists to shape an argv, while this one
-/// exists to tell a user which of the two spawns will read a file. Keeping them
-/// separate stops the disclosure surface from acquiring a dependency on the
-/// seam's payload.
+/// A **disclosure label** that tells a user which of the two spawns will read a
+/// file. (It was deliberately kept apart from the in-process executor's spawn
+/// profile type, which carried a JSON schema and shaped an argv; that type went
+/// in Phase 31.)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PromptProfile {
     /// The bounded model seam: an empty tool set and a suppressed `CLAUDE.md`.
@@ -776,9 +775,8 @@ pub enum PromptProfile {
 ///
 /// **Recorded, not consulted (WR-01).** The digests of these files are recorded
 /// at opt-in, but nothing on the launcher path consults them and no popup shows
-/// them any more; the only reader is the legacy executor gate
-/// (`crate::executor::DrivableProject::from_registry`), which has no production
-/// caller.
+/// them any more; its only reader, the legacy executor gate, went in Phase 31
+/// (31-07).
 ///
 /// **This list is the disclosure, and its membership is a correctness property.**
 /// The plan's own prohibition rates an under-broad list as exactly as dishonest
@@ -890,9 +888,9 @@ impl OptInDrift {
 /// `None` means the recorded approval is still good. `Some(drift)` means
 /// re-confirm.
 ///
-/// **Its one caller has no production caller (WR-01).** It is asked only by
-/// `crate::executor::DrivableProject::from_registry`, the legacy executor gate;
-/// nothing on the launcher path consults it. Were it consulted, it would have to
+/// **It has no caller in this build (WR-01).** Its one caller was the legacy
+/// executor gate, which went in Phase 31 (31-07); nothing on the launcher path
+/// consults it. Were it consulted, it would have to
 /// be at the spawn gate rather than at render time, so that a confirmation
 /// screen left open while a `git pull` rewrites `CLAUDE.md` cannot approve
 /// bytes that changed underneath it.
@@ -957,10 +955,10 @@ pub fn clear_opt_in(config: &mut Config, alias: &str) -> Result<()> {
 
 /// Whether `alias` carries an opt-in record.
 ///
-/// A cheap read for the UI (plan 17-07). **Not a gate**: the gate is
-/// `DrivableProject::from_registry`, which lives in the driver process so a
-/// hand-typed `drive` is refused by the same code as a TUI-initiated one (D-16).
-/// An unregistered alias answers `false`.
+/// A cheap read for the UI (plan 17-07). **Not a gate**: the launcher refuses a
+/// project with no opt-in record by its own check. (The legacy executor gate that
+/// used to share this question went in Phase 31.) An unregistered alias answers
+/// `false`.
 pub fn is_opted_in(config: &Config, alias: &str) -> bool {
     config
         .projects
@@ -972,9 +970,9 @@ pub fn is_opted_in(config: &Config, alias: &str) -> bool {
 ///
 /// **It deliberately touches no UI-side map, and the omission is structural
 /// rather than an oversight** (D-27): this module is free functions over a
-/// `&mut Config` and has no access to `AppContext`, where the driver state lives
-/// — `run_states`. It is cleaned in exactly two places, and this sentence exists so
-/// the next reader finds them instead of concluding the leak is still open:
+/// `&mut Config` and has no access to `AppContext`, where the per-alias maps live.
+/// They are cleaned in exactly two places, and this sentence exists so the next
+/// reader finds them instead of concluding the leak is still open:
 ///
 /// * `ui::screens::delete_confirm::do_remove_project` — the interactive path,
 ///   which drops them in the same block as `project_states` and `last_refresh`.
@@ -2113,24 +2111,6 @@ mod tests {
         crate::text::strip_terminal_controls(one) != one
     }
 
-    /// How many [`crate::text::Untrusted`] fields this variant carries.
-    ///
-    /// **The wildcard-free `match` IS the anti-recurrence mechanism**, and it is
-    /// why this function exists at all rather than the subject list below simply
-    /// naming four variants. Adding a variant to [`OptInError`] does not compile
-    /// until an arm is written here, and writing that arm is the moment the
-    /// author is asked whether the variant carries an untrusted value — which is
-    /// the moment the question is cheap. **No `_ =>` arm may be added.**
-    fn opt_in_untrusted_fields(err: &crate::error::OptInError) -> usize {
-        use crate::error::OptInError as E;
-        match err {
-            E::UnknownAlias { .. } => 1,
-            E::NotOptedIn { .. } => 1,
-            E::RootUnusable { .. } => 1,
-            E::PromptInputsDrifted { .. } => 1,
-        }
-    }
-
     /// A registry holding exactly `key`, built without going through
     /// [`Alias::new`] — which is the point, because every value this control
     /// cares about is one this build's alphabet refuses.
@@ -2148,48 +2128,13 @@ mod tests {
         config
     }
 
-    /// Every message this plan's two error types and the `remove` path produce
+    /// Every message the runtime-config error and the `remove` path produce
     /// for one value, as `(subject name, message)`.
     fn messages_for(value: &str) -> Vec<(String, String)> {
-        use crate::error::OptInError;
         use crate::text::Untrusted;
 
         let carrier = || Untrusted::from_untrusted_source(value.to_string());
         let mut out: Vec<(String, String)> = Vec::new();
-
-        for (name, err) in [
-            (
-                "OptInError::UnknownAlias",
-                OptInError::UnknownAlias { alias: carrier() },
-            ),
-            (
-                "OptInError::NotOptedIn",
-                OptInError::NotOptedIn { alias: carrier() },
-            ),
-            (
-                "OptInError::RootUnusable",
-                OptInError::RootUnusable {
-                    alias: carrier(),
-                    root: PathBuf::from("/nonexistent"),
-                },
-            ),
-            (
-                "OptInError::PromptInputsDrifted",
-                OptInError::PromptInputsDrifted {
-                    alias: carrier(),
-                    drift: OptInDrift::NothingDisclosed,
-                },
-            ),
-        ] {
-            assert_eq!(
-                opt_in_untrusted_fields(&err),
-                1,
-                "{name} is in this control's subject list but the wildcard-free \
-                 classifier says it carries no untrusted field — the list and \
-                 the classifier have drifted"
-            );
-            out.push((name.to_string(), err.to_string()));
-        }
 
         // The config value `UnrecognizedRuntime` echoes is user-authored text
         // (260922-hdj). It is a struct, not an enum, so no wildcard-free
@@ -2431,16 +2376,15 @@ mod tests {
         }
 
         assert!(
-            // Nine since Phase 31 (twelve before): the four legacy drive-error
-            // variants collapse to the one that survives as a bare
-            // `UnrecognizedRuntime`, because that enum went with `drive`.
-            subjects_seen == corpus.len() * 9,
+            // Five since Phase 31 (nine before 31-07): the four `OptInError`
+            // subjects went with that enum, which only the retired in-process
+            // executor produced.
+            subjects_seen == corpus.len() * 5,
             "only {subjects_seen} subject/value pairs were checked across \
-             {} corpus members. Each member must reach all NINE subjects — \
-             four `OptInError` variants, `UnrecognizedRuntime`, both \
-             halves of `remove`, and the two opt-in functions — or a subject \
-             has silently dropped out of the list the wildcard-free classifiers \
-             gate",
+             {} corpus members. Each member must reach all FIVE subjects — \
+             `UnrecognizedRuntime`, both halves of `remove`, and the two \
+             opt-in functions — or a subject has silently dropped out of the \
+             list this control checks",
             corpus.len()
         );
     }

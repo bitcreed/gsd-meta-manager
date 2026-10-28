@@ -4,9 +4,8 @@
 // One rule governs every assertion below: **a comment is not a guard; the test
 // is.** Until this file existed, the boundary between "a blocking syscall" and
 // "an `async fn` body" was held by prose — the legacy driver's module docs said
-// *"No blocking syscall inside an `async fn`"* several times, and
-// `src/executor/claude.rs`'s module doc says why its one spawn is exempt. Every
-// one of those sentences was true and none of them could stop the next edit.
+// *"No blocking syscall inside an `async fn`"* several times. Every one of
+// those sentences was true and none of them could stop the next edit.
 // This file can. (The legacy `drive` run body those docs described was retired
 // in Phase 31; the rule and the guard outlive it.)
 //
@@ -118,23 +117,14 @@ const BLOCKING_MARKERS: &[&str] = &[
 /// stale names and they were deleted. Phase 31's guard retirement then removed
 /// `probe_protection(` and `write_settings(` the same way (their modules,
 /// `envelope::advisory` and `envelope::hooks`, are gone), and the journal trim
-/// removed `JournalRun::start(`. The markers that remain
-/// are the envelope and snapshot seams that the executor and the launcher still
-/// reach.
+/// removed `JournalRun::start(`. 31-07 then removed `RunSnapshot::capture(`
+/// with the in-process executor that was its only `async fn` caller. The markers
+/// that remain are the envelope and git seams that the launcher still reaches.
 ///
 /// `every_named_blocking_helper_still_exists_in_the_tree` keeps this list from
 /// going stale: a rename that emptied a marker would otherwise look exactly
 /// like a clean run.
-const BLOCKING_HELPERS: &[&str] = &[
-    "scan_worktree(",
-    "record_and_check(",
-    "git_read_raw(",
-    // Phase 20's, and it was a **pre-existing hole** rather than one that phase
-    // opened: `RunSnapshot::capture` does full-tree file I/O and shells out to
-    // git twice — its own doc says so in as many words — and it has been
-    // reachable from an `async fn` since Phase 15 without appearing here at all.
-    "RunSnapshot::capture(",
-];
+const BLOCKING_HELPERS: &[&str] = &["scan_worktree(", "record_and_check(", "git_read_raw("];
 
 /// The hand-off shapes that move blocking work off the runtime thread.
 ///
@@ -188,18 +178,6 @@ const ASYNC_BLOCKING_ALLOWLIST: &[(&str, &str)] = &[
     // intended behaviour rather than a cost. Handing it to `spawn_blocking`
     // would let the event loop keep drawing over the editor's screen.
     ("src/main.rs", ".status()"),
-    // The agent spawn. The child is long-lived and duplex, so it is `spawn`ed
-    // and then read asynchronously — `src/executor/claude.rs`'s module doc
-    // states this outright ("not `spawn_blocking`. The child is long-lived and
-    // duplex"). `Command::spawn` forks and execs; it does not wait.
-    ("src/executor/claude.rs", ".spawn()"),
-    // The executor's own capture fallback, which is the hole this marker was
-    // added to close. It has been unreported since Phase 15 — not because it was
-    // judged acceptable, but because nothing named the helper — and the entry is
-    // added in the same commit as the marker so the exemption is a decision
-    // rather than an inheritance. Same shape again: `capture_snapshot` hands the
-    // work to `spawn_blocking` and re-runs inline only on a join failure.
-    ("src/executor/claude.rs", "RunSnapshot::capture("),
 ];
 
 /// The floor below which this audit is examining too little to mean anything.
@@ -207,12 +185,14 @@ const ASYNC_BLOCKING_ALLOWLIST: &[(&str, &str)] = &[
 /// Non-vacuity in the register `tests/spawn_seam_guard.rs` already uses: an
 /// audit that walked nothing passes for the wrong reason, and a brace-tracking
 /// bug that quietly stopped entering `async fn` bodies would look exactly like
-/// a clean tree. Roughly 2400 production `async` body lines exist at the time of
-/// writing (Phase 31 re-measure after retiring `drive`: 2380; the earlier
-/// "roughly 1700" figure was already stale); the floor is set well below that so
-/// ordinary churn does not trip it, and well above zero so a broken walk does.
-/// It was 800 before Phase 31 and is unchanged: the measured value stayed far
-/// above it, so there was nothing to lower.
+/// a clean tree. Roughly 1200 production `async` body lines exist at the time of
+/// writing (31-07 re-measure after the in-process executor went: 1229; Phase 31's
+/// earlier re-measure after retiring `drive` was 2380, and the "roughly 1700"
+/// figure before it was already stale); the floor is set below that so ordinary
+/// churn does not trip it, and well above zero so a broken walk does.
+/// It was 800 before Phase 31 and is unchanged at 800: the measured value fell
+/// from 2380 to 1229 but stayed above it, so the rule "lower it only if the
+/// measurement fell below the floor" did not fire.
 const MIN_ASYNC_BODY_LINES: usize = 800;
 
 /// The files D-29 is actually about: the TUI's event loop and the launcher's
@@ -709,9 +689,9 @@ fn the_non_vacuity_floor_counts_real_async_bodies_rather_than_reporting_a_consta
     // though it contains a call the marker set knows. A walk that counted every
     // line regardless would clear the floor while auditing nothing.
     let sync_only = lines(&[
-        "pub fn observe(path: &Path) -> RunSnapshot {",
-        "    let snapshot = RunSnapshot::capture(path);",
-        "    snapshot",
+        "pub fn observe(path: &Path) -> Report {",
+        "    let report = scan_worktree(path);",
+        "    report",
         "}",
     ]);
     let (hits, examined) = scan("src/synthetic_sync.rs", &sync_only);
@@ -770,43 +750,6 @@ fn the_non_vacuity_floor_counts_real_async_bodies_rather_than_reporting_a_consta
 }
 
 #[test]
-fn the_snapshot_capture_marker_covers_the_trees_inline_capture() {
-    // Phase 20's plan expected to ADD the snapshot-capture coverage here. It was
-    // already added — by plan 20-01, in the same commit as the loop that made it
-    // urgent — so this test pins the coverage rather than re-adding it, and
-    // proves the claim is true of the tree rather than of the plan text.
-    assert!(
-        BLOCKING_HELPERS.contains(&"RunSnapshot::capture("),
-        "the synchronous full-tree capture must be visible to the scanner; it \
-         does full-tree file I/O and shells out to git twice, and was invisible \
-         from Phase 15 until Phase 20 named it"
-    );
-
-    // **`capture_snapshot(` is deliberately NOT a marker**, and that is the
-    // whole finding. It is an `async fn` (`src/executor/claude.rs`) that hands
-    // the work to `spawn_blocking` internally. Naming it would report call sites
-    // that are already correct, and the only way to make the suite green again
-    // would be allowlist entries suppressing non-problems. An allowlist
-    // that grows for calls that were never violations is exactly the silent
-    // widening CTRL-06 forbids.
-    assert!(
-        !BLOCKING_HELPERS.contains(&"capture_snapshot("),
-        "`capture_snapshot` is an async wrapper that already hands off; naming it \
-         would force allowlist entries for compliant code"
-    );
-
-    // The inline re-run is the join-failure fallback of the capture site that
-    // remains, allowlisted at marker granularity rather than by file.
-    let file = "src/executor/claude.rs";
-    assert!(
-        ASYNC_BLOCKING_ALLOWLIST
-            .iter()
-            .any(|(path, marker)| *path == file && *marker == "RunSnapshot::capture("),
-        "{file}'s inline join-failure capture must carry a declared entry"
-    );
-}
-
-#[test]
 fn the_scanner_reports_a_planted_blocking_call_and_spares_a_handed_off_one() {
     // The control arm, and it is not optional: the gate above asserts an
     // emptiness, and a scanner that recognised nothing at all would satisfy it
@@ -850,9 +793,8 @@ fn the_scanner_reports_a_planted_blocking_call_and_spares_a_handed_off_one() {
     );
 
     // And the hand-off must not extend past the block it opened: the
-    // join-failure fallback in `src/executor/claude.rs` sits in a `match` arm on the
-    // task's RESULT, outside the closure, and it is reported (and then
-    // allowlisted) rather than swallowed.
+    // join-failure fallback shape (a `match` arm on the task's RESULT, outside
+    // the closure) is reported rather than swallowed.
     let fallback = lines(&[
         "pub async fn run(path: PathBuf) -> anyhow::Result<()> {",
         "    let text = match tokio::task::spawn_blocking(move || {",

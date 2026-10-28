@@ -423,10 +423,10 @@ fn cap_payload(v: &mut Value, max: usize) {
 /// Together those mean there is **no compilable path from a bare `String` to a
 /// written journal line** — the compiler holds the seam, not a code review.
 ///
-/// This follows `DrivableProject` (`src/executor/mod.rs:109-140`) with one
-/// deliberate deviation: that type carries a loudly-named test escape hatch, and
-/// this one must not, because such a constructor would reopen exactly the seam
-/// the type exists to close.
+/// It is a capability-token type with no test escape hatch, deliberately: such
+/// a constructor would reopen exactly the seam the type exists to close. (The
+/// executor's capability token, which this was modelled on, went in
+/// Phase 31.)
 // `dead_code` (Phase 31, `[inferred - audit]`): the journal writer was this
 // type's only consumer and is deleted with the legacy run directory. The type
 // and its tests are kept, rather than deleted in a plan about the envelope guard,

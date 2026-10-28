@@ -169,12 +169,12 @@ impl Oracle {
     /// 2865, 3230-3252). A Codex install's `.gsd-runtime` marker (`codex`), or a
     /// `GSD_RUNTIME` inherited from the test process, makes it answer
     /// `$gsd-discuss-phase 01` — measured, and it failed the safe-alphabet
-    /// assert. The rule table stores the canonical `/gsd-…` spelling and
-    /// `runtime::codex_command` translates only at the executor edge, so the
-    /// comparison has to be made in canonical spelling. For this verb the
+    /// assert. The rule table stores the canonical `/gsd-…` spelling (a
+    /// runtime-specific translation used to happen at the retired executor's
+    /// edge), so the comparison has to be made in canonical spelling. For this verb the
     /// runtime feeds only the spelling, never the routing, so pinning it cannot
-    /// hide a routing change. (The driven codex child is the opposite case: it
-    /// has `GSD_RUNTIME` scrubbed, never set — see `scrubbed_from_codex_child`.)
+    /// hide a routing change. (The retired driven codex child was the opposite case: it
+    /// had `GSD_RUNTIME` scrubbed, never set.)
     fn query_command(&self, verb: &str) -> Command {
         let mut command = Command::new(&self.program);
         if let Some(script) = &self.script {

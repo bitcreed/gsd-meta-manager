@@ -27,8 +27,6 @@ use crate::action::Action;
 use crate::app::DetailSubView;
 use crate::change_tracker::ChangeTracker;
 use crate::config::Config;
-use crate::executor::RunState;
-use crate::main_loop::ExecEvent;
 use crate::state_reader::backlog::BacklogItem;
 use crate::state_reader::git_ops::{GitCommitDetail, GitLogEntry};
 use crate::state_reader::ProjectState;
@@ -39,7 +37,7 @@ use ratatui::widgets::TableState;
 use ratatui::Frame;
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
-use tokio::sync::mpsc::{Sender, UnboundedSender};
+use tokio::sync::mpsc::UnboundedSender;
 
 // ---------------------------------------------------------------------------
 // The render adjudication — a COMPILE-TIME obligation, not a source census
@@ -448,9 +446,9 @@ const ELLIPSIS: char = '\u{2026}';
 /// and plain data, never a borrow of the journal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DriverLineKind {
-    /// `ExecEvent` on the assistant / user / turn streams — the common case.
+    /// An event on the assistant / user / turn streams — the common case.
     Output,
-    /// `ExecEvent` on the `stderr` stream: present but secondary.
+    /// An event on the `stderr` stream: present but secondary.
     Stderr,
     /// `Diagnostic`, `EventsDropped`, `JournalTruncated` — never silently swallowed.
     Diagnostic,
@@ -501,7 +499,7 @@ pub struct DriverOutputLine {
 
 /// One alias's bounded live-output ring (D-18).
 ///
-/// * A **sibling map value** on [`AppContext`], shaped like `run_states`.
+/// * A **sibling map value** on [`AppContext`], shaped like `last_refresh`.
 ///   It deliberately does NOT live on `ProjectState`: that
 ///   type derives `PartialEq`, and `app.rs` uses the derived equality to
 ///   suppress the "Updated: {alias}" status message. Live output changes every
@@ -693,7 +691,7 @@ pub struct LauncherLogTail {
 ///
 /// **Every string this phase renders that originated on disk is untrusted**, and
 /// this is the single append-time gate all of them pass through (18-UI-SPEC,
-/// `## Untrusted Input Boundary`). Agent prose lands in `ExecEvent.text`,
+/// `## Untrusted Input Boundary`). Agent prose lands in an event's `text`,
 /// `Diagnostic.detail`, the legacy `RunRecord.goal` on re-read and `gsd_command`.
 ///
 /// **This function is now the CLASS plus the CAP, and nothing else** (D-21-9).
@@ -1321,28 +1319,6 @@ pub struct AppContext {
     pub status_message: Option<(String, std::time::Instant)>,
     pub error_message: Option<String>,
     pub event_tx: Option<UnboundedSender<Action>>,
-    /// Long-lived sender for the **separate, bounded** executor channel (D-17).
-    ///
-    /// Two things about this field are load-bearing, and neither is stylistic:
-    ///
-    /// * It is **separate** from `event_tx`. High-volume stream traffic must
-    ///   never travel through the `Action` FIFO, because `pump`'s biased
-    ///   `select!` polls that FIFO first and would starve everything else.
-    /// * It is a clone held for the **process lifetime**. The executor channel
-    ///   legitimately has no producer between runs, and a channel with no live
-    ///   sender closes — which permanently disables its `select!` arm
-    ///   (Pitfall C). Keeping this clone alive is what stops that.
-    pub exec_tx: Option<Sender<ExecEvent>>,
-    /// Per-alias live driver state (D-19).
-    ///
-    /// A **sibling map**, shaped exactly like `last_refresh` and
-    /// `archive_cache` above. Driver state deliberately does NOT live on
-    /// `ProjectState`: that type derives `PartialEq`, and `app.rs` uses the
-    /// derived equality to suppress the "Updated: {alias}" status message.
-    /// Driver state changes every few seconds — one 68-second spike turn
-    /// emitted 22 `thinking_tokens` events — so putting it there would flood
-    /// the status bar for an entire multi-hour run.
-    pub run_states: HashMap<String, RunState>,
     /// Count of full `parse_project_state` dispatches this process has issued.
     ///
     /// * **Load-bearing for OBS-06.** A driver journal append must never
@@ -2411,8 +2387,6 @@ mod tests {
             status_message: None,
             error_message: None,
             event_tx: None,
-            exec_tx: None,
-            run_states: HashMap::new(),
             reparse_dispatches: 0,
             agent_views: HashMap::new(),
             agents_scan_in_flight: false,

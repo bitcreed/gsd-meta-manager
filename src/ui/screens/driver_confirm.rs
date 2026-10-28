@@ -418,8 +418,6 @@ pub(crate) mod tests {
             status_message: None,
             error_message: None,
             event_tx: Some(tx),
-            exec_tx: None,
-            run_states: HashMap::new(),
             reparse_dispatches: 0,
             agent_views: HashMap::new(),
             agents_scan_in_flight: false,

@@ -4,7 +4,10 @@ version = "1.15.0"
 edition = "2021"
 # FLOOR PROVENANCE. This value is not hand-chosen: it is the highest
 # `rust-version` declared anywhere in the resolved dependency graph. It is
-# currently 1.89.0, set by `uuid` 1.28 alone; the `ratatui` 0.30.x family,
+# currently 1.89.0, set by `uuid` 1.28 alone (since Phase 31 no longer a direct
+# dependency: it stays in the lock through `wezterm-blob-leases`, reached from
+# ratatui's unenabled termwiz backend, and cargo metadata counts it); the
+# `ratatui` 0.30.x family,
 # `time`, `darling` and the `icu_*` 2.3.x crates reached through
 # `icu_properties` sit one step below at 1.88.0. It moves under an ordinary `cargo update` with no
 # edit to this manifest, which is exactly how it drifted past the previously
@@ -52,18 +55,13 @@ futures = "0.3"
 notify = "8"
 notify-debouncer-full = "0.7"
 tui-textarea = { version = "0.7", features = ["ratatui"] }
-# `tokio1` is NOT a default feature and the crate is inert without it.
-# No line-framing crate is added: NDJSON framing uses tokio::io::BufReader::lines()
-# plus an explicit byte-length bound, so tokio-util is deliberately not a dependency.
-process-wrap = { version = "10.0.0", features = ["tokio1"] }
-uuid = { version = "1.24", features = ["v4", "serde"] }
 # One crate covers BOTH jobs the supervisor needs — process-group signalling
 # (`kill_process_group`, plan 17-06) and the single-execution advisory lock
 # (`flock`, plan 17-02) — which is why `fs4` was declined (D-08).
 # It resolves to 1.1.4, the exact version already present in Cargo.lock
 # transitively via ratatui/crossterm, so it adds zero new compilation units to
 # the graph. It is pure Rust with no libc linkage, which matches the deliberate
-# no-`nix`/no-`libc` posture documented at `src/executor/claude.rs:102-103`.
+# no-`nix`/no-`libc` posture the process-group code in `src/driver/kill.rs` keeps.
 rustix = { version = "1.1", features = ["process", "fs"] }
 # SHA-256 for the driver opt-in's re-confirmation digest (C-4). A maintained
 # RustCrypto implementation rather than a third hand-rolled hash in this tree:

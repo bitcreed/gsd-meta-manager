@@ -142,8 +142,9 @@ fn resolve_gsd_tools(project_root: &Path) -> Option<GsdToolsCmd> {
 /// install marker), so a Codex-resolved install would answer `$gsd-...`. The pin
 /// makes suggestions arrive in the canonical `/gsd-...` spelling, with the same
 /// reasoning as `tests/driver_router_conformance.rs` `query_command`. Pre-1.17
-/// installs still answer in the colon form, which `claude_command` /
-/// `codex_command` repair at dispatch.
+/// installs still answer in the colon form. (The in-process executor's
+/// `claude_command` / `codex_command` used to repair that at dispatch; both went
+/// with it in Phase 31.)
 /// [inferred 261016-dx4 I-3]
 fn resolve_gsd_tools_from(project_root: &Path, roots: &InstallRoots) -> Option<GsdToolsCmd> {
     for candidate in gsd_tools_candidates(project_root, roots) {

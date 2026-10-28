@@ -1167,9 +1167,8 @@ impl NormalScreen {
                     //
                     // **The worked example of the identity split (CR-01).**
                     // `row_badge(ctx, alias)` is handed the RAW key, because it
-                    // is a LOOKUP — it indexes `view_cache`, `project_states`
-                    // and `run_states` by that exact string, and an escaped key
-                    // would miss every one of them. The cell rendered beside the
+                    // is a LOOKUP — it indexes `view_cache` and `project_states`
+                    // by that exact string, and an escaped key would miss both. The cell rendered beside the
                     // badge is what a HUMAN READS, so it carries the escaped
                     // form. Same value, two questions, and the answer differs.
                     let alias_read = crate::text::render_for_terminal(alias);
@@ -1677,8 +1676,6 @@ mod tests {
             status_message: None,
             error_message: None,
             event_tx: None,
-            exec_tx: None,
-            run_states: HashMap::new(),
             reparse_dispatches: 0,
             agent_views: HashMap::new(),
             agents_scan_in_flight: false,

@@ -172,12 +172,11 @@ fn do_remove_project(ctx: &mut AppContext, alias: &str) {
             ctx.detail_sub_view_per_project.remove(alias);
             ctx.last_refresh.remove(alias);
 
-            // The driver map joins the three above (D-27). `registry::remove_project`
-            // cleans none of them — it takes a `&mut Config` and has no access to
-            // `AppContext` at all — so this is the **immediate** path, and
-            // `App::prune_driver_maps` is the backstop for every removal that
-            // does not come through this screen.
-            ctx.run_states.remove(alias);
+            // `registry::remove_project` cleans none of the maps above — it takes
+            // a `&mut Config` and has no access to `AppContext` at all — so this
+            // is the **immediate** path, and `App::prune_driver_maps` is the
+            // backstop for every removal that does not come through this screen
+            // (D-27).
 
             // Read, not looked up: every map removal above keys off the RAW
             // `alias`; only this toast is escaped, because only this toast is
@@ -254,8 +253,6 @@ mod tests {
             status_message: None,
             error_message: None,
             event_tx: Some(tx),
-            exec_tx: None,
-            run_states: HashMap::new(),
             reparse_dispatches: 0,
             agent_views: HashMap::new(),
             agents_scan_in_flight: false,

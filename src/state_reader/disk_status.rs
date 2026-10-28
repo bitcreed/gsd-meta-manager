@@ -51,8 +51,8 @@ pub enum DiskStatus {
 /// `status: unparseable` as a table key.
 ///
 /// **Matched as a string with an explicit fallback that keeps the value**, in
-/// the tolerant-wire-enum posture `executor::outcome` and `executor::stream_json`
-/// already use: a typed parse that discarded an unrecognised value would lose the
+/// the tolerant-wire-enum posture `executor::stream_json` already
+/// uses: a typed parse that discarded an unrecognised value would lose the
 /// one fact a human needs to see when GSD ships a seventh status.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum VerificationStatus {

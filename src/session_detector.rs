@@ -385,12 +385,10 @@ fn read_tty(pid: u32) -> Option<String> {
 /// which was entirely subsumed by the first of these and was deleted after both
 /// survivors were OBSERVED red under a planted fused-branch defect.)
 ///
-/// A third coupling now exists for this build's OTHER producer:
-/// [`tests::the_executors_own_argv_is_an_argv_this_build_can_read_back`] drives
-/// `crate::executor::claude::build_argv`'s real argv through this parser, and
 /// [`tests::every_claude_argv_option_site_under_src_is_adjudicated`] is what
 /// makes the producer SET measured rather than remembered — so a producer added
-/// later is a RED, not an omission.
+/// later is a RED, not an omission. (The in-process executor, this build's other
+/// producer, went in Phase 31; its round-trip control went with it.)
 ///
 /// **The line this correction must not blur.** What has been added is
 /// **wire-format parsing and its functional control**, never value validation.
@@ -468,9 +466,9 @@ const RESUME_OPTION_FUSED_PREFIX: &[u8] = b"--resume=";
 /// rather than inferred forward from a version number.
 const RESUME_OPTION_SHORT_NAME: &[u8] = b"-r";
 
-/// The bare name of the option **this build's own executor emits**
-/// (`crate::executor::claude::build_argv`), documented at `claude` 2.1.250 as
-/// `--session-id <uuid>`.
+/// The bare name of the option `claude` documents (at 2.1.250) as
+/// `--session-id <uuid>`. The retired in-process executor used to emit it; it is
+/// parsed because `claude` accepts it, and the spec is that CLI's own.
 ///
 /// Reading it is the whole of G2. Before this round every driver-launched
 /// session — `claude -p --session-id <uuid>` — read back as `None`, so the one
@@ -1717,8 +1715,8 @@ mod tests {
     // round-trip claim as a property of THIS BUILD — *what this build emits,
     // this build can read back* — and asserted it over ONE of this build's
     // TWO `claude` argv producers, with nothing anywhere saying which. The
-    // second producer is `crate::executor::claude::build_argv`, which emits
-    // `--session-id <uuid>`; measured before this round, `claude -p
+    // second producer was the in-process executor (retired in Phase 31), which
+    // emitted `--session-id <uuid>`; measured before this round, `claude -p
     // --session-id <uuid>` read back as `None`, so EVERY driver-launched
     // session was invisible to the detector that finds it again.
     //
@@ -1874,7 +1872,7 @@ mod tests {
         /// reason and a DIRECTION.
         ///
         /// **Deliberately unconstructed today, and kept anyway.** No site in
-        /// this tree needs it: the four measured files are two producers, one
+        /// this tree needs it: the three measured files are one producer, one
         /// consumer and one same-spelled non-`claude` flag. It stays because
         /// the vocabulary is the census's contract — the next adjudicator who
         /// meets a genuine exclusion must be able to say so, and a vocabulary
@@ -1889,19 +1887,12 @@ mod tests {
     /// non-comment count, its disposition, and the reason.
     ///
     /// The counts are measured on the tree, never inherited from a plan. The
-    /// pre-wave-1 baseline was **18 sites across these same four files** —
+    /// pre-wave-1 baseline was **18 sites across four files** —
     /// `src/executor/claude.rs` 5, `src/session_detector.rs` 8,
     /// `src/ui/screens/detail.rs` 4, `src/state_reader/git_ops.rs` 1 — and
-    /// 21-36 added parser arms to two of them.
-    const CLAUDE_ARGV_SITES: [(&str, usize, SiteDisposition, &str); 4] = [
-        (
-            "src/executor/claude.rs",
-            5,
-            SiteDisposition::Producer,
-            "build_argv emits `--session-id <uuid>` for every driver-launched \
-             run, and `--resume <id>` when resuming. This is the producer the \
-             round-trip invariant was written about and never asserted over.",
-        ),
+    /// 21-36 added parser arms to two of them. `src/executor/claude.rs` went
+    /// with the in-process executor in Phase 31 (31-07), taking its 5 with it.
+    const CLAUDE_ARGV_SITES: [(&str, usize, SiteDisposition, &str); 3] = [
         (
             "src/session_detector.rs",
             23,
@@ -1937,154 +1928,10 @@ mod tests {
     /// CLAIMS to cover and no test actually drives — which is precisely the
     /// state round 12 shipped in, and precisely what this census exists to make
     /// impossible to ship again.
-    const CLAUDE_ARGV_ROUND_TRIPS: [(&str, &str); 2] = [
-        (
-            "src/ui/screens/detail.rs",
-            "a_session_id_survives_the_round_trip_in_both_wire_forms",
-        ),
-        (
-            "src/executor/claude.rs",
-            "the_executors_own_argv_is_an_argv_this_build_can_read_back",
-        ),
-    ];
-
-    /// **This build's SECOND `claude` argv producer, driven through the REAL
-    /// parser** (21-37, G2, D-21-74, T-21-37-01).
-    ///
-    /// The invariant *what this build emits, this build can read back* was
-    /// written as a property of THIS BUILD and asserted over ONE of this
-    /// build's TWO producers, with nothing anywhere saying which. This is the
-    /// other one. Nothing is re-spelled: the argv comes from the real
-    /// [`crate::executor::claude::build_argv`], the encoding is the kernel's,
-    /// and the parse comes from the real [`session_id_in_cmdline`].
-    ///
-    /// # The encoding is BYTE-EXACT, deliberately
-    ///
-    /// The `Vec<OsString>` is joined through
-    /// [`std::os::unix::ffi::OsStrExt::as_bytes`] and never through
-    /// `to_string_lossy` — which is the exact substitution 21-36 removed from
-    /// the parser. A lossy conversion here would make this control assert on a
-    /// value it invented rather than on the bytes the kernel would present, and
-    /// it would do so silently.
-    ///
-    /// `#[cfg(unix)]` because that conversion is, exactly as the `/proc` reader
-    /// this module already is.
-    ///
-    /// # Both shapes, because they answer different questions
-    ///
-    /// The NON-resuming shape asks whether a freshly launched run is visible at
-    /// all — measured before this round, it was not. The RESUMING shape asks
-    /// which of two ids on one argv is the live conversation's, and it is
-    /// asserted here rather than only in the parser's own arms because this is
-    /// the argv this build actually emits: `--session-id` first, `--resume`
-    /// later, so a parser that returned the leftmost match would pass every
-    /// enumerated arm and still report the wrong id for every resumed run this
-    /// build starts.
-    #[cfg(unix)]
-    #[test]
-    fn the_executors_own_argv_is_an_argv_this_build_can_read_back() {
-        use std::os::unix::ffi::OsStrExt;
-
-        // The `/proc/<pid>/cmdline` encoding: each element's own bytes, each
-        // followed by a NUL. Byte-exact by construction.
-        fn wire(argv: &[std::ffi::OsString]) -> Vec<u8> {
-            let mut bytes = Vec::new();
-            for element in argv {
-                bytes.extend_from_slice(element.as_bytes());
-                bytes.push(0);
-            }
-            bytes
-        }
-
-        fn read_back(argv: &[std::ffi::OsString]) -> Option<String> {
-            session_id_in_cmdline(&wire(argv)).map(|id| id.as_raw_for_logic_only().to_string())
-        }
-
-        // --- The NON-RESUMING shape: a fresh run's assigned id --------------
-        let options = crate::executor::ExecutionOptions::default();
-        let assigned = options.session_id.to_string();
-        let argv = crate::executor::claude::build_argv(&options);
-
-        assert!(
-            !argv.is_empty(),
-            "build_argv produced an EMPTY argv, so the round trip below would \
-             be driving nothing through the parser and passing on that"
-        );
-        assert!(
-            argv.iter()
-                .any(|element| element.as_bytes() == assigned.as_bytes()),
-            "the assigned session id {assigned:?} is not an element of the argv \
-             build_argv produced ({argv:?}), so this control would be asserting \
-             against a value the producer never emitted"
-        );
-
-        assert_eq!(
-            read_back(&argv).as_deref(),
-            Some(assigned.as_str()),
-            "this build's own executor emitted {argv:?} and this build could \
-             not read the session id back out of it. Measured before 21-37 this \
-             returned None for EVERY driver-launched run: the id this build \
-             hands `claude` was invisible to the detector that finds the session \
-             again, so a run this build itself started reads back as \
-             `session_id: None` and its Sessions-tab row answers `No session ID \
-             to resume` with nothing anywhere reporting why. This is the same \
-             defect round 12 closed for the OTHER producer, on the producer \
-             nobody had said the invariant covered."
-        );
-
-        // --- The RESUMING shape: two ids on one argv ------------------------
-        let resumed = "a-conversation-that-already-exists".to_string();
-        let options = crate::executor::ExecutionOptions {
-            resume_session: Some(resumed.clone()),
-            ..Default::default()
-        };
-        let fresh = options.session_id.to_string();
-        let argv = crate::executor::claude::build_argv(&options);
-
-        // Non-vacuity for the RANK claim: both options must actually be on
-        // this argv, and the assigned one must come FIRST — otherwise the
-        // assertion below would be satisfied by leftmost-wins and would
-        // certify nothing about rank.
-        let assigned_at = argv
-            .iter()
-            .position(|element| element.as_bytes() == SESSION_ID_OPTION_NAME);
-        let resume_at = argv
-            .iter()
-            .position(|element| element.as_bytes() == RESUME_OPTION_NAME);
-        assert!(
-            matches!((assigned_at, resume_at), (Some(a), Some(r)) if a < r),
-            "the resuming argv {argv:?} must carry the assigned-id option \
-             BEFORE the resume option (found at {assigned_at:?} and \
-             {resume_at:?}). If it does not, the rank assertion below is \
-             satisfied by argv index and certifies nothing about rank."
-        );
-        assert!(
-            argv.iter()
-                .any(|element| element.as_bytes() == fresh.as_bytes()),
-            "the fresh session id {fresh:?} is not on the resuming argv \
-             ({argv:?}), so there is no second id for the rank rule to outrank"
-        );
-
-        assert_eq!(
-            read_back(&argv).as_deref(),
-            Some(resumed.as_str()),
-            "this build's executor emitted {argv:?}, carrying a FRESH assigned \
-             id ({fresh:?}) to the LEFT of the resumed one ({resumed:?}), and \
-             the parser must report the RESUMED one. The basis is measured, not \
-             assumed: `claude` 2.1.250 documents its forking option as creating \
-             a new session id INSTEAD OF reusing the original, so absent that \
-             flag — and `no_source_line_under_src_requests_a_forked_session` \
-             asserts this build never asks for one — the resumed conversation \
-             keeps the id it resumed. Reporting {fresh:?} would offer the \
-             operator a resume of a conversation that does not exist."
-        );
-        assert_ne!(
-            read_back(&argv).as_deref(),
-            Some(fresh.as_str()),
-            "the parser reported the FRESH assigned id for a resuming run. That \
-             is the leftmost match, not the live conversation's identity."
-        );
-    }
+    const CLAUDE_ARGV_ROUND_TRIPS: [(&str, &str); 1] = [(
+        "src/ui/screens/detail.rs",
+        "a_session_id_survives_the_round_trip_in_both_wire_forms",
+    )];
 
     /// **Every `claude` argv option site under `src/` is adjudicated** (21-37,
     /// D-21-74, T-21-37-01, T-21-37-04).
@@ -2100,8 +1947,8 @@ mod tests {
     /// A disposition table in which every row is an exclusion reports nothing
     /// while LOOKING like a control, and a reason field left empty converts a
     /// decision into an omission. So three properties of the TABLE itself are
-    /// asserted, not reviewed: at least one row is a `Producer`; both known
-    /// producers are `Producer` rather than `Excluded`; and every non-`Producer`
+    /// asserted, not reviewed: at least one row is a `Producer`; the known
+    /// producer is `Producer` rather than `Excluded`; and every non-`Producer`
     /// row carries a non-empty reason (T-21-37-04).
     #[test]
     fn every_claude_argv_option_site_under_src_is_adjudicated() {
@@ -2180,20 +2027,19 @@ mod tests {
             "no row of CLAUDE_ARGV_SITES is a Producer. A census whose every row \
              is an exclusion reports nothing while looking like a control."
         );
-        for known_producer in ["src/ui/screens/detail.rs", "src/executor/claude.rs"] {
-            let row = CLAUDE_ARGV_SITES
-                .iter()
-                .find(|(path, ..)| *path == known_producer);
-            assert_eq!(
-                row.map(|(.., disposition, _)| *disposition),
-                Some(SiteDisposition::Producer),
-                "{known_producer} builds a `claude` argv and its row says \
-                 {:?}. Both of this build's producers must be adjudicated \
-                 Producer: excluding one is exactly how the invariant came to \
-                 be wider than its evidence.",
-                row.map(|(.., disposition, _)| *disposition)
-            );
-        }
+        let known_producer = "src/ui/screens/detail.rs";
+        let row = CLAUDE_ARGV_SITES
+            .iter()
+            .find(|(path, ..)| *path == known_producer);
+        assert_eq!(
+            row.map(|(.., disposition, _)| *disposition),
+            Some(SiteDisposition::Producer),
+            "{known_producer} builds a `claude` argv and its row says \
+             {:?}. Every producer of this build must be adjudicated \
+             Producer: excluding one is exactly how the invariant came to \
+             be wider than its evidence.",
+            row.map(|(.., disposition, _)| *disposition)
+        );
         for (path, _, disposition, reason) in CLAUDE_ARGV_SITES {
             if disposition != SiteDisposition::Producer {
                 assert!(
