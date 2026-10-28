@@ -14890,7 +14890,10 @@ fn clear_config_value(config: &mut crate::state_reader::config_json::GsdConfig, 
             true
         }
         "git.repo_tagging" => {
-            config.git.get_or_insert_with(GitConfig::default).repo_tagging = None;
+            config
+                .git
+                .get_or_insert_with(GitConfig::default)
+                .repo_tagging = None;
             true
         }
         "git.allow_default_branch_commits" => {
