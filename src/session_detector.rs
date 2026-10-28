@@ -1197,37 +1197,6 @@ mod tests {
         );
     }
 
-    /// This build's own executor argv must never look like an interactive
-    /// session, whatever `pgrep -x codex` makes of it. The argv comes from the
-    /// real producer and is encoded byte-exact, as the kernel would present it.
-    #[cfg(unix)]
-    #[test]
-    fn the_executors_own_codex_argv_is_never_an_interactive_session() {
-        use std::os::unix::ffi::OsStrExt;
-
-        let argv = crate::executor::codex::build_codex_argv(
-            &crate::executor::ExecutionOptions::default(),
-            std::path::Path::new("/tmp/project"),
-            "do the thing",
-        )
-        .expect("the default options must build a codex argv");
-        assert!(
-            !argv.is_empty(),
-            "an empty argv would make this check vacuous"
-        );
-
-        let mut wire = CODEX_PROGRAM.as_bytes().to_vec();
-        wire.push(0);
-        for element in &argv {
-            wire.extend_from_slice(element.as_bytes());
-            wire.push(0);
-        }
-        assert!(
-            !codex_cmdline_is_interactive(&wire),
-            "the executor's `codex {argv:?}` was classified as an interactive session"
-        );
-    }
-
     #[test]
     fn only_terminal_devices_count_as_a_codex_stdin() {
         assert!(is_terminal_device("pts/3"));

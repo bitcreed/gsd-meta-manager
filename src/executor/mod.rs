@@ -43,11 +43,6 @@
 // portable and testable everywhere.
 #[cfg(unix)]
 pub mod claude;
-// The Codex transport, Unix-only for exactly the reason `claude` is: it reuses
-// that module's process-group supervisor (260922-hdj).
-#[cfg(unix)]
-pub mod codex;
-pub mod codex_json;
 pub mod gate;
 pub mod outcome;
 pub mod runtime;
@@ -80,10 +75,9 @@ pub type PendingControl = Arc<Mutex<HashMap<String, oneshot::Sender<ControlRespo
 /// Drives an agent process and reports what it did.
 ///
 /// **On object safety and `async fn`.** The async methods return boxed futures
-/// by hand rather than depending on `async-trait`. Since 260922-hdj there are
-/// three implementors — `ClaudeExecutor`, `CodexExecutor`, and the driver's
-/// `runtime::AgentExecutor` enum that delegates to one of them — and the
-/// hand-boxed futures still cost nothing a dependency would save.
+/// by hand rather than depending on `async-trait`; the one implementor is
+/// `ClaudeExecutor`, and the hand-boxed futures cost nothing a dependency would
+/// save.
 ///
 /// **On backend honesty.** `send` and `interrupt` are a *Claude capability
 /// tier*, not backend parity. A hypothetical Codex or aider backend satisfies

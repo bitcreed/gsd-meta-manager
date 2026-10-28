@@ -75,7 +75,6 @@ use tokio::time::Instant;
 use uuid::Uuid;
 
 use crate::error::{CapabilityError, SendError, SpawnError};
-use crate::executor::codex_json::{self, CodexStep};
 use crate::executor::gate::{self, GateOutcome};
 use crate::executor::outcome::{derive_run_outcome_from_envelopes, RunSnapshot};
 use crate::executor::runtime;
@@ -624,7 +623,6 @@ impl ClaudeExecutor {
         tokio::spawn(
             Coordinator {
                 child,
-                protocol: StreamProtocol::ClaudeStreamJson,
                 reader_rx,
                 events_tx,
                 writer_tx: writer_tx.clone(),
@@ -836,23 +834,6 @@ pub(super) enum ReaderItem {
     Envelope(Envelope),
     /// A line over `MAX_LINE_BYTES`, discarded rather than parsed.
     Truncated { bytes: usize, prefix: String },
-    /// A Codex `exec --json` line, parsed and mapped in the Codex reader task
-    /// (`src/executor/codex.rs`). The Claude reader never produces this.
-    Codex { raw: String, step: CodexStep },
-}
-
-/// Which wire protocol the coordinator is supervising (260922-hdj).
-///
-/// It changes exactly one thing: whether there is a first user message to
-/// release. Claude's prompt travels over stdin and is withheld until the gate
-/// or the grace; Codex's prompt rides argv, so there is nothing to release and
-/// the grace timer never arms.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum StreamProtocol {
-    /// Claude Code, duplex `stream-json`.
-    ClaudeStreamJson,
-    /// `codex exec --json`, one prompt on argv, stdin closed.
-    CodexExecJson,
 }
 
 /// One framed line, or the reason there is not one.
@@ -1043,8 +1024,6 @@ async fn write_stdin(mut stdin: tokio::process::ChildStdin, mut rx: mpsc::Receiv
 /// Owns the child and the run's state machine.
 pub(super) struct Coordinator {
     pub(super) child: Box<dyn ChildWrapper>,
-    /// Which wire protocol this run speaks; see [`StreamProtocol`].
-    pub(super) protocol: StreamProtocol,
     pub(super) reader_rx: mpsc::Receiver<ReaderItem>,
     pub(super) events_tx: mpsc::Sender<ExecutionEvent>,
     pub(super) writer_tx: mpsc::Sender<WriterCommand>,
@@ -1162,7 +1141,6 @@ impl Coordinator {
     pub(super) async fn run(self) {
         let Coordinator {
             mut child,
-            protocol,
             mut reader_rx,
             events_tx,
             writer_tx,
@@ -1188,11 +1166,7 @@ impl Coordinator {
         // it — the gate passing in `handle_item`, and the grace expiring in the
         // enforcement block below — and it is what keeps the prompt written
         // exactly once whichever of them fires first (260908-uqq).
-        //
-        // A Codex run starts released: its prompt rode argv, there is no first
-        // message to write, and the grace timer must never arm (260922-hdj).
-        // False for Claude, exactly as before.
-        let mut prompt_released = matches!(protocol, StreamProtocol::CodexExecJson);
+        let mut prompt_released = false;
         let mut cancelled = false;
         let mut refused: Option<CapabilityError> = None;
         let mut breach: Option<Breach> = None;
@@ -1722,62 +1696,6 @@ async fn handle_item(
     replay_observer: Option<&mpsc::UnboundedSender<String>>,
 ) -> bool {
     match item {
-        ReaderItem::Codex { raw, step } => match step {
-            // The start gate for a Codex run. There is no capability list to
-            // validate — Codex announces a thread and nothing else — and no
-            // prompt to release, because it rode argv. Nothing is written to
-            // the writer (260922-hdj).
-            CodexStep::ThreadStarted { thread_id } if !*gated => {
-                *gated = true;
-                if let Some(tx) = gate_tx.take() {
-                    let _ = tx.send(Ok(codex_json::gate_outcome_for_thread(&thread_id)));
-                }
-                forward(
-                    events_tx,
-                    ExecutionEvent::SessionStarted {
-                        session_id: thread_id,
-                        capabilities: Vec::new(),
-                        claude_code_version: String::new(),
-                        api_key_source: None,
-                        permission_mode: None,
-                    },
-                    forward_deadline,
-                    dropped,
-                )
-                .await
-            }
-            CodexStep::ThreadStarted { .. } | CodexStep::Unknown => {
-                forward(
-                    events_tx,
-                    ExecutionEvent::Unknown { raw },
-                    forward_deadline,
-                    dropped,
-                )
-                .await
-            }
-            // Onto the SAME envelopes the Claude arm fills, so the unchanged
-            // `derive_run_outcome_from_envelopes` classifies the run. No `Cost`
-            // event: Codex reports none.
-            CodexStep::TurnEnded(result) => {
-                envelopes.push((*result).clone());
-                forward(
-                    events_tx,
-                    ExecutionEvent::TurnCompleted(result),
-                    forward_deadline,
-                    dropped,
-                )
-                .await
-            }
-            CodexStep::Output { stream, text } => {
-                forward(
-                    events_tx,
-                    ExecutionEvent::AgentOutput { stream, text },
-                    forward_deadline,
-                    dropped,
-                )
-                .await
-            }
-        },
         ReaderItem::Truncated { bytes, prefix } => {
             forward(
                 events_tx,

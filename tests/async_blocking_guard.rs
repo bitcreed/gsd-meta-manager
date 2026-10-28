@@ -193,10 +193,6 @@ const ASYNC_BLOCKING_ALLOWLIST: &[(&str, &str)] = &[
     // states this outright ("not `spawn_blocking`. The child is long-lived and
     // duplex"). `Command::spawn` forks and execs; it does not wait.
     ("src/executor/claude.rs", ".spawn()"),
-    // The Codex agent spawn (260922-hdj), the same shape and the same reason:
-    // `codex exec` is long-lived, `spawn`ed and then read asynchronously.
-    // `Command::spawn` forks and execs; it does not wait.
-    ("src/executor/codex.rs", ".spawn()"),
     // The executor's own capture fallback, which is the hole this marker was
     // added to close. It has been unreported since Phase 15 — not because it was
     // judged acceptable, but because nothing named the helper — and the entry is

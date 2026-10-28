@@ -1,26 +1,21 @@
-//! Which agent CLI drives a project, and the one enum the driver programs
-//! against.
+//! Which agent CLI a project is configured for.
 //!
-//! Two runtimes exist: Claude Code (`claude -p` over duplex `stream-json`) and
-//! OpenAI Codex (`codex exec --json`, one prompt, one turn per process). They
-//! are not peers in capability, and nothing here pretends they are. Codex has
-//! no stdin message protocol, no interrupt control channel, no capability
-//! announcement and no USD cost (measured against codex-cli 0.155.1; see the
-//! 260922-hdj research), so [`AgentExecutor::Codex`] satisfies `start`,
-//! `cancel` and `is_running` and refuses the rest with a typed error.
-//!
-//! **Claude is the default and stays the default.** A project runs under Codex
-//! only when the manager's own config names it (see [`resolve`]).
+//! Two runtimes are named: Claude Code and OpenAI Codex. Since Phase 31 this
+//! module selects nothing to drive: the in-process executors that consumed the
+//! value went with the legacy `drive` path, and the sandboxed launcher runs
+//! Claude only. [`AgentRuntime`] stays because it is a parsed config value: the
+//! per-project `runtime` key and the `default_runtime` preference still load,
+//! and a config naming `"codex"` is still accepted rather than refused.
 
 use serde_json::Value;
 
-/// An agent CLI this manager can drive.
+/// An agent CLI a project's config can name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AgentRuntime {
     /// Claude Code. The default, and the only runtime before 260922-hdj.
     #[default]
     Claude,
-    /// OpenAI Codex, driven through `codex exec --json`.
+    /// OpenAI Codex. A parsed config value only: nothing in this build drives it.
     Codex,
 }
 
@@ -74,7 +69,7 @@ impl AgentRuntime {
 /// A runtime value in the manager config that names no runtime this build
 /// knows.
 ///
-/// Raised by `drive` before anything is created, so a typo costs nothing. The
+/// Raised while the manager config is read, so a typo costs nothing. The
 /// value is carried as [`crate::text::Untrusted`] because it is user-authored
 /// config text echoed back to a terminal.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -143,28 +138,6 @@ fn gsd_command_parts(command: &str) -> Option<(&str, &str)> {
     None
 }
 
-/// Translate a canonical GSD command into Codex's skill-mention form.
-///
-/// `/gsd-execute-phase 3` becomes `$gsd-execute-phase 3`. Under Codex, GSD
-/// commands are skills invoked by *mentioning* `$gsd-<name>`, and a live
-/// `codex exec` resolved that form (research, "GSD skills under Codex").
-///
-/// Mirrors GSD's own `formatGsdSlash`: only the command token is lowercased and
-/// the argument tail is kept byte for byte. **Unlike it, only prefixed input is
-/// translated** — a bare word passes through verbatim, because this function's
-/// input is a prompt and a goal sentence is not a command name (ID-7). A
-/// prefix with no command token after it is also returned verbatim.
-///
-/// Called at the executor boundary and nowhere else: the driver, the bounds,
-/// the router and the journal all compare canonical `/gsd-…` strings. Its
-/// Claude counterpart is [`claude_command`].
-pub fn codex_command(canonical: &str) -> String {
-    match gsd_command_parts(canonical) {
-        Some((token, tail)) => format!("$gsd-{}{tail}", token.to_lowercase()),
-        None => canonical.to_string(),
-    }
-}
-
 /// Translate a GSD command into the slash form Claude installs register.
 ///
 /// `/gsd:execute-phase 7` becomes `/gsd-execute-phase 7`. gsd-core 1.17.0
@@ -185,157 +158,6 @@ pub fn claude_command(command: &str) -> String {
     match gsd_command_parts(command) {
         Some((token, tail)) => format!("/gsd-{token}{tail}"),
         None => command.to_string(),
-    }
-}
-
-#[cfg(unix)]
-pub use self::unix::AgentExecutor;
-
-#[cfg(unix)]
-mod unix {
-    use std::ffi::OsString;
-    use std::path::PathBuf;
-
-    use tokio::sync::{mpsc, oneshot};
-
-    use super::AgentRuntime;
-    use crate::error::{SendError, SpawnError};
-    use crate::executor::claude::ClaudeExecutor;
-    use crate::executor::codex::CodexExecutor;
-    use crate::executor::stream_json::UserMessage;
-    use crate::executor::{
-        BoxFuture, DrivableProject, ExecutionHandle, ExecutionOptions, Executor, InterruptAck,
-        RunOutcome,
-    };
-
-    /// The executor the driver holds: one variant per runtime.
-    ///
-    /// An enum rather than a `Box<dyn Executor>` because the driver also needs
-    /// the concrete builders (`observing_spawn`, `observing_replay_echoes`),
-    /// which are deliberately not on the portable trait.
-    #[derive(Debug, Clone)]
-    pub enum AgentExecutor {
-        /// Claude Code over duplex `stream-json`.
-        Claude(ClaudeExecutor),
-        /// Codex over `codex exec --json`.
-        Codex(CodexExecutor),
-    }
-
-    impl AgentExecutor {
-        /// Drive the runtime's default program found on `PATH`.
-        pub fn new(runtime: AgentRuntime) -> Self {
-            match runtime {
-                AgentRuntime::Claude => Self::Claude(ClaudeExecutor::new()),
-                AgentRuntime::Codex => Self::Codex(CodexExecutor::new()),
-            }
-        }
-
-        /// Drive a stand-in program with fixed leading arguments — the test
-        /// and debug-override path, exactly as each backend's own
-        /// `with_program` is.
-        pub fn with_program(
-            runtime: AgentRuntime,
-            program: impl Into<PathBuf>,
-            leading_args: Vec<OsString>,
-        ) -> Self {
-            match runtime {
-                AgentRuntime::Claude => {
-                    Self::Claude(ClaudeExecutor::with_program(program, leading_args))
-                }
-                AgentRuntime::Codex => {
-                    Self::Codex(CodexExecutor::with_program(program, leading_args))
-                }
-            }
-        }
-
-        /// Publish the agent's process group id on `tx` the instant the child
-        /// exists. Both backends spawn a process-group leader, so both honour
-        /// this.
-        pub fn observing_spawn(self, tx: oneshot::Sender<u32>) -> Self {
-            match self {
-                Self::Claude(executor) => Self::Claude(executor.observing_spawn(tx)),
-                Self::Codex(executor) => Self::Codex(executor.observing_spawn(tx)),
-            }
-        }
-
-        /// Publish the raw line of every replay echo on `tx`.
-        ///
-        /// Codex has no replay echo, so its arm drops the sender: the driver's
-        /// receiver then sees a closed channel, which it already treats as
-        /// "no more echoes".
-        pub fn observing_replay_echoes(self, tx: mpsc::UnboundedSender<String>) -> Self {
-            match self {
-                Self::Claude(executor) => Self::Claude(executor.observing_replay_echoes(tx)),
-                Self::Codex(executor) => {
-                    drop(tx);
-                    Self::Codex(executor)
-                }
-            }
-        }
-
-        /// Which runtime this executor drives.
-        pub fn runtime(&self) -> AgentRuntime {
-            match self {
-                Self::Claude(_) => AgentRuntime::Claude,
-                Self::Codex(_) => AgentRuntime::Codex,
-            }
-        }
-    }
-
-    impl Executor for AgentExecutor {
-        fn start<'a>(
-            &'a self,
-            project: &'a DrivableProject,
-            command: String,
-            options: ExecutionOptions,
-        ) -> BoxFuture<'a, Result<ExecutionHandle, SpawnError>> {
-            match self {
-                Self::Claude(executor) => executor.start(project, command, options),
-                Self::Codex(executor) => executor.start(project, command, options),
-            }
-        }
-
-        fn send<'a>(
-            &'a self,
-            handle: &'a mut ExecutionHandle,
-            message: UserMessage,
-        ) -> BoxFuture<'a, Result<(), SendError>> {
-            match self {
-                Self::Claude(executor) => executor.send(handle, message),
-                Self::Codex(executor) => executor.send(handle, message),
-            }
-        }
-
-        fn interrupt<'a>(
-            &'a self,
-            handle: &'a mut ExecutionHandle,
-        ) -> BoxFuture<'a, Result<InterruptAck, SendError>> {
-            match self {
-                Self::Claude(executor) => executor.interrupt(handle),
-                Self::Codex(executor) => executor.interrupt(handle),
-            }
-        }
-
-        fn cancel<'a>(&'a self, handle: &'a mut ExecutionHandle) -> BoxFuture<'a, RunOutcome> {
-            match self {
-                Self::Claude(executor) => executor.cancel(handle),
-                Self::Codex(executor) => executor.cancel(handle),
-            }
-        }
-
-        fn is_running(&self, handle: &ExecutionHandle) -> bool {
-            match self {
-                Self::Claude(executor) => executor.is_running(handle),
-                Self::Codex(executor) => executor.is_running(handle),
-            }
-        }
-
-        fn capabilities<'a>(&self, handle: &'a ExecutionHandle) -> &'a [String] {
-            match self {
-                Self::Claude(executor) => executor.capabilities(handle),
-                Self::Codex(executor) => executor.capabilities(handle),
-            }
-        }
     }
 }
 
@@ -377,31 +199,6 @@ mod tests {
         assert_eq!(
             resolve(Some(AgentRuntime::Claude), Some(AgentRuntime::Codex)),
             AgentRuntime::Claude
-        );
-    }
-
-    #[test]
-    fn a_gsd_command_becomes_a_codex_skill_mention() {
-        for (canonical, expected) in [
-            ("/gsd-progress", "$gsd-progress"),
-            ("/GSD:Plan-Phase 3 --X", "$gsd-plan-phase 3 --X"),
-            ("gsd:execute-phase 4", "$gsd-execute-phase 4"),
-            ("$gsd-progress", "$gsd-progress"),
-            ("hello world", "hello world"),
-            ("/gsd-", "/gsd-"),
-            ("/gsd- tail", "/gsd- tail"),
-            ("", ""),
-            ("/g", "/g"),
-        ] {
-            assert_eq!(codex_command(canonical), expected, "{canonical:?}");
-        }
-    }
-
-    #[test]
-    fn the_argument_tail_is_kept_byte_for_byte() {
-        assert_eq!(
-            codex_command("/gsd-plan-phase  Ünïcode\targ \"Q\""),
-            "$gsd-plan-phase  Ünïcode\targ \"Q\""
         );
     }
 
