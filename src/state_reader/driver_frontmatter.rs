@@ -868,6 +868,42 @@ pub fn open_run_file(path: &std::path::Path) -> std::io::Result<std::fs::File> {
     Ok(file)
 }
 
+/// Read a run-directory file as bytes through [`open_run_file`], bounded by
+/// [`DIRECTION_READ_MAX_BYTES`] (28-REVIEW WR-03, T-30-04).
+///
+/// The bytes form of [`read_driver_run_text`]'s guard, for the launcher and the CLI
+/// that read `DIRECTION.md` under or beside a run lock: a symlink or FIFO at the name
+/// is [`std::io::ErrorKind::InvalidData`] (never followed, never blocking), a file
+/// over the cap is `InvalidData` "larger than the N-byte limit" (the size is checked
+/// on the open handle, then the read itself is bounded by `take(cap + 1)` in case it
+/// grew), and a missing name stays [`std::io::ErrorKind::NotFound`].
+///
+/// Blocking file I/O: call it only inside `spawn_blocking` on an async runtime.
+pub fn read_run_file_capped(path: &std::path::Path) -> std::io::Result<Vec<u8>> {
+    let too_big = || {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "{}: larger than the {DIRECTION_READ_MAX_BYTES}-byte limit",
+                path.display()
+            ),
+        )
+    };
+    let file = open_run_file(path)?;
+    if file.metadata()?.len() > DIRECTION_READ_MAX_BYTES {
+        return Err(too_big());
+    }
+    let mut bytes = Vec::new();
+    std::io::Read::read_to_end(
+        &mut std::io::Read::take(file, DIRECTION_READ_MAX_BYTES + 1),
+        &mut bytes,
+    )?;
+    if bytes.len() as u64 > DIRECTION_READ_MAX_BYTES {
+        return Err(too_big());
+    }
+    Ok(bytes)
+}
+
 /// Read a run directory: its `DIRECTION.md` frontmatter and the derived status.
 ///
 /// Reads `<run_dir>/DIRECTION.md` and, on unix, probes `<run_dir>/launcher.lock`
@@ -1216,6 +1252,53 @@ mod tests {
         assert!(open_run_file(&target).is_ok());
         let missing = open_run_file(&tmp.path().join("nope")).unwrap_err();
         assert_eq!(missing.kind(), std::io::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn wr03_read_run_file_capped_bounds_the_read() {
+        let tmp = tempfile::tempdir().unwrap();
+        let small = tmp.path().join("small.md");
+        std::fs::write(&small, b"hello").unwrap();
+        assert_eq!(read_run_file_capped(&small).unwrap(), b"hello");
+
+        let exact = tmp.path().join("exact.md");
+        std::fs::write(&exact, vec![b'x'; DIRECTION_READ_MAX_BYTES as usize]).unwrap();
+        assert_eq!(
+            read_run_file_capped(&exact).unwrap().len() as u64,
+            DIRECTION_READ_MAX_BYTES
+        );
+
+        let over = tmp.path().join("over.md");
+        std::fs::write(&over, vec![b'x'; DIRECTION_READ_MAX_BYTES as usize + 1]).unwrap();
+        let err = read_run_file_capped(&over).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("larger than"), "{err}");
+
+        let missing = read_run_file_capped(&tmp.path().join("nope")).unwrap_err();
+        assert_eq!(missing.kind(), std::io::ErrorKind::NotFound);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn wr03_read_run_file_capped_refuses_a_symlink() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("real.md");
+        std::fs::write(&target, "x").unwrap();
+        let link = tmp.path().join("DIRECTION.md");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let err = read_run_file_capped(&link).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn wr03_read_run_file_capped_refuses_a_fifo_without_blocking() {
+        use super::fifo_test_support::{mkfifo, within_5s};
+        let tmp = tempfile::tempdir().unwrap();
+        let fifo = tmp.path().join("DIRECTION.md");
+        mkfifo(&fifo);
+        let err = within_5s(move || read_run_file_capped(&fifo)).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
     }
 
     #[cfg(target_os = "linux")]

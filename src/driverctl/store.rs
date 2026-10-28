@@ -57,9 +57,9 @@ use crate::driver::direction::{
 };
 use crate::driver::lock::{LockHolder, RunLock};
 use crate::state_reader::driver_frontmatter::{
-    Cap, Caps, Connection, DispatchAudit, DriverFrontmatter, GapCap, ItemCounts, ItemState,
-    ItemStateEntry, ItemStates, LastEvent, RunStatus, WallClockCap, DRIVER_FRONTMATTER_VERSION,
-    HEARTBEAT_STALE_AFTER_S,
+    read_run_file_capped, Cap, Caps, Connection, DispatchAudit, DriverFrontmatter, GapCap,
+    ItemCounts, ItemState, ItemStateEntry, ItemStates, LastEvent, RunStatus, WallClockCap,
+    DRIVER_FRONTMATTER_VERSION, HEARTBEAT_STALE_AFTER_S,
 };
 
 /// The state file inside a run directory.
@@ -704,7 +704,10 @@ impl RunStore {
     /// has not filled) and has neither. Any other read error is `Err(kind)`: the
     /// control word is then unknown, which the dispatch paths treat as a hold.
     fn direction_read(&self) -> Result<DirectionInfo, String> {
-        let bytes = match fs::read(self.run_dir.join(DIRECTION_FILE)) {
+        // 28 WR-03: through `open_run_file` with the 1 MiB cap, so a FIFO, a symlink
+        // or an oversized file planted at the name is an `Err` (the gate then denies
+        // "unreadable"), never a blocked or unbounded read.
+        let bytes = match read_run_file_capped(&self.run_dir.join(DIRECTION_FILE)) {
             Ok(bytes) => bytes,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 return Ok(DirectionInfo::default())

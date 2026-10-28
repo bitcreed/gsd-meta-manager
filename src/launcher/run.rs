@@ -103,7 +103,7 @@ use crate::driverctl::store::{
 };
 use crate::envelope::policy::EnvelopePolicy;
 use crate::error::LockError;
-use crate::state_reader::driver_frontmatter::RunStatus;
+use crate::state_reader::driver_frontmatter::{read_run_file_capped, RunStatus};
 
 /// The launcher connection's mode for a sandboxed launch (`RUN | launch | mode=`).
 /// A degraded launch records `degraded` instead ([`Posture::as_str`]).
@@ -287,7 +287,9 @@ fn check_limits(opts: &LaunchOptions) -> Result<(), LauncherError> {
 /// Reads the file only: it is called before the lock, the token and the prompt.
 fn preflight_direction(run_dir: &Path) -> Result<(), LauncherError> {
     let path = run_dir.join("DIRECTION.md");
-    let text = fs::read_to_string(&path).map_err(|e| {
+    // 28 WR-03: capped and guarded like the other DIRECTION.md readers, so a FIFO or
+    // an oversized file planted in the run dir is a refusal, not a hang.
+    let bytes = read_run_file_capped(&path).map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
             LauncherError::DirectionInvalid {
                 problems: vec!["DIRECTION.md not found; create the run with driver new".to_owned()],
@@ -295,6 +297,12 @@ fn preflight_direction(run_dir: &Path) -> Result<(), LauncherError> {
         } else {
             io_error(&format!("read {}", path.display()), e)
         }
+    })?;
+    let text = String::from_utf8(bytes).map_err(|e| {
+        io_error(
+            &format!("read {}", path.display()),
+            std::io::Error::new(std::io::ErrorKind::InvalidData, e),
+        )
     })?;
     let report = lint_direction(&text);
     if !report.is_clean() {

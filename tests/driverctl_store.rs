@@ -28,7 +28,7 @@ use gsd_meta_manager::driverctl::store::{
 };
 use gsd_meta_manager::launcher::gate::{new_tripped, CapGate};
 use gsd_meta_manager::state_reader::driver_frontmatter::{
-    parse_driver_frontmatter, ItemState, RunStatus,
+    parse_driver_frontmatter, ItemState, RunStatus, DIRECTION_READ_MAX_BYTES,
 };
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -1888,6 +1888,52 @@ fn an_unreadable_direction_fails_closed_for_the_gate_and_for_dispatched() {
         "{r:?}"
     );
     assert_eq!(fx.state_json()["hook_dispatches"], 0);
+}
+
+/// Send `GATE_REQ` from a thread so a read that blocks is a timeout, not a wedged suite.
+fn gate_deny_within_30s(mut store: RunStore) -> String {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(send(&mut store, GATE_REQ));
+    });
+    rx.recv_timeout(Duration::from_secs(30))
+        .expect("the gate blocked reading DIRECTION.md")
+        .deny
+        .expect("an unreadable DIRECTION.md denies the dispatch")
+}
+
+#[test]
+fn wr03_a_fifo_at_direction_denies_the_gate_instead_of_blocking() {
+    let fx = Fixture::new();
+    let mut store = fx.open();
+    store.set_gate(CapGate::new(CapLimits::default(), new_tripped()).into_gate());
+    store.begin_launch(standalone()).unwrap();
+    log_ok(&mut store, "start", &[("mode", "headless")]);
+    let path = fx.run_dir.join("DIRECTION.md");
+    fs::remove_file(&path).unwrap();
+    rustix::fs::mknodat(
+        rustix::fs::CWD,
+        &path,
+        rustix::fs::FileType::Fifo,
+        rustix::fs::Mode::from_raw_mode(0o600),
+        0,
+    )
+    .unwrap();
+    let deny = gate_deny_within_30s(store);
+    assert!(deny.contains("DIRECTION.md is unreadable"), "{deny}");
+}
+
+#[test]
+fn wr03_an_oversized_direction_denies_the_gate() {
+    let fx = Fixture::new();
+    let mut store = fx.open();
+    store.set_gate(CapGate::new(CapLimits::default(), new_tripped()).into_gate());
+    store.begin_launch(standalone()).unwrap();
+    log_ok(&mut store, "start", &[("mode", "headless")]);
+    let path = fx.run_dir.join("DIRECTION.md");
+    fs::write(&path, vec![b'x'; DIRECTION_READ_MAX_BYTES as usize + 1]).unwrap();
+    let deny = gate_deny_within_30s(store);
+    assert!(deny.contains("DIRECTION.md is unreadable"), "{deny}");
 }
 
 #[test]

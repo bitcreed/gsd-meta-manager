@@ -436,7 +436,9 @@ fn new_main(_target: &str, _slug: &str, _config: Option<PathBuf>) -> i32 {
 fn check_main(target: &str, run_id: &str, config: Option<PathBuf>) -> i32 {
     use gsd_meta_manager::driver_templates::lint::lint_direction;
     use gsd_meta_manager::driverctl::serve::{valid_run_id, validate_run_dir, RUN_ID_RE};
-    use gsd_meta_manager::state_reader::driver_frontmatter::DRIVER_RUNS_REL;
+    use gsd_meta_manager::state_reader::driver_frontmatter::{
+        read_run_file_capped, DRIVER_RUNS_REL,
+    };
 
     let (_alias, project, _registry) = match resolve_project(target, config) {
         Ok(resolved) => resolved,
@@ -459,7 +461,12 @@ fn check_main(target: &str, run_id: &str, config: Option<PathBuf>) -> i32 {
         }
     };
     let direction = run_dir.join("DIRECTION.md");
-    let text = match std::fs::read_to_string(&direction) {
+    // 28 WR-03: capped and guarded (FIFO, symlink, over 1 MiB), then UTF-8.
+    let read = read_run_file_capped(&direction).and_then(|bytes| {
+        String::from_utf8(bytes)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+    });
+    let text = match read {
         Ok(text) => text,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             err_line(&format!(
