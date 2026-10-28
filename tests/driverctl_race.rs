@@ -26,8 +26,10 @@
 // NON-VACUITY. A passing race test proves nothing if the race never happens.
 // `editor_race_naive_positive_control` runs the obvious read-once-then-rename
 // strategy — kept HERE, test-only, so the library carries no naive strategy —
-// and requires LOST > 0. Each exchange case also requires `contended > 0` (a
-// save started while a splice was in flight) and `ok > 0` (the tool landed one).
+// and requires LOST > 0; that control is the proof the race window is real. Each
+// exchange case also requires `contended > 0` (a save started while the tool
+// thread was busy, between a splice's start and its end; it does not show that
+// the read-to-exchange window itself was raced) and `ok > 0` (the tool landed one).
 //
 // THE YIELD. Every splice attempt's window, from its read to its exchange,
 // contains the temp's fsync (D-23, it must precede the exchange). On overlay
@@ -250,7 +252,8 @@ fn human(
         let loaded = fs::read_to_string(&path).unwrap_or_default();
         let (block, _) = split_frontmatter(&loaded);
         let data = format!("{}{}", block.unwrap_or_default(), body(k));
-        // A splice in flight now means this save races it.
+        // A splice in flight now means this save started while the tool thread was
+        // busy. That is a coarse proxy for the race, not a proof of it.
         if hs.begun.load(Ordering::SeqCst) > hs.done.load(Ordering::SeqCst) {
             contended += 1;
         }
@@ -466,8 +469,8 @@ fn assert_exchange_holds(secs: f64, check_inplace_bound: bool) {
         );
         assert!(
             case.contended > 0,
-            "{name}: no save landed while a splice was in flight, so the race was never \
-             exercised (saves={}, yields={}, tool={:?})",
+            "{name}: no save started while a splice was in flight, so the tool thread \
+             was never contended (saves={}, yields={}, tool={:?})",
             case.saves,
             case.yields,
             case.tool

@@ -681,6 +681,41 @@ mod imp {
         renameat_with(dir, a, dir, b, RenameFlags::EXCHANGE)
     }
 
+    /// The errno text of a failed exchange, with a hint for the two errnos a
+    /// filesystem that cannot swap two names in one step reports (`NOTSUP` and
+    /// `INVAL`; 30-REVIEW IN-06). The label is portable on purpose: the syscall
+    /// behind it is `renameat2` on Linux and `renameatx_np` on macOS.
+    fn exchange_failure_detail(errno: rustix::io::Errno) -> String {
+        if errno == rustix::io::Errno::NOTSUP || errno == rustix::io::Errno::INVAL {
+            format!("{errno} (this filesystem does not support an atomic rename exchange)")
+        } else {
+            errno.to_string()
+        }
+    }
+
+    #[cfg(test)]
+    mod exchange_failure_tests {
+        use super::exchange_failure_detail;
+
+        #[test]
+        fn an_unsupported_filesystem_errno_gets_the_hint() {
+            for errno in [rustix::io::Errno::NOTSUP, rustix::io::Errno::INVAL] {
+                let text = exchange_failure_detail(errno);
+                assert!(
+                    text.contains("this filesystem does not support an atomic rename exchange"),
+                    "{text}"
+                );
+                assert!(text.contains(&errno.to_string()), "{text}");
+            }
+        }
+
+        #[test]
+        fn any_other_errno_is_the_bare_errno_text() {
+            let errno = rustix::io::Errno::ACCESS;
+            assert_eq!(exchange_failure_detail(errno), errno.to_string());
+        }
+    }
+
     /// Create the temp `O_EXCL`, write `content`, copy `mode`, fsync (D-23).
     fn write_temp(path: &Path, content: &str, mode: u32) -> std::io::Result<()> {
         let mut file = OpenOptions::new()
@@ -759,7 +794,9 @@ mod imp {
         }
         Err(io_err(
             format!(
-                "newer saves kept arriving; a displaced file was left at {}",
+                "newer saves kept arriving; the newest save is the one left at {}, \
+                 and the next launch of this run deletes it once it is a minute old, \
+                 so copy it out first",
                 temp_path.display()
             ),
             format!("{GIVE_BACK_ROUNDS} give-back exchanges did not settle"),
@@ -838,7 +875,10 @@ mod imp {
                 }
                 Err(errno) => {
                     let _ = std::fs::remove_file(&temp_path);
-                    return Err(io_err("renameat2(RENAME_EXCHANGE)", errno));
+                    return Err(io_err(
+                        "atomic rename exchange",
+                        exchange_failure_detail(errno),
+                    ));
                 }
             }
 
