@@ -317,6 +317,8 @@ mod tests {
         assert!(!is_zombie(IMPOSSIBLE_PID));
     }
 
+    // Linux-only: reads /proc, which macOS lacks (liveness is Linux-only).
+    #[cfg(target_os = "linux")]
     #[test]
     fn the_process_state_of_a_running_child_is_not_the_zombie_state() {
         let (mut child, pid) = spawn_sleeper();
@@ -338,6 +340,8 @@ mod tests {
         assert!(!zombie, "is_zombie must agree with process_state");
     }
 
+    // Linux-only: reads /proc, which macOS lacks (liveness is Linux-only).
+    #[cfg(target_os = "linux")]
     #[cfg(unix)]
     #[test]
     fn process_group_reads_the_kernels_group_for_a_child_that_leads_its_own() {
@@ -396,6 +400,8 @@ mod tests {
         );
     }
 
+    // Linux-only: reads /proc, which macOS lacks (liveness is Linux-only).
+    #[cfg(target_os = "linux")]
     #[cfg(unix)]
     #[test]
     fn the_inline_run_id_spelling_is_not_invisible_to_the_probe() {
@@ -482,6 +488,8 @@ mod tests {
         );
     }
 
+    // Linux-only: reads /proc, which macOS lacks (liveness is Linux-only).
+    #[cfg(target_os = "linux")]
     #[test]
     fn this_process_reports_its_own_state_as_running_or_sleeping() {
         // A positive control for the comm-field parse: if the parse were wrong

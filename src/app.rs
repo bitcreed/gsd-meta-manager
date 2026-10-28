@@ -7295,9 +7295,16 @@ mod tests {
             launch: fake_launch,
             detect: fake_detect_ready,
         };
+        // The watcher reports paths under the registered project path. `run.direction`
+        // is canonical, which differs from the temp dir on macOS (`/var` is a link to
+        // `/private/var`), so the event path is rebuilt from the project path.
         app.update(Action::FileChanged {
             project_path: dir.path().to_path_buf(),
-            changed_path: run.direction.clone(),
+            changed_path: dir
+                .path()
+                .join(crate::state_reader::driver_frontmatter::DRIVER_RUNS_REL)
+                .join(&run.run_id)
+                .join("DIRECTION.md"),
         });
         deliver_launcher_refresh(&mut app, &mut rx).await;
         open_the_launch_form(&mut app, &mut rx).await;
