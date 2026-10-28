@@ -3,14 +3,38 @@ phase: 31
 review: 31-REVIEW.md
 titles: json
 findings:
+  - id: WR-01
+    severity: warning
+    disposition: open
+    title: "`DRIVER_TEARDOWN_GRACE` lower-bound guard now compares against a mirror of a deleted constant"
+  - id: WR-02
+    severity: warning
+    disposition: open
+    title: "Comments and assertion messages in `session_detector.rs` still say this build's own executor emits `--session-id` and `codex exec`"
+  - id: IN-01
+    severity: info
+    disposition: open
+    title: "Comments still cite deleted files and line numbers"
+  - id: IN-02
+    severity: info
+    disposition: open
+    title: "Broken intra-doc link to a deleted constant"
   - id: IN-03
     severity: info
     disposition: open
-    title: "Opt-in toggle popup dims the dashboard even though it is only reachable from the Driver tab"
+    title: "Spawn-seam guard still names the process-wrap marker and a capability type that no longer exist"
+  - id: IN-04
+    severity: info
+    disposition: open
+    title: "Production-dead code is retained, and the module doc overstates its use"
   - id: IN-05
     severity: info
     disposition: open
-    title: "Leftover naming and attributes from retired code"
+    title: "Retargeted app tests keep \"driver maps\" names but now assert a non-driver map"
+  - id: IN-06
+    severity: info
+    disposition: open
+    title: "Src-wide negative guards for Codex bypass flags and MCP config went with their subjects"
   - id: IN-07
     severity: info
     disposition: open
@@ -27,14 +51,6 @@ findings:
     severity: info
     disposition: open
     title: "The unregister guard is advisory: it covers the cached scan only, and its limits are not stated to the user"
-  - id: WR-01
-    severity: warning
-    disposition: fixed
-    title: "Opt-in disclosure still describes retired model seams and a re-confirmation that nothing performs"
-  - id: WR-02
-    severity: warning
-    disposition: fixed
-    title: "Opt-in prompts and docs claim the push step reads a branch namespace from the opt-in; it does not"
   - id: WR-03
     severity: warning
     disposition: fixed
@@ -47,46 +63,30 @@ findings:
     severity: warning
     disposition: fixed
     title: "SAFE-04 redaction can be bypassed when the captured stderr line exceeds the 4 KiB tail window"
-  - id: IN-01
-    severity: info
-    disposition: open
-    title: "Orphaned comment block above the `Driverctl` arm describes arms that no longer exist"
-  - id: IN-02
-    severity: info
-    disposition: open
-    title: "Slow-tick comments still reference the deleted reconciliation probe, inbox and journal"
-  - id: IN-04
-    severity: info
-    disposition: open
-    title: "User-visible Preferences text names an internal phase number"
-  - id: IN-06
-    severity: info
-    disposition: open
-    title: "Release docs and packaging comments retain stale claims"
-open: 10
+open: 12
 total: 15
-recorded: 2026-10-28T03:11:09.144Z
+recorded: 2026-10-28T05:11:07.620Z
 ---
 
 # Phase 31: Code Review Disposition
 
 | Finding | Severity | Disposition | Source |
 |---------|----------|-------------|--------|
+| WR-01 | warning | open | - |
+| WR-02 | warning | open | - |
+| IN-01 | info | open | - |
+| IN-02 | info | open | - |
 | IN-03 | info | open | - |
+| IN-04 | info | open | - |
 | IN-05 | info | open | - |
-| IN-07 | info | open | - |
-| IN-08 | info | open | - |
-| IN-09 | info | open | - |
-| IN-10 | info | open | - |
-| WR-01 | warning | fixed | 12b8a1d, 89f4b3b (31-08) (not in the current review) |
-| WR-02 | warning | fixed | 89f4b3b (31-08) (not in the current review) |
+| IN-06 | info | open | - |
+| IN-07 | info | open | - (not in the current review) |
+| IN-08 | info | open | - (not in the current review) |
+| IN-09 | info | open | - (not in the current review) |
+| IN-10 | info | open | - (not in the current review) |
 | WR-03 | warning | fixed | 36e0805 (31-08) (not in the current review) |
 | WR-04 | warning | fixed | 21b94df, a51b39a (31-09) (not in the current review) |
 | WR-05 | warning | fixed | 21b94df (31-09) (not in the current review) |
-| IN-01 | info | open | - (not in the current review) |
-| IN-02 | info | open | - (not in the current review) |
-| IN-04 | info | open | - (not in the current review) |
-| IN-06 | info | open | - (not in the current review) |
 
 Dispositions: `open` (recorded, not yet triaged), `fixed`, `skipped`, `deferred`.
 Set `deferred` by hand and put the reason in the Source cell; both are preserved. A `|` in the reason is kept as prose and escaped on the next run.
