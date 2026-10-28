@@ -2040,6 +2040,8 @@ mod tests {
     /// with the in-process executor in Phase 31 (31-07), taking its 5 with it.
     /// Quick 261028-n0v re-measured `src/session_detector.rs` from 23 to 31: the
     /// rewritten option-shaped-successor test spells more option literals.
+    /// Quick 261028-n0w re-measured `src/ui/screens/detail.rs` from 6 to 7: the
+    /// `--session-id` wire-form rows' test-local option-name constant.
     const CLAUDE_ARGV_SITES: [(&str, usize, SiteDisposition, &str); 3] = [
         (
             "src/session_detector.rs",
@@ -2061,11 +2063,13 @@ mod tests {
         ),
         (
             "src/ui/screens/detail.rs",
-            6,
+            7,
             SiteDisposition::Producer,
             "resume_terminal_argv fuses the id to its option name and emits \
              `--resume=<id>` into a terminal emulator's argv. Also carries the \
-             round-trip harness and the generator's option-shaped prefixes.",
+             round-trip harness, including its `--session-id` wire-form rows \
+             (one test-local option-name constant, 261028-n0w), and the \
+             generator's option-shaped prefixes.",
         ),
     ];
 

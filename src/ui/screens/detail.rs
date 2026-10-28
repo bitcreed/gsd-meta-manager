@@ -22471,6 +22471,41 @@ mod tests {
         nul_join_cmdline(&[b"claude".as_slice(), element.as_slice()])
     }
 
+    /// The bare `--session-id` option name, measured at `claude` 2.1.250 as
+    /// `--session-id <uuid>` and re-measured at 2.1.312: its value is REQUIRED
+    /// (`claude --session-id --version` printed `Error: Invalid session ID.
+    /// Must be a valid UUID.` and exited 1, see the CR-01 todo), so it binds
+    /// whatever follows, option-shaped or not.
+    ///
+    /// **Spelled here rather than imported from `crate::session_detector`**,
+    /// for the oracle-independence reason [`RESUME_OPTION_SHORT_NAME`] records:
+    /// an encoder derived from the parser it checks can only ever agree with
+    /// it. No producer in this build emits this spelling since Phase 31 (31-07)
+    /// retired the in-process executor, so there is no producer constant to
+    /// derive from; the honest substitute is one constant carrying the
+    /// measurement, with BOTH encoders below derived from it
+    /// `[inferred — cleanup 2026-10-28]`. It stays registered because the
+    /// parser reads it for argvs an external launcher may emit (CR-02,
+    /// 261028-n0w).
+    const SESSION_ID_OPTION_NAME: &str = "--session-id";
+
+    /// The FUSED `--session-id=<s>` form: one element, the bare name, the
+    /// fusion character, then the value. The `=` is appended to the bare
+    /// constant so this file spells the option once.
+    fn encode_session_id_fused(s: &[u8]) -> Vec<u8> {
+        let mut element = SESSION_ID_OPTION_NAME.as_bytes().to_vec();
+        element.push(b'=');
+        element.extend_from_slice(s);
+        nul_join_cmdline(&[b"claude".as_slice(), element.as_slice()])
+    }
+
+    /// The SPLIT `--session-id <s>` form: the bare name, then the value as the
+    /// next element. The option's value is REQUIRED, so an option-shaped value
+    /// IS bound here and must round-trip byte-identically.
+    fn encode_session_id_split(s: &[u8]) -> Vec<u8> {
+        nul_join_cmdline(&[b"claude".as_slice(), SESSION_ID_OPTION_NAME.as_bytes(), s])
+    }
+
     /// The registered wire forms the round-trip property is stated over.
     ///
     /// 21-36 made this a TABLE precisely so a later plan could extend it by
@@ -22478,6 +22513,14 @@ mod tests {
     /// plan, and the two short spellings are those rows. The generated property
     /// and the non-vacuity floor both iterate this function, so both cover the
     /// new forms with no further change.
+    ///
+    /// **CR-02 / 261028-n0w:** the register now carries all SIX spellings the
+    /// parser reads. 21-37 registered four and left both `--session-id`
+    /// spellings out, so no whitespace-padded, ill-formed, option-shaped or
+    /// empty value was ever driven through them. The two `--session-id` rows
+    /// declare the REQUIRED-value arity (`optional_successor: false`). The
+    /// register is pinned to the parser's census by
+    /// `the_wire_form_register_covers_every_recognised_spelling_exactly_once`.
     fn wire_forms() -> Vec<WireForm> {
         vec![
             WireForm {
@@ -22498,6 +22541,16 @@ mod tests {
             WireForm {
                 name: "short-attached",
                 encode: encode_short_attached,
+                optional_successor: false,
+            },
+            WireForm {
+                name: "session-id-fused",
+                encode: encode_session_id_fused,
+                optional_successor: false,
+            },
+            WireForm {
+                name: "session-id-split",
+                encode: encode_session_id_split,
                 optional_successor: false,
             },
         ]
@@ -22942,6 +22995,67 @@ mod tests {
                  successor of an optional-value option again, and the branch of \
                  the property that certifies the refusal is then passing over \
                  nothing.",
+                form.name
+            );
+        }
+
+        // --- Per-ROW reach (CR-02, 261028-n0w) -------------------------------
+        // The cross-form totals above sum over every row, so a row that
+        // contributes nothing hides inside them. Each row is therefore tallied
+        // under its own name. An option-shaped input is first byte `-` and not
+        // exactly the single byte `-` (CR-01's definition); only valid UTF-8
+        // that is non-empty after trim is counted, since anything else reads
+        // back None under any parser.
+        let round_trips_to_itself = |form: &WireForm, s: &Vec<u8>| -> bool {
+            crate::session_detector::session_id_in_cmdline(&(form.encode)(s))
+                .as_ref()
+                .map(|id| id.as_raw_for_logic_only().as_bytes())
+                == Some(s.as_slice())
+        };
+        for form in wire_forms() {
+            let round_tripped_by_row = corpus
+                .iter()
+                .filter(|s| round_trips_to_itself(&form, s))
+                .count();
+            assert!(
+                round_tripped_by_row >= 1,
+                "wire form {:?} round-tripped {round_tripped_by_row} generated \
+                 inputs byte-identically, below the floor of 1. A row that \
+                 contributes nothing is invisible to the cross-form totals \
+                 above, so the property is passing over a register narrower \
+                 than it names (CR-02).",
+                form.name
+            );
+        }
+        let required_session_id_rows: Vec<WireForm> = wire_forms()
+            .into_iter()
+            .filter(|form| !form.optional_successor && form.name.starts_with("session-id-"))
+            .collect();
+        assert_eq!(
+            required_session_id_rows.len(),
+            2,
+            "expected exactly the two `--session-id` rows (fused and split) \
+             with the required-value arity, found {:?}",
+            required_session_id_rows
+                .iter()
+                .map(|form| form.name)
+                .collect::<Vec<_>>()
+        );
+        for form in &required_session_id_rows {
+            let option_shaped_round_tripped = corpus
+                .iter()
+                .filter(|s| s.len() > 1 && s.first() == Some(&b'-'))
+                .filter(|s| std::str::from_utf8(s).is_ok_and(|text| !text.trim().is_empty()))
+                .filter(|s| round_trips_to_itself(form, s))
+                .count();
+            assert!(
+                option_shaped_round_tripped >= 1,
+                "wire form {:?} round-tripped {option_shaped_round_tripped} \
+                 option-shaped, valid, non-empty inputs byte-identically, below \
+                 the floor of 1. `--session-id` binds a REQUIRED value, so an \
+                 option-shaped value must come back as the id; if none does, \
+                 the required-value oracle on this row is certifying nothing \
+                 (CR-02, T-261028-n0w-03).",
                 form.name
             );
         }
