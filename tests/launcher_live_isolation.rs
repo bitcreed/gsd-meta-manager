@@ -620,11 +620,25 @@ fn sandbox_isolates_host_credentials_and_services() {
         assert_eq!(get(key), "", "{key} must be unset inside");
     }
     assert_eq!(get("env_git_terminal_prompt"), "0");
-    assert_eq!(
-        get("tty_open"),
-        "NONE",
-        "the controlling terminal must not be reachable inside (--new-session)"
-    );
+    // 28 IN-02: without a controlling terminal the probe fails with or without
+    // --new-session, so asserting it would prove nothing (CI, a detached shell).
+    if std::fs::OpenOptions::new()
+        .read(true)
+        .open("/dev/tty")
+        .is_ok()
+    {
+        assert_eq!(
+            get("tty_open"),
+            "NONE",
+            "the controlling terminal must not be reachable inside (--new-session)"
+        );
+    } else {
+        eprintln!(
+            "SKIP: tty_open proves nothing here: this process has no controlling terminal, \
+             so the probe fails with or without --new-session (the bwrap argv golden still \
+             pins --new-session)"
+        );
+    }
     assert_eq!(get("run_dir_touch"), "EROFS");
     assert_eq!(get("lock_bytes"), "0");
     assert_eq!(get("direction_lock_bytes"), "0");
