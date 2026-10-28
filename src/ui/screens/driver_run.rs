@@ -2746,7 +2746,7 @@ pub fn steer_target(cache: Option<&ProjectViewCache>) -> SteerTarget {
 /// build that cannot write DIRECTION.md says so first.
 pub fn steer_refusal(target: &SteerTarget) -> Option<String> {
     if !super::driver_steer::can_steer() && !matches!(target, SteerTarget::Nothing) {
-        return Some(super::driver_steer::STEERING_NEEDS_LINUX.to_string());
+        return Some(super::driver_steer::STEERING_UNSUPPORTED_PLATFORM.to_string());
     }
     match target {
         SteerTarget::Run { .. } | SteerTarget::Nothing => None,
@@ -3008,10 +3008,10 @@ fn narrow_title(entry: &DriverRunEntry, index: usize, total: usize, width: u16) 
 fn render_empty_state(frame: &mut Frame, area: Rect, alias: &str) {
     // The registry key is drawn here: both escape classes, composed.
     let alias = shown_capped(alias);
-    let body = if cfg!(target_os = "linux") {
+    let body = if super::driver_steer::can_steer() {
         "Press [s] to start one: name it, edit its DIRECTION, check it, then launch."
     } else {
-        "Starting and steering runs needs Linux. Runs started elsewhere show here read-only."
+        "Starting and steering runs needs Linux or macOS. Runs started elsewhere show here read-only."
     };
     let block = Block::default()
         .borders(Borders::ALL)
@@ -3658,12 +3658,12 @@ mod tests {
                 .any(|row| row.contains("No driver runs yet for \"proj\".")),
             "{rows:#?}"
         );
-        if cfg!(target_os = "linux") {
+        if super::super::driver_steer::can_steer() {
             assert!(rows.iter().any(|row| row.contains(
                 "Press [s] to start one: name it, edit its DIRECTION, check it, then launch."
             )));
         } else {
-            assert!(rows.iter().any(|row| row.contains("needs Linux")));
+            assert!(rows.iter().any(|row| row.contains("needs Linux or macOS")));
         }
         assert!(
             rows[0].starts_with('\u{250C}'),

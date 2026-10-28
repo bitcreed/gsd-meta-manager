@@ -5845,7 +5845,7 @@ impl Screen for DetailScreen {
                 ctx.needs_redraw = true;
                 if !super::driver_steer::can_steer() {
                     ctx.status_message = Some((
-                        super::driver_steer::STEERING_NEEDS_LINUX.to_string(),
+                        super::driver_steer::STEERING_UNSUPPORTED_PLATFORM.to_string(),
                         std::time::Instant::now(),
                     ));
                     return ScreenAction::None;
@@ -5873,7 +5873,7 @@ impl Screen for DetailScreen {
                 ctx.needs_redraw = true;
                 if !super::driver_steer::can_steer() {
                     ctx.status_message = Some((
-                        super::driver_steer::STEERING_NEEDS_LINUX.to_string(),
+                        super::driver_steer::STEERING_UNSUPPORTED_PLATFORM.to_string(),
                         std::time::Instant::now(),
                     ));
                     return ScreenAction::None;
@@ -11207,7 +11207,10 @@ fn driver_footer_spans(width: u16, keys: &super::driver_run::DriverKeys) -> Vec<
         tokens.push(FooterToken::hint("[f]", "ollow  ", 3));
     }
     if keys.read_only_platform {
-        tokens.push(FooterToken::muted("read-only: steering needs Linux  ", 1));
+        tokens.push(FooterToken::muted(
+            "read-only: steering needs Linux or macOS  ",
+            1,
+        ));
     }
 
     let fixed = Span::raw("  ").width() + Span::raw("[?]help").width();
@@ -20749,13 +20752,13 @@ mod tests {
             give_steering_items(&mut ctx, held, parked);
             super::super::driver_run::driver_keys(&ctx, TEST_ALIAS)
         };
-        let linux = cfg!(target_os = "linux");
+        let steer = super::super::driver_steer::can_steer();
         let none = keys(&[], &[]);
         assert!(!none.answer && !none.unhold);
         let parked = keys(&[], &["I-02"]);
-        assert_eq!((parked.answer, parked.unhold), (linux, false));
+        assert_eq!((parked.answer, parked.unhold), (steer, false));
         let held = keys(&["I-01"], &[]);
-        assert_eq!((held.answer, held.unhold), (linux, linux));
+        assert_eq!((held.answer, held.unhold), (steer, steer));
         // A frontmatter-only parked item cannot be answered.
         let only_fm = keys(&[], &["I-09"]);
         assert!(!only_fm.answer);
@@ -20896,20 +20899,28 @@ mod tests {
             ..live_run_keys()
         };
         let text = driver_footer_text(160, &keys);
-        assert!(text.contains("read-only: steering needs Linux"), "{text}");
         assert!(
-            text.ends_with("read-only: steering needs Linux  [?]help"),
+            text.contains("read-only: steering needs Linux or macOS"),
             "{text}"
         );
-        assert!(!driver_footer_text(160, &live_run_keys()).contains("steering needs Linux"));
+        assert!(
+            text.ends_with("read-only: steering needs Linux or macOS  [?]help"),
+            "{text}"
+        );
+        assert!(
+            !driver_footer_text(160, &live_run_keys()).contains("steering needs Linux or macOS")
+        );
     }
 
     #[test]
     fn launcher_steer_driver_keys_follow_the_selection() {
         let (_screen, ctx, _rx) = launcher_fixture(1);
         let keys = super::super::driver_run::driver_keys(&ctx, TEST_ALIAS);
-        assert_eq!(keys.control, cfg!(target_os = "linux"));
-        assert_eq!(keys.read_only_platform, !cfg!(target_os = "linux"));
+        assert_eq!(keys.control, super::super::driver_steer::can_steer());
+        assert_eq!(
+            keys.read_only_platform,
+            !super::super::driver_steer::can_steer()
+        );
         let mut ctx2 = launcher_fixture(1).1;
         ctx2.view_cache
             .entry(TEST_ALIAS.to_string())
@@ -21170,7 +21181,7 @@ mod tests {
         assert!(top.contains("[c]ontrol"), "{top:?}");
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn pressing_s_on_the_driver_tab_pushes_the_new_run_slug_input_not_the_start_flow() {
         let (mut screen, mut ctx, _rx) = driver_action_fixture();
@@ -21193,7 +21204,7 @@ mod tests {
         );
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     #[test]
     fn pressing_s_on_a_build_that_cannot_write_is_inert_and_says_why() {
         let (mut screen, mut ctx, _rx) = driver_action_fixture();
@@ -21201,7 +21212,7 @@ mod tests {
         assert!(matches!(action, ScreenAction::None));
         assert_eq!(
             ctx.status_message.map(|(text, _)| text).as_deref(),
-            Some("read-only: steering needs Linux")
+            Some("read-only: steering needs Linux or macOS")
         );
     }
 

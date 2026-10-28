@@ -35,7 +35,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::Frame;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::path::Path;
 use std::sync::LazyLock;
 
@@ -308,7 +308,7 @@ pub fn relaunch_prefill(fm: &DriverFrontmatter) -> LaunchForm {
 /// override.
 ///
 /// [`LaunchOptions`]: crate::launcher::run::LaunchOptions
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub fn launch_options_for(
     alias: &str,
     project: &Path,
@@ -376,7 +376,7 @@ pub struct LaunchPreflight {
 /// **Blocking: `spawn_blocking` only.** It reads `DIRECTION.md` (under the edit flow's
 /// 1 MiB cap); the host probes themselves ran in `caps`, which the caller got from the
 /// injectable `detect` seam.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub fn launch_preflight(run_dir: &Path, caps: &crate::launcher::host::HostCaps) -> LaunchPreflight {
     use crate::driver::direction::split_frontmatter;
     use crate::driver_templates::lint::{control_line, lint_direction};

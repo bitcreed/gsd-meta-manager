@@ -482,7 +482,7 @@ pub struct EditSession {
 /// is given and returns a pid, and the real path is proven through the real binary with
 /// the same argv in `tests/driver_tab_launch_e2e.rs`. `detect` is the host probe, which
 /// runs `bwrap`, `systemd-run`, `systemctl` and `claude --version`.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[derive(Clone, Copy)]
 pub struct LaunchSeams {
     pub launch: fn(
@@ -492,7 +492,7 @@ pub struct LaunchSeams {
     pub detect: fn() -> crate::launcher::host::HostCaps,
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 impl Default for LaunchSeams {
     fn default() -> Self {
         Self {
@@ -522,7 +522,7 @@ pub struct App {
     /// kept text is discarded, or the run is launched.
     pub new_run_flow: std::collections::HashSet<(String, String)>,
     /// The host check and the launch call the launch form reaches (30-05).
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub launch_seams: LaunchSeams,
     /// The DESIRED terminal mouse-capture state (quick 260926-dyf, D-06).
     ///
@@ -714,7 +714,7 @@ impl App {
         // first), but the apply is a DIRECTION.md write and keeps its own refusal.
         if !crate::ui::screens::driver_steer::can_steer() {
             self.refuse_steering(
-                crate::ui::screens::driver_steer::STEERING_NEEDS_LINUX.to_string(),
+                crate::ui::screens::driver_steer::STEERING_UNSUPPORTED_PLATFORM.to_string(),
             );
             return;
         }
@@ -826,7 +826,7 @@ impl App {
             pending_editor: None,
             edit_sessions: HashMap::new(),
             new_run_flow: std::collections::HashSet::new(),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             launch_seams: LaunchSeams::default(),
             mouse_capture,
             click_tracker: crate::ui::mouse::ClickTracker::default(),
@@ -935,7 +935,7 @@ impl App {
     /// a minute for the lock to clear, so it must never run on the render thread
     /// (WR-10). The outcome returns as [`Action::LauncherStopped`]. Gated on the
     /// experimental surfaces: the key that reaches this exists only on the Driver tab.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn stop_launcher_run(&mut self, alias: &str, run_id: &str) {
         if !self.ctx.experimental {
             return;
@@ -983,7 +983,7 @@ impl App {
     /// What a launch needs before it can start: the experimental gate, a registered
     /// project, a run id that names a plain directory, and a channel to report on. A
     /// failure is refused visibly (S4) and says that nothing was started.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn launch_target(
         &mut self,
         alias: &str,
@@ -1013,7 +1013,7 @@ impl App {
     /// The launch form opened: run the host check and the `driver check` lint off the
     /// render thread and answer [`Action::DriverLaunchPreflighted`]. The host probes go
     /// through the `detect` seam.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn request_launch_preflight(&mut self, alias: &str, run_id: &str) {
         let Some((_project, run_dir, tx)) = self.launch_target(alias, run_id) else {
             return;
@@ -1040,7 +1040,7 @@ impl App {
     /// The registry reads (`open_pr`, the project's opt-in) happen BEFORE the spawn, on
     /// this thread; the closure owns plain data. This process starts a daemon and holds
     /// nothing of the run afterwards, so closing the TUI never stops a launched run.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn request_launch(&mut self, alias: &str, run_id: &str, mut args: crate::cli::LaunchArgs) {
         let Some((project, _run_dir, tx)) = self.launch_target(alias, run_id) else {
             return;
@@ -1122,11 +1122,11 @@ impl App {
         }
         if !crate::ui::screens::driver_steer::can_steer() {
             self.refuse_steering(
-                crate::ui::screens::driver_steer::STEERING_NEEDS_LINUX.to_string(),
+                crate::ui::screens::driver_steer::STEERING_UNSUPPORTED_PLATFORM.to_string(),
             );
             return;
         }
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
             use crate::action::NewRunFailure;
             // A request refused before it starts goes through the one answer path, so
@@ -1169,7 +1169,7 @@ impl App {
                 });
             });
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         let _ = (alias, slug);
     }
 
@@ -1223,7 +1223,7 @@ impl App {
 
     /// `driver check` over the new run's edited DIRECTION.md, on `spawn_blocking`
     /// (30-05, D-18). Answers [`Action::DriverNewRunChecked`].
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn request_new_run_check(&mut self, alias: &str, run_id: &str) {
         let Some((_project, run_dir, tx)) = self.launch_target(alias, run_id) else {
             return;
@@ -1256,9 +1256,11 @@ impl App {
         });
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     fn request_new_run_check(&mut self, _alias: &str, _run_id: &str) {
-        self.refuse_steering(crate::ui::screens::driver_steer::STEERING_NEEDS_LINUX.to_string());
+        self.refuse_steering(
+            crate::ui::screens::driver_steer::STEERING_UNSUPPORTED_PLATFORM.to_string(),
+        );
     }
 
     /// The check finished: problems open the `Check DIRECTION.md` popup (launch stays
@@ -1341,7 +1343,7 @@ impl App {
 
     /// A launch request reached a build that cannot launch (not Linux): say so and
     /// start nothing.
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     fn refuse_unsupported_launch(&mut self) {
         self.ctx.error_message = Some(format!(
             "{} Nothing was started.",
@@ -1364,7 +1366,7 @@ impl App {
         }
         if !crate::ui::screens::driver_steer::can_steer() {
             self.refuse_steering(
-                crate::ui::screens::driver_steer::STEERING_NEEDS_LINUX.to_string(),
+                crate::ui::screens::driver_steer::STEERING_UNSUPPORTED_PLATFORM.to_string(),
             );
             return None;
         }
@@ -2248,9 +2250,9 @@ impl App {
             // 28-07, D-11: stop a launcher run through the library function the
             // `driver stop` CLI calls. Linux-only like the launcher itself.
             Action::LauncherStopRequested { alias, run_id } => {
-                #[cfg(target_os = "linux")]
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
                 self.stop_launcher_run(&alias, &run_id);
-                #[cfg(not(target_os = "linux"))]
+                #[cfg(not(any(target_os = "linux", target_os = "macos")))]
                 {
                     let _ = (alias, run_id);
                     self.ctx.error_message =
@@ -2292,7 +2294,7 @@ impl App {
             }
             // 30-04, D-17: edit DIRECTION.md's body in the user's editor. The temp is
             // made and applied off the render thread; the library holds the no-clobber
-            // rule. Every arm that reaches a write has its non-Linux refusal in
+            // rule. Every arm that reaches a write has its unsupported-platform refusal in
             // `steering_target`.
             Action::DriverEditRequested { alias, run_id } => {
                 self.request_edit(&alias, &run_id);
@@ -2410,9 +2412,9 @@ impl App {
             // through the launcher library's detached start. Linux-only, like the
             // launcher; the other arms say so and start nothing.
             Action::DriverLaunchPreflightRequested { alias, run_id } => {
-                #[cfg(target_os = "linux")]
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
                 self.request_launch_preflight(&alias, &run_id);
-                #[cfg(not(target_os = "linux"))]
+                #[cfg(not(any(target_os = "linux", target_os = "macos")))]
                 {
                     let _ = (alias, run_id);
                     self.refuse_unsupported_launch();
@@ -2435,9 +2437,9 @@ impl App {
                 run_id,
                 args,
             } => {
-                #[cfg(target_os = "linux")]
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
                 self.request_launch(&alias, &run_id, args);
-                #[cfg(not(target_os = "linux"))]
+                #[cfg(not(any(target_os = "linux", target_os = "macos")))]
                 {
                     let _ = (alias, run_id, args);
                     self.refuse_unsupported_launch();
@@ -6208,9 +6210,9 @@ mod tests {
 
     /// A build without the write primitive refuses every steering request with the
     /// read-only copy and writes nothing (D-14).
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     #[test]
-    fn launcher_steer_a_non_linux_build_refuses_with_the_read_only_copy() {
+    fn launcher_steer_an_unsupported_platform_build_refuses_with_the_read_only_copy() {
         let dir = tempfile::tempdir().expect("temp dir");
         let (mut app, _rx) = obs_app(dir.path());
         app.update(Action::DriverSteerRequested {
@@ -6220,7 +6222,7 @@ mod tests {
         });
         assert_eq!(
             app.ctx.error_message.as_deref(),
-            Some("read-only: steering needs Linux")
+            Some("read-only: steering needs Linux or macOS")
         );
     }
 
@@ -6843,9 +6845,9 @@ mod tests {
         assert!(message.contains("no longer open"), "{message}");
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     #[test]
-    fn launcher_edit_a_non_linux_build_refuses_with_the_read_only_copy() {
+    fn launcher_edit_an_unsupported_platform_build_refuses_with_the_read_only_copy() {
         let dir = tempfile::tempdir().expect("temp dir");
         let (mut app, _rx) = obs_app(dir.path());
         app.update(Action::DriverEditRequested {
@@ -6854,7 +6856,7 @@ mod tests {
         });
         assert_eq!(
             app.ctx.error_message.as_deref(),
-            Some("read-only: steering needs Linux")
+            Some("read-only: steering needs Linux or macOS")
         );
         assert!(app.pending_editor.is_none());
     }
@@ -7054,9 +7056,9 @@ mod tests {
         assert!(app.ctx.status_message.is_none());
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     #[test]
-    fn launcher_launch_a_non_linux_build_refuses_and_starts_nothing() {
+    fn launcher_launch_an_unsupported_platform_build_refuses_and_starts_nothing() {
         let dir = tempfile::tempdir().expect("temp dir");
         let (mut app, _rx) = obs_app(dir.path());
         app.update(Action::DriverLaunchRequested {

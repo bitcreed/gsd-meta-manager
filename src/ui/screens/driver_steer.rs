@@ -35,13 +35,18 @@ use ratatui::Frame;
 use std::path::{Path, PathBuf};
 
 /// What every steering key says on a build that cannot write `DIRECTION.md` safely
-/// (D-14): the writer is `renameat2(RENAME_EXCHANGE)`, which is Linux-only.
-pub const STEERING_NEEDS_LINUX: &str = "read-only: steering needs Linux";
+/// (D-14). The writer is the atomic rename exchange in `crate::driver::direction`:
+/// `renameat2(RENAME_EXCHANGE)` on Linux, and on macOS the `renameatx_np` swap that
+/// rustix maps `RENAME_EXCHANGE` to. Only other platforms (Windows) see this copy,
+/// which agrees with `LauncherError::UnsupportedPlatform` ("the launcher needs Linux
+/// or macOS") on the same platform.
+pub const STEERING_UNSUPPORTED_PLATFORM: &str = "read-only: steering needs Linux or macOS";
 
 /// Whether this build can steer. A constant, not a probe: the write primitive exists
-/// on Linux and nowhere else.
+/// on Linux and macOS. macOS needs APFS for the swap; HFS+ refuses it cleanly and
+/// `direction.rs` reports the error without a partial write.
 pub const fn can_steer() -> bool {
-    cfg!(target_os = "linux")
+    cfg!(any(target_os = "linux", target_os = "macos"))
 }
 
 fn bold() -> Style {
