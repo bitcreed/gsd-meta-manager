@@ -12,6 +12,9 @@ files:
   - src/ui/screens/driver_run.rs
   - src/driver/direction.rs
 decision: enable
+status: completed
+completed: 2026-10-28
+resolution: fixed
 ---
 
 ## Problem
@@ -38,3 +41,18 @@ Risk: the `renameatx_np` swap needs APFS (HFS+ refuses cleanly).
 The user decided to ENABLE TUI launch and steering on macOS: Phase 28 review WR-05 is resolved as
 "enable on macOS". The gate to widen is still `can_steer()` at `src/ui/screens/driver_steer.rs:43-45`
 (`cfg!(target_os = "linux")`). Phase 31 has closed, so the "after Phase 31" precondition above is met.
+
+## Resolution — fixed (2026-10-28, 261028-n11)
+
+Commits: 76a9ecb (TUI launch, steering and stop enabled on macOS: `can_steer()` true on Linux and macOS, launch/preflight/stop
+arms and tests widened, refusal copy now "Linux or macOS"), de20ec3 (portable `host_name()` via `rustix::system::uname()`,
+umask test Linux-gated, test gates widened), 9b68124 (Darwin lib-suite fixes found by the VM run).
+
+Evidence: host `cargo test --locked --no-fail-fast` 3172 passed, 0 failed; `cargo clippy --locked --all-targets -- -D warnings`
+exit 0 on the host, x86_64-apple-darwin, aarch64-apple-darwin and x86_64-pc-windows-gnu; `cargo fmt --check` clean. Darwin
+(docker-osx VM, Intel): lib suite 2522 passed, 0 failed; real TUI drive of `s`, the launch form, `y` refusal with the `[U]`
+offer, the `[U]` second confirmation, a degraded launch with a non-null launcher host, `c` pause, and `x` stop (recorded in
+28-UAT.md test 2).
+
+Deliberately kept Linux-only: `SANDBOX_SUPPORTED` (bwrap/systemd), `LIVENESS_SUPPORTED` (/proc), the FIFO tests (need
+`mknodat`), the CR-01 umask test and four `driver::liveness` tests (read /proc).

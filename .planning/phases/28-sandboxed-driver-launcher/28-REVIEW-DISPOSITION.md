@@ -21,7 +21,7 @@ findings:
     title: "The D-17 recovery block cannot be satisfied when DIRECTION has no parsed items"
   - id: WR-05
     severity: warning
-    disposition: open
+    disposition: fixed
     title: "macOS enablement is half applied (TUI still gates on Linux and shows a contradictory message)"
   - id: WR-06
     severity: warning
@@ -51,7 +51,7 @@ findings:
     severity: warning
     disposition: fixed
     title: "`install_signal_handlers` is one-shot; a second SIGTERM/SIGINT is swallowed for the rest of the process"
-open: 10
+open: 9
 total: 12
 recorded: 2026-10-24T04:14:55.006Z
 ---
@@ -64,7 +64,7 @@ recorded: 2026-10-24T04:14:55.006Z
 | WR-02 | warning | open | - |
 | WR-03 | warning | open | - |
 | WR-04 | warning | open | - |
-| WR-05 | warning | open | - |
+| WR-05 | warning | fixed | 261028-n11 76a9ecb, de20ec3, 9b68124: TUI launch, steering and stop enabled on macOS (user decision 2026-10-28); portable host_name; umask test Linux-gated |
 | WR-06 | warning | open | - |
 | IN-01 | info | open | - |
 | IN-02 | info | open | - |

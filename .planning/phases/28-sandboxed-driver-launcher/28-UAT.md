@@ -92,6 +92,32 @@ evidence: |
     macOS or declare it Linux-only). Minor, same finding: the launcher connection records `host: null` on Darwin.
   VM temp dir removed afterwards; the VM was left running.
 
+  Re-check 2026-10-28 after 261028-n11 (WR-05 enabled on macOS) [inferred — cleanup 2026-10-28]
+  Same docker-osx VM (macOS 26.6.2, Darwin 25.6.0, Intel), HEAD 9b68124 (`git archive`), throwaway rustup under /tmp
+  (rustc 1.99.1). `cargo build --locked` rc 0; `cargo test --locked --no-fail-fast --lib`: 2522 passed, 0 failed, 1 ignored.
+  A first Darwin run found 5 failures, all test-side and fixed in 9b68124: four `driver::liveness` tests read /proc (now
+  Linux-only) and `launcher_launch_r_on_a_new_run_opens_the_form_with_the_defaults` built its event path from the canonical
+  `/private/var` path while the project path was `/var` (the test now builds the path from the project path).
+  Real TUI in a 160x45 pty driven with pyte (hermetic fixture as above; `$EDITOR` a shim that writes a lint-clean body;
+  fake `claude` scenario that logs start and waits), Enter, `D`, `s`:
+  - Empty state shows "Press [s] to start one ..." (no "needs Linux"); slug `e2e` creates 20261028-e2e, the editor shim
+    runs, the check passes and the launch form opens with the preflight: "Sandbox unavailable: missing bwrap, systemd-run,
+    user-systemd. A sandboxed launch is refused on this host." and "[U] launch UNSANDBOXED instead (asks again)".
+  - `y`: "Launch refused: this host cannot sandbox the driver (missing: ...). Press [U] to launch it unsandboxed instead."
+    `U`: the "Launch UNSANDBOXED" second confirmation naming the eight absent protections. `y`: run started, row
+    "running 20261028-e2e!", detail "sandbox UNSANDBOXED", LOG.md "RUN | launch | n=1 | mode=degraded"; DIRECTION.md
+    `sandbox: "degraded"`.
+  - state.json connections: launcher mode=degraded and driver mode=headless, both with `host: "docker-osx.local"` (was
+    null before the uname() change).
+  - Steer: `c` then `p` posts "control: pause written to DIRECTION.md"; the body line changed from `- control: run` to
+    `- control: pause`; the detail shows "control pause (pending)".
+  - Stop: `x` opens "Kill driver run", `y`: row "stopped", LOG.md "RUN | launch-end | status=stopped | reason=stop:user";
+    no launcher or scenario process left.
+  - `R` (relaunch) was not separately driven: a stopped run shows `[R]elaunch` in the footer; it shares the launch form,
+    preflight and `[U]` path exercised through `s`.
+  The "[U] residual" above is now CLOSED on Darwin for the Intel x86_64 host. Apple Silicon (aarch64-apple-darwin) is
+  still clippy-checked only. VM temp dirs removed and the VM stopped again (it was inactive at the start).
+
 ## Summary
 
 total: 2
