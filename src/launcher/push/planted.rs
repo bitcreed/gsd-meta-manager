@@ -11,6 +11,10 @@
 //!
 //! Files are never reverted, deleted or rewritten here: the guard reports, the
 //! push refuses, and the operator decides (the non-intrusive constraint).
+//!
+//! The budgeted walks visit directory entries in file-name order, so a snapshot of
+//! one tree is the same on every file system, truncated or not (see
+//! [`MAX_WALK_ENTRIES`]).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
@@ -50,6 +54,12 @@ pub const SKIP_DIR_NAMES: &[&str] = &["target", "node_modules", ".venv", "venv",
 /// truncation (a flood of files must not hide a plant silently). One million
 /// `[inferred — audit]`: large monorepos (`vendor`, `dist`, data directories) stay
 /// under it, and the walk costs a few seconds at that size (WR-08).
+///
+/// Entries are visited in name order, and a directory holding more entries than the
+/// budget has left truncates the walk whole, before any of its entries is recorded.
+/// A truncated snapshot is therefore a function of the tree, never of the order the
+/// file system lists a directory in, and a flood directory cannot make the push step
+/// hold more than `MAX_WALK_ENTRIES + 1` listing entries.
 pub const MAX_WALK_ENTRIES: usize = 1_000_000;
 
 /// The largest git config file that is parsed.
@@ -233,6 +243,38 @@ impl Budget {
         self.used += 1;
         self.used <= self.limit
     }
+
+    /// How many more entries the walks may visit.
+    fn room(&self) -> usize {
+        self.limit.saturating_sub(self.used)
+    }
+}
+
+/// What listing one directory for a budgeted walk found.
+enum Listing {
+    /// The directory could not be read; the walk skips it.
+    Unreadable,
+    /// The directory holds more entries than the budget has left; the walk is
+    /// truncated and records none of them.
+    OverBudget,
+    /// Every entry, sorted by file name.
+    Entries(Vec<fs::DirEntry>),
+}
+
+/// List `dir` for a walk: at most `budget.room() + 1` entries are read, so a flood
+/// directory is never buffered whole, and the entries come back sorted by file name
+/// so the walk does not depend on the order the file system lists them in.
+fn list_dir_bounded(dir: &Path, budget: &Budget) -> Listing {
+    let Ok(read) = fs::read_dir(dir) else {
+        return Listing::Unreadable;
+    };
+    let room = budget.room();
+    let mut entries: Vec<fs::DirEntry> = read.flatten().take(room.saturating_add(1)).collect();
+    if entries.len() > room {
+        return Listing::OverBudget;
+    }
+    entries.sort_by_key(fs::DirEntry::file_name);
+    Listing::Entries(entries)
 }
 
 /// `path` as a `/`-separated relative string.
@@ -262,13 +304,22 @@ fn normalize(path: &Path) -> PathBuf {
 }
 
 /// Hash every regular file below `rel` (symlinks are recorded, not followed).
+///
+/// Pre-order by file name; a directory that does not fit the remaining budget
+/// truncates the walk whole (see [`MAX_WALK_ENTRIES`]).
 fn walk_tracked_dir(project: &Path, rel: &str, budget: &mut Budget, snap: &mut Snapshot) {
     let mut stack = vec![PathBuf::from(rel)];
     while let Some(dir) = stack.pop() {
-        let Ok(entries) = fs::read_dir(project.join(&dir)) else {
-            continue;
+        let entries = match list_dir_bounded(&project.join(&dir), budget) {
+            Listing::Unreadable => continue,
+            Listing::OverBudget => {
+                snap.truncated = true;
+                return;
+            }
+            Listing::Entries(entries) => entries,
         };
-        for ent in entries.flatten() {
+        let mut subdirs = Vec::new();
+        for ent in entries {
             if !budget.take() {
                 snap.truncated = true;
                 return;
@@ -276,23 +327,34 @@ fn walk_tracked_dir(project: &Path, rel: &str, budget: &mut Budget, snap: &mut S
             let Ok(kind) = ent.file_type() else { continue };
             let child = dir.join(ent.file_name());
             if kind.is_dir() {
-                stack.push(child);
+                subdirs.push(child);
             } else {
                 snap.files.insert(rel_string(&child), entry_of(&ent.path()));
             }
         }
+        // Reverse name order, so the stack pops the subdirectories ascending.
+        stack.extend(subdirs.into_iter().rev());
     }
 }
 
 /// Find every `.git` entry below the checkout except the root one: never into a
 /// `.git` itself, never through a symlink, never into [`SKIP_DIR_NAMES`].
+///
+/// Pre-order by file name; a directory that does not fit the remaining budget
+/// truncates the walk whole (see [`MAX_WALK_ENTRIES`]).
 fn walk_nested_git(project: &Path, budget: &mut Budget, snap: &mut Snapshot) {
     let mut stack = vec![PathBuf::new()];
     while let Some(dir) = stack.pop() {
-        let Ok(entries) = fs::read_dir(project.join(&dir)) else {
-            continue;
+        let entries = match list_dir_bounded(&project.join(&dir), budget) {
+            Listing::Unreadable => continue,
+            Listing::OverBudget => {
+                snap.truncated = true;
+                return;
+            }
+            Listing::Entries(entries) => entries,
         };
-        for ent in entries.flatten() {
+        let mut subdirs = Vec::new();
+        for ent in entries {
             if !budget.take() {
                 snap.truncated = true;
                 return;
@@ -314,9 +376,11 @@ fn walk_nested_git(project: &Path, budget: &mut Budget, snap: &mut Snapshot) {
                 continue;
             }
             if kind.is_dir() && !SKIP_DIR_NAMES.contains(&&*name) {
-                stack.push(child);
+                subdirs.push(child);
             }
         }
+        // Reverse name order, so the stack pops the subdirectories ascending.
+        stack.extend(subdirs.into_iter().rev());
     }
 }
 
@@ -1330,6 +1394,12 @@ mod tests {
         for i in 0..40 {
             write(dir.path(), &format!("flood/f{i}"), "x");
         }
+        // Budget count for limit 10, walking in name order: the tracked dirs take 2
+        // (`.git/hooks/pre-commit`, `.claude/agents/a.md`); the root listing takes 3
+        // (`.claude`, `.git`, `flood`) for 5; `.claude` takes 2 (7), `.claude/agents` 1
+        // (8), `.claude/worktrees` 1 (9) and `.claude/worktrees/w` 1 (10), which records
+        // `.claude/worktrees/w/.git`. `flood/`'s 40 entries then exceed the 0 left, so
+        // the walk truncates whole, on every file system.
         let base = snapshot_with_limit(dir.path(), 10);
         let now = snapshot_with_limit(dir.path(), 10);
         assert!(base.truncated && now.truncated);
@@ -1345,6 +1415,54 @@ mod tests {
         // ... and so does one with no baseline at all (strict mode).
         let found = findings(None, &now, dir.path());
         assert!(found.iter().any(|f| f.render() == "scan-truncated ."));
+    }
+
+    #[test]
+    fn a_truncated_walk_records_the_same_entries_in_any_directory_order() {
+        // SC4 gap: a truncated snapshot must be a function of the tree, not of the
+        // order the file system lists a directory in. Two trees with the same twelve
+        // nested repositories are created in opposite orders, so any listing order that
+        // follows creation (tmpfs) or a hash (ext4, overlayfs) differs between them.
+        const NAMES: usize = 12;
+        let names: Vec<String> = (0..NAMES).map(|i| format!("n{i:02}")).collect();
+        let a = tempfile::tempdir().expect("a");
+        let b = tempfile::tempdir().expect("b");
+        for n in &names {
+            write(a.path(), &format!("{n}/.git"), "gitdir: elsewhere\n");
+        }
+        for n in names.iter().rev() {
+            write(b.path(), &format!("{n}/.git"), "gitdir: elsewhere\n");
+        }
+        let sorted: Vec<String> = names.iter().map(|n| format!("{n}/.git")).collect();
+        let mut all_prefixes = true;
+        for limit in 0..=40 {
+            let sa = snapshot_with_limit(a.path(), limit);
+            let sb = snapshot_with_limit(b.path(), limit);
+            assert_eq!(
+                sa, sb,
+                "limit {limit}: the snapshot depends on listing order"
+            );
+            let got: Vec<&String> = sa
+                .git_entries
+                .keys()
+                .filter(|k| k.as_str() != ".git" && k.ends_with("/.git"))
+                .collect();
+            let want: Vec<&String> = sorted.iter().take(got.len()).collect();
+            assert_eq!(got, want, "limit {limit}: keys are not a name-order prefix");
+            all_prefixes &= sa.truncated || got.len() == NAMES;
+        }
+        assert!(all_prefixes, "an untruncated snapshot must hold every key");
+        // Non-vacuity: at the real limit nothing is truncated and every key is recorded.
+        for tree in [&a, &b] {
+            let full = snapshot_with_limit(tree.path(), MAX_WALK_ENTRIES);
+            assert!(!full.truncated);
+            let keys: Vec<&String> = full
+                .git_entries
+                .keys()
+                .filter(|k| k.ends_with("/.git"))
+                .collect();
+            assert_eq!(keys, sorted.iter().collect::<Vec<_>>());
+        }
     }
 
     #[test]

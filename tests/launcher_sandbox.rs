@@ -30,6 +30,7 @@ use tempfile::TempDir;
 
 const RUN: &str = "/work/proj/.planning/meta-manager/drivers/r1";
 const CFG: &str = "/data/driver/ab12cd34/r1/claude-config";
+const RUNTIME_DIR: &str = "/run/user/1000";
 const SOCK: &str = "/run/user/1000/gsdmm-driverctl/r1-ab12cd34.sock";
 const EGRESS: &str = "/run/user/1000/gsdmm-driverctl/egress-ab12cd34.sock";
 const GITCONFIG: &str = "/data/driver/ab12cd34/r1/gitconfig";
@@ -290,7 +291,12 @@ fn no_flag_names_a_credential_directory_and_the_home_block_precedes_the_run_bind
         &state,
     )
     .unwrap();
-    let spec = SandboxSpec::from_host(paths(), &home, &setup);
+    let mut spec = SandboxSpec::from_host(paths(), &home, &setup);
+    // The runtime dir is an input of `bwrap_argv` that this test pins to its socket
+    // fixture (`SOCK` and `EGRESS` live under it). `from_host` reads the host's
+    // `XDG_RUNTIME_DIR`, which the CI runner and the pre-tag container do not set; the
+    // subject here is the `$HOME` block's flags and ordering, not the host's session.
+    spec.runtime_dir = Some(PathBuf::from(RUNTIME_DIR));
     let argv = strings(&bwrap_argv(&spec, &[OsString::from("true")]));
     for rel in TMPFS_MASK_DIRS {
         let mask = home.join(rel).display().to_string();
@@ -311,7 +317,7 @@ fn no_flag_names_a_credential_directory_and_the_home_block_precedes_the_run_bind
     let gitconfig = at("--ro-bind", &state.join("gitconfig").display().to_string());
     let project = at("--bind", "/work/proj");
     let cfg = at("--bind", CFG);
-    let runtime = at("--tmpfs", "/run/user/1000");
+    let runtime = at("--tmpfs", RUNTIME_DIR);
     assert_eq!(argv[run + 2..run + 4], ["--size", "268435456"]);
     assert_eq!(tmpfs, run + 4, "the sized tmpfs follows --tmpfs /run");
     assert!(tmpfs < gsd && gsd < gitconfig, "binds, then the gitconfig");
@@ -436,7 +442,7 @@ fn the_egress_socket_is_re_bound_after_the_driverctl_socket_and_only_inside_the_
             .position(|w| w[0] == flag && w[1] == a)
             .unwrap_or_else(|| panic!("{flag} {a} missing: {argv:?}"))
     };
-    let runtime = at("--tmpfs", "/run/user/1000");
+    let runtime = at("--tmpfs", RUNTIME_DIR);
     let driverctl = at("--bind", SOCK);
     let egress = at("--bind", EGRESS);
     assert_eq!(driverctl, runtime + 2);
@@ -477,7 +483,7 @@ fn the_run_tmpfs_follows_the_etc_block_and_precedes_the_project_and_the_runtime_
     let remount = at("--remount-ro", "/etc");
     let run = at("--tmpfs", "/run");
     let project = at("--bind", "/work/proj");
-    let runtime = at("--tmpfs", "/run/user/1000");
+    let runtime = at("--tmpfs", RUNTIME_DIR);
     assert_eq!(run, remount + 2, "/run follows the /etc block");
     assert!(
         run < project && project < runtime,
