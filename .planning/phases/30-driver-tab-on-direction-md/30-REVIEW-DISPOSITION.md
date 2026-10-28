@@ -3,6 +3,34 @@ phase: 30
 review: 30-REVIEW.md
 titles: json
 findings:
+  - id: WR-11
+    severity: warning
+    disposition: open
+    title: "`probe_at` and `read_holder_at` open the run lock without `O_NOFOLLOW` or `O_NONBLOCK`; a FIFO at `launcher.lock` parks a blocking worker forever, and the fleet-wide scan leaks one per tick"
+  - id: WR-12
+    severity: warning
+    disposition: open
+    title: "The first exchange-back in `run_loop` still strands the human's save at a hidden temp on `ENOENT`, the shape WR-10 fixed one step later"
+  - id: IN-10
+    severity: info
+    disposition: open
+    title: "`read_driver_run_text` bounds its read with `take(CAP + 1)` but never checks the result against the cap"
+  - id: IN-11
+    severity: info
+    disposition: open
+    title: "`Seen`'s \"equal means unchanged\" claim no longer holds for over-cap or unreadable files"
+  - id: IN-12
+    severity: info
+    disposition: open
+    title: "A write refused for being over the cap reaches the store as an unexplained `splice-gave-up`"
+  - id: IN-13
+    severity: info
+    disposition: open
+    title: "The hard-link refusal gives a user no way out, and fails on snapshot trees"
+  - id: IN-14
+    severity: info
+    disposition: open
+    title: "Stale and dangling documentation left by the Linux-to-macOS widening and the Phase 31 deletions"
   - id: WR-08
     severity: warning
     disposition: fixed
@@ -79,21 +107,28 @@ findings:
     severity: info
     disposition: fixed
     title: "The launch form and the launcher read the `control` word with different readers"
-open: 0
-total: 19
-recorded: 2026-10-24T18:41:08.771Z
+open: 7
+total: 26
+recorded: 2026-10-28T23:38:09.476Z
 ---
 
 # Phase 30: Code Review Disposition
 
 | Finding | Severity | Disposition | Source |
 |---------|----------|-------------|--------|
-| WR-08 | warning | fixed | fixed by quick 261028-n0z 670e099 (acquire_at opens with O_NOFOLLOW plus O_NONBLOCK and refuses a non-regular or multiply-linked file before flock; launcher.lock too) |
-| WR-09 | warning | fixed | fixed by quick 261028-n0z 0f85617 (read_run_file capped at 1 MiB via take; run_loop refuses a write past the cap) |
-| WR-10 | warning | fixed | fixed by quick 261028-n0z 44eef32 (a give-back ENOENT restores by no-replace rename; EEXIST runs another exchange round) |
-| IN-06 | info | fixed | fixed by quick 261028-n12 886acc8 (exchange failure reports a portable atomic rename exchange label, with a filesystem hint for NOTSUP and INVAL) |
-| IN-08 | info | fixed | fixed by quick 261028-n12 886acc8 (the contended gloss, sample comment and assertion message in driverctl_race.rs say what the counter measures; editor_race_naive_positive_control is the non-vacuity proof) |
-| IN-09 | info | fixed | fixed by quick 261028-n12 886acc8 (the exhaustion error says the newest save is the one left at the temp, that the next launch's stale-temp sweep deletes it, and to copy it out; message only, no extra exchange adopted because eight racing saves within microseconds is not a realistic input) [inferred — cleanup 2026-10-28] |
+| WR-11 | warning | open | - |
+| WR-12 | warning | open | - |
+| IN-10 | info | open | - |
+| IN-11 | info | open | - |
+| IN-12 | info | open | - |
+| IN-13 | info | open | - |
+| IN-14 | info | open | - |
+| WR-08 | warning | fixed | fixed by quick 261028-n0z 670e099 (acquire_at opens with O_NOFOLLOW plus O_NONBLOCK and refuses a non-regular or multiply-linked file before flock; launcher.lock too) (not in the current review) |
+| WR-09 | warning | fixed | fixed by quick 261028-n0z 0f85617 (read_run_file capped at 1 MiB via take; run_loop refuses a write past the cap) (not in the current review) |
+| WR-10 | warning | fixed | fixed by quick 261028-n0z 44eef32 (a give-back ENOENT restores by no-replace rename; EEXIST runs another exchange round) (not in the current review) |
+| IN-06 | info | fixed | fixed by quick 261028-n12 886acc8 (exchange failure reports a portable atomic rename exchange label, with a filesystem hint for NOTSUP and INVAL) (not in the current review) |
+| IN-08 | info | fixed | fixed by quick 261028-n12 886acc8 (the contended gloss, sample comment and assertion message in driverctl_race.rs say what the counter measures; editor_race_naive_positive_control is the non-vacuity proof) (not in the current review) |
+| IN-09 | info | fixed | fixed by quick 261028-n12 886acc8 (the exhaustion error says the newest save is the one left at the temp, that the next launch's stale-temp sweep deletes it, and to copy it out; message only, no extra exchange adopted because eight racing saves within microseconds is not a realistic input) [inferred — cleanup 2026-10-28] (not in the current review) |
 | IN-05 | info | deferred | [INFERRED — audit] carried from the 2026-10-21 ledger: same finding re-reported 2026-10-23 with a "(carried, unchanged)" title suffix, which the ledger script read as an id reuse; only visible if DIRECTION.md changes between preflight and launch; body-relative numbering is the D-17/D-18 editor contract; relabel or re-base in a later cleanup (not in the current review) |
 | IN-07 | info | skipped | thin disclosure, and only at the one or two heights where the list gets zero rows. The count stays in the header, which the review says is not a safety hole. Making y inert on the override would bring back the unconfirmable popup that quick 261021-101 (IN-04) closed [inferred — cleanup 2026-10-28] (not in the current review) |
 | WR-02 | warning | fixed | fixed by quick 261021-101 64f73e7 (run_loop opens DIRECTION.md and the exchanged temp through open_run_file) (not in the current review) |
