@@ -109,7 +109,7 @@ findings:
     title: "The launch form and the launcher read the `control` word with different readers"
 open: 7
 total: 26
-recorded: 2026-10-28T23:38:09.476Z
+recorded: 2026-10-28T23:38:31.979Z
 ---
 
 # Phase 30: Code Review Disposition
