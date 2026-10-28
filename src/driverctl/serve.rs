@@ -552,8 +552,14 @@ fn replace_and_bind(sock: &Path, stale: bool) -> Result<UnixListener, DriverctlE
 ///
 /// The socket is bound inside a private 0700 staging directory next to `path`
 /// (nobody else can traverse it, so the socket's creation mode is unreachable),
-/// chmod-ed to 0600, then renamed into place: a bound unix socket keeps working
-/// after `rename`, because the listener is bound to the inode, not the name.
+/// chmod-ed to 0600, then hard-linked into place, never renamed over anything
+/// (28 WR-01: `rename` would silently replace a file or live socket that appeared
+/// at `path` after vetting; `link` fails with EEXIST instead). A bound unix socket
+/// keeps working under its new name, because the listener is bound to the inode,
+/// not the name.
+///
+/// The staging-path length check stays: the bind itself needs the staged path to
+/// fit `sun_path`, so dropping it would only turn a clear refusal into EINVAL.
 fn bind_private(path: &Path) -> Result<UnixListener, DriverctlError> {
     let parent = path
         .parent()
@@ -571,8 +577,12 @@ fn bind_private(path: &Path) -> Result<UnixListener, DriverctlError> {
         .map_err(|e| io_error(&format!("bind {}", staged.display()), e))?;
     fs::set_permissions(&staged, fs::Permissions::from_mode(0o600))
         .map_err(|e| io_error("chmod the staged socket", e))?;
-    fs::rename(&staged, path)
-        .map_err(|e| io_error(&format!("move the socket to {}", path.display()), e))?;
+    // A hard link never replaces an existing name: a file or a live socket that
+    // appeared at `path` after vetting makes this fail with EEXIST (28 WR-01).
+    // The staging directory's drop removes the staged name; the bound inode lives
+    // on at `path`.
+    fs::hard_link(&staged, path)
+        .map_err(|e| io_error(&format!("publish the socket at {}", path.display()), e))?;
     listener
         .set_nonblocking(true)
         .map_err(|e| io_error("set the listener non-blocking", e))?;
@@ -1573,6 +1583,55 @@ mod tests {
         // The original server still owns the path: a client can still connect.
         assert!(UnixStream::connect(&sock).is_ok());
         drop(live);
+    }
+
+    fn staging_dirs_in(dir: &Path) -> Vec<String> {
+        fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with(".b"))
+            .collect()
+    }
+
+    #[test]
+    fn wr01_bind_private_never_replaces_a_file_that_appeared_after_vetting() {
+        let td = TempDir::new().unwrap();
+        let target = td.path().join("run.sock");
+        fs::write(&target, b"precious").unwrap();
+        let err = bind_private(&target).unwrap_err();
+        assert!(err.to_string().contains("publish"), "{err}");
+        assert_eq!(fs::read(&target).unwrap(), b"precious");
+        assert!(
+            staging_dirs_in(td.path()).is_empty(),
+            "the staging directory must be gone: {:?}",
+            staging_dirs_in(td.path())
+        );
+    }
+
+    #[test]
+    fn wr01_bind_private_never_replaces_a_live_socket_that_won_the_race() {
+        let td = TempDir::new().unwrap();
+        let target = td.path().join("run.sock");
+        let first = UnixListener::bind(&target).unwrap();
+        assert!(bind_private(&target).is_err());
+        // The first listener still owns the name: a client reaches it.
+        let client = UnixStream::connect(&target).unwrap();
+        let (_accepted, _) = first.accept().unwrap();
+        drop(client);
+        assert!(staging_dirs_in(td.path()).is_empty());
+    }
+
+    #[test]
+    fn wr01_the_published_socket_is_0600() {
+        use std::os::unix::fs::PermissionsExt;
+        let td = TempDir::new().unwrap();
+        let target = td.path().join("run.sock");
+        let listener = bind_private(&target).unwrap();
+        let mode = fs::metadata(&target).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        assert!(UnixStream::connect(&target).is_ok());
+        assert!(staging_dirs_in(td.path()).is_empty());
+        drop(listener);
     }
 
     #[test]
