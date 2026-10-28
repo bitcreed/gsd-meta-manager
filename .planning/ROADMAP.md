@@ -1685,3 +1685,75 @@ Plans:
 Captured 2026-10-20 at the Phase 29 UAT sign-off. Both need a prompt version bump, so ship together.
 
 Note: Backlog 999.1 (Milestone Archive Browser) promoted to Phase 12 in v1.2.
+
+
+### Phase 999.8: GSD Capabilities: Visibility & Per-Project Control (BACKLOG)
+
+> **Deferred from v2.0 Phase 32 by user decision (2026-10-28 cleanup).** Moved out of the milestone to the
+> next milestone/backlog; nothing was planned (0 plans, no CONTEXT.md), so this is the full original section.
+> Musk ledger: logged as a `milestone-phase` cut.
+
+**Goal**: From the TUI, users can see which GSD capabilities exist for each project and across
+all projects, and switch them on or off and configure them per project, without leaving the TUI.
+
+**Prerequisite**: hard prerequisite is the separate quick bug-fix that makes
+`config.json` writes atomic and `.planning/.lock`-aware and fixes the
+`capabilities.strict_known_registries` type; Tier 2 must not start before it lands. TUI-only and
+independent of the driver work (Phases 28-31), so parallel-safe like Phases 24 and 25
+[inferred — the add-phase tool defaulted this to "Phase 31"].
+
+**Requirements**: TBD (to be derived in discuss/plan; no REQUIREMENTS.md ids minted yet [inferred])
+
+**Scope**:
+
+- *Tier 1 — see.* Per project: capability id, version, kind (built-in / global / project),
+  state (active / off in this project / incompatible / inactive with no consent) and the reason.
+  Plus a dashboard matrix of capabilities × projects.
+- *Tier 2 — toggle and configure.*
+  - Flip the per-project switch, i.e. the manifest's `activationKey` (e.g. `musk.enabled`), in
+    `.planning/config.json`.
+  - Turn capability-contributed config keys (`ponytail.*`, `musk.*`, `mempalace.*`,
+    `refactor.*`, …) from read-only pass-through rows into editable typed rows, driven
+    generically by each manifest's declared config keys, defaults and descriptions, with no
+    per-capability code.
+  - Machine-wide enable/disable (`.gsd-surface.json` `disabledClusters`), if exposed at all, is
+    labelled "affects all projects".
+
+**Background (gsd-core 1.18.0)**:
+
+- The 46 built-ins are frozen in `bin/lib/capability-registry.cjs` and switched by config keys.
+- Third-party capabilities live in `$GSD_HOME/.gsd/capabilities/<id>/` (global) or
+  `<repo>/.gsd/capabilities/` (project); each scope has a ledger `.gsd-capabilities.json`.
+  Project scope needs a consent record in `~/.gsd/consent.json`.
+- Precedence: first-party, then global, then project. A project install cannot shadow a global one.
+- `gsd-tools capability list|state|set|enable|disable --json` exist; `set --gate` writes
+  `config.json` under `.planning/.lock`.
+
+**Decision to make in discuss/research (open)**:
+
+- *Reads:* parse ledgers, manifests and config directly (fast across N projects; fits the
+  "read from files" constraint), or call `gsd-tools capability list --json` (authoritative status
+  semantics, but a Node startup per project)? A hybrid is possible.
+- *Writes:* direct `config.json` edits through the app's own locked atomic write path, or
+  `gsd-tools capability set` / `config-set`?
+- The user has authorised running mutating GSD commands from the app.
+
+**Out of scope (backlog)**: capability lifecycle — outdated/update/remove/install-by-URL
+(Phase 999.5); registry browsing (Phase 999.6).
+
+**Success Criteria** (draft, to be firmed up in discuss/plan [inferred]):
+
+  1. For any registered project, a capability view lists every capability with id, version,
+     kind, state and reason, and the dashboard shows a capabilities × projects matrix.
+  2. Toggling a capability's `activationKey` from the TUI changes `.planning/config.json` safely
+     (locked, atomic) and the new state is reflected without restarting.
+  3. Capability-contributed config keys render as editable typed rows generated from the
+     manifest, with no per-capability code.
+  4. Any machine-wide control is visibly labelled "affects all projects".
+
+**Requirements:** TBD
+**Plans:** 0 plans
+
+Plans:
+
+- [ ] TBD (promote with /gsd-review-backlog when ready)
