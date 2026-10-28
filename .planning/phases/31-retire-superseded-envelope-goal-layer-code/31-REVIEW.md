@@ -1,181 +1,131 @@
 ---
 phase: 31-retire-superseded-envelope-goal-layer-code
-reviewed: 2026-10-27T00:00:00Z
+reviewed: 2026-10-28T00:00:00Z
 depth: standard
-files_reviewed: 20
+files_reviewed: 23
 files_reviewed_list:
-  - README.md
-  - docs/CONFIGURATION.md
-  - docs/GSD-CORE-SYNC.md
+  - Cargo.lock
+  - Cargo.toml
+  - docs/TESTING.md
+  - src/app.rs
   - src/config.rs
-  - src/envelope/ledger.rs
   - src/error.rs
-  - src/launcher/process.rs
-  - src/launcher/push.rs
-  - src/launcher/push/planted.rs
+  - src/executor/mod.rs
+  - src/executor/runtime.rs
+  - src/journal/redact.rs
+  - src/main.rs
+  - src/main_loop.rs
   - src/registry.rs
-  - src/state_reader/config_json.rs
-  - src/text.rs
-  - src/ui/mod.rs
+  - src/session_detector.rs
+  - src/state_reader/disk_status.rs
+  - src/state_reader/queue_md.rs
   - src/ui/screens/delete_confirm.rs
   - src/ui/screens/detail.rs
-  - src/ui/screens/driver.rs
   - src/ui/screens/driver_confirm.rs
   - src/ui/screens/mod.rs
-  - src/ui/screens/render_escape_guard.rs
-  - tests/launcher_sandbox.rs
+  - src/ui/screens/normal.rs
+  - tests/async_blocking_guard.rs
+  - tests/driver_router_conformance.rs
+  - tests/spawn_seam_guard.rs
 findings:
   critical: 0
-  warning: 0
+  warning: 2
   info: 6
-  total: 6
+  total: 8
 status: issues_found
 ---
 
-# Phase 31: Code Review Report (incremental re-review)
+# Phase 31: Code Review Report (incremental, plan 31-07)
 
-**Reviewed:** 2026-10-27
+_Note: this report overwrites the earlier one; the prior report (plans 31-01..31-06/08/09) is at git f0eb8b8._
+
+**Reviewed:** 2026-10-28
 **Depth:** standard
-**Files Reviewed:** 20
+**Files Reviewed:** 23
 **Status:** issues_found
 
 ## Summary
 
-Scope: `git diff c204aff HEAD` for the 20 listed files. This is an incremental re-review of the
-prior report, whose five warnings were the target of gap-closure plans 31-08 (36e0805, 12b8a1d,
-89f4b3b) and 31-09 (6de4572, 21b94df, 832c58f, a51b39a).
+Scope: `git diff f0eb8b8..HEAD` (commits a23d1d4, 2e2e335) plus surrounding context. The removal itself is clean. I found no broken build edge, no behaviour regression and no security regression introduced by the deletion:
 
-**Provenance of the diff.** Four of the files did not change through phase-31 task commits. They changed
-through quick task 261027-184 (gsd-core v1.19.0 re-sync, commits 3cda6eb, 6a8cf8f, 2ea7d77):
-`README.md`, `docs/GSD-CORE-SYNC.md`, `src/state_reader/config_json.rs` and `src/ui/screens/detail.rs`. I
-read them in full. They are internally consistent. The new `git.repo_tagging` key has a typed field, a
-Defaults row, set, cycle and clear arms, a built-in default, a `since` marker, and a test that pins its JSON
-path. The three baseline constants, the README note and `GSD-CORE-SYNC.md` agree on 1.19.0.
+- No Rust identifier, module path or fixture name from the deleted files (`ClaudeExecutor`, `CodexExecutor`, `AgentExecutor`, `ExecutionHandle`, `DrivableProject`, `ExecEvent`, `exec_tx/exec_rx`, `run_states`, `SpawnError/SendError/CapabilityError/OptInError`, `fake-claude*`, `fake-codex`, `executor_lifecycle`, `executor_transport`) is still used as code. The remaining hits are comments, doc strings and assertion messages (below).
+- `process-wrap` is gone from `Cargo.toml` and `Cargo.lock`. `uuid` has no `uuid::` user left in `src/` or `tests/`; the remaining `uuid` hits are fields on the stream-json wire model (`Option<String>`) and prose. It stays in the lock transitively through `wezterm-blob-leases`, as the manifest comment says. The lock diff is deletions only (process-wrap, the `windows` 0.62 family, uuid's direct edge); `nix`, `indexmap`, `futures`, `tracing` stay because other crates or direct deps still use them. Nothing relied on a feature that only `process-wrap` or `uuid` enabled: `tokio` is `full`, and `rustix` features are declared directly.
+- `pump` is correct with two arms. A closed action channel disables arm 1 and arm 2 answers, so the `else` branch and `Idle` stay unreachable in practice. The three replacement tests assert real outcomes (`Action`, `RedrawTick`) and are not vacuous.
+- The guard tests that remain still earn their keep. The bidirectional vanished checks, `BLOCKING_HELPERS` (the `RunSnapshot::capture(` removal is needed, since `every_named_blocking_helper_still_exists_in_the_tree` would reject it) and `MIN_ASYNC_BODY_LINES` (800 against a measured 1229) all hold. The non-vacuity control in `async_blocking_guard.rs` was retargeted from `RunSnapshot::capture(` to `scan_worktree(`, which is still a marker.
+- Deleting the Codex bypass-flag scan and the MCP-set guard was authorised by the plan (31-07-PLAN.md lines 193 and 227), so it is not raised as a defect. See IN-06 for the one residual note.
+- The summary's "no ignored test lived in the deleted binaries" is correct. The old TESTING.md claim about an ignored escalation test was already stale before this plan.
 
-**Prior WR-01 through WR-05 are resolved.** I checked each against the current source, not the commit
-messages.
+What remains is stale or vacuous residue the deletion left behind: one test that now guards nothing, and a set of comments and assertion messages that state facts about the removed executor as if it were still part of the build.
 
-- **WR-01 (retired-seam disclosure on the grant popup): resolved.** `render` now builds a body of the
-  consent prompt only. `SECTION_*` and `render_disclosure` are gone, and the test
-  `the_grant_popup_shows_no_disclosure_of_retired_seams` asserts "seam", "digest", "CLAUDE.md" and "=="
-  are absent. The `PromptInputsDrifted` message no longer promises a re-confirmation. The doc comments in
-  `registry.rs` and `error.rs` now say the digests are recorded but not consulted. The `config.rs` docs
-  still carry the stale claim (see IN-07).
-- **WR-02 (branch namespace claimed as applying): resolved.** Both prompts, `docs/CONFIGURATION.md` and the
-  `config.rs` field doc now say the namespace is parsed and validated but not consulted. The code agrees:
-  `policy_for` feeds only caps and `dest_ref` hard-codes the default namespace. A test forbids "namespace"
-  in either prompt.
-- **WR-03 (unregister not guarded against a live launcher run): resolved.** `do_remove_project` refuses when
-  `ctx.experimental` holds and the cached `launcher_marker.any_live` is true. It reports through
-  `error_message`, writes no config, and leaves the project registered. Two tests cover the refusal and the
-  crashed-run case. The guard's coverage limits are IN-10.
-- **WR-04 (ledger message cited a deadline nothing enforces): resolved.** `COUNT_DEADLINE_SECS` is removed.
-  The refusal states the size bound only, and a test forbids "deadline", "second", "timeout" and
-  "time limit" in the text. The sizing figure survives as a test-only `COUNT_BUDGET_SECS`. The module docs no
-  longer describe an agent that can inflate the ledger through the retired guard.
-- **WR-05 (SAFE-04 redaction bypass on a long stderr line): resolved.** `last_line_of_tail` drops the partial
-  first line of a cut window and returns a fixed note when no whole line remains. `redact_captured`
-  redacts first and caps at 512 chars afterwards. I traced the boundary cases: a window cut mid-line, a cut
-  at a line start, a single overlong line with and without a trailing newline, and `len == 4096` (not cut).
-  All behave correctly. The end-to-end test builds a 4207-byte stderr line with a `ghp_` token cut by the
-  window and asserts no 8-byte run of the secret survives.
+## Warnings
 
-**Other changes in the window, no defects found.**
+### WR-01: `DRIVER_TEARDOWN_GRACE` lower-bound guard now compares against a mirror of a deleted constant
 
-- `planted.rs`: the budgeted walks list each directory through `list_dir_bounded`, sorted by name, and
-  truncate a directory whole when it exceeds the remaining budget. `room().saturating_add(1)` bounds
-  buffering. Reversing the subdirectory list before pushing makes the stack pop in ascending order. The
-  new order-independence test is non-vacuous: it builds the trees in opposite orders and checks
-  name-order prefixes at every limit from 0 to 40.
-- `tests/launcher_sandbox.rs`: the test now pins `spec.runtime_dir` instead of reading the host's
-  `XDG_RUNTIME_DIR`, which fixes the container-only failure.
-- `ui/mod.rs`, `screens/mod.rs`, `render_escape_guard.rs`, `driver.rs`, `text.rs`: comment and census-pin
-  updates only. The `MEASURED_REACH` table and the `PRODUCTION_NEEDLE_*` figures agree with the stated
-  removal of the two composed calls from `driver_confirm.rs`.
+**File:** `src/driver/kill.rs:31`, `src/driver/kill.rs:92-128` (not in the diff; this plan's deletion orphaned it)
+**Issue:** `the_driver_grace_exceeds_the_claude_group_grace_plus_slack` asserts `DRIVER_TEARDOWN_GRACE > CLAUDE_GROUP_GRACE` and `>= CLAUDE_GROUP_GRACE + 2s`. `CLAUDE_GROUP_GRACE` is a literal `Duration::from_secs(10)` in the test module, documented as an "observable copy of a constant that is private to the executor (`src/executor/claude.rs:107`)". That file and constant no longer exist, so the mirror has no referent and can never move. The test is now two assertions of `12 > 10` and `12 >= 12`. The doc comment on `DRIVER_TEARDOWN_GRACE` (line 31-36) still gives as its reason that "the driver spends that entire grace inside `Executor::cancel`", and that test message repeats it. Nothing in the surviving launcher spends a 10 s grace, so the invariant that justified the 12 s value is gone and a future edit to the figure is no longer constrained by anything real. The sibling upper-bound test (strictly below the 15 s verification point) still has a real basis. The 12 s is consumed by `launcher::run::stop_group` (`src/launcher/run.rs:580`).
+**Fix:** Either retire the lower-bound test and rewrite the `DRIVER_TEARDOWN_GRACE` doc to give only the surviving bound and the real reason for the floor (the launcher's own SIGTERM wait), or repoint it at a value that exists, such as `TimeoutStopSec`/the launcher unit's stop timeout in `src/launcher/run.rs:116`:
+```rust
+// delete CLAUDE_GROUP_GRACE and the first test, then reword the doc:
+//   "It must be strictly less than fifteen seconds ... (the only remaining bound)."
+```
+`[inferred — audit]` This is a warning rather than info because a green test is asserting a rationale that is no longer true.
 
-No critical issues and no warnings. The items below are documentation and maintainability residue.
+### WR-02: Comments and assertion messages in `session_detector.rs` still say this build's own executor emits `--session-id` and `codex exec`
+
+**File:** `src/session_detector.rs:96`, `:503-506`, `:565-568`, `:1547-1550`, `:1567-1570`
+**Issue:** After 31-07 no code in this build emits `claude -p --session-id <uuid>` or runs `codex exec --json`. The commit updated three nearby doc comments (lines 390, 470, 1718, 1894) but left these statements:
+- line 96: "`e` is `exec`'s visible alias. This build's own executor runs `codex exec --json …`."
+- lines 503-506 and 1570: "the exact argv this build's executor emits when resuming, `--session-id <fresh-uuid>` followed by `--resume <old>`".
+- lines 565-568 and 1547-1550: "`--session-id <uuid>` is what THIS BUILD's own executor emits on every driver-launched run ... made every session this build itself started invisible".
+
+Lines 1547 and 1570 are assertion failure messages, so a future red would send the reader chasing a producer that does not exist. The rank rule (`--resume` outranks `--session-id`) is still sound as a parser rule for externally launched sessions, but the justification as "the argv this build emits" is false, and the round-trip control that backed it (`the_executors_own_argv_is_an_argv_this_build_can_read_back`) was deleted in this plan. Note too that the claim at 1550 ("the population DRIVE-01 is about") no longer has a measured producer in this tree; the sandboxed launcher's argv does not carry a `--session-id` literal.
+**Fix:** Reword each to the parser's actual basis: "`claude` documents `--session-id <uuid>` (2.1.250); the retired in-process executor used to emit it and externally launched sessions still do". Drop the "this build emits" framing from the two assertion messages, for example:
+```rust
+"`--session-id <uuid>` is a documented `claude` option; an externally launched \
+ session carrying it must still read back its id."
+```
+and at line 96 delete the second sentence.
 
 ## Info
 
-### IN-03: Opt-in toggle popup dims the dashboard even though it is only reachable from the Driver tab
+### IN-01: Comments still cite deleted files and line numbers
 
-**Carried over from the prior review, unchanged.**
-**File:** `src/ui/screens/driver_confirm.rs:189-196`
-**Issue:** `ToggleOptIn` is constructed only at `detail.rs:5991` (Driver tab), so the user is in a detail view.
-The popup still renders `NormalScreen` behind it, and the comment still justifies this with "as it did when
-the dashboard also opened it". The background changes under the user when they press `o`.
-**Fix:** Render `DetailScreen::new(self.alias.clone()).render_main_only(frame, area, ctx)` for both actions,
-drop the `matches!` branch, and drop the `NormalScreen` import path from this screen.
+**File:** `src/driver/rate_limit.rs:18` (`src/executor/outcome.rs:9-12`), `src/state_reader/git_ops.rs:98` and `:166` (`src/executor/outcome.rs`, `:60`), `src/launcher/process.rs:42` (`src/executor/claude.rs`), `src/driver/kill.rs:31`/`:92` (`src/executor/claude.rs:107`), `src/driver/liveness.rs:245` and `src/driver/kill.rs:94` (`tests/executor_lifecycle.rs`), `src/executor/stream_json.rs:151`, `:354`, `:978` (`ExecutionEvent::Unparseable`, `derive_run_outcome_from_envelopes`), `src/journal/redact.rs:396` (`ExecutionEvent::LineTruncated`), `src/driver/mod.rs:6`, `src/agents/adapters/mod.rs:15`, `src/config.rs:413`
+**Issue:** Each is a path, line number or type name from a file this plan deleted. Several sit in files the plan did touch for the same kind of drift (`queue_md.rs`, `disk_status.rs`, `redact.rs` were fixed), so the sweep was partial.
+**Fix:** Reword each to past tense or drop the citation. In `git_ops.rs:98` the claimed consumer ("the run snapshot") no longer exists; see IN-04.
 
-### IN-05: Leftover naming and attributes from retired code
+### IN-02: Broken intra-doc link to a deleted constant
 
-**Carried over from the prior review. Only the `driver.rs` part of the original item remains in this scope.**
-**File:** `src/ui/screens/driver.rs:98`
-**Issue:** `DRY_RUN_LOADING` is still named for the retired dry-run preview. It is now the generic
-"Loading..." string used at `driver_run.rs:990, 1724, 2101, 3075`. The other parts of the original item
-(`journal/redact.rs`, `cli.rs`) are outside this re-review's file scope and were not re-checked.
-**Fix:** Rename it to `LOADING_TEXT` and update the `driver_run.rs` import at line 37.
+**File:** `src/ui/screens/mod.rs:386`
+**Issue:** ``[`crate::main_loop::EXEC_BATCH`]`` is an intra-doc link, and `EXEC_BATCH` was deleted from `main_loop.rs` in this plan. `cargo doc` emits a `rustdoc::broken_intra_doc_links` warning. Neither the build nor the clippy gate runs rustdoc, so it passed.
+**Fix:** Drop the link and keep the sentence: "2000 is a defensible starting value with no tuning data behind it."
 
-### IN-07: `DriverOptIn` docs in `config.rs` still say the drift check runs at the spawn gate and that drift re-confirms
+### IN-03: Spawn-seam guard still names the process-wrap marker and a capability type that no longer exist
 
-**File:** `src/config.rs:274-282, 306-323, 344, 414`
-**Issue:** This is residue of the prior WR-01. The 31-08 fix corrected `registry.rs` and `error.rs`, but
-the doc comments on the data type still read as live behaviour. Examples:
+**File:** `tests/spawn_seam_guard.rs:226` (assertion message), `:67-69` (`SPAWN_MARKERS`)
+**Issue:** `SPAWN_MARKERS` still lists `"CommandWrap::with_new("`, a `process-wrap` API. The crate is gone, so the marker can never match and only widens the list. The failure message tells the next author to "Confirm it takes a capability type", but `DrivableProject`, the capability type, was deleted in this plan; the instruction cannot be followed.
+**Fix:** Remove the `CommandWrap::with_new(` marker (keeping `Command::new(` and `process_group(`) and reword the message to the real rule: "Confirm the file is a deliberate spawn site and add it with a one-line reason."
 
-- "Phase 21 is that phase, and it has landed ... the drift check runs at the spawn gate."
-- `prompt_inputs`: "all mean the same thing: re-confirm."
-- `claude_md_digest`: "an empty `prompt_inputs` re-confirms."
+### IN-04: Production-dead code is retained, and the module doc overstates its use
 
-The only reader is `DrivableProject::from_registry`, which has no production caller (per the new `error.rs`
-and `registry.rs` docs). A maintainer reading `config.rs` first will believe a control exists. The new
-docs elsewhere in the same change set say it does not.
-**Fix:** Add one paragraph to the `DriverOptIn` doc: the digests are recorded at opt-in but nothing on the
-launcher path compares them. Then qualify the "re-confirm" sentences with "(legacy executor gate only)".
+**File:** `src/executor/mod.rs:8-14`, `src/executor/stream_json.rs`, `src/executor/runtime.rs` (`resolve`), `src/state_reader/git_ops.rs:107` (`head_sha`)
+**Issue:** `executor/mod.rs` says each remaining submodule "has a live user", and 31-07-SUMMARY repeats it. For `stream_json` the only user outside its own file is `src/driver/rate_limit.rs:388`, which is inside `#[cfg(test)] mod tests`. The roughly 1000-line wire model (`UserMessage`, `ControlRequest` builders, `parse_line`) therefore has no production caller; the mod doc's "the rate-limit fixtures parse transcripts through" describes test code. In the same way `AgentRuntime::resolve` has no caller (config only validates the value through `from_config_value`), and `head_sha`'s only remaining callers are its own tests now that the run snapshot is gone. All are `pub` items in a library crate, so no dead-code lint fires. The SUMMARY records some of this under "Deferred Issues" but not these.
+**Fix:** Either reword the module doc honestly ("test-only parser kept for the rate-limit transcript fixtures") and move `stream_json` behind `#[cfg(test)]` or relocate it next to `rate_limit`, or log it as a follow-up retirement candidate alongside `check_prompt_input_drift`. `[inferred — audit]` Not a defect in 31-07's scope, since the plan chose to keep these.
 
-### IN-08: `delete_confirm.rs` re-implements the "driver is live" predicate that `detail.rs` already has
+### IN-05: Retargeted app tests keep "driver maps" names but now assert a non-driver map
 
-**File:** `src/ui/screens/delete_confirm.rs:131-135`, duplicating `src/ui/screens/detail.rs:784-791`
-**Issue:** `detail::driver_live_for(ctx, alias)` is the same expression: `ctx.experimental && view_cache
--> launcher_marker -> any_live`. The delete guard repeats it inline. If the definition of "live" changes
-(for example to include a stale lock), the badge and the unregister guard can diverge, and the guard is the
-safety control.
-**Fix:** Make `driver_live_for` `pub(super)`, or move it to `screens/mod.rs`, and call it from
-`do_remove_project`:
+**File:** `src/app.rs:4733-4753` (`removing_a_project_interactively_clears_its_driver_maps`), `src/app.rs:4769` (`every_per_alias_driver_map_is_pruned`)
+**Issue:** The `run_states` assertions were replaced with `last_refresh`. `last_refresh` is cleared by `do_remove_project` (`delete_confirm.rs:173`) independently of any driver feature and was already asserted in the second test, so the first test now adds no driver-specific coverage and `every_per_alias_driver_map_is_pruned` no longer lists a map that is "per-alias driver" state. The wildcard-free destructure still forces a decision on any new `AppContext` field, which is the part of the guard that matters.
+**Fix:** Rename both tests (for example `..._clears_its_per_alias_maps`) so the name matches what they assert, or drop the first test's `last_refresh` seeding if the removal is already covered by `delete_confirm.rs` tests.
 
-```rust
-if super::detail::driver_live_for(ctx, alias) { /* refuse */ }
-```
+### IN-06: Src-wide negative guards for Codex bypass flags and MCP config went with their subjects
 
-### IN-09: `OVERLONG_STDERR_NOTE` hard-codes the window size as a literal
-
-**File:** `src/launcher/process.rs:147-148`
-**Issue:** The note says "longer than 4096 bytes". `STDERR_TAIL_BYTES` is the source of truth. If someone
-retunes the window, the note silently becomes false, which is the class of defect the WR-04 fix removed
-from the ledger message. The module test also hard-codes 4096 in a comment, which is fine, but the
-production string is not.
-**Fix:** Drop the number ("the last stderr line was too long to keep and is not kept") or build the string
-from the constant with `format!` at the use site.
-
-### IN-10: The unregister guard is advisory: it covers the cached scan only, and its limits are not stated to the user
-
-**File:** `src/ui/screens/delete_confirm.rs:121-142`
-**Issue:** The guard reads the cached marker. It does not protect these cases:
-
-- Before the first marker scan lands, the cache entry is `None`.
-- A run started within the last slow-tick window is not yet in the cache.
-- A user who turns off the experimental flag while a run is live. `ctx.experimental` is part of the
-  condition, so removal proceeds and the detached launcher keeps running.
-
-The code comment discloses the first two. Nothing is disclosed to the user, and the refusal message reads
-as if the check were authoritative. The consequence is the same hazard as before, in a narrower window: a
-removed project with a live run and no TUI handle.
-**Fix:** Either re-read the run locks synchronously at confirm time (one `launcher_markers_for` call for
-this alias), or document the window beside the guard and in `docs/CONFIGURATION.md`. Dropping the
-`ctx.experimental` clause is also reasonable here, since refusing to unregister a project with a live lock
-is safe even when the flag is off.
+**File:** `tests/spawn_seam_guard.rs` (deleted `no_executable_line_in_src_carries_a_codex_bypass_flag_or_the_full_access_sandbox`, `the_permitted_mcp_set_stays_empty_on_both_profiles`)
+**Issue:** The plan authorised both deletions (31-07-PLAN.md lines 193 and 227), and the executor argv builders they exercised are gone, so this is not a regression. For the record: two of the deleted checks were scans over all of `src/` (no executable line carries a Codex permission-bypass flag or `danger-full-access`; no line supplies `--mcp-config`). Those would still have caught a resurrected Codex path or an MCP widening in the sandboxed launcher. Repo-wide grep now shows the launcher's `claude` argv builder (`src/launcher/sandbox.rs:720`) uses `--setting-sources user` and `--permission-mode` but no `--strict-mcp-config`, so after this plan no test pins the MCP posture of any spawn path. That predates 31-07 for the launcher, but 31-07 removed the last test that stated the posture at all.
+**Fix:** If the launcher's MCP posture matters (it runs `--permission-mode bypassPermissions` inside bwrap, per `tests/launcher_e2e.rs:458`), add one launcher-level assertion in `tests/launcher_sandbox.rs` rather than reviving the deleted src scan. `[inferred — audit]` Raising this as a coverage note only; no action is required for 31-07 to close.
 
 ---
 
-_Reviewed: 2026-10-27_
+_Reviewed: 2026-10-28_
 _Reviewer: Claude (gsd-code-reviewer)_
 _Depth: standard_
