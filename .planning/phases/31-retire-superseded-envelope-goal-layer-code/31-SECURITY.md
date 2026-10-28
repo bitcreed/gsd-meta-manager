@@ -8,14 +8,14 @@ threats_open_nonblocking: 0
 asvs_level: 1
 block_on: high
 created: "2026-10-25"
-updated: "2026-10-27"
+updated: "2026-10-28"
 ---
 
 # Phase 31 — Security
 
 > Per-phase security contract: threat register, accepted risks, and audit trail.
 
-Scope: plans 31-01..31-06 and gap-closure plans 31-08, 31-09 (re-audited 2026-10-27). Plan 31-07 (D-04, removal of the experimental Codex executor / in-process Claude transport) is HELD pending a user decision and was not executed. Its threats are **deferred** and not audited here; they are not open gaps of this phase.
+Scope: plans 31-01..31-09 (re-audited 2026-10-28). Plan 31-07 (D-04, removal of the experimental Codex executor / in-process Claude transport and the `process-wrap`/`uuid` direct deps) was held for a user decision when this file was first written; the hold was lifted (`1aca88d`) and it executed in `a23d1d4`, `2e2e335`, `b9990c0`. Its threats T-31-22..T-31-24 and T-31-SC are folded in below.
 
 ---
 
@@ -43,6 +43,8 @@ Scope: plans 31-01..31-06 and gap-closure plans 31-08, 31-09 (re-audited 2026-10
 | detached launcher run -> TUI liveness view / removal | the TUI learns of a live run only through the cached launcher marker (31-08) | process with git/push rights |
 | driver-written checkout -> host push step (planted-file guard) | the sandboxed driver controls tree names, sizes and layout; the guard runs on the host (31-09) | untrusted files |
 | host process -> PR ledger file | user-writable file outside the sandbox (31-09) | ledger bytes |
+| Cargo.toml/Cargo.lock -> every `--locked` gate | a stale or tampered lock fails CI and gate 6 (31-07) | dependency graph |
+| docs/TESTING.md -> contributors | contributors learn the fixture strategy from it (31-07) | claims |
 
 ---
 
@@ -71,6 +73,9 @@ Scope: plans 31-01..31-06 and gap-closure plans 31-08, 31-09 (re-audited 2026-10
 | T-31-19 | Repudiation | Phase 19/21 closure rows | high | mitigate | Phase 19 `deferred-items.md:3232` table, 27 rows; K rows T-19-72/73 stay open with todo owners (todos exist); Phase 21 `deferred-items.md:2963` marks CR-01/CR-02 NOT superseded; 27 vs 26 reconciled by name (T-19-105) | closed |
 | T-31-20 | Repudiation | N-class closures pending 28.1 D-11 probe | medium | mitigate | T-19-86/112/116/121 and Phase 21 criterion-4 closure carry the literal reopen conditional; awk check clean | closed |
 | T-31-21 | Repudiation | earlier audit text | medium | mitigate | only removed lines since 036426d: `status: blocked`, `threats_open: 6`, `updated: 2026-09-04` | closed |
+| T-31-22 | Tampering | `Cargo.lock` after removing `process-wrap`/`uuid` (31-07) | medium | mitigate | lock regenerated in the same commit as the `Cargo.toml` edit (`2e2e335`); `git diff a3105e1..HEAD -- Cargo.lock` has 0 added lines (68 removed); `process-wrap` absent from both files; `uuid` 1.28.0 stays only as a transitive lock entry (noted in `Cargo.toml:7-10`); `cargo clippy --locked` and container gate 6 `cargo package --locked` PASS (`31-07-SUMMARY.md:126-136`) | closed |
+| T-31-23 | Tampering | `SPAWN_ALLOWLIST` / `ASYNC_BLOCKING_ALLOWLIST` / `MIN_ASYNC_BODY_LINES` (31-07) | medium | mitigate | every removed allowlist path names a deleted file (`src/executor/{claude,codex,outcome}.rs`; the other `-` path is a synthetic fixture inside a deleted test); no path added; bidirectional `vanished` check intact `tests/spawn_seam_guard.rs:228-232`; floor unchanged `tests/async_blocking_guard.rs:196` = 800, measured 2380 -> 1229 (`31-07-SUMMARY.md:149`) | closed |
+| T-31-24 | Repudiation | `docs/TESTING.md` executor fixture sections (31-07) | low | mitigate | `fake-claude*`/teardown-grace sections removed with the fixtures (`2e2e335`); remaining mention `docs/TESTING.md:188-190` states they were retired | closed |
 | T-31-25 | Elevation of privilege | `do_remove_project` live-launcher-run refusal (WR-03) | medium | mitigate | guard on cached `launcher_marker.any_live` at `src/ui/screens/delete_confirm.rs:121-140`; refusal/control tests `delete_confirm.rs:326,356` | closed |
 | T-31-26 | Spoofing | opt-in grant popup disclosure (WR-01) | medium | mitigate | retired-seam sections removed; `the_grant_popup_shows_no_disclosure_of_retired_seams` in `src/ui/screens/driver_confirm.rs` pins absence on the rendered buffer | closed |
 | T-31-27 | Tampering | opt-in prompts / doc / CONFIGURATION.md namespace claims (WR-02) | low | mitigate | "PR caps only" wording `driver_confirm.rs:13-17,118,132`, `docs/CONFIGURATION.md:143-147`; push-step destination logic untouched | closed |
@@ -102,7 +107,7 @@ Scope: plans 31-01..31-06 and gap-closure plans 31-08, 31-09 (re-audited 2026-10
 | AR-31-01 | T-31-09 | After plan 31-03 the TUI cannot observe a legacy run and none can be started; a legacy `drive` still alive at upgrade is an operator kill (`31-03-SUMMARY.md:157-159`); the removed guard read only `ctx.observed_runs`, so launcher runs never had it | plan 31-03 threat model | 2026-10-25 |
 | AR-31-02 | T-31-11 | Nothing can start a new legacy `drive`; `drive` now parses as a positional TARGET; operator told to kill survivors (`31-04-SUMMARY.md:286-288`) | plan 31-04 threat model | 2026-10-25 |
 | AR-31-03 | T-31-16 | Stale stubs exec removed subcommands; `envelope pre-push/pre-commit/askpass/guard` exit 2 "unrecognized subcommand" (fail closed); nothing persisted in repo config (T-19-02) | plan 31-05 threat model | 2026-10-25 |
-| AR-31-04 | T-31-SC | No package added or upgraded: `Cargo.lock` unchanged since 036426d, `Cargo.toml` comment-only edits; re-checked for 31-08/31-09: `Cargo.lock`/`Cargo.toml` untouched in 36e0805~1..165a80c | plans 31-01..31-06, 31-08, 31-09 threat models | 2026-10-27 |
+| AR-31-04 | T-31-SC | No package added or upgraded: `Cargo.lock` unchanged since 036426d, `Cargo.toml` comment-only edits; re-checked for 31-08/31-09: `Cargo.lock`/`Cargo.toml` untouched in 36e0805~1..165a80c; re-checked for 31-07: only removals (`process-wrap`, `uuid` direct dep), lock diff `a3105e1..HEAD` adds no package | plans 31-01..31-09 threat models | 2026-10-28 |
 
 *Accepted risks do not resurface in future audit runs.*
 
@@ -110,11 +115,12 @@ Scope: plans 31-01..31-06 and gap-closure plans 31-08, 31-09 (re-audited 2026-10
 
 ## Notes
 
-- Deferred (not audited): all threats of plan 31-07 (held for user decision D-04).
+- Plan 31-07 (formerly deferred under the D-04 hold) executed and audited 2026-10-28; nothing deferred remains.
 - Conditional: four high N-class Phase 19 closures (T-19-86, T-19-112, T-19-116, T-19-121) reopen if the Phase 28.1 D-11 live probe fails — a declared condition, not a gap.
 - Superseded: the container dry run was red at gate 4 on two pre-existing 28.1 launcher tests (`31-05-SUMMARY.md`); 31-09 fixed both and the container run is green, gates 1-6 (T-31-32).
 - Orchestrator decisions taken unattended: Step 4 "Verify all open threats" chosen `[inferred — audit]`; WR-05 classified residual rather than open at ASVS L1 `[inferred — audit]`; T-31-04 left open (non-blocking) rather than accepted, so the WR-01/WR-02 rewording stays visible `[inferred — audit]`.
 - 2026-10-27 re-audit (verify:post after 31-08/31-09): all new threats closed at L1 grep depth with ASVS L1 and a plan-time register, so the auditor was skipped per the short-circuit rule; T-31-04 closed on 31-08's delivered rewording `[inferred — audit]`.
+- 2026-10-28 re-audit (after 31-07): T-31-22..T-31-24 closed at L1 grep/diff depth, T-31-SC re-accepted (removal only); auditor skipped per the ASVS L1 short-circuit (plan-time register, threats_open 0). The transitive `uuid` lock entry is not a T-31-22 gap — the plan removed the direct dep, not the crate from the graph `[inferred — audit]`.
 
 ---
 
@@ -124,6 +130,7 @@ Scope: plans 31-01..31-06 and gap-closure plans 31-08, 31-09 (re-audited 2026-10
 |------------|---------------|--------|------|--------|
 | 2026-10-25 | 22 | 21 | 1 (non-blocking, medium) | gsd-security-auditor (sonnet) via /gsd-secure-phase 31 |
 | 2026-10-27 | 31 | 31 | 0 | orchestrator L1 grep check (auditor skipped: ASVS L1 short-circuit) via /gsd-secure-phase 31 after 31-08/31-09 |
+| 2026-10-28 | 34 | 34 | 0 | orchestrator L1 grep check (auditor skipped: ASVS L1 short-circuit) via /gsd-secure-phase 31 after 31-07 |
 
 ---
 
@@ -134,7 +141,7 @@ Scope: plans 31-01..31-06 and gap-closure plans 31-08, 31-09 (re-audited 2026-10
 - [x] `threats_open: 0` confirmed
 - [x] `status: verified` set in frontmatter
 
-**Approval:** verified 2026-10-25 (one non-blocking medium open: T-31-04); re-verified 2026-10-27 after 31-08/31-09 — 31 threats, all closed
+**Approval:** verified 2026-10-25 (one non-blocking medium open: T-31-04); re-verified 2026-10-27 after 31-08/31-09 — 31 threats, all closed; re-verified 2026-10-28 after 31-07 — 34 threats, all closed
 
 ## Security Audit 2026-10-28
 
@@ -142,4 +149,12 @@ Scope: plans 31-01..31-06 and gap-closure plans 31-08, 31-09 (re-audited 2026-10
 |---|---|
 | Threats found | 31 |
 | Closed | 31 |
+| Open | 0 |
+
+## Security Audit 2026-10-28
+
+| Metric | Count |
+|---|---|
+| Threats found | 34 |
+| Closed | 34 |
 | Open | 0 |
