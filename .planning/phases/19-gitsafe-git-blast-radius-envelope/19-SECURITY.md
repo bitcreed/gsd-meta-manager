@@ -8,7 +8,7 @@ threats_open: 0
 asvs_level: 1
 block_on: high
 created: 2026-08-29
-updated: 2026-10-25
+updated: 2026-10-28
 register_authored_at_plan_time: true
 audited_against: HEAD (4055b81) — the THIRTEENTH audit judges the tree after plans
   19-32 (the round-13 corpus, RED) and 19-33 (the third word class, the ancestor
@@ -30,6 +30,9 @@ register_totals_after_phase_31: 139 total / 137 closed / 2 open / 0 at or above 
 # six blocking ids close as superseded by the Phase 28.1 sandbox, and the N-class ones
 # (T-19-86, T-19-112, T-19-116, T-19-121) reopen against Phase 28.1 if the D-11 live probe fails.
 # The closure table is in deferred-items.md "## Phase 31 closure (2026-10-25)" and below.
+# Quick 261028-n0x (2026-10-28) closed T-19-72 and T-19-73 by pinning tests dd1669e and 25a4721;
+# see "## Quick 261028-n0x closure (2026-10-28)" at the end of this file.
+register_totals_current: 139 total / 139 closed / 0 open / 0 at or above high
 ---
 
 # Phase 19 — Security
@@ -16236,3 +16239,16 @@ this tree or is held by a different mechanism, not that any of the six was ever 
 audit 13 verdict ("blocked, 2026-09-04") is left untouched above. The N-class rows lean on Phase 28.1,
 whose setup-token reach probe (28.1-UAT.md test 1) is still pending, so they reopen if it fails.
 Sign-off boxes in `## Audit 13 Sign-Off` are history and are not re-ticked.
+
+---
+
+## Quick 261028-n0x closure (2026-10-28)
+
+Both K-class ids were mitigated by construction, as audit 1 verified. The gap was evidentiary, and it is now closed by tests that turn red under the named mutation.
+
+| Id | Severity | Pin | Commit | Status |
+|----|----------|-----|--------|--------|
+| T-19-72 | low | `src/envelope/scan.rs` `envelope::scan::tests::an_absent_external_scanner_never_changes_the_verdict`: goes red if `is_clean` lets `Absent` move the verdict in either direction | `dd1669e` | closed (pinned) |
+| T-19-73 | low | `src/config.rs` `config::tests::a_credential_source_has_no_literal_token_variant`: its exhaustive match makes any third variant a compile error, and it rejects literal-token shapes with `unknown variant` | `25a4721` | closed (pinned) |
+
+The mutation evidence is in `.planning/quick/261028-n0x-phase-19-surviving-pin-gaps-t-19-72-t-19-73-add-a-scan-rs-te/261028-n0x-SUMMARY.md`. Nothing above this heading was changed, and after this section the register is 139 total / 139 closed / 0 open.

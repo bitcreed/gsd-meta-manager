@@ -28,3 +28,7 @@ Add a scan test that builds a clean report with `external = ExternalScanner::Abs
 unchanged by it. Add a config test asserting `serde_json::from_str::<CredentialSource>(r#"{"source":"literal","token":"x"}"#)`
 is an `Err`. Both are a few lines each. Source: `19-SECURITY.md` register rows T-19-72 and T-19-73, closure table in
 `.planning/phases/19-gitsafe-git-blast-radius-envelope/deferred-items.md` (`## Phase 31 closure (2026-10-25)`).
+
+## Resolution
+
+2026-10-28, quick 261028-n0x. T-19-72 pinned by `envelope::scan::tests::an_absent_external_scanner_never_changes_the_verdict` (`dd1669e`); T-19-73 pinned by `config::tests::a_credential_source_has_no_literal_token_variant` (`25a4721`). Register updated in `phases/19-gitsafe-git-blast-radius-envelope/19-SECURITY.md` (frontmatter `register_totals_current` and the closure section) and `deferred-items.md` (the two K rows and the closure section).
