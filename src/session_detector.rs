@@ -93,7 +93,7 @@ const CLAUDE_PROGRAM: &str = "claude";
 const CODEX_PROGRAM: &str = "codex";
 
 /// Codex subcommands that never run the interactive TUI. `e` is `exec`'s
-/// visible alias. This build's own executor runs `codex exec --json …`.
+/// visible alias.
 const NON_INTERACTIVE_CODEX_SUBCOMMANDS: [&str; 6] = [
     "exec",
     "e",
@@ -551,8 +551,9 @@ pub(crate) fn recognised_spelling_argv(template: &str, id: &str) -> Vec<String> 
 ///
 /// Read it for what it says: absent that flag, a resumed conversation REUSES
 /// the id it resumed. So on an argv carrying both options — exactly the shape
-/// this build's own executor emits when resuming, `--session-id <fresh-uuid>`
-/// followed by `--resume <old>` — the LIVE conversation's identity is the
+/// an external launcher can emit (the retired in-process executor did, until
+/// Phase 31), `--session-id <fresh-uuid>` followed by
+/// `--resume <old>` — the LIVE conversation's identity is the
 /// resumed value, and the fresh uuid is an id the run does not end up under.
 /// Reporting the fresh uuid would offer the operator a resume of a conversation
 /// that does not exist.
@@ -616,8 +617,9 @@ enum SessionIdRank {
 /// was never censused, and it was two short in one direction and four short in
 /// another. At `claude` 2.1.250 the same option is also spelled `-r` (bare and
 /// attached), and a SECOND option carries an id at all — `--session-id <uuid>`,
-/// which is what **this build's own executor emits on every driver-launched
-/// run**. Measured before this round, `claude -p --session-id <uuid>` read back
+/// which `claude` documents (`--session-id <uuid>`) and which the retired
+/// in-process executor used to emit on every driver-launched run (retired in
+/// Phase 31; externally launched sessions still carry it). Measured before this round, `claude -p --session-id <uuid>` read back
 /// as `None`: the population DRIVE-01 is about was the population this parser
 /// could not see. Six spellings are now read — `--resume=<id>`, `--resume <id>`,
 /// `-r<id>`, `-r <id>`, `--session-id=<id>`, `--session-id <id>` — and the set
@@ -739,8 +741,8 @@ enum SessionIdRank {
 /// one (see the 261028-n0v block below).
 ///
 /// **A producer correction.** The 21-37 block above says `--session-id` is what
-/// *"this build's own executor emits on every driver-launched run"*. That is
-/// stale: Phase 31 (31-07) retired the in-process executor, and no line under
+/// this build's own in-process executor emitted on every driver-launched run.
+/// That is stale: Phase 31 (31-07) retired the in-process executor, and no line under
 /// `src/` produces either `--session-id` spelling now. The parser still reads
 /// them because `claude` accepts them and an external launcher may emit them
 /// `[inferred — cleanup 2026-10-28]`.
@@ -1785,10 +1787,8 @@ mod tests {
         assert_eq!(
             parsed(&["claude", "--session-id", "u"]).as_deref(),
             Some("u"),
-            "`--session-id <uuid>` is what THIS BUILD's own executor emits on \
-             every driver-launched run. Measured before this round it read back \
-             as None, which made every session this build itself started \
-             invisible to the detector that finds it again."
+            "`--session-id <uuid>` is a documented `claude` option; an externally \
+             launched session carrying it must still read back its id."
         );
         assert_eq!(
             parsed(&["claude", "--session-id=u"]).as_deref(),
@@ -1808,7 +1808,7 @@ mod tests {
              original, so absent that flag a resume reuses the resumed id and \
              the live conversation's identity is `old`. Reporting `u` would \
              offer a resume of a conversation that does not exist. This is the \
-             exact argv this build's executor emits when resuming."
+             resume argv shape an external launcher emits."
         );
         assert_eq!(
             parsed(&["claude", "--resume", "old", "--session-id", "u"]).as_deref(),
