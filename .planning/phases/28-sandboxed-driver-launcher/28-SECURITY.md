@@ -11,7 +11,7 @@ created: "2026-10-20"
 # Phase 28 — Security
 
 > Per-phase security contract: threat register, accepted risks, and audit trail.
-> Register authored at plan time (28-01..28-09 `<threat_model>` blocks). Audited by gsd-security-auditor at HEAD a5b2801, after the code-review fixes (0951aea..b678e78). Evidence refreshed at HEAD a69de7a (2026-10-28) after Phase 28.1, Phase 31 deletions and quick batch 261028-n0u (macOS TUI launch/steering, WR-05); all mitigations still present, citations updated. [inferred — cleanup 2026-10-28] Re-verified at HEAD 66e3d94 (2026-10-29) after quick batch 261028-t3c and quick task 261028-v2z (config_dir.rs WR-08/WR-13 fail-closed host merge; lock/state open hardening in run.rs, stop.rs, serve.rs): cited code moved only by line shifts (content-hash checked), mitigations intact, T-28-15 strengthened; citations refreshed. Auditor not re-spawned (ASVS L1 short-circuit). [inferred — cleanup 2026-10-28]
+> Register authored at plan time (28-01..28-09 `<threat_model>` blocks). Audited by gsd-security-auditor at HEAD a5b2801, after the code-review fixes (0951aea..b678e78). Evidence refreshed at HEAD a69de7a (2026-10-28) after Phase 28.1, Phase 31 deletions and quick batch 261028-n0u (macOS TUI launch/steering, WR-05); all mitigations still present, citations updated. [inferred — cleanup 2026-10-28] Re-verified at HEAD 66e3d94 (2026-10-29) after quick batch 261028-t3c and quick task 261028-v2z (config_dir.rs WR-08/WR-13 fail-closed host merge; lock/state open hardening in run.rs, stop.rs, serve.rs): cited code moved only by line shifts (content-hash checked), mitigations intact, T-28-15 strengthened; citations refreshed. Auditor not re-spawned (ASVS L1 short-circuit). [inferred — cleanup 2026-10-28] Re-verified at HEAD 8663b3c (2026-10-29) after quick task 261029-1dp (f4cfa01 SAFE-04 line-redacting capture pump in `process.rs`; ce86206 dead `AgentRuntime` key removed from `config.rs`/`executor`/`registry`): `run.rs` and `config.rs` citations moved only by line shifts (content-compared against 66e3d94), no other cited file touched, mitigations intact; T-28-03 and T-28-27 strengthened by the pump; citations refreshed. Auditor not re-spawned (ASVS L1 short-circuit). [inferred — cleanup 2026-10-28]
 
 ---
 
@@ -37,21 +37,21 @@ created: "2026-10-20"
 
 | Threat ID | Category | Component | Severity | Disposition | Mitigation | Status |
 |-----------|----------|-----------|----------|-------------|------------|--------|
-| T-28-01 | Spoofing | second launcher as second writer | high | mitigate | run lock (`run.rs:675-688`) before `Session::start` (`run.rs:710`), rc 3 (`mod.rs:173`); `launcher_e2e.rs:690,816,1134` | closed |
+| T-28-01 | Spoofing | second launcher as second writer | high | mitigate | run lock (`run.rs:674-687`) before `Session::start` (`run.rs:709`), rc 3 (`mod.rs:173`); `launcher_e2e.rs:690,816,1134` | closed |
 | T-28-02 | Tampering | driver writes LOG/state/locks | high | mitigate | ro-bind run_dir + `/dev/null` over locks (`sandbox.rs:587-592`), siblings hidden (`:582-586`); `launcher_e2e.rs:446-457`, `launcher_sandbox.rs:55` | closed |
-| T-28-03 | Information Disclosure | OAuth token in argv/files | high | mitigate | degraded: env only (`run.rs:1618-1626`); bwrap: dummy token in sandbox (`sandbox.rs:672`), real token held by launcher egress (`run.rs:1713-1742`); Debug redacts (`auth.rs:74-81`); `launcher_e2e.rs:401` | closed |
-| T-28-04 | Tampering | run-id/run-dir escape | medium | mitigate | `validate_run_dir` (`serve.rs:212-264`) before lock (`run.rs:631`, `serve.rs:915`); tests `serve.rs:1071-1126` | closed |
+| T-28-03 | Information Disclosure | OAuth token in argv/files | high | mitigate | degraded: env only (`run.rs:1617-1625`); bwrap: dummy token in sandbox (`sandbox.rs:672`), real token held by launcher egress (`run.rs:1716-1745`); Debug redacts (`auth.rs:74-81`); `launcher_e2e.rs:401`; strengthened by SAFE-04 (f4cfa01): master stdout/stderr go through one pipe whose pump redacts each whole line (JSON tree walk or text, overlong lines replaced by a note) before `launch-N.jsonl` (`process.rs:96-130,146-188`, drained via `run.rs:1690`); tests `process.rs:491,570` | closed |
+| T-28-04 | Tampering | run-id/run-dir escape | medium | mitigate | `validate_run_dir` (`serve.rs:212-264`) before lock (`run.rs:630`, `serve.rs:915`); tests `serve.rs:1071-1126` | closed |
 | T-28-05 | Spoofing | `driver stop` wrong pid | medium | mitigate | Held probe, pid 0/1/self refused, re-probe (`stop.rs:103-162`); `launcher_stop.rs:27` | closed |
-| T-28-06 | Elevation of Privilege | silent unsandboxed run | high | mitigate | single `decide` (`host.rs:286-320`), off-Linux probes report missing (`host.rs:72,234-239`); TUI forces sandboxed (`driver_launch.rs:571,754`), opt-in only via Red default-No `UnsandboxedConfirmScreen` (`:1180`); posture recorded (`run.rs:922,929`) | closed |
+| T-28-06 | Elevation of Privilege | silent unsandboxed run | high | mitigate | single `decide` (`host.rs:286-320`), off-Linux probes report missing (`host.rs:72,234-239`); TUI forces sandboxed (`driver_launch.rs:571,754`), opt-in only via Red default-No `UnsandboxedConfirmScreen` (`:1180`); posture recorded (`run.rs:921,928`) | closed |
 | T-28-07 | Information Disclosure | setup-token at rest/output | high | mitigate | 0600 `create_new` + fsync + rename (`auth.rs:311-390`); `launcher_auth.rs:114` no echo | closed |
-| T-28-08 | Denial of Service | degraded descendants | medium | mitigate | TERM -> 12 s -> KILL group (`run.rs:587-597`, `driver/kill.rs:37`); `launcher_degraded.rs:330,374` | closed |
+| T-28-08 | Denial of Service | degraded descendants | medium | mitigate | TERM -> 12 s -> KILL group (`run.rs:586-596`, `driver/kill.rs:37`); `launcher_degraded.rs:330,374` | closed |
 | T-28-09 | Information Disclosure | host creds in sandbox | high | mitigate | `$HOME` tmpfs + allowlist (`sandbox.rs:549-552`), null masks (`:242-254,493-497`), env scrub (`:164-185,765-777`); `launcher_sandbox.rs:199,276,552`; live probe last run 2026-10-20 (not re-run) | closed |
 | T-28-10 | Elevation of Privilege | agent/D-Bus via runtime dir | high | mitigate | `/run` + runtime-dir tmpfs, only driverctl/egress sockets rebound (`sandbox.rs:544-545,605-614`), unshare (`:617-624`); `launcher_sandbox.rs:409,428,703` | closed |
 | T-28-11 | Tampering | driver disables own gate | high | mitigate | `--setting-sources user` (`sandbox.rs:720`); settings.json/bin/managed ro (`:594-604`); `launcher_sandbox.rs:670` | closed |
 | T-28-12 | Spoofing | auth precedence override | medium | mitigate | `apiKeyHelper` dropped (`config_dir.rs:128-134,600-605`); `ANTHROPIC_AUTH_TOKEN` stripped (`sandbox.rs:105`) | closed |
 | T-28-13 | Information Disclosure | refresh token into sandbox | high | mitigate | accessToken + expiry only (`auth.rs:179-225`); test `auth.rs:571` | closed |
 | T-28-14 | Tampering | driver self-reports counts | high | mitigate | gate counts from payload shape (`protocol.rs:155-159`, `store.rs:1231-1263`) / on-disk scan (`store.rs:1286-1301`) | closed |
-| T-28-15 | Denial of Service | gate fails open | high | mitigate | `onFailure: block` (`config_dir.rs:201-204`); host `hooks`/`permissions` merge fail-closed, wrong-shape values dropped so they cannot displace the gate hooks or deny list (`config_dir.rs:359-424,680-713`, WR-08/WR-13); trip marker before write/kill (`run.rs:1321-1346,1796-1800`, `gate.rs:132-139`); `launcher_caps.rs:385` | closed |
+| T-28-15 | Denial of Service | gate fails open | high | mitigate | `onFailure: block` (`config_dir.rs:201-204`); host `hooks`/`permissions` merge fail-closed, wrong-shape values dropped so they cannot displace the gate hooks or deny list (`config_dir.rs:359-424,680-713`, WR-08/WR-13); trip marker before write/kill (`run.rs:1320-1345,1799-1803`, `gate.rs:132-139`); `launcher_caps.rs:385` | closed |
 | T-28-16 | Tampering | forged `stop-guard.count` | low | mitigate | strict read + clamp (`stop_guard.rs:108-132,236`) | closed |
 | T-28-17 | Repudiation | kill with no record | medium | mitigate | `cap-tripped` committed before stop (`store.rs:1459-1474`); test `store.rs:1979` | closed |
 | T-28-18 | Spoofing | stop wrong run | medium | mitigate | same-string confirm (`driver_confirm.rs:70-75,103-135,170`), revalidation (`stop.rs:94-108`); test `driver_confirm.rs:810` | closed |
@@ -59,12 +59,12 @@ created: "2026-10-20"
 | T-28-20 | Tampering | `.git/config`/hooks hijack push | high | mitigate | pinned `gsdmm.pushUrl` (`push.rs:76,382-440,561-568`), `GIT_HARDENING` hooksPath `/dev/null` (`:281-293`) | closed |
 | T-28-21 | Information Disclosure | secret in tip pushed | high | mitigate | full-tree scan before push, park on hit (`push.rs:715-740`); `launcher_push.rs:373` | closed |
 | T-28-22 | Tampering | out-of-namespace/force push | high | mitigate | `check_destination` (`push.rs:203-212,583`); `{tip}:{dest}` no force (`:741-753`) | closed |
-| T-28-23 | Denial of Service | PR spam | medium | mitigate | open_pr default false (`config.rs:573-579`); `record_and_check` before `gh` (`push.rs:839`) | closed |
-| T-28-24 | Elevation of Privilege | hooks run in mirror | medium | mitigate | `prepare_mirror` each launch (`run.rs:762,853`) re-asserts hooksPath (`push.rs:428-440`) | closed |
+| T-28-23 | Denial of Service | PR spam | medium | mitigate | open_pr default false (`config.rs:529-535`); `record_and_check` before `gh` (`push.rs:839`) | closed |
+| T-28-24 | Elevation of Privilege | hooks run in mirror | medium | mitigate | `prepare_mirror` each launch (`run.rs:761,852`) re-asserts hooksPath (`push.rs:428-440`) | closed |
 | T-28-25 | Denial of Service | runaway spend | high | mitigate | `ceiling_ok` + `--max-budget-usd` (`launcher-acceptance.sh:118-130,766-779,849-853`); ledger $10.04 / $20; selftest PASS | closed |
 | T-28-26 | Repudiation | rubric edited post-hoc | medium | mitigate | `prereg_gate` (`launcher-acceptance.sh:155-172,845`) | closed |
-| T-28-27 | Information Disclosure | tokens/transcripts committed | high | mitigate | `evidence_gates` (`launcher-acceptance.sh:924,938-949`) | closed |
-| T-28-SC (x9) | Tampering | package installs (plans 28-01..09) | high | accept | no Cargo.toml/Cargo.lock change in phase 28 window (`git diff bda1ad9^ a5b2801` empty); later changes belong to 28.1/31/WR-05; none since a69de7a | closed |
+| T-28-27 | Information Disclosure | tokens/transcripts committed | high | mitigate | `evidence_gates` (`launcher-acceptance.sh:924,938-949`); SAFE-04 pump (`process.rs:146-188`) now redacts credential-shaped tokens in the master capture at write time, upstream of the gate | closed |
+| T-28-SC (x9) | Tampering | package installs (plans 28-01..09) | high | accept | no Cargo.toml/Cargo.lock change in phase 28 window (`git diff bda1ad9^ a5b2801` empty); later changes belong to 28.1/31/WR-05; none since a69de7a (still none at 8663b3c) | closed |
 
 *Status: open · closed · open — below high threshold (non-blocking)*
 *Severity: critical > high > medium > low — only open threats at or above workflow.security_block_on count toward threats_open*
@@ -98,6 +98,7 @@ created: "2026-10-20"
 | 2026-10-20 | 36 | 36 | 0 | gsd-security-auditor (ASVS L1, block_on high) + live isolation probe re-run post-fix |
 | 2026-10-28 | 36 | 36 | 0 | gsd-security-auditor re-verification at HEAD a69de7a (ASVS L1, block_on high); 8 launcher test binaries + 192 lib tests + acceptance selftest PASS; live isolation probe not re-run (opt-in, touches real $HOME) [inferred — cleanup 2026-10-28] |
 | 2026-10-29 | 36 | 36 | 0 | gsd-secure-phase L1 re-verification at HEAD 66e3d94 (ASVS L1 short-circuit, block_on high); citations refreshed after 261028-t3c / 261028-v2z; lib (2573) + launcher_config_dir, launcher_stop, launcher_sandbox, launcher_e2e, driverctl_serve PASS [inferred — cleanup 2026-10-28] |
+| 2026-10-29 | 36 | 36 | 0 | gsd-secure-phase L1 re-verification at HEAD 8663b3c (ASVS L1 short-circuit, block_on high); citations refreshed after 261029-1dp; SAFE-04 pump noted on T-28-03/T-28-27; `launcher::process` lib tests (11) PASS [inferred — cleanup 2026-10-28] |
 
 ---
 
