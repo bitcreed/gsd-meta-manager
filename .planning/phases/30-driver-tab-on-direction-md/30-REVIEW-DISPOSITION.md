@@ -5,7 +5,7 @@ titles: json
 findings:
   - id: WR-11
     severity: warning
-    disposition: open
+    disposition: fixed
     title: "`probe_at` and `read_holder_at` open the run lock without `O_NOFOLLOW` or `O_NONBLOCK`; a FIFO at `launcher.lock` parks a blocking worker forever, and the fleet-wide scan leaks one per tick"
   - id: WR-12
     severity: warning
@@ -107,7 +107,7 @@ findings:
     severity: info
     disposition: fixed
     title: "The launch form and the launcher read the `control` word with different readers"
-open: 7
+open: 6
 total: 26
 recorded: 2026-10-28T23:38:31.979Z
 ---
@@ -116,7 +116,7 @@ recorded: 2026-10-28T23:38:31.979Z
 
 | Finding | Severity | Disposition | Source |
 |---------|----------|-------------|--------|
-| WR-11 | warning | open | - |
+| WR-11 | warning | fixed | fixed by quick 261028-t3d 4977318 (probe_at and read_holder_at open through acquire_at's guard (open_lock_file): a symlink, hard link or FIFO is Unknown(EINVAL) or None without blocking, and the holder read is capped at 4096 bytes; read_driver_run_text derives LivenessUnknown for a FIFO launcher.lock; the separate marker-scan in-flight flag is in todo 2026-10-28-launcher-marker-scan-in-flight-flag.md [inferred — cleanup 2026-10-28]) |
 | WR-12 | warning | open | - |
 | IN-10 | info | open | - |
 | IN-11 | info | open | - |

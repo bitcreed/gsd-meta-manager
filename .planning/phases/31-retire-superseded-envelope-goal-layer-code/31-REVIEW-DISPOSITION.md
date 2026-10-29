@@ -5,7 +5,7 @@ titles: json
 findings:
   - id: WR-01
     severity: warning
-    disposition: open
+    disposition: fixed
     title: "Lock hardening covers `acquire_at` only; `probe_at` and `read_holder_at` still follow symlinks and block on a FIFO"
   - id: WR-02
     severity: warning
@@ -95,7 +95,7 @@ findings:
     severity: info
     disposition: fixed
     title: "Retargeted app tests keep \"driver maps\" names but now assert a non-driver map"
-open: 7
+open: 6
 total: 23
 recorded: 2026-10-29T01:13:37.226Z
 ---
@@ -104,7 +104,7 @@ recorded: 2026-10-29T01:13:37.226Z
 
 | Finding | Severity | Disposition | Source |
 |---------|----------|-------------|--------|
-| WR-01 | warning | open | - |
+| WR-01 | warning | fixed | fixed by quick 261028-t3d 4977318 (probe_at and read_holder_at open through acquire_at's guard (open_lock_file): a symlink, hard link or FIFO is Unknown(EINVAL) or None without blocking, and the holder read is capped at 4096 bytes; the acquire_at doc claim now holds for every lock-file open in the module) |
 | WR-02 | warning | open | - |
 | WR-03 | warning | open | - |
 | IN-01 | info | open | - |

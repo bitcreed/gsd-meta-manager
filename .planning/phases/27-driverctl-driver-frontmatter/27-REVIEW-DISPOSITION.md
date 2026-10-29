@@ -13,11 +13,11 @@ findings:
     title: "A failed `FileWatcher::new` leaves the terminal in raw mode on the alternate screen"
   - id: WR-03
     severity: warning
-    disposition: open
+    disposition: fixed
     title: "Run-start opens of untrusted run-dir names are unhardened (`DIRECTION.lock`, `state.json`)"
   - id: WR-04
     severity: warning
-    disposition: open
+    disposition: fixed
     title: "`probe_at` and `read_holder_at` can block, follow links and read without a bound"
   - id: WR-05
     severity: warning
@@ -83,7 +83,7 @@ findings:
     severity: warning
     disposition: fixed
     title: "Wall-clock assertions in default-run tests are flake-prone"
-open: 16
+open: 14
 total: 20
 recorded: 2026-10-29T00:24:12.282Z
 ---
@@ -94,8 +94,8 @@ recorded: 2026-10-29T00:24:12.282Z
 |---------|----------|-------------|--------|
 | WR-01 | warning | open | - |
 | WR-02 | warning | open | - |
-| WR-03 | warning | open | - |
-| WR-04 | warning | open | - |
+| WR-03 | warning | fixed | fixed by quick 261028-t3d 65233b8 (serve and driver launch create DIRECTION.lock through lock::ensure_lock_file (O_NOFOLLOW, O_NONBLOCK, single-link regular file on the handle); RunStore::open reads state.json through read_run_file_capped, so a symlink, FIFO or file over 1 MiB is CorruptState; check_wall_clock_budget reads it the same way [inferred — cleanup 2026-10-28]) |
+| WR-04 | warning | fixed | fixed by quick 261028-t3d 4977318 (probe_at and read_holder_at open through acquire_at's guard (open_lock_file): a symlink, hard link or FIFO is Unknown(EINVAL) or None without blocking, and the holder read is capped at 4096 bytes) |
 | WR-05 | warning | open | - |
 | WR-06 | warning | open | - |
 | IN-01 | info | open | - |
