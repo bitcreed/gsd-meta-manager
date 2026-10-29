@@ -25,7 +25,7 @@ findings:
     title: "The list pane title advertises a `v` key that is unbound"
   - id: WR-06
     severity: warning
-    disposition: open
+    disposition: deferred
     title: "The Roadmap measures widths in chars, so wide-glyph names push the plans and wave columns out of the pane (still present)"
   - id: WR-07
     severity: warning
@@ -51,7 +51,7 @@ findings:
     severity: info
     disposition: open
     title: "Regexes are compiled on every call beside `OnceLock` statics"
-open: 12
+open: 11
 total: 12
 recorded: 2026-10-29T00:50:49.484Z
 ---
@@ -65,7 +65,7 @@ recorded: 2026-10-29T00:50:49.484Z
 | WR-03 | warning | open | - |
 | WR-04 | warning | open | - |
 | WR-05 | warning | open | - |
-| WR-06 | warning | open | - |
+| WR-06 | warning | deferred | known debt: D-21-53 (21-30/21-32 SUMMARY) chose chars().count() and declined unicode-width, residual recorded; still present at src/ui/roadmap_view.rs:204-270 [inferred — cleanup 2026-10-28] |
 | WR-07 | warning | open | - |
 | IN-01 | info | open | - |
 | IN-02 | info | open | - |
@@ -76,3 +76,15 @@ recorded: 2026-10-29T00:50:49.484Z
 Dispositions: `open` (recorded, not yet triaged), `fixed`, `skipped`, `deferred`.
 Set `deferred` by hand and put the reason in the Source cell; both are preserved. A `|` in the reason is kept as prose and escaped on the next run.
 Re-running the gate keeps every row it can. A row the current review no longer reports is kept and its Source cell flagged, so a finding does not leave this record silently. ONE exception: when a finding id is REUSED by a different finding, the earlier decision cannot keep a row — the id is taken — and it is dropped. A RECORDED decision (anything but `open`) is named on the console when that happens; a row still at `open` is replaced silently, because `open` records no decision to lose.
+
+## Re-verification notes (HEAD review e16a201, replacing the 2026-09-24 review 551ecc2)
+
+The 2026-09-24 review predates this ledger and had no fix report, so none of its rows existed here. The HEAD re-review
+classifies WR-01, WR-02, WR-03, WR-06, WR-07, IN-01 and IN-03 as still present from it, and WR-04 and WR-05 as new.
+It confirms the stale `v` row in `src/ui/screens/help.rs` is gone, and that no live `PhaseList`, `layout_graph`,
+`RoadmapGraphWidget` or `roadmap_widget.rs` references remain. The `PhaseList` hits that are left are
+`archive::ArchiveDepth::PhaseList`, comments, or test strings. [inferred — cleanup 2026-10-28]
+
+No code was changed in this round, and no `--fix` was run. Every finding except WR-06 stays `open`. WR-06 is
+`deferred` because D-21-53 already accepted that residual. WR-01 through WR-04 were confirmed with a scratch probe
+crate. WR-02 is reachable only through a third-party ROADMAP, where the range starts at 0. [inferred — cleanup 2026-10-28]
