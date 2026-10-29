@@ -32,8 +32,10 @@ A sandboxed launch (`bwrap` inside a `systemd-run --user --scope` unit) gives th
   `mcp__claude_ai_*`) live in a managed settings file bound read-only at `/etc/claude-code`, so a
   nested `claude` with another config directory still fires them. Host policy already in
   `/etc/claude-code` is merged in, never hidden; the one exception is a host `hooks` or
-  `permissions` value that is not a JSON object, which is ignored so it can never replace the
-  gate hooks or the deny rules.
+  `permissions` value of the wrong shape (a value that is not an object, a hook event that is not
+  a list, a malformed matcher entry, a permission list that is not a list of strings, or a
+  permission setting that is neither a string nor a boolean), which is dropped so it can never
+  displace the gate hooks or the deny rules; well-formed entries beside it still merge.
 - **Read-only planted-file paths** inside the project (see [Planted-file guard](#planted-file-guard)).
 
 A launch on a host that cannot do this is refused unless you pick **Launch UNSANDBOXED** (or pass

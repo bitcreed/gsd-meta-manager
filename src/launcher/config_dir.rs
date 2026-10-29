@@ -28,8 +28,10 @@
 //!   A degraded run has no `/etc` to bind, so it keeps the gate in `settings.json`
 //!   with the deny list and writes no managed file. The host administrator's own
 //!   `/etc/claude-code` policy is merged in, never hidden ([`read_host_managed`]),
-//!   except that a host `hooks` or `permissions` value that is not a JSON object is
-//!   ignored, so it cannot replace the gate;
+//!   except that a host `hooks` or `permissions` value of the wrong shape is dropped
+//!   (a non-object block, or a nested event, matcher entry, permission list or
+//!   permission setting of the wrong shape; 28 WR-08, 30 WR-13), so it cannot
+//!   displace the gate;
 //! * a minimal `.claude.json` (`hasCompletedOnboarding`), only when absent;
 //! * a `bin/driverctl` shim that sets `DRIVERCTL_SOCK` to the run's socket and execs
 //!   this binary (hand-off 8), so the master prompt's `driverctl log ...` runs
@@ -98,6 +100,12 @@ pub const DENY_TOOLS: &[&str] = &[
     "DesignSync",
     "mcp__claude_ai_*",
 ];
+
+/// The `permissions` sub-keys that are lists of rule or path strings (30-REVIEW
+/// WR-13). Every other `permissions` sub-key (`defaultMode`,
+/// `disableBypassPermissionsMode`, `blockReadsOutsideWorkingDirectories`) is a string
+/// or bool setting `[inferred — cleanup 2026-10-28]`.
+const PERMISSION_LISTS: &[&str] = &["allow", "ask", "deny", "additionalDirectories"];
 
 /// Managed-settings keys the launcher pins; a host value never replaces them. Each
 /// is a lock whose launcher value is already the strictest one.
@@ -347,6 +355,74 @@ fn append_unique(map: &mut Map<String, Value>, key: &str, items: &[Value]) {
     }
 }
 
+/// True when `entry` is a well-formed hook matcher entry (30-REVIEW WR-13): an object
+/// whose `matcher` is absent or a string, whose `hooks` is an array, and whose every
+/// hook item is an object with a string `type`.
+///
+/// Per-type fields (`command`, `url`, `prompt`, `timeout`) and event names are not
+/// checked: they vary by Claude Code release `[inferred — cleanup 2026-10-28]`.
+fn is_well_formed_hook_entry(entry: &Value) -> bool {
+    let Value::Object(entry) = entry else {
+        return false;
+    };
+    if entry.get("matcher").is_some_and(|m| !m.is_string()) {
+        return false;
+    }
+    let Some(Value::Array(hooks)) = entry.get("hooks") else {
+        return false;
+    };
+    hooks
+        .iter()
+        .all(|hook| hook.get("type").is_some_and(Value::is_string) && hook.is_object())
+}
+
+/// The well-formed part of a host `hooks` object (30-REVIEW WR-13): each event whose
+/// value is an array, holding its [`is_well_formed_hook_entry`] entries in their
+/// original order. An event whose value is not an array, or that keeps no entry, is
+/// omitted, so nothing that survives needs coercing `[inferred — cleanup 2026-10-28]`.
+fn well_formed_hooks(events: &Map<String, Value>) -> Map<String, Value> {
+    let mut kept = Map::new();
+    for (event, entries) in events {
+        let Value::Array(entries) = entries else {
+            continue;
+        };
+        let good: Vec<Value> = entries
+            .iter()
+            .filter(|entry| is_well_formed_hook_entry(entry))
+            .cloned()
+            .collect();
+        if !good.is_empty() {
+            kept.insert(event.clone(), Value::Array(good));
+        }
+    }
+    kept
+}
+
+/// The well-formed part of a host `permissions` object (30-REVIEW WR-13).
+///
+/// A [`PERMISSION_LISTS`] key keeps its string items in order when its value is an
+/// array, and is omitted when no string remains or the value is not an array. Any
+/// other key is kept only when its value is a string or a bool, so the documented
+/// settings (`defaultMode`, `disableBypassPermissionsMode`, ...) are not hidden
+/// `[inferred — cleanup 2026-10-28]`.
+fn well_formed_permissions(permissions: &Map<String, Value>) -> Map<String, Value> {
+    let mut kept = Map::new();
+    for (key, value) in permissions {
+        if PERMISSION_LISTS.contains(&key.as_str()) {
+            let Value::Array(items) = value else {
+                continue;
+            };
+            let good: Vec<Value> = items.iter().filter(|i| i.is_string()).cloned().collect();
+            if !good.is_empty() {
+                kept.insert(key.clone(), Value::Array(good));
+            }
+        } else if value.is_string() || value.is_boolean() {
+            kept.insert(key.clone(), value.clone());
+        }
+    }
+    kept
+}
+
 /// Path markers that make a command a GSD hook (D-19): the directories the GSD
 /// installer puts its hook and helper scripts in.
 const GSD_HOOK_MARKERS: &[&str] = &[
@@ -562,7 +638,11 @@ pub fn settings_transform(
 /// `permissions.<list>` arrays are appended AFTER the launcher's entries, exact
 /// duplicates dropped; the five lock keys keep the launcher's value (already the
 /// strictest of each); a host `hooks` or `permissions` that is not a JSON object is
-/// ignored, never copied (WR-08); every other host key is copied as written, so a
+/// ignored, never copied (WR-08), and inside an object only the well-formed part is
+/// merged: [`well_formed_hooks`] keeps array-valued events and their well-formed
+/// matcher entries, [`well_formed_permissions`] keeps string items of the four rule
+/// lists plus string and bool settings such as `defaultMode` and
+/// `disableBypassPermissionsMode` (WR-13); every other host key is copied as written, so a
 /// host `allowManagedHooksOnly` stays in force. `allowManagedHooksOnly` is never set by
 /// the launcher: it would unload the GSD/rtk user hooks (D-16).
 pub fn managed_settings(gate: &GateCommands, host: &[Value]) -> Value {
@@ -588,12 +668,11 @@ pub fn managed_settings(gate: &GateCommands, host: &[Value]) -> Value {
                     let Some(Value::Object(ours)) = settings.get_mut("hooks") else {
                         continue;
                     };
-                    for (event, entries) in events {
-                        match entries {
-                            Value::Array(entries) => append_unique(ours, event, entries),
-                            other => {
-                                ours.entry(event.clone()).or_insert_with(|| other.clone());
-                            }
+                    // WR-13: only well-formed events reach `append_unique`; every
+                    // value is a non-empty array, so nothing is coerced.
+                    for (event, entries) in well_formed_hooks(events) {
+                        if let Value::Array(entries) = entries {
+                            append_unique(ours, &event, &entries);
                         }
                     }
                 }
@@ -601,14 +680,17 @@ pub fn managed_settings(gate: &GateCommands, host: &[Value]) -> Value {
                     let Some(Value::Object(ours)) = settings.get_mut("permissions") else {
                         continue;
                     };
-                    for (list, entries) in lists {
-                        match entries {
-                            Value::Array(entries) => append_unique(ours, list, entries),
-                            // IN-03: a host value that is not an array never replaces a
-                            // list the launcher already holds (`deny`); the safety list
-                            // must not depend on Claude Code refusing such a file.
+                    // IN-03, WR-13: a host list that is not an array never reaches the
+                    // managed file at all, and neither does a non-string rule; the
+                    // safety tier must not depend on Claude Code refusing such a file.
+                    for (key, value) in well_formed_permissions(lists) {
+                        match value {
+                            Value::Array(items) => append_unique(ours, &key, &items),
+                            // A string or bool setting: the first doc that sets it
+                            // wins (I-6). It can never touch `deny`, which only
+                            // arrives as an array.
                             other => {
-                                ours.entry(list.clone()).or_insert_with(|| other.clone());
+                                ours.entry(key).or_insert(other);
                             }
                         }
                     }
