@@ -35,7 +35,10 @@
 //!    a git checkout) restores the newer file by a no-replace rename
 //!    (`RENAME_NOREPLACE` on Linux, `RENAME_EXCL` on macOS), which cannot
 //!    overwrite a file created in between; if one was created, the exchange
-//!    runs again (30-REVIEW WR-10, quick 261028-n0z).
+//!    runs again (30-REVIEW WR-10, quick 261028-n0z). The exchange back that
+//!    follows a mismatch (fact 2) handles an absent `DIRECTION.md` the same way,
+//!    then retries from a fresh read of the restored save, and both sites share
+//!    one helper (30-REVIEW WR-12, 31-REVIEW WR-03, quick 261028-t3e).
 //! 4. **An insane body is never written back (D-12).** An in-place editor save
 //!    (truncate, then write) can be observed half done. A body missing either
 //!    `## Direction` or `## Items` is [`SpliceOutcome::SkippedInsaneBody`] and the
@@ -518,8 +521,8 @@ mod imp {
             AfterExchangeBack,
             /// A give-back round is about to exchange the newer file in.
             BeforeGiveBack,
-            /// The give-back exchange found no `DIRECTION.md`; the no-replace
-            /// rename is next.
+            /// An exchange (the exchange back after a mismatch, or a give-back
+            /// round) found no `DIRECTION.md`; the no-replace rename is next.
             BeforeRestore,
         }
 
@@ -553,6 +556,7 @@ mod imp {
 
     /// How many exchanges one give-back makes while ever newer saves keep
     /// arriving before it gives up and reports the file left at the temp name.
+    /// It also bounds the restore retries in `exchange_or_restore`.
     const GIVE_BACK_ROUNDS: u32 = 8;
 
     /// One file as seen at a temp name: its inode and its bytes (`None` when
@@ -728,6 +732,81 @@ mod imp {
         file.sync_all()
     }
 
+    /// What [`exchange_or_restore`] did.
+    enum PutBack {
+        /// The file at the temp name is now at `DIRECTION.md`, and whatever was
+        /// there is now at the temp name.
+        Exchanged,
+        /// `DIRECTION.md` was absent; the file at the temp name was renamed into
+        /// place by a no-replace rename and the temp name is now free.
+        Restored,
+    }
+
+    /// The one shared put-back step: exchange the file at `temp_name` with
+    /// `DIRECTION.md`. When `DIRECTION.md` is absent (an unlink-then-create
+    /// save, a git checkout or stash), restore the file by a NO-REPLACE rename
+    /// (`RENAME_NOREPLACE` on Linux, `RENAME_EXCL` on macOS): it cannot overwrite
+    /// a file created in the meantime, so on `EEXIST` the exchange runs again
+    /// with that file (bounded by [`GIVE_BACK_ROUNDS`]). There is no plain-rename
+    /// fallback (module fact 2) and the temp is never unlinked: it holds a
+    /// human's bytes. `failed` is the caller's context phrase for errors. Both
+    /// `give_back_newest` and `run_loop`'s exchange back call this, so the two
+    /// sites cannot drift (30-REVIEW WR-12, 31-REVIEW WR-03, quick 261028-t3e;
+    /// the `EEXIST` loop living here is [inferred — cleanup 2026-10-28]).
+    fn exchange_or_restore(
+        dir: &File,
+        temp_name: &str,
+        temp_path: &Path,
+        failed: &str,
+    ) -> Result<PutBack, DirectionError> {
+        for _ in 0..GIVE_BACK_ROUNDS {
+            match exchange(dir, temp_name, DIRECTION_FILE) {
+                Ok(()) => return Ok(PutBack::Exchanged),
+                Err(errno) if errno == rustix::io::Errno::NOENT => {
+                    #[cfg(test)]
+                    race_hook::fire(race_hook::Point::BeforeRestore);
+
+                    match renameat_with(dir, temp_name, dir, DIRECTION_FILE, RenameFlags::NOREPLACE)
+                    {
+                        Ok(()) => return Ok(PutBack::Restored),
+                        // A file was created in between: exchange with it.
+                        Err(e) if e == rustix::io::Errno::EXIST => continue,
+                        // Never unlink here: the temp holds a human's bytes.
+                        Err(e) => {
+                            return Err(io_err(
+                                format!(
+                                    "{failed}; DIRECTION.md was absent and the no-replace \
+                                     restore failed; a displaced file was left at {}",
+                                    temp_path.display()
+                                ),
+                                e,
+                            ));
+                        }
+                    }
+                }
+                Err(errno) => {
+                    // Never unlink here: the temp name holds a human's bytes.
+                    return Err(io_err(
+                        format!(
+                            "{failed}; a displaced file was left at {}",
+                            temp_path.display()
+                        ),
+                        errno,
+                    ));
+                }
+            }
+        }
+        Err(io_err(
+            format!(
+                "{failed}; DIRECTION.md kept disappearing and reappearing; a displaced \
+                 file was left at {}, and the next launch of this run deletes it once \
+                 it is a minute old, so copy it out first",
+                temp_path.display()
+            ),
+            format!("{GIVE_BACK_ROUNDS} restore attempts did not settle"),
+        ))
+    }
+
     /// Put the newer file at `temp_name` in place by exchange, then check that
     /// what came back is, unchanged, the file `expect` believed to be at
     /// `DIRECTION.md`; that one is older, so it is dropped. Anything else that
@@ -745,45 +824,13 @@ mod imp {
             #[cfg(test)]
             race_hook::fire(race_hook::Point::BeforeGiveBack);
 
-            match exchange(dir, temp_name, DIRECTION_FILE) {
-                Ok(()) => {}
-                // DIRECTION.md is absent (an unlink-then-create save, a git
-                // checkout). Restore the newer file by a NO-REPLACE rename: it
-                // cannot overwrite a file created in the meantime (WR-10, quick
-                // 261028-n0z). There is no plain-rename fallback (fact 2).
-                Err(errno) if errno == rustix::io::Errno::NOENT => {
-                    #[cfg(test)]
-                    race_hook::fire(race_hook::Point::BeforeRestore);
-
-                    match renameat_with(dir, temp_name, dir, DIRECTION_FILE, RenameFlags::NOREPLACE)
-                    {
-                        // The older displaced file was unlinked by whoever
-                        // removed DIRECTION.md; it is not ours to restore.
-                        Ok(()) => return Ok(()),
-                        // A file was created in between: exchange with it.
-                        Err(e) if e == rustix::io::Errno::EXIST => continue,
-                        // Never unlink here: the temp holds a human's bytes.
-                        Err(e) => {
-                            return Err(io_err(
-                                format!(
-                                    "could not restore a newer save; a displaced file was left at {}",
-                                    temp_path.display()
-                                ),
-                                e,
-                            ));
-                        }
-                    }
-                }
-                Err(errno) => {
-                    // Never unlink here: the temp name holds a human's bytes.
-                    return Err(io_err(
-                        format!(
-                            "could not put a newer save back; a displaced file was left at {}",
-                            temp_path.display()
-                        ),
-                        errno,
-                    ));
-                }
+            match exchange_or_restore(dir, temp_name, temp_path, "could not put a newer save back")?
+            {
+                PutBack::Exchanged => {}
+                // DIRECTION.md was absent and the newer file was restored by a
+                // no-replace rename. The older displaced file was unlinked by
+                // whoever removed DIRECTION.md; it is not ours to restore.
+                PutBack::Restored => return Ok(()),
             }
             let back = seen(temp_path).map_err(|e| io_err(temp_path.display(), e))?;
             if expect.as_ref() == Some(&back) {
@@ -900,18 +947,19 @@ mod imp {
 
             // A human save raced us: give their inode back. After this the
             // temp name holds whatever was at DIRECTION.md just before.
-            if let Err(errno) = exchange(&dir, &temp_name, DIRECTION_FILE) {
-                // Never unlink here: the temp name may hold a human's bytes.
-                return Err(io_err(
-                    format!(
-                        "could not exchange back; a displaced file was left at {}",
-                        temp_path.display()
-                    ),
-                    errno,
-                ));
+            match exchange_or_restore(&dir, &temp_name, &temp_path, "could not exchange back")? {
+                PutBack::Exchanged => {
+                    #[cfg(test)]
+                    race_hook::fire(race_hook::Point::AfterExchangeBack);
+                }
+                // DIRECTION.md was absent: the human's save is back at
+                // DIRECTION.md (30-REVIEW WR-12, 31-REVIEW WR-03), the tool's own
+                // file was unlinked by whoever removed it, and the temp name is
+                // free. That is the state the own-stale-file branch below leaves,
+                // so retry from a fresh read of the save rather than give up
+                // [inferred — cleanup 2026-10-28].
+                PutBack::Restored => continue,
             }
-            #[cfg(test)]
-            race_hook::fire(race_hook::Point::AfterExchangeBack);
             let back = seen(&temp_path).map_err(|e| io_err(temp_path.display(), e))?;
             if back.bytes.as_deref() == Some(new_content.as_bytes()) {
                 // Our own stale file: drop it and try again.
@@ -1373,6 +1421,49 @@ mod tests {
 
             assert_eq!(report.outcome, SpliceOutcome::Ok);
             assert_eq!(read(&dir), format!("{}{}", block(1), save(3)));
+            assert!(no_temps_left(&dir));
+        }
+
+        /// 30-REVIEW WR-12 / 31-REVIEW WR-03: the exchange back after a body
+        /// mismatch finds DIRECTION.md unlinked. The human's save (1) is restored
+        /// at DIRECTION.md by a no-replace rename and the splice retries on it.
+        #[test]
+        fn exchange_back_enoent_restores_the_human_save_and_retries() {
+            use super::super::imp::race_hook::Point;
+
+            let dir = run_dir_with(BODY);
+            let report = splice_acting(
+                &dir,
+                &[
+                    (Point::BeforeExchange, Act::Save(1)),
+                    (Point::AfterExchange, Act::Unlink),
+                ],
+            );
+
+            assert_eq!(report.outcome, SpliceOutcome::Ok);
+            assert_eq!(read(&dir), format!("{}{}", block(1), save(1)));
+            assert!(no_temps_left(&dir), "the restored temp is gone");
+        }
+
+        /// 30-REVIEW WR-12 / 31-REVIEW WR-03: a file created after the ENOENT,
+        /// before the no-replace restore, is never overwritten; the helper
+        /// exchanges with it and the newest save (2) wins.
+        #[test]
+        fn exchange_back_enoent_keeps_a_file_created_before_the_restore() {
+            use super::super::imp::race_hook::Point;
+
+            let dir = run_dir_with(BODY);
+            let report = splice_acting(
+                &dir,
+                &[
+                    (Point::BeforeExchange, Act::Save(1)),
+                    (Point::AfterExchange, Act::Unlink),
+                    (Point::BeforeRestore, Act::Save(2)),
+                ],
+            );
+
+            assert_eq!(report.outcome, SpliceOutcome::Ok);
+            assert_eq!(read(&dir), format!("{}{}", block(1), save(2)));
             assert!(no_temps_left(&dir));
         }
 
