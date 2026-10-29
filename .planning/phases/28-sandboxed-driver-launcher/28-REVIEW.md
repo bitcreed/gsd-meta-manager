@@ -1,114 +1,96 @@
 ---
 phase: 28-sandboxed-driver-launcher
-reviewed: 2026-10-28T00:00:00Z
+reviewed: 2026-10-29T00:00:00Z
 depth: standard
-files_reviewed: 42
+files_reviewed: 12
 files_reviewed_list:
-  - scripts/launcher-acceptance.sh
-  - src/action.rs
-  - src/app.rs
-  - src/bounded_output.rs
-  - src/cli.rs
-  - src/config.rs
+  - docs/DRIVER-SANDBOX.md
   - src/driver/direction.rs
-  - src/driver/kill.rs
-  - src/driver/liveness.rs
-  - src/driver_cli.rs
+  - src/driver/lock.rs
   - src/driverctl/serve.rs
   - src/driverctl/store.rs
-  - src/driverctl_cli.rs
-  - src/launcher/auth.rs
   - src/launcher/config_dir.rs
-  - src/launcher/host.rs
-  - src/launcher/mod.rs
-  - src/launcher/process.rs
-  - src/launcher/push.rs
   - src/launcher/run.rs
-  - src/launcher/sandbox.rs
-  - src/main.rs
+  - src/launcher/stop.rs
   - src/state_reader/driver_frontmatter.rs
-  - src/ui/screens/detail.rs
-  - src/ui/screens/driver.rs
-  - src/ui/screens/driver_confirm.rs
-  - src/ui/screens/driver_launch.rs
-  - src/ui/screens/mod.rs
-  - src/ui/screens/render_escape_guard.rs
-  - tests/async_blocking_guard.rs
-  - tests/driverctl_frontmatter.rs
+  - tests/driverctl_serve.rs
   - tests/driverctl_store.rs
-  - tests/launcher_auth.rs
-  - tests/launcher_caps.rs
   - tests/launcher_config_dir.rs
-  - tests/launcher_degraded.rs
-  - tests/launcher_e2e.rs
-  - tests/launcher_live_isolation.rs
-  - tests/launcher_push.rs
-  - tests/launcher_sandbox.rs
-  - tests/launcher_support/mod.rs
-  - tests/spawn_seam_guard.rs
 findings:
   critical: 0
   warning: 4
-  info: 2
-  total: 6
+  info: 3
+  total: 7
 status: issues_found
 ---
 
 # Phase 28: Code Review Report
 
-**Reviewed:** 2026-10-28
+**Reviewed:** 2026-10-29
 **Depth:** standard
-**Files Reviewed:** 42
+**Files Reviewed:** 12
+**Status:** issues_found
 
 ## Summary
 
-Re-review at HEAD of the Phase 28 files that changed since the prior review at `9252aa5`
-`[inferred — cleanup 2026-10-28]`. The scope is the intersection of Phase 28's files with
-`git diff 9252aa5 HEAD`. The workflow's degraded fallback offered 112 files, most of them not Phase 28's.
-Three bodies of work landed in that range:
+Incremental re-review of Phase 28 at HEAD. The scope is the delta `git diff 80b200e HEAD` over the twelve files
+above, which is quick tasks 261028-t3d, t3e, t3f and v2z `[inferred — cleanup 2026-10-29]`:
 
-- the 2026-10-28 cleanup batch (quick 261028-n0z, n0u, n11, n12),
-- Phase 28.1, which added the network, IPC and UTS namespaces, the in-sandbox bridge, the egress proxy, the
-  `$HOME` tmpfs allowlist, managed settings and the planted-file guard,
-- Phase 31's deletions, which account for most of the diff volume in `app.rs`, `cli.rs`, `action.rs`,
-  `kill.rs`, `driver.rs` and `spawn_seam_guard.rs`.
+- t3d: every lock-file open (`acquire_at`, `ensure_lock_file`, `probe_at`, `read_holder_at`) now goes through one
+  private `open_lock_file` (`O_NOFOLLOW | O_NONBLOCK`, regular-file and single-link check on the handle).
+  `state.json` is read through `read_run_file_capped` in `RunStore::open_with_clock`, `check_wall_clock_budget` and
+  `stop_orphaned_scope`. `serve` and `launch` create `DIRECTION.lock` through `ensure_lock_file`.
+- t3e: the exchange back after a body mismatch and the give-back loop share one helper, `exchange_or_restore`. An
+  absent `DIRECTION.md` is restored by a no-replace rename, bounded by `GIVE_BACK_ROUNDS`.
+- t3f and v2z: the host managed `hooks` and `permissions` merge in `config_dir.rs` ignores a non-object value, and
+  drops wrong-shape nested values. This is the claimed fix for WR-08.
 
-The new files `launcher/home.rs`, `launcher/egress/*`, `launcher/bridge.rs` and `launcher/push/planted.rs` are
-not in the requested file list. I read `bridge.rs` and the parts of `home.rs`, `planted.rs` and `egress/mod.rs`
-that the listed files call, and did not audit the rest.
+I read the whole diff, then the surrounding code in `direction.rs` (`run_loop`, `locked`, `sweep_stale_temps`),
+`driver_frontmatter.rs` (`open_run_file`, `read_run_file_capped`), `store.rs` (`open_with_clock`, state growth) and
+`config_dir.rs` (`managed_settings`, `settings_transform`, `LOCK_KEYS`). I also re-read the sources of the carried
+findings in `sandbox.rs`, `store.rs` and `run.rs` at HEAD.
 
-Verification run, in a private target directory so the shared tree was untouched:
+Verification, in a private target directory: `cargo test --no-fail-fast` over `driverctl_serve` (16), `driverctl_store`
+(61) and `launcher_config_dir` (28) passes, 105 tests, 0 failed. The lib unit tests for `driver::lock`,
+`driver::direction`, `launcher::config_dir` and `driver_frontmatter` were NOT run: the private target directory hit the
+disk quota on that second build, so I removed it and did not retry. The live bwrap tests are `#[ignore]` and were not
+run.
 
-- `cargo clippy --all-targets` is clean.
-- `cargo test --no-fail-fast` over `async_blocking_guard`, `driverctl_frontmatter`, `driverctl_store`,
-  `launcher_auth`, `launcher_caps`, `launcher_config_dir`, `launcher_degraded`, `launcher_e2e`, `launcher_push`,
-  `launcher_sandbox` and `spawn_seam_guard` passes (255 tests, 0 failed).
-- The live bwrap tests are `#[ignore]` and were not run.
+No critical issues. The hardening work is sound: I found no remaining unguarded read of `state.json` or a lock file
+in `src/`, and the `run_loop` restore path terminates (it is bounded by `SPLICE_TRIES`, and the helper by
+`GIVE_BACK_ROUNDS`). Two new findings concern the host-policy merge (WR-10, IN-07). Five prior findings are carried
+(WR-02, WR-04, WR-09, IN-05, IN-06). WR-08 is fixed and holds.
 
-No critical issues. Four warnings, two info items. Two of the warnings are prior deferred findings that are
-still present at HEAD. Five of the six prior findings the triage marked fixed (WR-01, WR-03, WR-05, IN-02, IN-04) hold at HEAD (see the table).
-The sixth, WR-06 (the credential denylist), was fixed by Phase 28.1 and I did not re-derive that fix. The `$HOME` tmpfs,
-env routing and `/etc` re-binds are in place, but `home.rs` is outside the requested list. Two prior info
-items were triaged as skipped and are unchanged.
-
-**New IDs start at WR-08 and IN-05, not WR-07.** `28-REVIEW-DISPOSITION.md` already holds a WR-07
-("`install_signal_handlers` is one-shot", fixed) and a CR-01 ("`bind_private` changes the process-wide umask",
-fixed), both from `28-REVIEW-FIX.md`. Reusing WR-07 would drop that recorded decision. `[inferred — cleanup 2026-10-28]`
+The new IDs follow the ledger. CR-01, WR-01..WR-09 and IN-01..IN-06 are all taken, so the new ones are WR-10 and IN-07.
+There is no CR-02.
 
 ### Prior findings re-checked at HEAD
 
 | Prior | Disposition | Status at HEAD |
 |---|---|---|
-| WR-01 `bind_private` rename race | fixed (n12 e98520c) | **Holds.** `serve.rs` now `hard_link`s the staged socket into place, so `EEXIST` replaces the old silent overwrite. Three new tests pin it: a file at the target, a live socket, and mode 0600. `hard_link` of a socket is fine on Linux and APFS, and the `protected_hardlinks` sysctl does not apply because the caller owns the inode. |
-| WR-02 drivers tmpfs skipped for a symlinked `.planning` | deferred | **Still present.** Restated below as WR-02. |
-| WR-03 unbounded `DIRECTION.md` reads | fixed (n12 dc812c0) | **Holds.** `RunStore::direction_read`, `preflight_direction` and `driver check` all go through `read_run_file_capped`, which uses `open_run_file` plus the 1 MiB cap. Tests cover FIFO, symlink, exactly-at-cap and over-cap. I found no remaining unguarded `DIRECTION.md` reader outside tests. |
-| WR-04 D-17 block with no parsed items | deferred | **Still present.** Restated below as WR-04. |
-| WR-05 macOS enablement half applied | fixed (n11) | **Holds.** The TUI launch, stop, steer and `can_steer()` arms are `any(linux, macos)`. `host_name()` uses `rustix::system::uname()` and the umask test is Linux-gated. The only `target_os = "linux"` arms left under `app.rs`, `ui`, `driverctl` or `launcher` are `/proc`-reading tests and `LIVENESS_SUPPORTED`. |
-| WR-06 credential denylist | fixed (Phase 28.1) | **Not re-derived.** `$HOME` is a size-capped tmpfs with a derived allowlist, `/etc` is rebuilt read-only, `/run` is a tmpfs, and the sandbox has `--unshare-net`. The only way out is the allowlisted egress server. The allowlist builder `home.rs` is outside the requested files. |
-| IN-01 ledger race in the acceptance script | skipped | Unchanged (comment-only edit). The skip reason stands. |
-| IN-02 `tty_open` probe | fixed (n12 88a61ec) | **Holds.** The assertion runs only with a controlling terminal and prints a SKIP note otherwise. |
-| IN-03 signal escalation counts "already set" | skipped | Unchanged. Still latent: `launch_detached` runs the launcher as a separate process, so nothing embeds it. |
-| IN-04 doc drift | fixed (n12 d344401) | **Holds** for `launcher/mod.rs` and the `mode_config` header. The `blocking_recovery` doc comment is still wrong, but that belongs to WR-04. |
+| WR-01 `bind_private` rename race | fixed (n12 e98520c) | Holds. `serve.rs` is unchanged apart from the `ensure_lock_file` call, and the `hard_link` staging is intact. |
+| WR-02 drivers tmpfs skipped for a symlinked `.planning` | deferred | **Still present.** `sandbox.rs:582-587` is byte-identical to the prior review. Restated below, with the part t3d closed noted. |
+| WR-03 unbounded `DIRECTION.md` reads | fixed (n12 dc812c0) | Holds. t3d extends the same guard (`open_run_file` plus the 1 MiB cap) to `state.json`. No unguarded `DIRECTION.md` or `state.json` reader remains outside tests. |
+| WR-04 D-17 block with no parsed items | deferred | **Still present.** `store.rs:1085` keeps `direction.items.is_empty() \|\| ..`. The new test `a_crashed_run_with_direction_md_absent_is_still_refused_dispatch` (`tests/driverctl_store.rs`) pins the fail-closed half the deferral relies on. It does not touch the unsatisfiable message. Restated below. |
+| WR-05 macOS enablement half applied | fixed (n11) | Holds. The t3 range adds only `rustix`-based, platform-neutral code. FIFO tests are Linux-gated. |
+| WR-06 credential denylist | fixed (Phase 28.1) | Not re-derived. `home.rs` is outside the requested files. |
+| WR-08 malformed host managed `hooks`/`permissions` replaces the gate | fixed (t3f 6a55713, v2z) | **Holds.** See the evidence below. No `### WR-08` heading is emitted. |
+| IN-01 ledger race in the acceptance script | skipped | Unchanged. |
+| IN-02 `tty_open` probe | fixed (n12 88a61ec) | Holds. |
+| IN-03 signal escalation counts "already set" | skipped | Unchanged. |
+| IN-04 doc drift | fixed (n12 d344401) | Holds. The `blocking_recovery` doc comment is still wrong, which belongs to WR-04. |
+| WR-09 launcher binary under `/tmp` or `/run` | open | **Still present.** `snapshot_exe`'s condition is unchanged (`config_dir.rs:303`). Restated below. |
+| IN-05 UTS namespace does not hide the host name | open | **Still present.** `sandbox.rs:51,78,625` unchanged; `etc_entries_in` (`sandbox.rs:383-404`) re-binds every `/etc` entry except `claude-code`. Restated below. |
+| IN-06 failed `record_launch_posture` leaves the launch half recorded | open | **Still present.** `run.rs:935` still returns through `?` before the `supervise` error arm. Restated below. |
+
+**WR-08 evidence.** `managed_settings` (`config_dir.rs:663-725`) skips `LOCK_KEYS` first. It then handles
+`("hooks", Value::Object(..))` and `("permissions", Value::Object(..))`. The new arm `("hooks" | "permissions", _) => {}`
+(`config_dir.rs:718`) sits before the `_ => settings.insert(..)` catch-all, so a string, array, null, number or bool can
+never replace the launcher's `hooks` object or the `deny` list. Inside an object, the nested values pass through
+`well_formed_hooks` and `well_formed_permissions` first. `deny` can only arrive as an array of strings, and `append_unique`
+appends after the launcher's list. The degraded posture is covered by `settings_transform` (`config_dir.rs:614-621`).
+Tests pin the table of shapes for both keys in both postures (`config_dir.rs` unit tests and
+`tests/launcher_config_dir.rs`). The integration tests pass. The fix holds as claimed.
 
 ## Warnings
 
@@ -126,17 +108,18 @@ matches. The golden test `no_drivers_tmpfs_unless_the_run_dir_sits_directly_unde
 (`sandbox.rs:1145`) pins the silent skip. The doc comment above the check still says `validate_run_dir`
 "guarantees" the shape, which is false for symlinked layouts.
 
-Phase 28.1 raises the cost. Sibling runs that stay visible are not only readable. When the symlink target lies
-inside the project bind they are writable, and the launcher reads some of their files with plain blocking
-reads before taking the lock (`run.rs:1219`, `fs::read(run_dir.join(STATE_FILE))`). A sandboxed driver could
-therefore plant a FIFO or an oversized `state.json` in a sibling run and hang or bloat that run's next launch.
-That is the same class as the prior WR-03, now reachable across runs.
+When the symlink target lies inside the project bind, the sibling runs stay visible and writable to the sandboxed
+driver. The 261028-t3d hardening narrows what that buys. The launcher's pre-lock `state.json` read
+(`run.rs:1220`), `RunStore::open` (`store.rs:645`) and `driver stop` (`stop.rs:203`) now refuse a FIFO, a symlink or
+an oversized file instead of hanging on it. A driver can still plant one of those in a sibling run, which turns that
+run's next launch into a `CorruptState` refusal, and it can rewrite a sibling's `state.json` or lock files. The
+hang is closed. The cross-run reach is not.
 
 The disposition is right that the review's original `ends_with(DRIVER_RUNS_REL)` fix does not match its own
 example (`planning` against `.planning`).
 
-**Fix:** carry the canonical drivers directory in `LaunchPaths` and compare against that. The launcher
-already knows it, because `validate_run_dir` canonicalizes `project/DRIVERS_REL`.
+**Fix:** carry the canonical drivers directory in `LaunchPaths` and compare against that. The launcher already
+knows it, because `validate_run_dir` canonicalizes `project/DRIVERS_REL`.
 
 ```rust
 // LaunchPaths gains: pub drivers_dir: PathBuf  // canonical parent of run_dir
@@ -151,73 +134,42 @@ test to expect a symlinked-planning case with the tmpfs.
 **Status:** prior, deferred, **still present at HEAD**
 (`todos/pending/2026-10-28-d17-recovery-block-with-no-direction-items.md`).
 
-**File:** `src/driverctl/store.rs:1070-1075` (`blocking_recovery`)
+**File:** `src/driverctl/store.rs:1081-1086` (`blocking_recovery`)
 
 **Issue:** The line `.find(|id| direction.items.is_empty() || direction.items.iter().any(..))` is unchanged.
-The doc comment directly above still says an awaiting id "the human has since removed from `DIRECTION.md`
-cannot be recovered ... so it no longer blocks". With zero parsed items, every awaiting id blocks, while
-`validate_log("recovered", ..)` rejects any id not listed in DIRECTION. The driver is told to log `recovered`
+The doc comment directly above (`store.rs:1076-1080`) still says an awaiting id "the human has since removed from
+`DIRECTION.md` cannot be recovered ... so it no longer blocks". With zero parsed items, every awaiting id blocks,
+while `validate_log("recovered", ..)` rejects any id not listed in DIRECTION. The driver is told to log `recovered`
 for an item the protocol then refuses.
 
-The disposition's reasoning for deferring is sound. Dropping the clause would let a crashed run dispatch while
-DIRECTION.md is absent or unparseable, which loosens a fail-closed gate. Fail-closed is the right default for
-a gate. The defect is the unsatisfiable message, not the block.
+The disposition's reasoning for deferring is sound, and the t3e test above now pins it: dropping the clause would
+let a crashed run dispatch while DIRECTION.md is absent or unparseable, which loosens a fail-closed gate.
+Fail-closed is the right default for a gate. The defect is the unsatisfiable message, not the block.
 
 **Fix:** keep the block and make it satisfiable or honest. Either reword both refusals when
 `direction.items.is_empty()` to say "DIRECTION.md has no parseable `### I-NN` items; repair it, then the run
 can continue". Or accept `recovered` for an awaiting id while items are empty. Correct the doc comment to
 describe the empty case.
 
-### WR-08: A malformed host managed `hooks` or `permissions` value replaces the launcher's gate (NEW)
-
-**File:** `src/launcher/config_dir.rs:583-616` (`managed_settings`)
-
-**Issue:** The host-merge match has two typed arms, `("hooks", Value::Object(..))` and
-`("permissions", Value::Object(..))`. Any other value for those two keys (`"hooks": []`, `"hooks": null`,
-`"permissions": "x"`) falls through to the `_ => settings.insert(key.clone(), value.clone())` arm. That arm
-overwrites the launcher's own `hooks` object, which holds the dispatch gate and the stop guard, or its
-`permissions.deny` list. The code already protects the inner level: a non-array host `deny` never replaces the
-launcher's list (IN-03, test `a_non_array_host_deny_list_does_not_replace_the_launchers`). The same protection
-is missing one level up.
-
-`read_host_managed` accepts any JSON object, so `{"hooks": []}` passes it. The comment on that function says
-Claude Code refuses to start on such a file, but that is a claim about another program's validation. This
-is the managed tier, which on bwrap launches carries the gate (D-12). A safety list should not depend on
-Claude Code rejecting a bad file. `[inferred — cleanup 2026-10-28]`
-
-**Fix:** make the two keys non-overridable by type, as `LOCK_KEYS` does for the others.
-
-```rust
-match (key.as_str(), value) {
-    ("hooks", Value::Object(events)) => { /* unchanged */ }
-    ("permissions", Value::Object(lists)) => { /* unchanged */ }
-    // A non-object `hooks` / `permissions` never replaces the launcher's.
-    ("hooks" | "permissions", _) => continue,
-    _ => { settings.insert(key.clone(), value.clone()); }
-}
-```
-
-Add a test next to `a_non_array_host_deny_list_does_not_replace_the_launchers` for `{"hooks": []}` and
-`{"permissions": "x"}`.
-
 ### WR-09: A launcher binary under `/tmp` or `/run` is unreachable inside the sandbox (NEW)
 
-**File:** `src/launcher/config_dir.rs:291` (`snapshot_exe`), with `src/launcher/sandbox.rs:512,545`
-(`--tmpfs /tmp`, `--tmpfs /run`) and `src/launcher/run.rs:1596` (`bridged_command(&ctx.binary, ..)`)
+**File:** `src/launcher/config_dir.rs:302-304` (`snapshot_exe`), with `src/launcher/sandbox.rs:512,544`
+(`--tmpfs /tmp`, `--tmpfs /run`) and `src/launcher/run.rs:1597` (`bridged_command(&ctx.binary, ..)`)
 
 **Issue:** Phase 28.1 makes `<this binary> bridge ...` bwrap's command, and the `bin/driverctl` shim execs
-the same path. `snapshot_exe` copies the binary out only when it lies under the driven project. The
-sandbox then replaces `/tmp` and `/run` with empty tmpfs mounts, and `$HOME` with a tmpfs holding only the
-allowlist. `HomeSetup::for_host(&home, &binary, ..)` takes care of a binary under `$HOME`. Nothing handles a
-binary under `/tmp` or `/run`. A user running a build from `CARGO_TARGET_DIR=/tmp/...`, an extracted release
-under `/tmp`, or a layout reached through `/run` (NixOS `/run/current-system`) gets a launch where bwrap
-cannot exec the bridge. The visible failure is a bwrap or bridge "No such file" (exit 127) after the run was
-already recorded, not a clear refusal. It is fail-closed, so this is a robustness defect, not an exposure.
-`[inferred — cleanup 2026-10-28]`: I read the argv order and the three call sites, and did not run a live
-sandbox with such a binary.
+the same path. `snapshot_exe` copies the binary out only when it lies under the driven project
+(`!real.starts_with(project) && !exe.starts_with(project)` returns the original path). The sandbox then replaces
+`/tmp` and `/run` with empty tmpfs mounts, and `$HOME` with a tmpfs holding only the allowlist.
+`HomeSetup::for_host(&home, &binary, ..)` takes care of a binary under `$HOME`. Nothing handles a binary under
+`/tmp` or `/run`. A user running a build from `CARGO_TARGET_DIR=/tmp/...`, an extracted release under `/tmp`, or a
+layout reached through `/run` (NixOS `/run/current-system`) gets a launch where bwrap cannot exec the bridge. The
+visible failure is a bwrap or bridge "No such file" (exit 127) after the run was already recorded, not a clear
+refusal. It is fail-closed, so this is a robustness defect, not an exposure.
+`[inferred — cleanup 2026-10-28]`: I read the argv order and the three call sites, and did not run a live sandbox
+with such a binary.
 
-**Fix:** widen `snapshot_exe`'s condition to "exe is somewhere the sandbox hides": under the project, or
-under `/tmp`, `/run`, `/var/run`, `/dev` or `/proc`. Copy it to `<cfg>/bin` exactly as for the project case.
+**Fix:** widen `snapshot_exe`'s condition to "exe is somewhere the sandbox hides": under the project, or under
+`/tmp`, `/run`, `/var/run`, `/dev` or `/proc`. Copy it to `<cfg>/bin` exactly as for the project case.
 
 ```rust
 const SANDBOX_HIDDEN: &[&str] = &["/tmp", "/run", "/var/run", "/dev", "/proc"];
@@ -226,6 +178,40 @@ if !hidden(&real) && !hidden(exe) { return Ok(exe.to_owned()); }
 ```
 
 Add a unit test beside `a_binary_under_the_project_is_copied_out_and_any_other_is_left_alone`.
+
+### WR-10: A wrong-shape host managed policy value is dropped with no diagnostic, though a non-object file is refused (NEW)
+
+**File:** `src/launcher/config_dir.rs:359-424` (`well_formed_hooks`, `well_formed_permissions`),
+`src/launcher/config_dir.rs:663-721` (their use in `managed_settings`), against `read_host_managed`
+(`config_dir.rs:736-767`)
+
+**Issue:** `read_host_managed` documents the launcher's principle for a bad host managed file: Claude Code refuses
+to start on it, "so the launch is refused here ... instead of silently running without the administrator's policy".
+The v2z change takes the opposite course one level down. A wrong-shape nested value is discarded without a trace:
+`{"permissions": {"deny": "Bash(rm *)"}}` loses the administrator's deny rule, `{"hooks": {"PreToolUse": {...}}}`
+loses an audit hook, and one malformed hook item discards its whole matcher entry, valid siblings included. A search
+of `config_dir.rs` finds no `eprintln!`, `tracing` call or returned note anywhere on the path. Neither the operator
+nor the administrator can learn that the driver ran without the policy they wrote.
+
+WR-08's own fix (ignore a non-object value) is the right fail-closed choice for the launcher's gate. The defect is
+the silence. The administrator's policy is then weakened (a lost `deny`, a lost hook) while the launcher reports a
+normal launch, and the managed file is the tier that is supposed to be authoritative on bwrap launches.
+`[inferred — cleanup 2026-10-29]`: I can prove the absence of any diagnostic, and the contrast with the top-level
+refusal. I did not verify how Claude Code treats such a value itself.
+
+**Fix:** make the drop observable, and ideally keep the existing refuse-on-bad-policy rule.
+
+```rust
+// in read_host_managed, after the object check, for each doc:
+if let Some(Value::Object(h)) = doc.get("hooks") && &well_formed_hooks(h) != h {
+    return Err(invalid("a malformed hooks entry"));
+}
+// likewise for "permissions" with well_formed_permissions.
+```
+
+If refusal is too strict for the project, return the dropped key paths from `managed_settings` and have `launch`
+print one `driver launch: ignored malformed host managed policy: <file>: <path>` line, as it does for the
+host-proxy and gateway warnings. Add a test that asserts the notice (or the refusal).
 
 ## Info
 
@@ -244,7 +230,7 @@ proxy or an allowlisted CONNECT host, so the exposure is small. The claim is str
 
 ### IN-06: A failed `record_launch_posture` leaves the launch half recorded (NEW)
 
-**File:** `src/launcher/run.rs:937` (compare the `supervise` error arm just below)
+**File:** `src/launcher/run.rs:935` (compare the `supervise` error arm just below)
 
 **Issue:** `begin_launch(..)?` has already bumped `launches` and written the launcher connection. The next
 statement, `record_launch_posture(..)?`, can fail on a store write error. It returns without the
@@ -256,8 +242,28 @@ that fails here would likely fail the terminal write too. This is a consistency 
 **Fix:** route both early `?` returns through the same cleanup as the `Err(e)` arm, e.g. wrap them in a small
 closure or helper that records the failed start before returning the error.
 
+### IN-07: Host managed `permissions` scalar settings are first-wins while every other host key is last-wins (NEW)
+
+**File:** `src/launcher/config_dir.rs:698-711` (the `other => ours.entry(key).or_insert(other)` arm), against the
+catch-all `settings.insert(key.clone(), value.clone())` at `config_dir.rs:719-721`
+
+**Issue:** `managed_settings` merges `host` "in precedence order: the file, then the drop-ins" (sorted by file
+name). For a top-level key, the catch-all `insert` makes the last doc win, which is the usual drop-in rule. For the
+string and bool `permissions` settings that the v2z change deliberately passes through (`defaultMode`,
+`disableBypassPermissionsMode`, `blockReadsOutsideWorkingDirectories`), the arm uses `or_insert`, so the FIRST doc
+wins. With `managed-settings.json` setting `defaultMode: "default"` and `managed-settings.d/50-site.json` setting
+`"plan"`, the base file's value is merged and the drop-in's is ignored, while the same pair under `model` would
+merge as the drop-in's. The comment calls this "(I-6)", a recorded decision, but the function's doc does not say it,
+and no test pins which doc wins. `[inferred — cleanup 2026-10-29]`: whether Claude Code's own drop-in precedence is
+last-wins is not verified here, so this is flagged as an internal inconsistency, not a confirmed
+mismatch.
+
+**Fix:** pick one rule. Either use `ours.insert(key, other)` so these settings follow the last-wins rule of every
+other key, or state first-wins in the `managed_settings` doc comment and add a test with the same
+`permissions` scalar set in the file and in a drop-in, asserting the winner.
+
 ---
 
-_Reviewed: 2026-10-28_
+_Reviewed: 2026-10-29_
 _Reviewer: Claude (gsd-code-reviewer)_
 _Depth: standard_
