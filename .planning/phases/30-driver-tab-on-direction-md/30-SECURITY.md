@@ -101,6 +101,8 @@ created: "2026-10-20"
 
 6. 2026-10-28 re-audit at a8f4672 after quick batch 261028-t3c (t3d: 30 WR-11, 27 WR-03/WR-04, 31 WR-01; t3e: 30 WR-12, 31 WR-03; t3f: 28 WR-08, 29 WR-02). Every source file changed since 7902043 was diffed against the register: (a) 4977318 / 65233b8 route every lock-file open in `src/driver/lock.rs` (acquire, `probe_at`, `read_holder_at`, new `ensure_lock_file`) through `open_lock_file` (`O_NOFOLLOW|O_NONBLOCK`, regular single-link file on the handle; holder read capped at 4096 bytes, `:149`). A symlink to another run's held lock, a hard link or a FIFO now probes `Unknown` -> `LivenessUnknown`, never `Running`/`Crashed`: T-30-01 strengthened (a planted link can no longer borrow another run's liveness) and the 20-tick marker scan (T-30-09) can no longer park on a FIFO `launcher.lock`; (b) 7f4fc49 makes `run_loop`'s exchange back share `exchange_or_restore` with `give_back_newest`, so an absent DIRECTION.md at the exchange back restores the human save by no-replace rename and retries (bounded by `SPLICE_TRIES` and `GIVE_BACK_ROUNDS`); no plain-rename fallback, the temp is never unlinked: T-30-10 strengthened; (c) `src/launcher/run.rs` / `stop.rs` now read `state.json` via `read_run_file_capped` and create DIRECTION.lock via `ensure_lock_file`, widening T-30-23 coverage; (d) `src/driverctl/{serve,store}.rs`, `src/launcher/config_dir.rs` and `tests/launcher_config_dir.rs` (28 WR-08, 29 WR-02 host hooks/permissions shape) sit outside this phase's register; `src/state_reader/driver_frontmatter.rs` changed by one test only. No `src/ui/**`, `src/app.rs` or `src/main.rs` change, so T-30-02/05/06/11..22/26..31 anchors and grep gates are unchanged. No mitigation weakened, no new threat. `[inferred — cleanup 2026-10-28]`
 
+7. 2026-10-29 re-audit at e9de71b after quick 261028-v2z (601d20f, 1158139, 92dac7a, bfbd231: 30 WR-13). The only source/test files changed since a8f4672 are `src/launcher/config_dir.rs` (new `is_well_formed_hook_entry` / `well_formed_hooks` / `well_formed_permissions` filters: wrong-shape nested host `hooks` / `permissions` values are dropped from the managed file and the degraded settings, well-formed siblings still merge) and `tests/launcher_config_dir.rs` (+50 lines, additions only). Both sit outside this phase's register (as in note 6d); the change is fail-closed hardening of the sandboxed driver's settings, not a weakening of any launch-path mitigation (T-30-15/16/19 anchors in `driver_launch.rs`, `app.rs`, `run.rs` untouched). The 30-08 ETXTBSY fix in `tests/launcher_config_dir.rs` (`EXEC_LOCK` `:39`, `run_shim` `:710`) is intact. No `Cargo.toml`/`Cargo.lock` change (AR-30-03 holds). No mitigation weakened, no new threat. `[inferred — cleanup 2026-10-28]`
+
 ---
 
 ## Accepted Risks Log
@@ -125,6 +127,7 @@ created: "2026-10-20"
 | 2026-10-24 | 32 | 32 | 0 | /gsd-secure-phase 30 (L1 short-circuit, ASVS 1) re-run after 717d724 changed `src/driver/direction.rs`; T-30-10 strengthened, T-30-25 / AR-30-02 re-anchored, auditor note 3 resolved; 334 `driver::` lib tests, 66 steer/write_body/open_run_file filter tests and `tests/driverctl_race.rs` (4 passed, 1 ignored) green |
 | 2026-10-28 | 32 | 32 | 0 | /gsd-secure-phase 30 (L1 short-circuit, ASVS 1) re-run at 7902043 after 28.1, 31 deletions and 261028-n0u (30 WR-08/09/10); all 32 rows re-anchored, T-30-10/T-30-23 strengthened, T-30-14 re-scoped to Linux+macOS (auditor note 5); lib filters launcher_ 272, steer_ 62, model 23, answer_ 19, render_escape_guard 18, confirm_popup 12 + 13 smaller filters, `tests/editor_command.rs` 5, `tests/driverctl_race.rs` 4 (+1 ignored) green, 0 failed |
 | 2026-10-28 | 32 | 32 | 0 | /gsd-secure-phase 30 (L1 short-circuit, ASVS 1) re-run at a8f4672 after quick batch 261028-t3c (30 WR-11/WR-12); T-30-01/T-30-10 strengthened, T-30-10/T-30-23/T-30-25/AR-30-02 re-anchored (auditor note 6); lib filters driver::, driver_frontmatter, launcher::, steer_, render_escape_guard, confirm_popup, model, answer_, editor_command, status_cell 568 passed, `tests/editor_command.rs` 5, `tests/driverctl_race.rs` 4 (+1 ignored), `tests/launcher_config_dir.rs` 27 green, 0 failed |
+| 2026-10-29 | 32 | 32 | 0 | /gsd-secure-phase 30 (L1 short-circuit, ASVS 1) re-run at e9de71b after quick 261028-v2z (30 WR-13, `src/launcher/config_dir.rs` fail-closed nested hooks/permissions); outside register, no anchor moved (auditor note 7); `tests/launcher_config_dir.rs` 28, lib `launcher::` 260 passed, 0 failed |
 
 ---
 
@@ -135,7 +138,7 @@ created: "2026-10-20"
 - [x] `threats_open: 0` confirmed
 - [x] `status: verified` set in frontmatter
 
-**Approval:** verified 2026-10-20; re-verified 2026-10-21 (30-06..30-09); re-verified 2026-10-24 (717d724); re-verified 2026-10-28 (HEAD 7902043, after 28.1 / 31 / 261028-n0u); re-verified 2026-10-28 (HEAD a8f4672, after 261028-t3c)
+**Approval:** verified 2026-10-20; re-verified 2026-10-21 (30-06..30-09); re-verified 2026-10-24 (717d724); re-verified 2026-10-28 (HEAD 7902043, after 28.1 / 31 / 261028-n0u); re-verified 2026-10-28 (HEAD a8f4672, after 261028-t3c); re-verified 2026-10-29 (HEAD e9de71b, after 261028-v2z)
 
 ## Security Audit 2026-10-28
 
