@@ -961,6 +961,45 @@ fn a_managed_seed_merges_the_hosts_policy_into_the_per_run_file() {
     );
 }
 
+// 28-REVIEW WR-08 / 29-REVIEW WR-02: a host `hooks` or `permissions` that is not a
+// JSON object (here an array, a string, null and a number, across the file and a
+// drop-in) must never replace the launcher's gate hooks or deny list in the managed
+// file, and must not stop the rest of the host policy from merging.
+#[test]
+fn a_managed_seed_keeps_the_gate_when_the_hosts_hooks_or_permissions_is_not_an_object() {
+    let root = TempDir::new().unwrap();
+    let mut spec = spec_in(root.path());
+    spec.managed = true;
+    seed(&spec).unwrap();
+    let managed_path = spec.config_dir.join(MANAGED_SUBDIR).join(MANAGED_FILE);
+    let baseline = read_json(&managed_path);
+
+    spec.host_managed_dir = root.path().join("etc-claude-code");
+    fs::create_dir_all(spec.host_managed_dir.join("managed-settings.d")).unwrap();
+    fs::write(
+        spec.host_managed_dir.join(MANAGED_FILE),
+        r#"{"hooks": [], "permissions": "x", "model": "admin"}"#,
+    )
+    .unwrap();
+    fs::write(
+        spec.host_managed_dir
+            .join("managed-settings.d")
+            .join("10-null.json"),
+        r#"{"hooks": null, "permissions": 7}"#,
+    )
+    .unwrap();
+    seed(&spec).unwrap();
+
+    let managed = read_json(&managed_path);
+    assert_eq!(managed["hooks"], baseline["hooks"]);
+    assert_eq!(managed["permissions"], baseline["permissions"]);
+    assert_eq!(
+        managed["permissions"]["deny"].as_array().unwrap().len(),
+        DENY_TOOLS.len()
+    );
+    assert_eq!(managed["model"], "admin");
+}
+
 #[test]
 fn degraded_seed_keeps_the_gate_and_the_deny_list_in_settings_json() {
     let root = TempDir::new().unwrap();
