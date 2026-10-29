@@ -1,0 +1,81 @@
+{
+  "schema_version": 1,
+  "batch_id": "261028-t3c",
+  "created_at": "2026-10-29T01:56:49.494Z",
+  "options": {},
+  "base_revision": "1afd4fdb81db221a35011a2f5187cd933e068e45",
+  "items": [
+    {
+      "quick_id": "261028-t3d",
+      "client_id": null,
+      "description": "Harden lock and state-file opens against FIFO/symlink blocking: apply the acquire_at guard (O_NOFOLLOW, nonblocking open, regular-file + single-link check, size cap; see batch 261028-n0u WR-10/WR-08) to src/driver/lock.rs probe_at and read_holder_at (Phase 27 WR-04, Phase 30 WR-11, Phase 31 WR-01) and to the startup opens of DIRECTION.lock in src/driverctl/serve.rs ~934-939 and state.json in src/driverctl/store.rs ~644 (Phase 27 WR-03); close the pending todo about two other lock-file opens lacking these guards if it is the same set; factor a shared helper where natural; add tests that a planted FIFO does not block and a symlink is refused; update dispositions to fixed in phases 27, 30, 31",
+      "status": "complete",
+      "depends_on": [],
+      "planned_files": [
+        "src/driver/lock.rs",
+        "src/driverctl/serve.rs",
+        "src/driverctl/store.rs",
+        "src/launcher/run.rs",
+        "src/launcher/stop.rs",
+        "src/state_reader/driver_frontmatter.rs",
+        "tests/driverctl_serve.rs",
+        ".planning/phases/27-driverctl-driver-frontmatter/27-REVIEW-DISPOSITION.md",
+        ".planning/phases/30-driver-tab-on-direction-md/30-REVIEW-DISPOSITION.md",
+        ".planning/phases/31-retire-superseded-envelope-goal-layer-code/31-REVIEW-DISPOSITION.md",
+        ".planning/todos/completed/2026-10-28-lock-probe-and-holder-read-open-by-path.md",
+        ".planning/todos/pending/2026-10-28-launcher-marker-scan-in-flight-flag.md"
+      ],
+      "directory": null,
+      "worktree": null,
+      "dispatched_worktree": null,
+      "dispatched_branch": null,
+      "dispatched_base": null,
+      "wave": 0,
+      "commit": "523aa75",
+      "failure_reason": null
+    },
+    {
+      "quick_id": "261028-t3e",
+      "client_id": null,
+      "description": "Keep the human's save when DIRECTION.md is missing at the first exchange-back in src/driver/direction.rs run_loop ~901-914 (Phase 30 WR-12, Phase 31 WR-03, completes WR-10): the save must not be left at a hidden temp file the next sweep deletes nor error, while a crashed run must still never dispatch on a missing DIRECTION.md (see the Phase 28 WR-04 deferral reasoning); add a test; update dispositions to fixed in phases 30, 31",
+      "status": "complete",
+      "depends_on": [],
+      "planned_files": [
+        "src/driver/direction.rs",
+        "tests/driverctl_store.rs",
+        ".planning/phases/30-driver-tab-on-direction-md/30-REVIEW-DISPOSITION.md",
+        ".planning/phases/31-retire-superseded-envelope-goal-layer-code/31-REVIEW-DISPOSITION.md"
+      ],
+      "directory": null,
+      "worktree": null,
+      "dispatched_worktree": null,
+      "dispatched_branch": null,
+      "dispatched_base": null,
+      "wave": 1,
+      "commit": "b407eb7",
+      "failure_reason": null
+    },
+    {
+      "quick_id": "261028-t3f",
+      "client_id": null,
+      "description": "Make host settings merge fail closed in src/launcher/config_dir.rs ~583-616 (Phase 28 WR-08, Phase 29 WR-02): a host hooks or permissions value that is not a JSON object must never replace the launcher's gate hooks or deny list; add tests for string, array, null and number host values; update dispositions to fixed in phases 28, 29",
+      "status": "complete",
+      "depends_on": [],
+      "planned_files": [
+        "src/launcher/config_dir.rs",
+        "tests/launcher_config_dir.rs",
+        "docs/DRIVER-SANDBOX.md",
+        ".planning/phases/28-sandboxed-driver-launcher/28-REVIEW-DISPOSITION.md",
+        ".planning/phases/29-master-prompt-run-templates/29-REVIEW-DISPOSITION.md"
+      ],
+      "directory": null,
+      "worktree": null,
+      "dispatched_worktree": null,
+      "dispatched_branch": null,
+      "dispatched_base": null,
+      "wave": 0,
+      "commit": "5dfbeb6",
+      "failure_reason": null
+    }
+  ]
+}
