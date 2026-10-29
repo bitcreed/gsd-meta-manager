@@ -664,6 +664,84 @@ fn run_dir_outside_drivers_is_refused() {
     assert!(!outside.join("launcher.lock").exists());
 }
 
+// ------------------------------------------- planted names in the run directory
+
+/// A FIFO (no reader, no writer) at `path`.
+fn mkfifo(path: &Path) {
+    rustix::fs::mknodat(
+        rustix::fs::CWD,
+        path,
+        rustix::fs::FileType::Fifo,
+        rustix::fs::Mode::from_raw_mode(0o600),
+        0,
+    )
+    .expect("mkfifo");
+}
+
+fn is_fifo(path: &Path) -> bool {
+    use std::os::unix::fs::FileTypeExt;
+    fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_fifo())
+}
+
+/// 27-REVIEW WR-03: a FIFO at `DIRECTION.lock` is a refused start, not a hang
+/// under the held run lock.
+#[test]
+fn a_fifo_direction_lock_fails_the_start_instead_of_hanging() {
+    let fx = Fixture::new();
+    mkfifo(&fx.run_dir.join("DIRECTION.lock"));
+
+    let mut refused = spawn_captured(&fx, serve_command(&fx, Some(&fx.sock("f.sock"))), "fifo-dl");
+    let status = refused.wait_exit(Duration::from_secs(10));
+
+    assert_eq!(status.code(), Some(1), "stderr: {}", refused.stderr_text());
+    let err = refused.stderr_text();
+    assert!(err.contains("DIRECTION.lock"), "stderr: {err}");
+    assert!(err.contains("not a regular file"), "stderr: {err}");
+    assert!(
+        !fx.run_dir.join("state.json").exists(),
+        "a refused start registers no launch"
+    );
+    assert!(
+        is_fifo(&fx.run_dir.join("DIRECTION.lock")),
+        "left as it was"
+    );
+}
+
+/// 27-REVIEW WR-03: the create must not write through a dangling symlink.
+#[test]
+fn a_dangling_symlinked_direction_lock_fails_the_start_and_creates_nothing() {
+    let fx = Fixture::new();
+    let target = fx.scratch.path().join("never-created");
+    std::os::unix::fs::symlink(&target, fx.run_dir.join("DIRECTION.lock")).expect("symlink");
+
+    let mut refused = spawn_captured(&fx, serve_command(&fx, Some(&fx.sock("d.sock"))), "dang-dl");
+    let status = refused.wait_exit(Duration::from_secs(10));
+
+    assert_eq!(status.code(), Some(1), "stderr: {}", refused.stderr_text());
+    assert!(
+        refused.stderr_text().contains("not a regular file"),
+        "stderr: {}",
+        refused.stderr_text()
+    );
+    assert!(!target.exists(), "the link target is never created");
+}
+
+/// 27-REVIEW WR-03: a FIFO at `state.json` is a refused start, not a hang.
+#[test]
+fn a_fifo_state_json_fails_the_start_instead_of_hanging() {
+    let fx = Fixture::new();
+    mkfifo(&fx.run_dir.join("state.json"));
+
+    let mut refused = spawn_captured(&fx, serve_command(&fx, Some(&fx.sock("s.sock"))), "fifo-st");
+    let status = refused.wait_exit(Duration::from_secs(10));
+
+    assert_eq!(status.code(), Some(1), "stderr: {}", refused.stderr_text());
+    let err = refused.stderr_text();
+    assert!(err.contains("state.json"), "stderr: {err}");
+    assert!(err.contains("not a regular file"), "stderr: {err}");
+    assert!(is_fifo(&fx.run_dir.join("state.json")), "left as it was");
+}
+
 // ---------------------------------------------------------------- stale sockets
 
 #[test]

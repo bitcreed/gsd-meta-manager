@@ -81,7 +81,9 @@ use super::protocol::{Response, MAX_REQUEST_BYTES};
 use super::scan::scan_verifications;
 use super::store::{DriverSpec, LaunchSpec, RunStore, StoreError, TerminalOutcome, TerminalStatus};
 use crate::driver::direction::{direction_lock_path, sweep_stale_temps};
-use crate::driver::lock::{acquire_at_with_retry, run_lock_path, ACQUIRE_RETRY_BUDGET};
+use crate::driver::lock::{
+    acquire_at_with_retry, ensure_lock_file, run_lock_path, ACQUIRE_RETRY_BUDGET,
+};
 use crate::error::LockError;
 
 /// The per-user directory (under the socket base: `XDG_RUNTIME_DIR`, or
@@ -931,11 +933,9 @@ pub fn serve(opts: ServeOptions) -> Result<(), DriverctlError> {
     })?;
 
     // Both lock files exist from here on (Phase 28 masks them inside bwrap).
-    fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(false)
-        .open(direction_lock_path(&run_dir))
+    // Through the guarded open (27-REVIEW WR-03): a FIFO or a symlink planted at the
+    // name is a refused start, not a hang or a write through the link.
+    ensure_lock_file(&direction_lock_path(&run_dir))
         .map_err(|e| io_error("create DIRECTION.lock", e))?;
     if let Err(e) = sweep_stale_temps(&run_dir, STALE_TEMP_AGE) {
         eprintln!("driverctl serve: could not sweep stale temps: {e}");

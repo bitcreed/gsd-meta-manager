@@ -633,7 +633,8 @@ impl RunStore {
     /// [`open`](Self::open) with an injected clock.
     ///
     /// Loads `state.json` when it exists; a file that does not parse is
-    /// [`StoreError::CorruptState`] and is never overwritten.
+    /// [`StoreError::CorruptState`] and is never overwritten. So is a symlink, a
+    /// FIFO or a file over 1 MiB (27-REVIEW WR-03).
     pub fn open_with_clock(
         run_dir: &Path,
         project: &Path,
@@ -641,7 +642,12 @@ impl RunStore {
         clock: Clock,
     ) -> Result<Self, StoreError> {
         let state_path = run_dir.join(STATE_FILE);
-        let state = match fs::read(&state_path) {
+        // 27-REVIEW WR-03: the guarded read. A symlink, a FIFO (refused without
+        // blocking) or a file over the cap is `InvalidData` and so `CorruptState`,
+        // left as it is. No link-count check: the read is read-only and
+        // `write_state` replaces the file by rename, which never writes through a
+        // link [inferred — cleanup 2026-10-28].
+        let state = match read_run_file_capped(&state_path) {
             Ok(bytes) => serde_json::from_slice::<RunState>(&bytes).map_err(|e| {
                 StoreError::CorruptState {
                     detail: format!("{}: {e}", state_path.display()),
@@ -657,6 +663,11 @@ impl RunStore {
                     &project.to_string_lossy(),
                     &log::utc_string(clock()),
                 )
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
+                return Err(StoreError::CorruptState {
+                    detail: format!("{}: {e}", state_path.display()),
+                })
             }
             Err(e) => return Err(io_err("read state.json")(e)),
         };
@@ -1841,6 +1852,95 @@ mod tests {
         )
         .unwrap();
         RunStore::open(&run_dir, dir, lock).unwrap()
+    }
+
+    /// A run dir under `dir` with the run lock taken, ready for a planted
+    /// `state.json` (27-REVIEW WR-03).
+    fn run_dir_and_lock(dir: &Path) -> (PathBuf, RunLock) {
+        let run_dir = dir.join(".planning/meta-manager/drivers/r28");
+        fs::create_dir_all(&run_dir).unwrap();
+        let lock = acquire_at_with_retry(
+            &run_lock_path(&run_dir),
+            "r28",
+            std::process::id(),
+            ACQUIRE_RETRY_BUDGET,
+        )
+        .unwrap();
+        (run_dir, lock)
+    }
+
+    fn valid_state_bytes() -> Vec<u8> {
+        serde_json::to_vec_pretty(&RunState::new("r28", "/p", "2026-10-28T00:00:00Z")).unwrap()
+    }
+
+    /// The `CorruptState` detail of an open, or a description of what happened.
+    fn open_outcome(run_dir: &Path, project: &Path, lock: RunLock) -> Result<(), String> {
+        match RunStore::open(run_dir, project, lock) {
+            Ok(_) => Ok(()),
+            Err(StoreError::CorruptState { detail }) => Err(detail),
+            Err(other) => Err(format!("not CorruptState: {other}")),
+        }
+    }
+
+    #[test]
+    fn a_symlinked_state_json_is_refused_and_its_target_is_untouched() {
+        let td = tempfile::TempDir::new().unwrap();
+        let other = tempfile::TempDir::new().unwrap();
+        let (run_dir, lock) = run_dir_and_lock(td.path());
+        let target = other.path().join("state.json");
+        let bytes = valid_state_bytes();
+        fs::write(&target, &bytes).unwrap();
+        std::os::unix::fs::symlink(&target, run_dir.join(STATE_FILE)).unwrap();
+
+        let detail = open_outcome(&run_dir, td.path(), lock)
+            .expect_err("a symlinked state.json is refused as CorruptState");
+
+        assert!(detail.contains("not a regular file"), "detail: {detail}");
+        assert_eq!(fs::read(&target).unwrap(), bytes, "the target is untouched");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_fifo_state_json_is_refused_without_blocking() {
+        use crate::state_reader::driver_frontmatter::fifo_test_support::{mkfifo, within_5s};
+        let td = tempfile::TempDir::new().unwrap();
+        let (run_dir, lock) = run_dir_and_lock(td.path());
+        mkfifo(&run_dir.join(STATE_FILE));
+        let project = td.path().to_owned();
+
+        let outcome = within_5s(move || open_outcome(&run_dir, &project, lock));
+
+        let detail = outcome.expect_err("a FIFO state.json is refused as CorruptState");
+        assert!(detail.contains("not a regular file"), "detail: {detail}");
+    }
+
+    #[test]
+    fn a_state_json_over_the_cap_is_refused_and_one_at_the_cap_opens() {
+        use crate::state_reader::driver_frontmatter::DIRECTION_READ_MAX_BYTES;
+        let td = tempfile::TempDir::new().unwrap();
+        let cap = usize::try_from(DIRECTION_READ_MAX_BYTES).unwrap();
+        let padded = |len: usize| {
+            let mut bytes = valid_state_bytes();
+            assert!(bytes.len() < len);
+            bytes.resize(len, b' ');
+            bytes
+        };
+
+        let (run_dir, lock) = run_dir_and_lock(td.path());
+        fs::write(run_dir.join(STATE_FILE), padded(cap + 1)).unwrap();
+        let detail = open_outcome(&run_dir, td.path(), lock)
+            .expect_err("a state.json over the cap is refused as CorruptState");
+        assert!(detail.contains("larger than"), "detail: {detail}");
+        assert_eq!(
+            fs::metadata(run_dir.join(STATE_FILE)).unwrap().len(),
+            DIRECTION_READ_MAX_BYTES + 1,
+            "the refused file is left as it was"
+        );
+
+        let td = tempfile::TempDir::new().unwrap();
+        let (run_dir, lock) = run_dir_and_lock(td.path());
+        fs::write(run_dir.join(STATE_FILE), padded(cap)).unwrap();
+        open_outcome(&run_dir, td.path(), lock).expect("a state.json of exactly the cap opens");
     }
 
     #[test]

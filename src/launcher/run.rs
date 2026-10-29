@@ -86,7 +86,8 @@ use super::LauncherError;
 use crate::driver::direction::{direction_lock_path, sweep_stale_temps};
 use crate::driver::kill::{signal_group, DRIVER_TEARDOWN_GRACE};
 use crate::driver::lock::{
-    acquire_at_with_retry, probe_at, read_holder_at, run_lock_path, LockProbe, ACQUIRE_RETRY_BUDGET,
+    acquire_at_with_retry, ensure_lock_file, probe_at, read_holder_at, run_lock_path, LockProbe,
+    ACQUIRE_RETRY_BUDGET,
 };
 use crate::driver_templates::lint::{control_line, lint_direction, Finding};
 use crate::driverctl::counters::outstanding_dispatch;
@@ -693,11 +694,8 @@ pub fn launch(opts: LaunchOptions) -> Result<LaunchSummary, LauncherError> {
     install_signal_handlers(&user_stop)?;
 
     // Both lock files exist from here on: bwrap masks them with /dev/null.
-    fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(false)
-        .open(direction_lock_path(&run_dir))
+    // Through the guarded open (27-REVIEW WR-03), as `serve` does.
+    ensure_lock_file(&direction_lock_path(&run_dir))
         .map_err(|e| io_error("create DIRECTION.lock", e))?;
     if let Err(e) = sweep_stale_temps(&run_dir, STALE_TEMP_AGE) {
         eprintln!("driver launch: could not sweep stale temps: {e}");
@@ -1216,7 +1214,10 @@ fn check_wall_clock_budget(run_dir: &Path, limits: &CapLimits) -> Result<(), Lau
     let Some(minutes) = limits.wall_clock_min else {
         return Ok(());
     };
-    let used = fs::read(run_dir.join(STATE_FILE))
+    // Through the guarded read (27-REVIEW WR-03): a FIFO or symlink at `state.json`
+    // counts as no recorded time here, and the store's open then refuses it
+    // [inferred — cleanup 2026-10-28].
+    let used = read_run_file_capped(&run_dir.join(STATE_FILE))
         .ok()
         .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
         .and_then(|state| state.get(EXTRA_ACTIVE_SECONDS).and_then(Value::as_f64))
@@ -1902,6 +1903,34 @@ mod tests {
     /// Whether the stream file's last result is a success.
     fn result_ok(path: &Path) -> bool {
         summarize_stream_file(path, Utc::now()).result_ok()
+    }
+
+    /// 27-REVIEW WR-03: the wall-clock pre-check reads `state.json` before the run
+    /// lock exists, so a FIFO there must not park the launch.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_wall_clock_check_does_not_block_on_a_fifo_state_json() {
+        use crate::state_reader::driver_frontmatter::fifo_test_support::{mkfifo, within_5s};
+        let dir = tempfile::TempDir::new().unwrap();
+        mkfifo(&dir.path().join(STATE_FILE));
+        let run_dir = dir.path().to_owned();
+
+        let outcome = within_5s(move || {
+            check_wall_clock_budget(
+                &run_dir,
+                &CapLimits {
+                    wall_clock_min: Some(60.0),
+                    ..CapLimits::default()
+                },
+            )
+            .map_err(|e| e.to_string())
+        });
+
+        assert_eq!(
+            outcome,
+            Ok(()),
+            "a refused state.json counts as no recorded time"
+        );
     }
 
     fn stream(lines: &[&str]) -> (tempfile::TempDir, PathBuf) {
