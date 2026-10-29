@@ -3,6 +3,22 @@ phase: 30
 review: 30-REVIEW.md
 titles: json
 findings:
+  - id: WR-13
+    severity: warning
+    disposition: open
+    title: "`managed_settings` still copies non-array nested host values verbatim, one level below the WR-08 fix"
+  - id: IN-15
+    severity: info
+    disposition: open
+    title: "`ensure_lock_file` documents a directory at the name as `InvalidData`, but it is `EISDIR`"
+  - id: IN-16
+    severity: info
+    disposition: open
+    title: "`probe_at` flattens every guard refusal to `Unknown(EINVAL)`, so `driver stop` and `push` print \"Invalid argument\""
+  - id: IN-17
+    severity: info
+    disposition: open
+    title: "`direction.rs` `read_run_file` duplicates `read_run_file_capped`, with a different error text"
   - id: WR-11
     severity: warning
     disposition: fixed
@@ -107,22 +123,26 @@ findings:
     severity: info
     disposition: fixed
     title: "The launch form and the launcher read the `control` word with different readers"
-open: 5
-total: 26
-recorded: 2026-10-28T23:38:31.979Z
+open: 9
+total: 30
+recorded: 2026-10-29T03:20:02.797Z
 ---
 
 # Phase 30: Code Review Disposition
 
 | Finding | Severity | Disposition | Source |
 |---------|----------|-------------|--------|
-| WR-11 | warning | fixed | fixed by quick 261028-t3d 4977318 (probe_at and read_holder_at open through acquire_at's guard (open_lock_file): a symlink, hard link or FIFO is Unknown(EINVAL) or None without blocking, and the holder read is capped at 4096 bytes; read_driver_run_text derives LivenessUnknown for a FIFO launcher.lock; the separate marker-scan in-flight flag is in todo 2026-10-28-launcher-marker-scan-in-flight-flag.md [inferred — cleanup 2026-10-28]) |
-| WR-12 | warning | fixed | fixed by quick 261028-t3e 7f4fc49 (run_loop's exchange back and give_back_newest share exchange_or_restore: an ENOENT restores the raced save by no-replace rename, EEXIST exchanges again, and the splice retries on the restored save; the D-17 gate stays fail-closed for an absent DIRECTION.md, pinned by a guard test b42e57c [retry-after-restore inferred — cleanup 2026-10-28]) |
-| IN-10 | info | open | - |
-| IN-11 | info | open | - |
-| IN-12 | info | open | - |
-| IN-13 | info | open | - |
-| IN-14 | info | open | - |
+| WR-13 | warning | open | - |
+| IN-15 | info | open | - |
+| IN-16 | info | open | - |
+| IN-17 | info | open | - |
+| WR-11 | warning | fixed | fixed by quick 261028-t3d 4977318 (probe_at and read_holder_at open through acquire_at's guard (open_lock_file): a symlink, hard link or FIFO is Unknown(EINVAL) or None without blocking, and the holder read is capped at 4096 bytes; read_driver_run_text derives LivenessUnknown for a FIFO launcher.lock; the separate marker-scan in-flight flag is in todo 2026-10-28-launcher-marker-scan-in-flight-flag.md [inferred — cleanup 2026-10-28]) (not in the current review) |
+| WR-12 | warning | fixed | fixed by quick 261028-t3e 7f4fc49 (run_loop's exchange back and give_back_newest share exchange_or_restore: an ENOENT restores the raced save by no-replace rename, EEXIST exchanges again, and the splice retries on the restored save; the D-17 gate stays fail-closed for an absent DIRECTION.md, pinned by a guard test b42e57c [retry-after-restore inferred — cleanup 2026-10-28]) (not in the current review) |
+| IN-10 | info | open | - (not in the current review) |
+| IN-11 | info | open | - (not in the current review) |
+| IN-12 | info | open | - (not in the current review) |
+| IN-13 | info | open | - (not in the current review) |
+| IN-14 | info | open | - (not in the current review) |
 | WR-08 | warning | fixed | fixed by quick 261028-n0z 670e099 (acquire_at opens with O_NOFOLLOW plus O_NONBLOCK and refuses a non-regular or multiply-linked file before flock; launcher.lock too) (not in the current review) |
 | WR-09 | warning | fixed | fixed by quick 261028-n0z 0f85617 (read_run_file capped at 1 MiB via take; run_loop refuses a write past the cap) (not in the current review) |
 | WR-10 | warning | fixed | fixed by quick 261028-n0z 44eef32 (a give-back ENOENT restores by no-replace rename; EEXIST runs another exchange round) (not in the current review) |
