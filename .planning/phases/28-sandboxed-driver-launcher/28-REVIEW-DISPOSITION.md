@@ -11,14 +11,14 @@ findings:
     severity: warning
     disposition: deferred
     title: "The D-17 recovery block cannot be satisfied when DIRECTION has no parsed items"
-  - id: WR-08
-    severity: warning
-    disposition: fixed
-    title: "A malformed host managed `hooks` or `permissions` value replaces the launcher's gate (NEW)"
   - id: WR-09
     severity: warning
     disposition: open
     title: "A launcher binary under `/tmp` or `/run` is unreachable inside the sandbox (NEW)"
+  - id: WR-10
+    severity: warning
+    disposition: open
+    title: "A wrong-shape host managed policy value is dropped with no diagnostic, though a non-object file is refused (NEW)"
   - id: IN-05
     severity: info
     disposition: open
@@ -27,6 +27,14 @@ findings:
     severity: info
     disposition: open
     title: "A failed `record_launch_posture` leaves the launch half recorded (NEW)"
+  - id: IN-07
+    severity: info
+    disposition: open
+    title: "Host managed `permissions` scalar settings are first-wins while every other host key is last-wins (NEW)"
+  - id: WR-08
+    severity: warning
+    disposition: fixed
+    title: "A malformed host managed `hooks` or `permissions` value replaces the launcher's gate (NEW)"
   - id: WR-01
     severity: warning
     disposition: fixed
@@ -67,9 +75,9 @@ findings:
     severity: warning
     disposition: fixed
     title: "`install_signal_handlers` is one-shot; a second SIGTERM/SIGINT is swallowed for the rest of the process"
-open: 3
-total: 16
-recorded: 2026-10-29T00:10:03.755Z
+open: 5
+total: 18
+recorded: 2026-10-29T05:27:48.118Z
 ---
 
 # Phase 28: Code Review Disposition
@@ -78,10 +86,12 @@ recorded: 2026-10-29T00:10:03.755Z
 |---------|----------|-------------|--------|
 | WR-02 | warning | deferred | still present; the drivers tmpfs is emitted only when run_dir.parent() equals project/DRIVER_RUNS_REL, and validate_run_dir returns the canonical path, so a symlinked .planning skips it silently; the review's ends_with(DRIVER_RUNS_REL) fix does not match its own .planning -> docs/planning example (planning vs .planning components) and a golden test deliberately pins the out-of-project case; a design choice is needed (carry the canonical drivers dir in SandboxPaths, or refuse the launch); todo 2026-10-28-sandbox-drivers-tmpfs-skipped-for-symlinked-planning.md [inferred — cleanup 2026-10-28] |
 | WR-04 | warning | deferred | still present (blocking_recovery keeps the direction.items.is_empty() clause); dropping it as the review suggests would let a crashed run dispatch while DIRECTION.md is absent or its I-NN headers do not parse, which loosens a fail-closed gate; the alternative keeps the block and rewords both refusals, which changes driver-facing protocol text, the reconcile tests and possibly MASTER-PROMPT; todo 2026-10-28-d17-recovery-block-with-no-direction-items.md [inferred — cleanup 2026-10-28] |
-| WR-08 | warning | fixed | quick 261028-t3f 6a55713: managed_settings ignores a host managed hooks or permissions value that is not a JSON object (string, array, null, number, bool), so the launcher's gate hooks and the DENY_TOOLS deny list survive whatever shape the host value has; RED-first bwrap seed test from host files on disk plus a shape table for both keys in both postures; doc claims corrected in config_dir.rs and docs/DRIVER-SANDBOX.md [inferred — cleanup 2026-10-28] |
 | WR-09 | warning | open | - |
+| WR-10 | warning | open | - |
 | IN-05 | info | open | - |
 | IN-06 | info | open | - |
+| IN-07 | info | open | - |
+| WR-08 | warning | fixed | quick 261028-t3f 6a55713: managed_settings ignores a host managed hooks or permissions value that is not a JSON object (string, array, null, number, bool), so the launcher's gate hooks and the DENY_TOOLS deny list survive whatever shape the host value has; RED-first bwrap seed test from host files on disk plus a shape table for both keys in both postures; doc claims corrected in config_dir.rs and docs/DRIVER-SANDBOX.md [inferred — cleanup 2026-10-28] (not in the current review) |
 | WR-01 | warning | fixed | 28-REVIEW-FIX.md (not in the current review) |
 | WR-03 | warning | fixed | 28-REVIEW-FIX.md (not in the current review) |
 | WR-05 | warning | fixed | 28-REVIEW-FIX.md (not in the current review) |
