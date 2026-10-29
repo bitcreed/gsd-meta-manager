@@ -121,3 +121,12 @@ Method: code-only; no cargo run.
 ## Method Notes
 - Code-only audit (no TUI run, no `cargo test`); diff inspected for ee65618..HEAD on both files (12 commits).
 - Line numbers marked `~` were read from snippets and may be off by a few lines.
+
+## Delta vs prior audit (90516c0) — no re-audit
+
+`[inferred — cleanup 2026-10-28]` Existing review kept (workflow's unattended path reuses it; the auditor was not re-spawned) because quick 261029-1dp has no user-visible TUI surface:
+- `git diff --stat 90516c0..HEAD -- src/ui src/app.rs`: only `src/ui/screens/detail.rs` (doc comment + test assertion message in `mod tests`, ~21257-21277) and `src/ui/screens/mod.rs:1389-1393` (doc comment on `AppContext::experimental`). No rendered string, layout, style or key binding changed.
+- f4cfa01 (SAFE-04): line-redacting stdout/stderr pump in `src/launcher/process.rs` plus wiring in `src/launcher/run.rs`. It changes what is written to `launch-N.jsonl`, which no `src/ui` code renders (the only `jsonl` reference in `driver_run.rs:5941` is a test fixture).
+- ce86206: removes the dead `AgentRuntime` key (`config.rs`, `registry.rs`, `executor/runtime.rs`); `grep -rn AgentRuntime src/ui` is empty, so no screen read it.
+
+Scores unchanged: 3/3/3/3/3/3 = 18/24, 0 blockers. Method: code-only, git diff + grep.
