@@ -7,6 +7,17 @@
 
 ---
 
+## Refresh at a8f4672 (2026-10-28, phase-30 re-verification verify:post)
+
+Short refresh, not a full re-audit. `[inferred — cleanup 2026-10-28]`: a full gsd-ui-auditor pass was skipped because no rendering code changed.
+
+- Changes since the prior review commit (d5b8699): `src/driver/{direction,lock}.rs`, `src/driverctl/{serve,store}.rs`, `src/launcher/{config_dir,run,stop}.rs`, `src/state_reader/driver_frontmatter.rs`, and tests. Nothing under `src/ui/` changed.
+- User-visible strings in that diff are error-path details only. The displaced-file restore messages kept their text through a refactor (`"{failed}; a displaced file was left at {}"`). New details: `"{GIVE_BACK_ROUNDS} restore attempts did not settle"`, plus the lock-file refusals (`"… is a symbolic link, not a regular file"`, `"… has N hard links, not exactly one"`). These are specific and follow the existing refusal-copy style, so Pillar 1 does not change.
+- `rtk proxy cargo test --no-fail-fast --lib ui::screens`: 853 passed, 0 failed, the same count as the prior review.
+- Scores, findings and line references below are unchanged: **22/24**, no BLOCKER, no new HIGH.
+
+---
+
 ## Prior findings status (re-checked at HEAD)
 
 | ID | Prior finding | Status at HEAD | Evidence |
