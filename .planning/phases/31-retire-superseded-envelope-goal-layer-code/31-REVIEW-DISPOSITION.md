@@ -13,7 +13,7 @@ findings:
     title: "Socket publish via `hard_link` has no fallback on filesystems without hard-link support"
   - id: WR-03
     severity: warning
-    disposition: open
+    disposition: fixed
     title: "The first exchange-back in `run_loop` still fails on an absent `DIRECTION.md` (WR-10 fix is incomplete)"
   - id: IN-01
     severity: info
@@ -95,7 +95,7 @@ findings:
     severity: info
     disposition: fixed
     title: "Retargeted app tests keep \"driver maps\" names but now assert a non-driver map"
-open: 6
+open: 5
 total: 23
 recorded: 2026-10-29T01:13:37.226Z
 ---
@@ -106,7 +106,7 @@ recorded: 2026-10-29T01:13:37.226Z
 |---------|----------|-------------|--------|
 | WR-01 | warning | fixed | fixed by quick 261028-t3d 4977318 (probe_at and read_holder_at open through acquire_at's guard (open_lock_file): a symlink, hard link or FIFO is Unknown(EINVAL) or None without blocking, and the holder read is capped at 4096 bytes; the acquire_at doc claim now holds for every lock-file open in the module) |
 | WR-02 | warning | open | - |
-| WR-03 | warning | open | - |
+| WR-03 | warning | fixed | fixed by quick 261028-t3e 7f4fc49 (same defect as 30 WR-12; run_loop's exchange back and give_back_newest share exchange_or_restore: an ENOENT restores the raced save by no-replace rename, EEXIST exchanges again, and the splice retries on the restored save; guard test b42e57c pins the fail-closed D-17 gate [retry-after-restore inferred — cleanup 2026-10-28]) |
 | IN-01 | info | open | - |
 | IN-02 | info | open | - |
 | IN-03 | info | open | - |

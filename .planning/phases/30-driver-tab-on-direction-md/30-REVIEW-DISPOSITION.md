@@ -9,7 +9,7 @@ findings:
     title: "`probe_at` and `read_holder_at` open the run lock without `O_NOFOLLOW` or `O_NONBLOCK`; a FIFO at `launcher.lock` parks a blocking worker forever, and the fleet-wide scan leaks one per tick"
   - id: WR-12
     severity: warning
-    disposition: open
+    disposition: fixed
     title: "The first exchange-back in `run_loop` still strands the human's save at a hidden temp on `ENOENT`, the shape WR-10 fixed one step later"
   - id: IN-10
     severity: info
@@ -107,7 +107,7 @@ findings:
     severity: info
     disposition: fixed
     title: "The launch form and the launcher read the `control` word with different readers"
-open: 6
+open: 5
 total: 26
 recorded: 2026-10-28T23:38:31.979Z
 ---
@@ -117,7 +117,7 @@ recorded: 2026-10-28T23:38:31.979Z
 | Finding | Severity | Disposition | Source |
 |---------|----------|-------------|--------|
 | WR-11 | warning | fixed | fixed by quick 261028-t3d 4977318 (probe_at and read_holder_at open through acquire_at's guard (open_lock_file): a symlink, hard link or FIFO is Unknown(EINVAL) or None without blocking, and the holder read is capped at 4096 bytes; read_driver_run_text derives LivenessUnknown for a FIFO launcher.lock; the separate marker-scan in-flight flag is in todo 2026-10-28-launcher-marker-scan-in-flight-flag.md [inferred — cleanup 2026-10-28]) |
-| WR-12 | warning | open | - |
+| WR-12 | warning | fixed | fixed by quick 261028-t3e 7f4fc49 (run_loop's exchange back and give_back_newest share exchange_or_restore: an ENOENT restores the raced save by no-replace rename, EEXIST exchanges again, and the splice retries on the restored save; the D-17 gate stays fail-closed for an absent DIRECTION.md, pinned by a guard test b42e57c [retry-after-restore inferred — cleanup 2026-10-28]) |
 | IN-10 | info | open | - |
 | IN-11 | info | open | - |
 | IN-12 | info | open | - |
