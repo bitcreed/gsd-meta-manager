@@ -11,14 +11,6 @@ findings:
     severity: warning
     disposition: open
     title: "A failed `FileWatcher::new` leaves the terminal in raw mode on the alternate screen"
-  - id: WR-03
-    severity: warning
-    disposition: fixed
-    title: "Run-start opens of untrusted run-dir names are unhardened (`DIRECTION.lock`, `state.json`)"
-  - id: WR-04
-    severity: warning
-    disposition: fixed
-    title: "`probe_at` and `read_holder_at` can block, follow links and read without a bound"
   - id: WR-05
     severity: warning
     disposition: open
@@ -27,6 +19,14 @@ findings:
     severity: warning
     disposition: open
     title: "Log-directory fallback to `/tmp` is a predictable path in a shared directory"
+  - id: WR-10
+    severity: warning
+    disposition: open
+    title: "`LOG.md` is appended with an unhardened open (follows symlinks, blocks on a FIFO) under the store mutex"
+  - id: WR-11
+    severity: warning
+    disposition: open
+    title: "The new 1 MiB read cap on `state.json` has no matching write bound, so a large run can write a `state.json` it cannot reopen"
   - id: IN-01
     severity: info
     disposition: open
@@ -67,6 +67,14 @@ findings:
     severity: info
     disposition: open
     title: "Committed fixtures carry a real username, hostname and session id"
+  - id: WR-03
+    severity: warning
+    disposition: fixed
+    title: "Run-start opens of untrusted run-dir names are unhardened (`DIRECTION.lock`, `state.json`)"
+  - id: WR-04
+    severity: warning
+    disposition: fixed
+    title: "`probe_at` and `read_holder_at` can block, follow links and read without a bound"
   - id: CR-01
     severity: critical
     disposition: fixed
@@ -83,9 +91,9 @@ findings:
     severity: warning
     disposition: fixed
     title: "Wall-clock assertions in default-run tests are flake-prone"
-open: 14
-total: 20
-recorded: 2026-10-29T00:24:12.282Z
+open: 16
+total: 22
+recorded: 2026-10-29T05:39:29.172Z
 ---
 
 # Phase 27: Code Review Disposition
@@ -94,10 +102,10 @@ recorded: 2026-10-29T00:24:12.282Z
 |---------|----------|-------------|--------|
 | WR-01 | warning | open | - |
 | WR-02 | warning | open | - |
-| WR-03 | warning | fixed | fixed by quick 261028-t3d 65233b8 (serve and driver launch create DIRECTION.lock through lock::ensure_lock_file (O_NOFOLLOW, O_NONBLOCK, single-link regular file on the handle); RunStore::open reads state.json through read_run_file_capped, so a symlink, FIFO or file over 1 MiB is CorruptState; check_wall_clock_budget reads it the same way [inferred — cleanup 2026-10-28]) |
-| WR-04 | warning | fixed | fixed by quick 261028-t3d 4977318 (probe_at and read_holder_at open through acquire_at's guard (open_lock_file): a symlink, hard link or FIFO is Unknown(EINVAL) or None without blocking, and the holder read is capped at 4096 bytes) |
 | WR-05 | warning | open | - |
 | WR-06 | warning | open | - |
+| WR-10 | warning | open | - |
+| WR-11 | warning | open | - |
 | IN-01 | info | open | - |
 | IN-02 | info | open | - |
 | IN-03 | info | open | - |
@@ -108,6 +116,8 @@ recorded: 2026-10-29T00:24:12.282Z
 | IN-08 | info | open | - |
 | IN-09 | info | open | - |
 | IN-10 | info | open | - |
+| WR-03 | warning | fixed | fixed by quick 261028-t3d 65233b8 (serve and driver launch create DIRECTION.lock through lock::ensure_lock_file (O_NOFOLLOW, O_NONBLOCK, single-link regular file on the handle); RunStore::open reads state.json through read_run_file_capped, so a symlink, FIFO or file over 1 MiB is CorruptState; check_wall_clock_budget reads it the same way [inferred — cleanup 2026-10-28]) (not in the current review) |
+| WR-04 | warning | fixed | fixed by quick 261028-t3d 4977318 (probe_at and read_holder_at open through acquire_at's guard (open_lock_file): a symlink, hard link or FIFO is Unknown(EINVAL) or None without blocking, and the holder read is capped at 4096 bytes) (not in the current review) |
 | CR-01 | critical | fixed | 27-REVIEW-FIX.md; guard still at HEAD: src/driverctl/scan.rs:24-29 MAX_VERIFICATION_BYTES + O_NONBLOCK/O_NOFOLLOW [inferred — cleanup 2026-10-28] (not in the current review) |
 | WR-07 | warning | fixed | 27-REVIEW-FIX.md; per-phase seen key still at HEAD: src/driverctl/counters.rs:81-84 [inferred — cleanup 2026-10-28] (not in the current review) |
 | WR-08 | warning | fixed | 27-REVIEW-FIX.md; total client deadline still at HEAD: src/driverctl_cli.rs:56,245 [inferred — cleanup 2026-10-28] (not in the current review) |
