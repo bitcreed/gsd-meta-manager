@@ -62,6 +62,7 @@ See the state of every GSD project at a glance and act on any of them without le
 - ✓ Master prompt & run templates — embedded, versioned `driver-prompt/1.0.0` recorded on every run (`custom:<sha8>` for overrides); `driver new` mints `<yyyymmdd>-<slug>` with self-ignoring run dir, DIRECTION.md and LOG.md templates; `driver check` lints the reviewable plan; one 8-rule stop precedence stated identically in prompt and template; crash-and-relaunch reconciliation and gate-enforced `control: pause|stop`; `next <project> --json` advisory router hint (PRMT-01..05, DRIVE-03, DRIVE-01 prompt half by operator sign-off) — Phase 29
 - ✓ Sandboxed driver launcher — `driver launch` runs the headless master in bwrap under `systemd-run --user --scope` (scope kill on stop, flock against a second launcher, `crash-detected` on relaunch); hard caps enforced from outside (dispatch, wall clock + RuntimeMaxSec, gap deny L+1 / kill L+2, rate-limit park); RO host `~/.claude`, masked credentials and scrubbed env, per-run `CLAUDE_CONFIG_DIR`; stored `claude setup-token` auth with `driver auth setup|status`; `driver push` outside the sandbox into `gsd-auto/<alias>/<run-id>` with secret scan, protected-branch refusal and PR cap; explicit `--unsandboxed` degraded mode (refused by default, posture recorded, `!`/UNSANDBOXED in the Driver tab), proven on a real macOS host (LNCH-01..08, DRIVE-01 launcher half). Network egress and agent-channel isolation gaps from the 2026-10-24 audit move to Phase 28.1 — Phase 28
 - ✓ Driver tab on DIRECTION.md — the TUI observes runs only through the run's files (status, caps, heartbeat and crash from the tool-written frontmatter, lock-probe status rule) and steers by editing DIRECTION.md (`control`, answer, unhold, `$EDITOR` edit under `DIRECTION.lock`, polite stop; nothing is killed); launch form and relaunch from the tab; FULL tier legible at 100x30 (DTAB-01..04). Re-verified 2026-10-24 after quick 261023-v1s hardened the give-back exchange — Phase 30
+- ✓ Sandbox egress & agent-channel isolation — `--unshare-net` plus an allowlisting egress proxy, a `$HOME` allowlist, the planted-file guard, agent-tool denies and the nested-agent cap check close the Phase 28 audit channels (LNCH-13, LNCH-14); the D-11 setup-token probe shows the token refused (401/403) on all four account endpoints — Phase 28.1
 
 ### Active
 
@@ -92,9 +93,6 @@ Phases 26-31 replace them.*
   driver-plantable files with no type/size guard, under the store mutex) and WR-01..09 open
   (27-REVIEW-DISPOSITION.md). Close or explicitly defer them before Phase 28's launcher relies on
   `driverctl serve` `[inferred — audit]`.
-- **Sandbox egress & agent-channel isolation (emerged, Phase 28 audit 2026-10-24).** Close the open
-  network, the `$HOME` denylist, abstract sockets and planted files. Phase 28.1
-  (`28.1-AUDIT-FINDINGS.md`).
 - **Master prompt 1.1 (emerged, Phase 29).** Route a "reconcile first" refusal to reconcile-then-
   continue instead of a stop-rule-2 park, and fix IN-01 (`$RUN_DIR`/`$PROJECT_ROOT` used as env vars).
   Backlog 999.7.
@@ -225,4 +223,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-10-24 after Phase 30 (Driver tab on DIRECTION.md, DTAB-01..04; re-verified 6/6 after quick 261023-v1s, UAT 2/2, SECURITY threats_open 0; review WR-08/09/10 carried as an Active item)*
+*Last updated: 2026-10-28 after Phase 28.1 (Sandbox egress & agent-channel isolation, LNCH-13/14; verification 7/7 passed, UAT 1/1 — D-11 setup-token reach probe, SECURITY threats_open 0)*

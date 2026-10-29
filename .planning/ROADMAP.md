@@ -101,7 +101,7 @@ No formal phases — see `.planning/MILESTONES.md` and `STATE.md`
 - [x] **Phase 26.1: Driver Validation Spike 003 Re-run** (INSERTED) - Fix gap-round counting, headless-driver liveness and T-26-11, then re-run Opus to prove VALID-01/02 (completed 2026-10-18)
 - [x] **Phase 27: driverctl & Driver Frontmatter** - Rust single writer of run state; exchange-splice frontmatter on DIRECTION.md (completed 2026-10-19)
 - [x] **Phase 28: Sandboxed Driver Launcher** - bwrap + cgroup scope, outside lock and hard caps, per-run config and auth, push outside the sandbox, macOS degraded mode (completed 2026-10-24)
-- [ ] **Phase 28.1: Sandbox Egress & Agent-Channel Isolation** (INSERTED) - `--unshare-net` + allowlisting egress proxy, `$HOME` allowlist, planted-file guard, agent-tool denies, nested-agent cap check, degraded-mode gap reporting
+- [x] **Phase 28.1: Sandbox Egress & Agent-Channel Isolation** (INSERTED) - `--unshare-net` + allowlisting egress proxy, `$HOME` allowlist, planted-file guard, agent-tool denies, nested-agent cap check, degraded-mode gap reporting (completed 2026-10-28)
 - [x] **Phase 29: Master Prompt & Run Templates** - Shipped, versioned master prompt; DIRECTION/LOG templates; explicit stop-rule precedence; reconciliation (completed 2026-10-20)
 - [x] **Phase 30: Driver Tab on DIRECTION.md** - TUI reads the frontmatter (status, caps, heartbeat, crash) and steers by editing `control` (completed 2026-10-24)
 - [x] **Phase 31: Retire Superseded Envelope & Goal-Layer Code** - Remove or rewire the Phase 19/21/22 code; close their threat ids as superseded (completed 2026-10-28)
@@ -1200,7 +1200,7 @@ there must end up closed, tested, or documented as accepted residual risk.
   7. Degraded and unsandboxed modes (macOS, `--unsandboxed`) record and show in the TUI which of
      the SC1-SC4 protections are absent, alongside the existing `sandbox` posture keys.
 
-**Plans**: 14/14 plans executed (4 gap-closure plans pending)
+**Plans**: 14/14 plans complete (includes 4 gap-closure plans, 11-14) [inferred — cleanup 2026-10-28]
 
 Plans:
 **Wave 1**
