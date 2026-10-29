@@ -19,6 +19,22 @@ findings:
     severity: warning
     disposition: open
     title: "A wrong-shape host managed policy value is dropped with no diagnostic, though a non-object file is refused (NEW)"
+  - id: WR-11
+    severity: warning
+    disposition: open
+    title: "The master's stdout and stderr share one pipe, so a large write can interleave mid-line and split a token across the redactor's lines"
+  - id: WR-12
+    severity: warning
+    disposition: open
+    title: "A line that does not parse as JSON is redacted as raw text, where `\\b`-anchored rules miss tokens that follow a JSON escape"
+  - id: WR-13
+    severity: warning
+    disposition: open
+    title: "A multi-line PEM private key printed as plain text is not redacted, because the text path sees one line at a time"
+  - id: WR-14
+    severity: warning
+    disposition: open
+    title: "A failure to start the capture thread leaves the driver child running with no one watching it"
   - id: IN-05
     severity: info
     disposition: open
@@ -31,6 +47,18 @@ findings:
     severity: info
     disposition: open
     title: "Host managed `permissions` scalar settings are first-wins while every other host key is last-wins (NEW)"
+  - id: IN-08
+    severity: info
+    disposition: open
+    title: "The cap comment claims the pump never writes a line the reader would skip, but redaction can make a line longer than its input"
+  - id: IN-09
+    severity: info
+    disposition: open
+    title: "The pump hides write and read failures, and the launcher cannot tell an empty capture from a lost one"
+  - id: IN-10
+    severity: info
+    disposition: open
+    title: "Leftovers from the `AgentRuntime` removal: a stale `runtime()` reference, a stale assertion message, a dead constant, and an untested per-project `runtime` round trip"
   - id: WR-08
     severity: warning
     disposition: fixed
@@ -75,9 +103,9 @@ findings:
     severity: warning
     disposition: fixed
     title: "`install_signal_handlers` is one-shot; a second SIGTERM/SIGINT is swallowed for the rest of the process"
-open: 5
-total: 18
-recorded: 2026-10-29T05:27:48.118Z
+open: 12
+total: 25
+recorded: 2026-10-29T23:50:12.685Z
 ---
 
 # Phase 28: Code Review Disposition
@@ -88,9 +116,16 @@ recorded: 2026-10-29T05:27:48.118Z
 | WR-04 | warning | deferred | still present (blocking_recovery keeps the direction.items.is_empty() clause); dropping it as the review suggests would let a crashed run dispatch while DIRECTION.md is absent or its I-NN headers do not parse, which loosens a fail-closed gate; the alternative keeps the block and rewords both refusals, which changes driver-facing protocol text, the reconcile tests and possibly MASTER-PROMPT; todo 2026-10-28-d17-recovery-block-with-no-direction-items.md [inferred — cleanup 2026-10-28] |
 | WR-09 | warning | open | - |
 | WR-10 | warning | open | - |
+| WR-11 | warning | open | - |
+| WR-12 | warning | open | - |
+| WR-13 | warning | open | - |
+| WR-14 | warning | open | - |
 | IN-05 | info | open | - |
 | IN-06 | info | open | - |
 | IN-07 | info | open | - |
+| IN-08 | info | open | - |
+| IN-09 | info | open | - |
+| IN-10 | info | open | - |
 | WR-08 | warning | fixed | quick 261028-t3f 6a55713: managed_settings ignores a host managed hooks or permissions value that is not a JSON object (string, array, null, number, bool), so the launcher's gate hooks and the DENY_TOOLS deny list survive whatever shape the host value has; RED-first bwrap seed test from host files on disk plus a shape table for both keys in both postures; doc claims corrected in config_dir.rs and docs/DRIVER-SANDBOX.md [inferred — cleanup 2026-10-28] (not in the current review) |
 | WR-01 | warning | fixed | 28-REVIEW-FIX.md (not in the current review) |
 | WR-03 | warning | fixed | 28-REVIEW-FIX.md (not in the current review) |
