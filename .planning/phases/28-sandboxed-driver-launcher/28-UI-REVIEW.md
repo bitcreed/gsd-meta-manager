@@ -1,13 +1,13 @@
 ---
 phase: 28
 phase_name: Sandboxed Driver Launcher
-audited: 2026-10-28
+audited: 2026-10-29
 baseline: abstract 6-pillar standards (TUI-adapted; no UI-SPEC.md for Phase 28)
 screenshots: not captured (ratatui TUI, no dev server; code audit only)
 interaction_capture: false
 overall_score: 18/24
 blockers: 0
-re_audit_of: ee65618
+re_audit_of: 03107c1
 ---
 
 # Phase 28 — UI Review (re-audit at HEAD)
@@ -101,6 +101,22 @@ Minor: Stop vs Kill naming; hung-preflight failure state; "Sandbox:" casing.
 - Phase 31-03 removed the legacy scan paths; no leftover legacy Driver-tab copy found in the two audited files.
 
 **Still open from prior:** unlegended `!`, `finish_launch` silence, single-paragraph confirm, duplicate Yellow helpers, `missing:` de-emphasis, `[U]` absent from key row, "Sandbox:" casing, Stop/Kill drift, hung-preflight state.
+
+## Delta vs prior audit (03107c1)
+
+Verified `git diff --stat 03107c1..HEAD -- src/ui src/app.rs` is empty: no rendered UI changed. Delta is 8 non-UI files under `src/` (launcher, driverctl, driver, state_reader) plus tests. All scores unchanged: 3/3/3/3/3/3 = 18/24, 0 blockers.
+
+Anchors re-checked at HEAD, all still valid: `app.rs:1311` (launch success line, still no UNSANDBOXED), `driver_launch.rs:531` (`KEY_ROW`), `:1148` (`prompt`), `driver_run.rs:254` / `:2151` (`posture_style` / `flag_style`, still duplicated).
+
+User-facing text candidates:
+- `driver_frontmatter.rs:834/851/861` "not a regular file (a symbolic link)": returned as an io error from the guarded read of run files; the TUI Driver tab consumes it as a missing/unreadable run (no new rendered string in `src/ui`). CLI `driver stop`/`launch` surfaces it through `stop.rs` messages; wording is specific and actionable. No score change.
+- `store.rs` "could not open {path}: {err}": CorruptState detail, reaches only `driverctl serve` / CLI output. Names the path and OS error; adequate.
+- `direction.rs:806/849` "{N} restore attempts did not settle": CLI/log text; states a count but no next step (WARNING, minor, Copywriting; does not move the 3/4).
+- `config_dir.rs`: wrong-shape host hooks/permissions are dropped silently; no warn/eprintln emitted. WARNING (minor, Experience Design): a user whose host hooks are discarded gets no notice that sandbox config omitted them. `[inferred — cleanup 2026-10-28]` This is low severity, since dropping is the safe direction.
+
+No security-relevant UI finding: the symlink/FIFO refusal is hardening and its messages leak only the path the user supplied.
+
+Method: code-only; no cargo run.
 
 ## Method Notes
 - Code-only audit (no TUI run, no `cargo test`); diff inspected for ee65618..HEAD on both files (12 commits).
