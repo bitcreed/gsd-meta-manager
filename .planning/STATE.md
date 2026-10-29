@@ -4,18 +4,18 @@ milestone: v2.0
 milestone_name: Autonomous Orchestration
 status: completed
 stopped_at: Phase 28.1 complete — all phases complete
-last_updated: "2026-10-29T03:42:31.241Z"
-state_head: 40870ca01c73cdcce8bf5a353bf6cc93ab118381
+last_updated: "2026-10-29T23:41:48.755Z"
+state_head: 0d18fe9640b962d71cad4499dbc5b844dc6f41c0
 progress:
   total_phases: 16
   completed_phases: 16
   total_plans: 125
   completed_plans: 125
   percent: 100
-last_activity: 2026-10-28
+last_activity: 2026-10-29
 current_phase: "28.1"
 current_phase_name: Sandbox Egress & Agent-Channel Isolation
-last_activity_desc: "Completed quick task 261028-v2z: Fix WR-13 (managed_settings nested wrong-shape host values fail closed)"
+last_activity_desc: "Completed quick task 261029-1dp: close v2.0 audit blockers A-F"
 ---
 
 # Project State
@@ -506,13 +506,14 @@ Older entries (Phase 19 T-19-* rows, Phase 21 round-13 gaps, Phase 26 risks, 31-
 | 261028-t3e | Keep the human's save when DIRECTION.md is missing at the first exchange-back in src/driver/direction.rs run_loop ~901-914 (Phase 30 WR-12, Phase 31 WR-03, completes WR-10): the save must not be left at a hidden temp file the next sweep deletes nor error, while a crashed run must still never dispatch on a missing DIRECTION.md (see the Phase 28 WR-04 deferral reasoning); add a test; update dispositions to fixed in phases 30, 31 | 2026-10-28 | b407eb7 | .planning/quick/261028-t3e-keep-the-human-s-save-when-direction-md-is-missing-at-the-fi |
 | 261028-t3f | Make host settings merge fail closed in src/launcher/config_dir.rs ~583-616 (Phase 28 WR-08, Phase 29 WR-02): a host hooks or permissions value that is not a JSON object must never replace the launcher's gate hooks or deny list; add tests for string, array, null and number host values; update dispositions to fixed in phases 28, 29 | 2026-10-28 | 5dfbeb6 | .planning/quick/261028-t3f-make-host-settings-merge-fail-closed-in-src-launcher-config |
 | 261028-v2z | Fix WR-13: managed_settings nested wrong-shape host values fail closed | 2026-10-28 | 40870ca | [261028-v2z-fix-wr-13-managed-settings-nested-wrong-](./quick/261028-v2z-fix-wr-13-managed-settings-nested-wrong-/) |
+| 261029-1dp | Close v2.0 audit blockers A-F: SAFE-04 stdout redaction, supersede CTRL-02/03 TRANS-01/04/05 STEER-02, CTRL-05 partial, drop AgentRuntime, 28.1 probe closed | 2026-10-29 | 0d18fe9 | [261029-1dp-close-v2-0-audit-blockers-supersede-ctrl](./quick/261029-1dp-close-v2-0-audit-blockers-supersede-ctrl/) |
 
 ## Session Continuity
 
-Last session: 2026-10-29T01:55:00Z
-Stopped at: Phase 28.1 complete — all phases complete
+Last session: 2026-10-29
+Stopped at: Quick 261029-1dp complete — v2.0 audit blockers A-F closed (pause handoff consumed)
 Resume file: None
 
-Next: quick-task fixes, then `/gsd-verify-work` for 14, 24, 25, 27, 28, 29, 30, then `/gsd-audit-milestone`. [inferred — cleanup 2026-10-28: milestone completion not auto-invoked; the audit comes first]
+Next: re-verify phases whose VERIFICATION.md reads `stale`, re-run `/gsd-audit-milestone v2.0`, then `/gsd-complete-milestone`. [inferred — cleanup 2026-10-28: milestone completion not auto-invoked; the audit comes first]
 Phase 19's gap-closure loop is closed by supersession (2026-10-28), not halted; do not resume it.
 Earlier session history: `.planning/STATE-ARCHIVE.md`.
