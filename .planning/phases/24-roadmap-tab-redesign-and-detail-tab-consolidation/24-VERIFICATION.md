@@ -1,8 +1,8 @@
 ---
 phase: 24-roadmap-tab-redesign-and-detail-tab-consolidation
-verified: 2026-09-24T05:10:00Z
+verified: 2026-10-28T00:00:00Z
 status: passed
-score: 5/5 roadmap success criteria verified; 27/27 locked decisions (D-A01-D-A15, D-B01-D-B12) accounted for and satisfied
+score: 5/5 roadmap success criteria verified; 27/27 locked decisions (D-A01-D-A15, D-B01-D-B12) accounted for (25 satisfied as written, 2 superseded by later deliberate work with the goal behaviour intact)
 covered_files:
   - .planning/phases/24-roadmap-tab-redesign-and-detail-tab-consolidation/24-01-PLAN.md
   - .planning/phases/24-roadmap-tab-redesign-and-detail-tab-consolidation/24-01-SUMMARY.md
@@ -18,7 +18,6 @@ covered_files:
   - .planning/phases/24-roadmap-tab-redesign-and-detail-tab-consolidation/24-06-SUMMARY.md
   - .planning/phases/24-roadmap-tab-redesign-and-detail-tab-consolidation/24-07-PLAN.md
   - .planning/phases/24-roadmap-tab-redesign-and-detail-tab-consolidation/24-07-SUMMARY.md
-  - .planning/phases/24-roadmap-tab-redesign-and-detail-tab-consolidation/24-CONTEXT.md
   - README.md
   - docs/ARCHITECTURE.md
   - src/app.rs
@@ -31,9 +30,15 @@ covered_files:
   - src/ui/screens/help.rs
   - src/ui/screens/mod.rs
   - src/ui/screens/render_escape_guard.rs
-covered_digest: "v1:sha256:a04acb182152851556ac15dc342655dc06b4c0efd9a9c743dc4637e8a9ec448e"
+covered_digest: "v4:sha256:1e7d27f0ffc596a8f68f599471ab7230fa78d800a694f257d3aad088b8316a61"
 behavior_unverified: 0
 overrides_applied: 0
+re_verification:
+  previous_status: passed
+  previous_score: 5/5
+  gaps_closed: []
+  gaps_remaining: []
+  regressions: []
 ---
 
 # Phase 24: Roadmap Tab Redesign & Detail-Tab Consolidation Verification Report
@@ -43,129 +48,130 @@ list with a git-log-style dependency graph, a selection cursor and a detail pane
 each phase needs, unblocks and can run alongside — and the detail tabs consolidate from ten to
 eight (Roadmap · Phases · Backlog · Git · Queue · Sess · Cfg · Docs, plus Driver).
 
-**Verified:** 2026-09-24
+**Verified:** 2026-10-28 (HEAD 51ae4c5)
 **Status:** passed
-**Re-verification:** No — initial verification
+**Re-verification:** Yes. The 2026-09-24 report is stale: about a month of quick tasks (workstream
+bands, lane corners, gsd-core 1.15 prose-dependency parsing parity, glyph registry, box-view removal,
+mouse support) touched `roadmap_md.rs`, `roadmap_graph.rs`, `roadmap_view.rs` and `detail.rs`.
+Every claim below was re-checked against HEAD, not carried over.
+
+## Evidence base (this run)
+
+- **Regression gate (orchestrator, cited):** `rtk proxy cargo test --no-fail-fast` at HEAD: 55 suites, 3183 passed, 0 failed, 17 ignored, exit 0. Not re-run.
+- **Targeted tests (run by the verifier, `cargo test --lib --no-fail-fast <name>`):** every named test cited below passed at HEAD. Filter totals: `roadmap_graph` 53, `roadmap_view` 37, `roadmap_md` 77, `render_escape_guard` 18, `inert` 18, `mockup` 7, `build_phase` 7, `shipped` 24, `tab_index` 2, `tab_bar_width` 1 (all 0 failed).
+- **Live drive (tmux, debug binary built at HEAD, isolated `--config`, `tests/fixtures/roadmaps/sentriq-ROADMAP.md`) at 120x34, 80x24 and 80x30.** Observed on screen: the tab bar `1:Roadmap | 2:Phases | 3:Backlog | 4:Git | 5:Queue | 6:Sess | 7:Cfg | 8:Docs`; the header line (`sentriq · v0.12 Actuation Routines · phase 9 planning · 0 of 4 phases done`); the "Start now" line; the collapsed shipped row `▸ v0.11  1 milestone · 4 phases shipped`; the `▾ v0.12 … 0/4 ━━━` band; one row per phase; the lane/marker column; the detail pane with Goal / Needs / Unblocks / Parallel; `(implied via 11)` under Needs for phase 12 (phase 9 appears once); and `G` moving the cursor to phase 12. `Enter` opened Phases with `> P12` selected. `1` then `9` and `0` stayed on Roadmap (inert). `8` then `m` opened Docs with `Files │ [Milestones]`.
+- **Security:** 24-SECURITY.md (e346da6): `threats_open: 0`, one accepted risk AR-24-01.
+- **Anti-pattern scan:** `TBD` hits are the legitimate user-facing `plans TBD` literal (`roadmap_view.rs:1163`), parser test strings, and `U+XXXX` escape documentation; no `FIXME`/`XXX` debt markers and no `TODO` stubs.
 
 ## Requirement-ID Cross-Reference (D-A*/D-B*, 24-CONTEXT.md)
 
-REQUIREMENTS.md has no Phase 24 entries (confirmed by grep — 0 matches), consistent with the
-ROADMAP's own "Requirements: TBD (locked decisions in `24-CONTEXT.md`)". All 27 locked decisions
-were treated as the requirement set and cross-referenced against every plan's `requirements:`
-frontmatter field. No ID is orphaned (declared in CONTEXT but claimed by no plan) and no plan
-claims an ID CONTEXT.md does not define.
+`.planning/REQUIREMENTS.md` has no "Phase 24" rows (grep count 0), consistent with ROADMAP's
+"Requirements: TBD (locked decisions in `24-CONTEXT.md`)". The 27 locked decisions are treated as the
+requirement set. No ID is orphaned and no plan claims an ID that CONTEXT.md does not define.
 
-| ID | Claimed by | Satisfied | Evidence |
-|----|-----------|-----------|----------|
-| D-A01 (list pane, git-log lane column) | 24-02, 24-04 | ✓ | `layout_list`/`RoadmapView`; `mockup_a_side_by_side_at_120_columns` passes |
-| D-A02 (detail pane: Goal/Needs/Unblocks/Parallel) | 24-02, 24-04, 24-06 | ✓ | `roadmap_view.rs` detail-pane items; sentriq/ttbook fixture tests pass |
-| D-A03 (Goal parsing, both bold forms) | 24-01, 24-06 | ✓ | `a_goal_is_read_in_both_bold_forms` passes |
-| D-A04 (status glyph set/colours) | 24-02, 24-04 | ✓ | `PhaseStatus::glyph()`; glyph consts in `roadmap_graph.rs` |
-| D-A05 (selection markers, cursor persistence) | 24-02, 24-04, 24-05 | ✓ | `CursorTarget`-keyed cursor; `a_folded_phase_resolves_to_its_band_row` passes |
-| D-A06 ("Start now" line) | 24-02, 24-04 | ✓ | `RoadmapModel.start_now`; drawn in `roadmap_view.rs` |
-| D-A07 (milestone bands, shipped-summary fold) | 24-01, 24-02, 24-04, 24-05 | ✓ | `unfolding_the_shipped_summary_reveals_one_row_per_shipped_milestone`, `daily_vow_shipped_milestones_are_the_five_before_v1_5` pass |
-| D-A08 (transitive reduction, git-log lane rules, no dupes) | 24-02, 24-06 | ✓ | `reduction_daily_vow_23_implies_20_via_21`, `reduction_sentriq_11_implies_9_via_10`, `daily_vow_phase_20_has_exactly_one_row`, `band_labels_appear_on_exactly_one_row` all pass |
-| D-A09 (80-col stack / ~100-col side-by-side) | 24-04, 24-06 | ✓ | `mockup_c_stacked_at_80_columns`, `sentriq_roadmap_at_80_columns_is_stacked_and_shows_9_once`, `mockup_a_side_by_side_at_120_columns` pass |
-| D-A10 (keys: j/k, g/G, h/l, [/], Space, Enter, v) | 24-02, 24-05 | ✓ | `roadmap_enter_*`, `bracket_steps_within_the_wave_and_wraps`, `h_cycles_the_origin_needs_including_implied`, `l_cycles_unblocks` pass |
-| D-A11 (no mouse handling) | 24-05 | ✓ | grep for `MouseEvent`/`handle_mouse` in touched files: 0 matches |
-| D-A12 (Build phase N parsing, selectable) | 24-01, 24-05, 24-06 | ✓ | `ttbook_build_phase_headings_parse_as_planned_phases`, `roadmap_model_for_ttbook_lists_build_phases_as_phases`, `roadmap_enter_on_a_build_phase_explains_itself` pass |
-| D-A13 (no horizontal scroll mechanism) | 24-04, 24-06 | ✓ | grep for `horizontal_scroll`/`hscroll` in touched files: 0 matches |
-| D-A14 (eliminate the 4 named bugs) | 24-01, 24-02, 24-04, 24-06 | ✓ | see SC-1 row below |
-| D-A15 (keep parse/cycle/wave, rewrite layout; legacy deleted) | 24-02, 24-06 | ✓ | `roadmap_graph.rs` legacy `layout_graph`/`RoadmapGraphWidget` removed per 24-06-SUMMARY; `layout_list` present |
-| D-B01 (new 8-tab order + Driver) | 24-03, 24-07 | ✓ | `TAB_LABELS_FULL` order + `every_tab_index_round_trips_through_its_sub_view` |
-| D-B02 (PhaseList removed, content moved to Roadmap header) | 24-03, 24-06 | ✓ | `DetailSubView` has no `PhaseList` variant; `roadmap_summary_line`, Paused/change-tracker banner in `render_roadmap` header |
-| D-B03 (Pipeline renamed Phases, shared selection) | 24-03, 24-05 | ✓ | `roadmap_enter_opens_the_selected_phase_in_phases`, `phases_selection_is_shared_back_to_the_roadmap` pass |
-| D-B04 (Archive folds into Docs › Milestones) | 24-07 | ✓ | `opened_on_archive_lands_on_docs_milestones`, `m_switches_docs_between_files_and_milestones`, `enter_on_the_shipped_milestones_row_opens_docs_milestones` pass |
-| D-B05 (every tab-index consumer updated) | 24-03, 24-07 | ✓ | round-trip test, width-arithmetic test, escape-guard probe, help text, README, ARCHITECTURE.md all updated and passing |
-| D-B06 (Archive move sequenced last, after debug fix) | 24-07 | ✓ | 24-07 is wave 4, depends_on [24-03,24-05,24-06]; the 5 named archive regression tests pass unmodified in assertions |
-| D-B07 (default tab is Roadmap) | 24-03 | ✓ | `#[default] RoadmapViz` in `src/app.rs:19-20` |
-| D-B08 (PhaseList-unique content preserved) | 24-05, 24-06 | ✓ | Paused/change-tracker/`[stage]` badge moved into Roadmap header/detail pane (`detail.rs:4087` region) |
-| D-B09 (in-memory-only view state, no migration) | 24-03, 24-07 | ✓ | `detail_sub_view_per_project` unchanged storage shape; `Archive` kept as a sub-view per 24-07 inferred decision |
-| D-B10 (digits 9/0 inert) | 24-03, 24-07 | ✓ | `nine_and_zero_are_inert_in_the_detail_view` passes |
-| D-B11 (compact labels, recomputed widths) | 24-03, 24-07 | ✓ | `the_tab_bar_widths_are_the_label_arrays_own_arithmetic` passes |
-| D-B12 (status glyph from `phase_marker`, not checkbox) | 24-02, 24-05, 24-06 | ✓ | `state.phase_marker(p)` wired at `detail.rs:1572`; folded todo closed citing this fix |
+| ID | Status | Evidence at HEAD |
+|----|--------|------------------|
+| D-A01 list pane + lane column | ✓ | live render rows `glyph lanes marker # name plans wave`; `layout_list` (`roadmap_graph.rs:921`); `mockup_a_side_by_side_at_120_columns` |
+| D-A02 detail pane Goal/Needs/Unblocks/Parallel | ✓ | live render (120 and 80 cols); `needs_rows` (`roadmap_view.rs:1236`); `mockup_c_stacked_at_80_columns` |
+| D-A03 Goal parsing, both bold forms | ✓ | `a_goal_is_read_in_both_bold_forms`; live Goal paragraph from fixture |
+| D-A04 status glyphs ●◉○◌ | ✓ | live render shows ◉ and ◌; `PhaseStatus` |
+| D-A05 selection markers | ✓ (glyph variant) | selected row `►`, deps `⇡`, unblocks `⇣`, implied `∙` come from the shared glyph registry (`MARK_SELECTED`/`MARK_UNBLOCKS`/`MARK_IMPLIED`, `roadmap_graph.rs:230-236`; quick 261021-1id re-routed them through `glyphs.rs`). Same semantics as `▶`/`↑`/`↓`/`·`; `h_cycles_the_origin_needs_including_implied`, `l_cycles_unblocks` |
+| D-A06 "Start now" line | ✓ | live line `Start now: ◉9 …`; `facts_for_mockup_c_phase_12` asserts `start_now` |
+| D-A07 bands once each, shipped fold | ✓ | live `▸ v0.11 1 milestone · 4 phases shipped` + `▾ v0.12 …`; `unfolding_the_shipped_summary_reveals_one_row_per_shipped_milestone`, `daily_vow_shipped_milestones_are_the_five_before_v1_5`, `band_labels_appear_on_exactly_one_row` |
+| D-A08 transitive reduction, lane rules, no dupes | ✓ | `reduction_daily_vow_23_implies_20_via_21`, `reduction_sentriq_11_implies_9_via_10`, `daily_vow_phase_20_has_exactly_one_row`, `sentriq_implied_dep_is_a_dim_marker_not_a_row` |
+| D-A09 80-col stacked / ~100+ side-by-side | ✓ | live 80x24 and 80x30 stacked, 120x34 side-by-side; `sentriq_and_daily_vow_hold_at_both_widths` |
+| D-A10 keys | ✓, one clause superseded | `j/k g/G h/l [/] Space Enter` tests pass (`bracket_steps_within_the_wave_and_wraps` etc.), `G` and `Enter` driven live. **`v` box-view toggle no longer exists:** quick 261022-wtw deliberately deleted `roadmap_widget.rs` and the Detail box view (commits 084fb4f, 69ac009), and `roadmap_tab_draws_the_list_and_v_is_unbound` pins it. Not a gap against the goal; see WR-05 below for the stale title hint. `[inferred — cleanup 2026-10-28]` |
+| D-A11 mouse click-to-select out of scope | ✓ superseded | D-A11 deferred mouse support as follow-up scope, not a prohibition. Quick 260926-dyf later delivered it (`DetailScreen::handle_mouse`, `detail.rs:6348`). `[inferred — cleanup 2026-10-28]` |
+| D-A12 `#### Build phase N` parsing | ✓ | `ttbook_build_phase_headings_parse_as_planned_phases`, `roadmap_model_for_ttbook_lists_build_phases_as_phases`, `roadmap_enter_on_a_build_phase_explains_itself`, `ttbook_fixture_gsd_phase_list_is_unchanged_by_build_phase_support` |
+| D-A13 no horizontal scroll | ✓ | no `hscroll`/`horizontal_scroll` in `roadmap_graph.rs`, `roadmap_view.rs`, `detail.rs` (grep 0); `roadmap_view_never_draws_outside_its_rect` |
+| D-A14 four bugs gone | ✓ | see SC-1/SC-2 |
+| D-A15 keep parse/cycle/wave, rewrite layout | ✓ | `resolve_deps:59`, `break_cycles:106`, `longest_path_layers:190` retained; `layout_graph`/`RoadmapGraphWidget` absent from `src` (grep 0), `layout_list` is the successor |
+| D-B01 new tab order + Driver | ✓ | `TAB_LABELS_FULL`/`TAB_LABELS_COMPACT` (`detail.rs:479-497`), `TAB_COUNT = 9`, `DRIVER_TAB_INDEX = 8`; live tab bar; `every_tab_index_round_trips_through_its_sub_view` |
+| D-B02 PhaseList removed, header moved | ✓ | `DetailSubView` has no `PhaseList` (`app.rs:16-`); live Roadmap header lines (summary + Path); remaining `PhaseList` hits are `archive::ArchiveDepth::PhaseList`, comments and test strings |
+| D-B03 Pipeline→Phases at position 2, shared selection | ✓ via Enter; see WR-07 | `roadmap_enter_opens_the_selected_phase_in_phases`, `phases_selection_is_shared_back_to_the_roadmap`, live `Enter` on phase 12 opened Phases with `> P12` |
+| D-B04 Archive → Docs › Milestones | ✓ | live `Files │ [Milestones]`; `m_switches_docs_between_files_and_milestones`, `opened_on_archive_lands_on_docs_milestones`, `enter_on_the_shipped_milestones_row_opens_docs_milestones`, `roadmap_enter_on_the_shipped_row_opens_the_archive_view` |
+| D-B05 every tab-index consumer | ✓ | round-trip, width-arithmetic and escape-guard tests pass; `README.md:95` "8-tab detail view", `README.md:47-48,255` Files/Milestones |
+| D-B06 Archive move last | ✓ | 24-07 is wave 4; archive regression tests (`archive_milestone` etc.) pass |
+| D-B07 default tab Roadmap | ✓ | `#[default] RoadmapViz` (`app.rs:19-20`); live open lands on Roadmap |
+| D-B08 PhaseList-unique content preserved | ✓ | `[Not started]`/stage badge in the detail-pane status line (live); Paused/change-tracker in header; empty states covered by `render_escape_guard` |
+| D-B09 in-memory view state | ✓ | no persistence change; `Agents`/`Archive` map onto Sessions/Docs with sub-tab active (`app.rs` doc comments) |
+| D-B10 digits 9/0 inert | ✓ | `nine_and_zero_are_inert_in_the_detail_view`; live `9`/`0` stayed on Roadmap |
+| D-B11 compact labels, recomputed widths | ✓ | `TAB_LABELS_COMPACT` `1:Rd … 8:Dc D:Dr`; `the_tab_bar_widths_are_the_label_arrays_own_arithmetic` |
+| D-B12 glyph from `phase_marker` | ✓ | `state.phase_marker(p)` drives status; live render matches disk-inferred stage |
 
 ## Goal Achievement — ROADMAP Success Criteria
 
-| # | Success Criterion (ROADMAP.md) | Status | Evidence |
-|---|---------------------------------|--------|----------|
-| 1 | Every phase renders exactly once, each milestone label exactly once, implied deps show as a dim marker not a duplicate row (daily-vow `20`-twice, sentriq `9→11` bugs gone) | ✓ VERIFIED | `daily_vow_phase_20_has_exactly_one_row`, `band_labels_appear_on_exactly_one_row`, `reduction_sentriq_11_implies_9_via_10`, `sentriq_implied_dep_is_a_dim_marker_not_a_row` — all pass |
-| 2 | Selection cursor over every phase (j/k, g/G, h/l, [/], Space); detail pane shows Goal/Needs/Unblocks/Parallel; no-deps phase gets an explanation instead of "Nothing in this milestone" | ✓ VERIFIED | `sentriq_phase_12_explains_it_has_no_deps`, `bracket_steps_within_the_wave_and_wraps`, `h_cycles_the_origin_needs_including_implied`, `l_cycles_unblocks`, `a_folded_phase_resolves_to_its_band_row` — all pass |
-| 3 | 80-column stacked layout, ~100+-column side-by-side, no horizontal scrolling | ✓ VERIFIED | `mockup_c_stacked_at_80_columns`, `sentriq_and_daily_vow_hold_at_both_widths`, `mockup_a_side_by_side_at_120_columns`, `roadmap_view_never_draws_outside_its_rect`, `roadmap_view_never_panics_at_tiny_sizes` — all pass; no horizontal-scroll state exists in the touched files |
-| 4 | `#### Build phase N` headings (ttbook) parse as phases | ✓ VERIFIED | `ttbook_build_phase_headings_parse_as_planned_phases`, `roadmap_model_for_ttbook_lists_build_phases_as_phases`, `ttbook_fixture_gsd_phase_list_is_unchanged_by_build_phase_support` (GSD-facing parser untouched) — all pass |
-| 5 | PhaseList gone (content preserved in Roadmap header); Pipeline renamed Phases at position 2, shares selection; Archive lives in Docs › Milestones; every tab-index consumer agrees | ✓ VERIFIED | see D-B01–D-B11 rows above; the five archive debug-fix regression tests pass unmodified, opened via Docs › Milestones |
+| # | Success Criterion | Status | Evidence |
+|---|-------------------|--------|----------|
+| 1 | Every phase once, each milestone label once, implied deps as dim marker (daily-vow `20`-twice, sentriq `9→11`) | ✓ VERIFIED | `daily_vow_phase_20_has_exactly_one_row`, `band_labels_appear_on_exactly_one_row`, `reduction_sentriq_11_implies_9_via_10`, `sentriq_implied_dep_is_a_dim_marker_not_a_row`; live: phase 9 occurs once, `(implied via 11)` in the Needs row, no `─►` |
+| 2 | Cursor over every phase (j/k g/G h/l [/] Space); detail pane Goal/Needs/Unblocks/Parallel; no-deps phase explained | ✓ VERIFIED | navigation tests above; live render. The no-deps wording is exercised by `mockup_c_stacked_at_80_columns` ("nothing declared", "no edge either way; can run any time") and seen live on phase 9 ("nothing declared", "(no deps; can run any time)"). **Note:** the original sentriq example (phase 12) now correctly *has* deps, since gsd-core 1.15's `PHASE_DEP_REF` reads the "blocks on nothing in Phases 9-11" prose as 9 and 11. The test was rewritten to `sentriq_phase_12_needs_what_gsd_1_15_reads_from_its_prose` (`detail.rs:27136`), and the capability survives on phases that genuinely declare nothing. Deliberate parity change, not a regression. `[inferred — cleanup 2026-10-28]` |
+| 3 | 80-col stacked, ~100+ side-by-side, no horizontal scrolling | ✓ VERIFIED | live 80x24, 80x30 (stacked, all four detail rows visible) and 120x34 (side-by-side); `mockup_c_stacked_at_80_columns`, `mockup_a_side_by_side_at_120_columns`, `roadmap_view_never_panics_at_tiny_sizes` |
+| 4 | `#### Build phase N` headings parse as phases | ✓ VERIFIED | `ttbook_build_phase_headings_parse_as_planned_phases`, `roadmap_model_for_ttbook_lists_build_phases_as_phases`, `build_phase` filter 7/7 |
+| 5 | PhaseList gone with content preserved; Pipeline→Phases at 2, shares selection (Enter opens it); Archive in Docs › Milestones; all consumers agree | ✓ VERIFIED | D-B01..D-B12 rows; live Enter→Phases `> P12`; live Docs `[Milestones]`; the `(Enter opens it)` clause defines the shared-selection mechanism and works (see WR-07 caveat) |
 
 **Score:** 5/5 success criteria verified, 0 present-but-behavior-unverified.
 
 ## Required Artifacts
 
-| Artifact | Expected | Status | Details |
-|----------|----------|--------|---------|
-| `src/state_reader/roadmap_md.rs` | Goal parsing, Build-phase parsing, shipped-milestone facts | ✓ VERIFIED | 56 lib tests pass, incl. `parse_planned_build_phases`, `parse_phase_goals`, `shipped_milestones` |
-| `src/state_reader/mod.rs` | `ProjectState.planned_phases`/`phase_goals`/`milestone_name` | ✓ VERIFIED | fields present, populated by `parse_project_state`, exercised by adapter tests |
-| `src/ui/roadmap_graph.rs` | `layout_list`, `RoadmapModel`, navigation, legacy layout removed | ✓ VERIFIED | 39 lib tests pass; grep confirms no `layout_graph`/`RoadmapGraphWidget` remain (24-06 deletion) |
-| `src/ui/roadmap_view.rs` | `RoadmapView` StatefulWidget, side-by-side/stacked panes | ✓ VERIFIED | 19 lib tests pass, incl. escape/panic/rect-bound tests |
-| `src/ui/screens/detail.rs` | tab constants, `roadmap_model_for`, `render_roadmap`, `switch_to_sub_view` | ✓ VERIFIED | tab, cursor, adapter and render tests all pass (see test log above) |
-| `src/ui/screens/render_escape_guard.rs` | `ALL_SUB_VIEWS` without `PhaseList`, new text paths covered | ✓ VERIFIED | 15 lib tests pass, incl. `the_planned_phase_arrives_whole_in_the_roadmap_detail_pane` |
-| `src/app.rs` | `DetailSubView` w/o `PhaseList`, `#[default] RoadmapViz`, ported archive tests | ✓ VERIFIED | enum inspected directly; 5 named archive regression tests pass |
-| `src/ui/screens/help.rs` | Roadmap key rows, `m` row, stale `r` row gone | ✓ VERIFIED | rows present; remaining `"r"` row is the unrelated dashboard "Start a driver run" binding |
-| `README.md`, `docs/ARCHITECTURE.md` | 8-tab description, Docs › Milestones | ✓ VERIFIED | both files updated (grep confirms) |
+| Artifact | Status | Details |
+|----------|--------|---------|
+| `src/state_reader/roadmap_md.rs` | ✓ VERIFIED | Goal, Build-phase and shipped-milestone parsing present; `roadmap_md` filter 77/77 |
+| `src/state_reader/mod.rs` | ✓ VERIFIED | planned phases / goals / milestone name wired (adapter tests pass) |
+| `src/ui/roadmap_graph.rs` | ✓ VERIFIED | `layout_list`, `transitive_reduction`, cursor navigation; successor of `layout_graph`; 53 tests |
+| `src/ui/roadmap_view.rs` | ✓ VERIFIED | `RoadmapView` master/detail widget with side-by-side and stacked panes; 37 tests |
+| `src/ui/screens/detail.rs` | ✓ VERIFIED | tab arrays, `roadmap_model_at`, `roadmap_nav`/`roadmap_activate`, `switch_to_sub_view` |
+| `src/ui/screens/render_escape_guard.rs` | ✓ VERIFIED | 18 tests incl. `the_planned_phase_arrives_whole_in_the_roadmap_detail_pane` |
+| `src/app.rs`, `help.rs`, `mod.rs`, `README.md`, `docs/ARCHITECTURE.md` | ✓ VERIFIED | enum, defaults, 8-tab docs consistent |
 
 ## Key Link Verification
 
-| From | To | Via | Status |
-|------|----|----|--------|
-| `roadmap_model_for` | `layout_list` (ProjectState → RoadmapModel) | adapter builds `ListInput` from state | ✓ WIRED — `roadmap_model_for_sentriq_uses_a_synthetic_band`, `roadmap_model_for_ttbook_lists_build_phases_as_phases` pass |
-| Roadmap `Enter` (phase row) | Phases tab (`Pipeline`) | `tab_index(&DetailSubView::Pipeline)` | ✓ WIRED — `roadmap_enter_opens_the_selected_phase_in_phases` passes |
-| Phases `j`/`k` selection | `roadmap_cursor` (write-back) | `share_pipeline_selection` | ✓ WIRED — `phases_selection_is_shared_back_to_the_roadmap` passes |
-| Roadmap `Enter` (shipped row) | Docs › Milestones | `switch_to_sub_view(.., Archive, ..)` | ✓ WIRED — `enter_on_the_shipped_milestones_row_opens_docs_milestones`, `roadmap_enter_on_the_shipped_row_opens_the_archive_view` pass |
-| `DetailScreen::opened_on(.., Archive, ..)` | Docs › Milestones | `switch_to_sub_view` direct call | ✓ WIRED — `opened_on_archive_lands_on_docs_milestones` passes |
-| Docs tab `m` key | Files ⇄ Milestones toggle | `docs_sub_tab_strip` + key arm | ✓ WIRED — `m_switches_docs_between_files_and_milestones` passes |
+| From | To | Status |
+|------|----|--------|
+| `roadmap_model_at` → `layout_list` | ProjectState to RoadmapModel | ✓ WIRED (adapter tests; live render) |
+| Roadmap `Enter` (phase) → Phases | `roadmap_activate` sets `pipeline_selected` | ✓ WIRED (test + live) |
+| Phases `j`/`k` → Roadmap cursor | `share_pipeline_selection` | ✓ WIRED (`phases_selection_is_shared_back_to_the_roadmap`) |
+| Roadmap `Enter` (shipped row) → Docs › Milestones | `switch_to_sub_view(Archive)` | ✓ WIRED (test; Docs sub-tab seen live) |
+| Docs `m` → Files ⇄ Milestones | key arm | ✓ WIRED (`m_switches_docs_between_files_and_milestones`; live) |
 
-## Behavioral Spot-Checks / Test Evidence
+## Data-Flow Trace (Level 4)
 
-All checks below were run directly by the verifier (`rtk proxy cargo test --no-fail-fast --lib <filter>`), not taken from SUMMARY.md claims:
+Phase rows, goals, plan counts, waves and status come from `ProjectState` read off the real `.planning/` files; the live drive against a real ROADMAP/STATE fixture showed fixture goals, plan counts (`0/2`) and the fixture milestone name in the rendered output. Not static: ✓ FLOWING.
 
-| Area | Filter | Result |
-|------|--------|--------|
-| Layout engine | `roadmap_graph` | 39 passed, 0 failed |
-| Master/detail widget | `roadmap_view` | 19 passed, 0 failed |
-| ROADMAP parser | `roadmap_md` | 56 passed, 0 failed |
-| Tab index round-trip | `tab_index` | 2 passed, 0 failed |
-| Tab-bar width arithmetic | `tab_bar_width` | 1 passed, 0 failed |
-| Escape-guard probe | `render_escape_guard` | 15 passed, 0 failed |
-| Digit-inert behavior | `inert` | 8 passed, 0 failed (incl. `nine_and_zero_are_inert_in_the_detail_view`) |
-| Docs `m` switch | `m_switch` | 1 passed, 0 failed |
-| `opened_on` Archive routing | `opened_on` | 1 passed, 0 failed |
-| Mockups A/B/C fixtures | `mockup` | 7 passed, 0 failed |
-| Sentriq fixture (SC-1, SC-2, SC-3) | `sentriq` | 11 passed, 0 failed |
-| ttbook build-phase fixture (SC-4) | `build_phase` | 7 passed, 0 failed |
-| Shipped-summary fixture (D-A07/D-B04) | `shipped` | 10 passed, 0 failed |
-| Roadmap↔Phases shared selection | `pipeline_selected`/`share_pipeline`/manual read | `phases_selection_is_shared_back_to_the_roadmap` passed |
-| 5 archive debug-fix regression tests | `archive_milestone`, `the_same_milestone_version_in_two_projects`, `an_in_place_reload_that_shrinks` | 5/5 passed (assertions untouched, opened via Docs › Milestones) |
+## Advisories (code review, UI review): none defeats a success criterion
 
-Full workspace run already performed by the orchestrator on this HEAD (re-verified as current):
-49 suites, 2342 passed, 1 failed (`envelope::policy::…the_config_section_constants_record_the_git_version_they_were_derived_against` — pinned local-git-vs-CI-git environment mismatch, unrelated to phase 24, documented in project memory), 15 ignored. Clippy `--all-targets --keep-going`: 11 pre-existing errors in `src/browser.rs`, `src/project_creator.rs`, `tests/envelope_*.rs` — none in phase 24 files, none new.
+| Finding | Source | Defeats an SC? | Disposition |
+|---------|--------|----------------|-------------|
+| Footer hint clipped at <=80 cols (`[e]nque…`, `[?]help` lost; seen live at 80x24) | UI-REVIEW | No. SCs 1-5 and D-A09/D-A13 govern the list and detail pane, not footer width. Shared chrome, no panic, no scroll. | Advisory |
+| Stacked detail pane collapses to one Goal row at 80x30/60x22 | UI-REVIEW | No. Live 80x24 and 80x30 on sentriq showed Goal, Needs, Unblocks and Parallel all present. The collapse is real for taller goals, but SC3 requires stacking without horizontal scroll, and that holds. | Advisory |
+| Done phase without a directory shows `[Not started]` (`detail.rs:2721`) | UI-REVIEW | No. Cosmetic status-badge mismatch; the glyph (D-B12) is correct. | Advisory |
+| WR-07: Roadmap `j`/`k` does not write back to the Phases selection; pressing `2` or `→` after moving the cursor opens Phases on the stale phase. **Confirmed live** (cursor on 12, `2` opened Phases on P9). | REVIEW | No, narrowly. SC5 and D-B03 define sharing as "Enter opens it", and that works. The digit/arrow path is a real inconsistency and the cache doc comment overstates the sharing. | **Warning**, worth fixing |
+| WR-05: pane title advertises `v list` though `v` is unbound (seen live) | REVIEW | No. Stale hint left after the box view was deleted. | Warning |
+| WR-01..04 (BandKey collision on case-folded Unicode labels, `declared_phase_count` u32 overflow, build-phase range self-inclusion, GSD entry inheriting `#### Build phase` lines) | REVIEW | No. All require hostile or unusual ROADMAP input; none occurs in the fixtures or the live drive. WR-02 could panic a debug build on `Phases 0-4294967295`. | Warning, open |
+| WR-06 wide-glyph column drift | REVIEW | No. Deferred per D-21-53. | Deferred |
+| IN-01..05 | REVIEW | No. | Info |
 
-## Anti-Patterns Found
+Disposition of all 12 review findings is recorded in 24-REVIEW-DISPOSITION.md (11 open, 1 deferred); none was fixed
+in this verification, per instruction.
 
-None blocking. `TBD`/`FIXME`/`XXX`/"placeholder" greps across all phase-24-touched files return only legitimate domain text (`"plans TBD"` empty-state literal, `U+XXXX` escape-format documentation, "planned placeholder" — the D-A12 build-phase term of art itself). No mouse-event code and no horizontal-scroll state were added, matching the D-A11/D-A13 prohibitions.
+## Behavioral Spot-Checks / Probes
 
-**Informational — not a gap:** 24-07's own "Inferred decisions" section (item 6) flags that the Roadmap tab's single-line footer is 91 cells with the experimental flag on / 87 with it off, so `[?]help` clips past 80 columns. This is the shared `footer_spans`/`build_footer` chrome used by *every* detail tab (Queue, Browse, Defaults already carry similarly long single-form hint strings — `footer_spans`'s doc comment states "only the Driver tab tiers on width today; the other tabs keep their single shipped form"), not new state introduced by this phase, and it clips via the existing `Paragraph` render (no panic, no scroll). Neither D-A09/D-A13 (which govern the Roadmap list+detail pane's own layout, confirmed rendering cleanly at 80×24 with no horizontal scroll) nor any other locked decision specifies a footer-width bound. The SUMMARY itself correctly scopes this as a follow-up, not phase-24 scope.
-
-## Requirements Coverage
-
-REQUIREMENTS.md carries no Phase 24 rows (phase uses locked decisions as its requirement set per ROADMAP.md). See the Requirement-ID Cross-Reference table above — all 27 D-A*/D-B* IDs are claimed by at least one plan and satisfied with test evidence. No orphaned requirements.
+Targeted `cargo test --lib --no-fail-fast` runs listed under "Evidence base", plus the tmux drive. No phase probes
+(`scripts/*/tests/probe-*.sh`) are declared by the phase PLANs. Probe execution: not applicable.
 
 ## Human Verification Required
 
-None. All checkable items were settled with direct test execution and code inspection (file:line citations above). The one open item from the executors (footer width) was resolved by inspection rather than escalated, per instruction, because it is observable/checkable code, not a subjective call.
+None. Everything was settled with tests and live rendering. The advisories above are not
+operator-signature items; no subjective quality call is required to accept the phase.
 
 ## Gaps Summary
 
-No gaps. All 5 ROADMAP success criteria and all 27 locked decisions (D-A01-D-A15, D-B01-D-B12) are implemented and covered by passing tests that the verifier ran directly (not SUMMARY.md claims). The legacy left-to-right graph layout was deleted (D-A15), the PhaseList tab is gone with its content preserved in the Roadmap header (D-B02/D-B08), Archive now lives at Docs › Milestones with all five archive debug-fix regression tests passing unmodified (D-B04/D-B06), and every tab-index consumer (round-trip tests, width arithmetic, escape-guard probe, help text, README, ARCHITECTURE.md) agrees with the final 8-tab-plus-Driver order (D-B05).
+No gaps. The phase goal survives in the HEAD code: the master/detail Roadmap with lane-column graph, selection
+cursor and Goal/Needs/Unblocks/Parallel detail pane; eight tabs plus Driver; PhaseList and Archive folded away.
+`PhaseList`, `layout_graph` and `RoadmapGraphWidget` were removed by later work and their behaviour lives on in
+`layout_list` and `RoadmapView`. The one real behavioural wart (WR-07, one-way selection sharing outside `Enter`)
+is a follow-up, not a failure of any success criterion.
 
 ---
 
-_Verified: 2026-09-24T05:10:00Z_
+_Verified: 2026-10-28_
 _Verifier: Claude (gsd-verifier)_
