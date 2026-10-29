@@ -31,7 +31,9 @@ A sandboxed launch (`bwrap` inside a `systemd-run --user --scope` unit) gives th
   tools (`Cron*`, `RemoteTrigger`, `SendMessage`, `ListAgents`, `ScheduleWakeup`, `DesignSync`,
   `mcp__claude_ai_*`) live in a managed settings file bound read-only at `/etc/claude-code`, so a
   nested `claude` with another config directory still fires them. Host policy already in
-  `/etc/claude-code` is merged in, never hidden.
+  `/etc/claude-code` is merged in, never hidden; the one exception is a host `hooks` or
+  `permissions` value that is not a JSON object, which is ignored so it can never replace the
+  gate hooks or the deny rules.
 - **Read-only planted-file paths** inside the project (see [Planted-file guard](#planted-file-guard)).
 
 A launch on a host that cannot do this is refused unless you pick **Launch UNSANDBOXED** (or pass

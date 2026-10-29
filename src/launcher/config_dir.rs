@@ -27,7 +27,9 @@
 //!   per-run `settings.json` then carries no driverctl entry (no hook fires twice).
 //!   A degraded run has no `/etc` to bind, so it keeps the gate in `settings.json`
 //!   with the deny list and writes no managed file. The host administrator's own
-//!   `/etc/claude-code` policy is merged in, never hidden ([`read_host_managed`]);
+//!   `/etc/claude-code` policy is merged in, never hidden ([`read_host_managed`]),
+//!   except that a host `hooks` or `permissions` value that is not a JSON object is
+//!   ignored, so it cannot replace the gate;
 //! * a minimal `.claude.json` (`hasCompletedOnboarding`), only when absent;
 //! * a `bin/driverctl` shim that sets `DRIVERCTL_SOCK` to the run's socket and execs
 //!   this binary (hand-off 8), so the master prompt's `driverctl log ...` runs
@@ -559,8 +561,9 @@ pub fn settings_transform(
 /// Merge rule `[inferred — audit]` (RESEARCH Pattern 6): `hooks.<event>` and
 /// `permissions.<list>` arrays are appended AFTER the launcher's entries, exact
 /// duplicates dropped; the five lock keys keep the launcher's value (already the
-/// strictest of each); every other host key is copied as written, so a host
-/// `allowManagedHooksOnly` stays in force. `allowManagedHooksOnly` is never set by
+/// strictest of each); a host `hooks` or `permissions` that is not a JSON object is
+/// ignored, never copied (WR-08); every other host key is copied as written, so a
+/// host `allowManagedHooksOnly` stays in force. `allowManagedHooksOnly` is never set by
 /// the launcher: it would unload the GSD/rtk user hooks (D-16).
 pub fn managed_settings(gate: &GateCommands, host: &[Value]) -> Value {
     let mut hooks = Map::new();
@@ -610,6 +613,12 @@ pub fn managed_settings(gate: &GateCommands, host: &[Value]) -> Value {
                         }
                     }
                 }
+                // 28-REVIEW WR-08 / 29-REVIEW WR-02: a host `hooks` or `permissions`
+                // that is not a JSON object (string, array, null, number, bool) is
+                // ignored. It never reaches the catch-all, so it can never replace
+                // the gate hooks or the deny list; the safety tier must not depend on
+                // Claude Code refusing such a file (the top-level counterpart of IN-03).
+                ("hooks" | "permissions", _) => {}
                 _ => {
                     settings.insert(key.clone(), value.clone());
                 }
