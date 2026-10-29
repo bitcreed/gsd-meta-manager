@@ -14,7 +14,8 @@
 //!   `enabledPlugins`, `remoteControlAtStartup`, `agentPushNotifEnabled` and
 //!   `apiKeyHelper`, minus any `env` entry the process scrub strips, and **minus every
 //!   user hook that is not a GSD or rtk hook whose `$HOME` paths all lie inside the
-//!   sandbox's allowlist** (28.1-08, D-19: [`hook_is_kept`]; the claudear hooks reach
+//!   sandbox's allowlist** (28.1-08, D-19: [`hook_is_kept`]; wrong-shape hook and
+//!   permission entries are dropped too, 30 WR-13; the claudear hooks reach
 //!   the operator's phone bridge, and under the allowlist they would fail on every
 //!   event anyway). The PreToolUse
 //!   `Agent|Task` entry goes FIRST and carries `"onFailure": "block"` (hand-off 1),
@@ -574,6 +575,11 @@ fn filter_user_hooks(hooks: &mut Map<String, Value>, home: &Path, roots: &[PathB
 /// * `skipWebFetchPreflight` and `disableClaudeAiConnectors` are always `true`
 ///   (D-09a: the preflight and the connector fetch would otherwise reach hosts the
 ///   egress proxy refuses);
+/// * wrong-shape nested `hooks` and `permissions` values (an event that is not a list,
+///   a malformed matcher entry, a permission list that is not a list of strings, a
+///   permission setting that is neither a string nor a bool) are dropped by
+///   [`well_formed_hooks`] / [`well_formed_permissions`] before the D-19 filter and the
+///   gate (WR-13);
 /// * the user's hooks are filtered by [`hook_is_kept`] against `home` and `keep_roots`
 ///   before the gate's are added (D-19, 28.1-08);
 /// * `gate = None` is the bwrap posture: the gate lives in the managed file
@@ -604,6 +610,15 @@ pub fn settings_transform(
         .is_some_and(|hooks| !hooks.is_object())
     {
         settings.insert("hooks".to_owned(), json!({}));
+    }
+    // 30-REVIEW WR-13: drop wrong-shape nested hooks and permissions values before the
+    // D-19 filter and the gate, so a malformed entry never sits beside the gate's own
+    // (whatever the posture, one code path). A non-object `permissions` stays as is.
+    if let Some(Value::Object(hooks)) = settings.get_mut("hooks") {
+        *hooks = well_formed_hooks(hooks);
+    }
+    if let Some(Value::Object(permissions)) = settings.get_mut("permissions") {
+        *permissions = well_formed_permissions(permissions);
     }
     // D-19: only GSD and rtk hooks reach the driver, whatever the posture.
     if let Some(Value::Object(hooks)) = settings.get_mut("hooks") {
