@@ -21257,11 +21257,12 @@ mod tests {
         (screen, ctx, rx)
     }
 
-    /// CTRL-03 end to end: the affordance moved, the gate did not.
+    /// The Driver-tab opt-in affordance end to end: the key flips the opt-in record.
+    /// (The record gates no launch; it only shapes the push policy.)
     ///
     /// The pair that carries the proof is the **first** and **last**
-    /// assertions — the opt-in gate (`registry::is_opted_in`) refusing, then
-    /// accepting — with nothing between them but the keypress and the
+    /// assertions — `registry::is_opted_in` reporting no record, then a record
+    /// — with nothing between them but the keypress and the
     /// confirmation. `name()` cannot do
     /// this on its own: `DriverConfirmScreen` returns `"driver_confirm"` for
     /// every `DriverAction`, so a name assertion cannot tell a `Stop` from a
@@ -21273,7 +21274,7 @@ mod tests {
 
         assert!(
             !crate::registry::is_opted_in(&ctx.config, TEST_ALIAS),
-            "the fixture must start REFUSED by the opt-in gate, or the rest of \
+            "the fixture must start with no opt-in record, or the rest of \
              this test proves nothing"
         );
 

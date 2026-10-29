@@ -955,10 +955,10 @@ pub fn clear_opt_in(config: &mut Config, alias: &str) -> Result<()> {
 
 /// Whether `alias` carries an opt-in record.
 ///
-/// A cheap read for the UI (plan 17-07). **Not a gate**: the launcher refuses a
-/// project with no opt-in record by its own check. (The legacy executor gate that
-/// used to share this question went in Phase 31.) An unregistered alias answers
-/// `false`.
+/// A cheap read for the UI (plan 17-07). **Not a gate**: no launch is gated on the
+/// record. It feeds only `launcher::push::policy_for` (PR caps and defaults), and a
+/// run starts through an explicit `driver launch` or a Driver-tab new run (CTRL-03
+/// superseded 2026-10-29, user decision). An unregistered alias answers `false`.
 pub fn is_opted_in(config: &Config, alias: &str) -> bool {
     config
         .projects
@@ -2128,27 +2128,10 @@ mod tests {
         config
     }
 
-    /// Every message the runtime-config error and the `remove` path produce
-    /// for one value, as `(subject name, message)`.
+    /// Every message the `remove` path and the opt-in functions produce for one
+    /// value, as `(subject name, message)`.
     fn messages_for(value: &str) -> Vec<(String, String)> {
-        use crate::text::Untrusted;
-
-        let carrier = || Untrusted::from_untrusted_source(value.to_string());
         let mut out: Vec<(String, String)> = Vec::new();
-
-        // The config value `UnrecognizedRuntime` echoes is user-authored text
-        // (260922-hdj). It is a struct, not an enum, so no wildcard-free
-        // classifier gates it; it is a subject here by name. It used to ride
-        // inside the legacy drive error enum, whose other variants (alias, run
-        // id, target phase) went with the `drive` subcommand (Phase 31).
-        out.push((
-            "UnrecognizedRuntime".to_string(),
-            crate::executor::runtime::UnrecognizedRuntime {
-                key: "runtime",
-                value: carrier(),
-            }
-            .to_string(),
-        ));
 
         // The real `Remove` path, BOTH halves. The MISS is CR-01's own path —
         // the one with no config prerequisite at all, reachable by any operator
@@ -2376,10 +2359,11 @@ mod tests {
         }
 
         assert!(
-            // Five since Phase 31 (nine before 31-07): the four `OptInError`
-            // subjects went with that enum, which only the retired in-process
-            // executor produced.
-            subjects_seen == corpus.len() * 5,
+            // Four since quick 261029-1dp (five since Phase 31, nine before
+            // 31-07): `UnrecognizedRuntime` went with the dead `AgentRuntime`
+            // key, and the four `OptInError` subjects with the retired
+            // in-process executor. Re-measured, not relaxed.
+            subjects_seen == corpus.len() * 4,
             "only {subjects_seen} subject/value pairs were checked across \
              {} corpus members. Each member must reach all FIVE subjects — \
              `UnrecognizedRuntime`, both halves of `remove`, and the two \

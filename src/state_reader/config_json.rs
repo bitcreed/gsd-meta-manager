@@ -207,11 +207,12 @@ pub struct GsdConfig {
     pub jina: Option<ApiKeySetting>,
     /// gsd-core's OWN runtime selector (`claude`, `codex`, or any string).
     ///
-    /// **This manager does not read it (ID-2).** The manager's per-project
-    /// agent runtime lives in its own registry (`crate::config`'s
-    /// `RUNTIME_KEY`); `tests/driver_codex_runtime.rs` pins that a project
-    /// whose GSD config says `codex` still spawns the unchanged Claude argv.
-    /// Typed here only so the Defaults tab can show and edit it.
+    /// **This manager does not read it (ID-2).** The manager's own legacy
+    /// per-project `runtime` key (`crate::config`'s `RUNTIME_KEY`) is kept in the
+    /// registry's `extra` map and written back unchanged, and selects nothing: the
+    /// launcher runs Claude only, so a project whose GSD config says `codex` is
+    /// launched the same way. Typed here only so the Defaults tab can show and
+    /// edit it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime: Option<String>,
     /// gsd-core's execution-context preset: `dev`, `research` or `review`.

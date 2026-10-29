@@ -12,8 +12,9 @@
 //!
 //! **Why `Box<dyn>`.** D-A07 requires that a runtime be added as one module
 //! plus one registration line. A registry of trait objects gives exactly that;
-//! the executor's enum dispatch (`src/executor/runtime.rs`) does not, because
-//! every new variant there is an edit to every `match` over it.
+//! the enum dispatch the retired executor used for its runtime value (removed in
+//! quick 261029-1dp) did not, because every new variant there was an edit to
+//! every `match` over it.
 //!
 //! **Adding a runtime** (D-A07, D-A08). One new file,
 //! `src/agents/adapters/<runtime>.rs`, implementing [`AgentAdapter`]; plus a

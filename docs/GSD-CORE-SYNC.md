@@ -400,7 +400,7 @@ against `upstream/release-1.15.0`:
   `firecrawl` and `exa_search` predate this record and keep an empty `since`.
 - `runtime` is gsd-core's own selector. This manager does not read it (ID-2):
   the manager's own per-project `runtime` key (`src/config.rs` `RUNTIME_KEY`) is
-  still parsed so an old config loads, but since Phase 31 retired the legacy
+  kept and written back unchanged so an old config loads, but since Phase 31 retired the legacy
   `drive` subcommand it no longer selects a driven agent (the launcher runs
   Claude only), and a project whose GSD config says `codex` is not driven
   differently. gsd-core's loader also fills it from `GSD_RUNTIME` / the install marker (#4717), so the

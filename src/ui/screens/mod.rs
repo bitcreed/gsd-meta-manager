@@ -1389,8 +1389,8 @@ pub struct AppContext {
     /// `false` is the default and that is load-bearing: the driver spawns a
     /// real agent against a real repository, and a user who never asked for
     /// that must not be able to discover it by pressing a key. It is a
-    /// **discovery** gate, not an authorisation boundary — `driver_opt_in`
-    /// remains the consent gate and is untouched by it (D4).
+    /// **discovery** gate, not an authorisation boundary — `driver_opt_in` is
+    /// untouched by it (D4) and gates no launch; it only shapes the push policy.
     pub experimental: bool,
 }
 
