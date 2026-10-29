@@ -5,7 +5,7 @@ titles: json
 findings:
   - id: WR-13
     severity: warning
-    disposition: open
+    disposition: fixed
     title: "`managed_settings` still copies non-array nested host values verbatim, one level below the WR-08 fix"
   - id: IN-15
     severity: info
@@ -123,7 +123,7 @@ findings:
     severity: info
     disposition: fixed
     title: "The launch form and the launcher read the `control` word with different readers"
-open: 9
+open: 8
 total: 30
 recorded: 2026-10-29T03:20:02.797Z
 ---
@@ -132,7 +132,7 @@ recorded: 2026-10-29T03:20:02.797Z
 
 | Finding | Severity | Disposition | Source |
 |---------|----------|-------------|--------|
-| WR-13 | warning | open | - |
+| WR-13 | warning | fixed | fixed by quick 261028-v2z 1158139 (managed_settings drops a wrong-shape nested host value instead of copying it: a hook event value that is not an array, a matcher entry that is not an object or whose matcher is not a string or whose hooks is not an array of objects with a string type, a permissions list (allow, ask, deny, additionalDirectories) that is not an array and every non-string rule inside one, and any other permissions key whose value is neither a string nor a bool; well-formed entries and string or bool settings such as defaultMode and disableBypassPermissionsMode still merge, which narrows the review's drop-every-non-array fix so host policy is not hidden; the degraded settings.json runs the same filter in bfbd231; RED-first bwrap seed test from host files on disk plus shared shape tables in both postures [inferred — cleanup 2026-10-28]) |
 | IN-15 | info | open | - |
 | IN-16 | info | open | - |
 | IN-17 | info | open | - |
