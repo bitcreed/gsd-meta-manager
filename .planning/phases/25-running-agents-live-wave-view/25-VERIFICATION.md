@@ -1,10 +1,9 @@
 ---
 phase: 25-running-agents-live-wave-view
-verified: 2026-09-26T05:00:00Z
+verified: 2026-10-28T20:00:00Z
 status: passed
 score: 7/7 must-haves verified
 covered_files:
-  - ".planning/REQUIREMENTS.md"
   - ".planning/phases/25-running-agents-live-wave-view/25-01-PLAN.md"
   - ".planning/phases/25-running-agents-live-wave-view/25-01-SUMMARY.md"
   - ".planning/phases/25-running-agents-live-wave-view/25-02-PLAN.md"
@@ -19,58 +18,71 @@ covered_files:
   - ".planning/phases/25-running-agents-live-wave-view/25-06-SUMMARY.md"
   - ".planning/phases/25-running-agents-live-wave-view/25-07-PLAN.md"
   - ".planning/phases/25-running-agents-live-wave-view/25-07-SUMMARY.md"
-  - ".planning/phases/25-running-agents-live-wave-view/25-CONTEXT.md"
-  - ".planning/phases/25-running-agents-live-wave-view/25-REVIEW.md"
-  - "README.md"
-  - "docs/ARCHITECTURE.md"
   - "src/action.rs"
   - "src/agents/adapters/claude.rs"
   - "src/agents/adapters/mod.rs"
   - "src/agents/fixers.rs"
   - "src/agents/mod.rs"
+  - "src/agents/processes.rs"
+  - "src/agents/unmerged.rs"
   - "src/agents/waves.rs"
+  - "src/agents/workstream_scope.rs"
+  - "src/agents/worktree_phases.rs"
+  - "src/agents/worktree_plans.rs"
   - "src/agents/worktrees.rs"
   - "src/app.rs"
   - "src/lib.rs"
+  - "src/session_detector.rs"
   - "src/state_reader/disk_status.rs"
   - "src/state_reader/git_ops.rs"
-  - "src/ui/screens/delete_confirm.rs"
   - "src/ui/screens/detail.rs"
-  - "src/ui/screens/driver_confirm.rs"
   - "src/ui/screens/help.rs"
-  - "src/ui/screens/mod.rs"
   - "src/ui/screens/normal.rs"
   - "src/ui/screens/render_escape_guard.rs"
   - "tests/agents_claude.rs"
   - "tests/agents_fixers.rs"
+  - "tests/agents_process.rs"
   - "tests/agents_scan.rs"
+  - "tests/agents_unmerged.rs"
   - "tests/agents_waves.rs"
-covered_digest: "v1:sha256:cc6c55b97fbae6acfb6d8b5124cf83087dd28bdb9d2e5d2d3bac5026e85c3f72"
-# NOTE: the verifier first wrote a hand-computed sha256 here because gsd-core 1.14.0
-# exposes no `verification.fingerprint` query verb; that value did not match the
-# canonical scheme and read as `stale`. The orchestrator replaced it with the output of
-# gsd-core's own computeCoveredDigest (bin/lib/verification.cjs) over the files above.
-# Refreshed once more after phase.complete flipped AGENT-01..07 to Complete in REQUIREMENTS.md.
+  - "tests/agents_workstreams.rs"
+  - "tests/agents_worktree_plans.rs"
+covered_digest: "v4:sha256:e34adaa2401465b1dd1f2b5b940ecf7fa4ce6ba1fc8ec8d2af3a3a03e0175f94"
 behavior_unverified: 0
 overrides_applied: 0
 re_verification:
-  previous_status: gaps_found
-  previous_score: "6/7 (requirement level; 1 critical correctness defect)"
-  gaps_closed:
-    - "The dashboard/detail summary shows what is currently running — an aborted or crashed run's leftover worktree must eventually stop reading Finished/Stalled and stop overriding the Status cell (CR-01 / AGENT-05)"
+  previous_status: passed
+  previous_score: 7/7
+  gaps_closed: []
   gaps_remaining: []
   regressions: []
 gaps: []
 deferred: []
-advisory: []
+advisory:
+  - finding: "WR-07: a project whose only scan output is worktree-only phases gets no AgentView (src/app.rs:2221-2227 omits worktree_phases), so its ghost phases and `N wt phases` tag never show"
+    category: other
+    reason: "Belongs to the post-phase quick task 23a947f (worktree-only phases), not AGENT-01..07. Confirmed by reading the handler condition."
+    evidence_status: "code read; no failing test"
+  - finding: "WR-08: the per-call git budget (10 s) does not bound the whole scan; a wedged shared mount can hold agents_scan_in_flight for minutes"
+    category: other
+    reason: "Availability only. The scan runs off the render path and no AGENT requirement promises a scan deadline."
+    evidence_status: "reviewer arithmetic [inferred]"
+  - finding: "WR-09: fixers::estimate reads the project's .planning, not the workstream's, for `--ws` fix runs"
+    category: other
+    reason: "Accuracy of a labelled `~f/t` estimate on a workstream edge case. AGENT-07 only requires a labelled estimate."
+    evidence_status: "reviewer inference, unconfirmed [inferred]"
+  - finding: "UI-REVIEW fix 1: the Waves pane words a finished-not-merged plan `unmerged` while the Agents tab words the same agent's liveness `done`"
+    category: other
+    reason: "Two different axes (plan integration state vs agent liveness), both true. Wording alignment is a UX follow-up, not a missing behaviour."
+    evidence_status: "reproduced in tmux, see Behavioral Spot-Checks"
 ---
 
 # Phase 25: Running Agents & Live Wave View Verification Report
 
-**Phase Goal:** For each registered project, show which GSD agents are currently running in parallel and, for executors, which wave and plans are running / queued / done — read-only from files and git, no Claude invocation, non-intrusive to the running GSD session
-**Verified:** 2026-09-26
+**Phase Goal:** For each registered project, show which GSD agents are currently running in parallel and, for executors, which wave and plans are running / queued / done, read-only from files and git, no Claude invocation, non-intrusive to the running GSD session
+**Verified:** 2026-10-28
 **Status:** passed
-**Re-verification:** Yes — after gap closure (plan 25-07, commits `29cd4f3..06f6045`; code review `5579bbc`)
+**Re-verification:** Yes. The earlier `passed` verdict (2026-09-26) predates the review fixes WR-03..06 and four quick tasks that touched `src/agents/**`, `tests/agents_*` and the UI screens: unmerged-work detection (260929-szq), worktree-plan and ghost-phase views (261014-0jv, 23a947f), workstream scoping (261023-05i), and the process-table doctrine amendment (260926-06g). Every truth was re-checked at HEAD `2ec531d`. Source is unchanged since `54a73bf`; later commits are `.planning` docs only.
 
 ## Goal Achievement
 
@@ -78,88 +90,101 @@ advisory: []
 
 | # | Truth | Status | Evidence |
 |---|-------|--------|----------|
-| 1 | Agent worktrees are enumerated with commit/dirty counts, non-intrusively (AGENT-01) | ✓ VERIFIED (regression-checked) | Unchanged since prior pass; `tests/agents_scan.rs` 13/13, including `no_file_under_src_agents_writes_reads_proc_or_spawns` and `scanning_a_live_agent_worktree_never_touches_its_index`. |
-| 2 | Plans grouped by `wave:` frontmatter, never plan number; done/running/stalled/queued derived (AGENT-02) | ✓ VERIFIED (regression-checked) | `src/agents/waves.rs::derive`; `tests/agents_waves.rs` 7/7, including the rewritten `a_summary_committed_in_the_worktree_reads_finished_before_the_merge` (now asserts a lone `Finished` row is inactive, and a live sibling row makes it `1 run · 2/3 done`). |
-| 3 | Adapter seam degrades gracefully on any failure, never drops a row or fails the scan (AGENT-03) | ✓ VERIFIED (regression-checked) | `tests/agents_scan.rs::a_panicking_adapter_leaves_the_core_rows_intact`, `a_test_only_adapter_claims_a_worktree_outside_the_predicate` pass. |
-| 4 | Claude Code adapter attaches type/description/liveness; lists worktree-less subagents (AGENT-04) | ✓ VERIFIED (regression-checked) | `tests/agents_claude.rs` 12/12, including two new orphan-aging tests (`a_released_lock_orphan_days_stale_reads_ended_and_is_not_active`, `a_locked_orphan_days_stale_reads_ended_not_stalled`). |
-| 5 | Dashboard Status cell shows a compact summary while agents are active; unchanged otherwise (AGENT-05) | ✓ VERIFIED — gap CR-01 closed | `src/agents/mod.rs:88-137` (`classify_facts`) now returns `Ended` once `age > MAX_AGENT_AGE_SECS`, before the released-lock `Finished` rule; `AgentLiveness::is_running()` (Live\|Idle only) is the single predicate `AgentView::is_active`, `executor_mode`, `N agents` and the fixer gate all use (`src/agents/waves.rs:431-434`). `Finished`/`Stalled` alone never activates the cell. Verified directly by reading `src/agents/mod.rs`, `src/agents/waves.rs`, `src/ui/screens/normal.rs:896-901`, and by running the two byte-identical regression tests myself: `ui::screens::normal::tests::an_aged_out_orphan_leaves_the_status_cell_byte_identical` and `..._a_finished_orphan_within_the_age_bound_leaves_the_status_cell_byte_identical` — both `ok`. `app::tests::an_agents_scan_reaches_the_dashboard_status_cell` also `ok`. |
-| 6 | Sessions tab gets an Agents sub-view with summary, per-wave rows, scrollable list, worktree-less group, degraded/empty states (AGENT-06) | ✓ VERIFIED (regression-checked) | `src/ui/screens/detail.rs::render_agents_tab` unchanged by 25-07; `--lib ui::screens::detail` 196/196 pass. |
-| 7 | Code-review fix runs show an estimated fixed/total, labelled `~` (AGENT-07) | ✓ VERIFIED (with known estimation-quality warnings, not blocking) | `src/agents/fixers.rs::estimate` now requires at least one *running* (Live/Idle) unattributed fixer before returning `Some` (the running-fixer gate, `fixers.rs:219-224`), closing the "orphan fixer alone switches on the estimate" half of CR-01/WR-01 for this path. `tests/agents_fixers.rs` 7/7, including new `a_finished_fixer_run_yields_no_estimate`. The estimate's phase-vote and finding-count logic downstream of the gate is still untiered — see WR-06 below; this is an accuracy defect in the *estimate*, not a violation of the "labelled estimate while running" truth. |
+| 1 | AGENT-01: agent worktrees are enumerated with commits-ahead and dirty counts, via read-only git that takes no lock in a live agent's worktree | ✓ VERIFIED | `tests/agents_scan.rs` 13/13, including `scanning_a_live_agent_worktree_never_touches_its_index` and `no_file_under_src_agents_writes_reads_proc_or_spawns`. In the tmux run the fixture's agent rows showed `+0 ~1`, and afterwards `git status` and `.git/*.lock` in the fixture showed no change from the TUI. |
+| 2 | AGENT-02: plans group by PLAN.md `wave:`; each reads done / finished / running / stalled / queued; the current wave is identified | ✓ VERIFIED | `tests/agents_waves.rs` 9/9 and `agents::waves` unit tests pass. The tmux Waves pane showed `w1  2 parallel · 1 done · 1 running` and `w2  2 parallel · 1 unmerged · 1 queued`, with the current-wave marker `▸ w1`. A finished-not-merged plan (`PlanState::Finished`) renders with the word `unmerged`; see the advisory below. |
+| 3 | AGENT-03: any adapter failure degrades a row to what git knows and never drops it or fails the scan | ✓ VERIFIED | `a_panicking_adapter_leaves_the_core_rows_intact`, `a_test_only_adapter_claims_a_worktree_outside_the_predicate` and the other `agents_scan` tests pass. |
+| 4 | AGENT-04: the Claude adapter attaches type, description and liveness from `<config>/projects/<encoded>/*/subagents/`, honours `$CLAUDE_CONFIG_DIR`, and lists worktree-less subagents | ✓ VERIFIED | `tests/agents_claude.rs` 13/13. WR-05 (exact encoded dirs only, `claude.rs:282-307`) is in place. In the tmux run the type `gsd-executor` and the description-derived plan `05-02` attached from a throwaway `$HOME/.claude`. |
+| 5 | AGENT-05: while agents run, the dashboard Status cell shows a compact summary that fits the column; with no active agents the row is unchanged | ✓ VERIFIED | tmux at 160x45 showed `w1/2 · 1 run · 1/4` in the Status cell for the project with a live agent, while projects without running agents kept the `D R P E V` ladder or `◒N unmerged`. Tests: `a_row_without_active_agents_is_byte_identical`, the two orphan byte-identical tests, `an_agents_scan_reaches_the_dashboard_status_cell` and `the_agents_scan_rides_the_session_poll_counter` all `ok`. `AgentLiveness::is_running()` (Live or Idle only, `mod.rs:104`) is the single activation predicate and the day-age-out is at `mod.rs:157-159`. |
+| 6 | AGENT-06: the Sessions tab has an Agents sub-view with summary, per-wave rows, scrollable list, worktree-less group, and explicit empty and degraded states | ✓ VERIFIED | tmux `6` then Right showed `P05 · w1/2 · 1 run · 1/4 done`, the wave row `▸w1 1 running  w2∙`, and per-agent rows `live 05-02 gsd-executor +0 ~1 25s`. `--lib ui::screens::detail` 432/432 pass, including `no_running_agents_is_the_empty_state`. |
+| 7 | AGENT-07: code-review fix runs show an estimated fixed/total from REVIEW.md `findings.total` and `fix(NN):` subjects, labelled as an estimate | ✓ VERIFIED | `tests/agents_fixers.rs` 10/10. The WR-03/04/06 fixes hold at HEAD: NN-REVIEW.md-only (`fixers.rs:172-175`), intersect-and-clamp (`fixers.rs:237-245`), running-first vote (`fixers.rs:318-342`), and the running-fixer gate. The `~` label is preserved. WR-09 (workstream-scoped review file) is an open, unconfirmed edge case. |
 
-**Score:** 7/7 truths hold. All regression-checked truths (1–4, 6) are unchanged since the prior pass; truth 5 (AGENT-05) is newly verified as fixed; truth 7 (AGENT-07) still holds with a known, non-blocking accuracy caveat (WR-06, new).
+Prohibitions (non-intrusive, read-only, no Claude invocation): `no_file_under_src_agents_writes_reads_proc_or_spawns` passes, and `Command::new` appears only in `src/session_detector.rs:132` (`pgrep -x codex`), outside `src/agents`.
+
+**Score:** 7/7 truths verified. 0 are behavior-unverified.
+
+### Process-table doctrine change (260926-06g)
+
+The goal says "read-only from files and git". Quick 260926-06g amended D-B01/D-B03 so that `src/agents` still reads no process table itself. The caller takes a snapshot through `session_detector::ProcessProbe` and passes it in as data (`src/agents/processes.rs:1-12`). The probe reads one pid's stat file and readlinks its cwd. It sends no signal, does not ptrace, and opens no other process's fds (`session_detector.rs:1002-1035`). Off Linux it is `NoProcessProbe` and liveness stays mtime-only. A live lock owner never upgrades a row; only its death is evidence. I judge that this keeps the intent of "non-intrusive, no Claude invocation" because it is a passive read of procfs and invokes nothing in the running session. Both guards still pass: `tests/agents_process.rs` 7/7 and the no-spawn guard above. `[inferred — cleanup 2026-10-28]`
+
+### Judgment on review and UI findings
+
+| Finding | Defeats a must-have? | Reason |
+|---------|----------------------|--------|
+| UI-REVIEW fix 1: `unmerged` in the Waves pane vs `done` in the Agents tab | No. Advisory. | I reproduced it. `agent_state_word(Finished)` returns `done` (`detail.rs:10752`) as agent liveness; `PaneState::Unmerged` is the word for `PlanState::Finished` (`detail.rs:9539`). The facts differ: the agent stopped, the plan is not merged. AGENT-02 and AGENT-06 are met as written. The review's claim that "done contradicts a plan with no SUMMARY" is a wording problem. In my fixture the unlocked worktree reads `Finished` through `lock_released`, which is open IN-04 `[inferred]`. A UX follow-up should align the vocabulary. |
+| UI-REVIEW fixes 2 and 3 (unlabelled columns, first-paint ladder before the first scan) | No. Advisory. | Presentation polish; behaviour is correct once the scan lands (about 5 s in my run). |
+| WR-07 (`app.rs:2221-2227` omits `worktree_phases`) | No. Advisory. | Affects only the Roadmap ghost node and `N wt phases` tag from quick 23a947f for worktree-only phases outside `.claude/worktrees/`. It is not in AGENT-01..07. Real defect, worth a small fix. |
+| WR-08 (scan has no overall deadline) | No. Advisory. | The scan is off the render path. The failure mode is stale views on a wedged mount, and no requirement promises a scan deadline. |
+| WR-09 (fixer estimate not workstream-aware) | No. Advisory. | Accuracy of a labelled estimate on a workstream edge case; unconfirmed. |
+| IN-01..IN-16 | No. | Info-level and not gating. IN-13 (the zero-write guard cannot see several write paths) is why I also checked the fixture for stray files after the tmux run. |
+| 25-SECURITY.md | Supports. | 33/33 threats closed, 0 open. |
 
 ### Required Artifacts
 
 | Artifact | Expected | Status | Details |
 |----------|----------|--------|---------|
-| `src/agents/mod.rs` | AgentLiveness, classify_facts, MAX_AGENT_AGE_SECS wired into classification | ✓ VERIFIED | `classify_facts` (mod.rs:113-137) now consumes `MAX_AGENT_AGE_SECS` (`age > MAX_AGENT_AGE_SECS` → `Ended`, before the released-lock check); `classify_child` routes through the same function. `AgentLiveness::is_running()` added (mod.rs:77-91). |
-| `src/agents/waves.rs` | Tiered active-phase vote; running-only `is_active`/`executor_mode`/`N agents` | ✓ VERIFIED | `derive`'s `vote` closure is tiered: running rows first, `Finished\|Stalled` fallback, then `state.active_phase_number()` (waves.rs:319-336); `is_active` (waves.rs:431-434), `executor_mode` and the `N agents` count all gate on `is_running()`. |
-| `src/agents/fixers.rs` | Running-fixer gate before any I/O | ✓ VERIFIED (with WR-06 caveat) | `estimate` returns `None` unless `fixers.iter().any(|r| r.liveness.is_running())` (fixers.rs:219-222), before `own_subjects`/`log_subjects` are read. The phase vote below the gate (fixers.rs:240-258) and the numerator union (fixers.rs:266-286) still treat every `Finished` fixer as equal to a running one — this is WR-06, an accuracy defect downstream of the gate, not a missing gate. |
-| `src/ui/screens/normal.rs` | Status-cell wrap using `is_active`/`summary_forms` | ✓ VERIFIED | Unchanged at normal.rs:896-901; correct now because `agent_summary_line` returns `None` for an orphan-only view. Two new byte-identical regression tests added and passing. |
-| `tests/agents_claude.rs`, `agents_waves.rs`, `agents_fixers.rs`, `agents_scan.rs` | Orphan-aging and tiered-vote regression coverage | ✓ VERIFIED | I ran all four suites myself (not just re-stating SUMMARY): `agents_claude` 12/12, `agents_waves` 7/7, `agents_fixers` 7/7, `agents_scan` 13/13 — all pass, 0 failed. |
+| `src/agents/{mod,worktrees,waves,fixers,processes}.rs` | Core scan, classification, wave model, fixer estimate | ✓ VERIFIED | Substantive (6.7k lines under `src/agents`), wired from `src/app.rs` scan handler and UI. |
+| `src/agents/adapters/{mod,claude}.rs` | Pluggable adapter seam and Claude adapter | ✓ VERIFIED | Wired through `registered_adapters()`. |
+| `src/agents/{unmerged,worktree_plans,worktree_phases,workstream_scope}.rs` | Post-phase additions | ✓ VERIFIED | Covered by `agents_unmerged`, `agents_worktree_plans`, `agents_workstreams` (10, 9 and 4 tests pass). Not part of AGENT-01..07. |
+| `src/ui/screens/{normal,detail}.rs` | Status-cell summary and Agents tab | ✓ VERIFIED | Rendered and driven in tmux. |
 
 ### Key Link Verification
 
 | From | To | Via | Status | Details |
 |------|----|-----|--------|---------|
-| `src/agents/mod.rs classify_facts` | `MAX_AGENT_AGE_SECS` | direct comparison before the lock-released branch | ✓ WIRED | mod.rs:130-137, confirmed by reading the function body. |
-| `src/agents/waves.rs derive`/`is_active`/`summary_forms` | `AgentLiveness::is_running()` | single predicate reused across activation, vote tier 1, executor mode, `N agents` | ✓ WIRED | waves.rs:319-336, 431-475, 485-490. |
-| `src/agents/fixers.rs estimate` | `AgentLiveness::is_running()` | gate before `own_subjects`/`log_subjects` | ✓ WIRED (gate only) | fixers.rs:219-224; the gate itself is real and precedes I/O, but the vote/union past the gate does not re-check `is_running()` per-row (WR-06). |
-| `normal.rs` status cell | `AgentView::is_active`/`summary_forms` | `agent_summary_line` | ✓ WIRED, regression-tested | normal.rs:896-901; pinned by two new byte-identical tests. |
+| Tick counter (`app.rs`) | `scan_projects_guarded` | `the_agents_scan_rides_the_session_poll_counter` | ✓ WIRED | Test passes. |
+| `AgentsScanned` handler | `ctx.agent_views` | insert `AgentView` per project | ✓ WIRED | `an_agents_scan_reaches_the_dashboard_status_cell` passes. One exception: WR-07 (advisory). |
+| `ctx.agent_views` | dashboard Status cell | `agent_summary_line` | ✓ WIRED | Seen in tmux: `w1/2 · 1 run · 1/4`. |
+| `ctx.agent_views` | Sessions > Agents tab and Waves pane | `render_agents_tab`, `render_waves_pane` | ✓ WIRED | Seen in tmux. |
 
-### Behavioral Spot-Checks / Test Runs (run directly by the verifier, not taken from SUMMARY)
+### Data-Flow Trace (Level 4)
+
+| Artifact | Data Variable | Source | Produces Real Data | Status |
+|----------|---------------|--------|--------------------|--------|
+| Status cell | `agent_views[alias]` | `git worktree list --porcelain`, `rev-list`, `status`, the adapter's meta and jsonl mtime, PLAN.md `wave:` | Yes. The tmux fixture's disk state showed up as live/done rows and wave counts. | ✓ FLOWING |
+| Agents tab rows | `AgentView.rows` | same | Yes | ✓ FLOWING |
+
+### Behavioral Spot-Checks
 
 | Behavior | Command | Result | Status |
 |----------|---------|--------|--------|
-| Phase-25 unit tests | `cargo test --no-fail-fast --lib agents::` | 45 passed, 0 failed | ✓ PASS |
-| Phase-25 integration suites | `cargo test --no-fail-fast --test agents_claude --test agents_waves --test agents_fixers --test agents_scan` | 12+7+7+13 = 39 passed, 0 failed | ✓ PASS |
-| Byte-identical dashboard regressions | `cargo test --no-fail-fast --lib ui::screens::normal` (filtered to the two new tests) | both `ok`; 55 passed, 0 failed overall | ✓ PASS |
-| Tick→scan→Status-cell integration | `cargo test --no-fail-fast --lib app::tests` (filtered to `an_agents_scan_reaches_the_dashboard_status_cell`) | `ok`; 76 passed, 0 failed overall | ✓ PASS |
-| Full workspace suite (regression check) | `cargo test --no-fail-fast` (via `rtk proxy`, raw output, once) | 2488 passed, 1 failed (expected: `envelope::policy::tests::the_config_section_constants_record_the_git_version_they_were_derived_against`, per project memory), 15 ignored | ✓ PASS (expected failure only) — matches the count the SUMMARY claims, independently reproduced |
+| Phase-25 integration suites | `rtk proxy cargo test --no-fail-fast --test agents_claude --test agents_waves --test agents_fixers --test agents_scan --test agents_process --test agents_unmerged --test agents_workstreams --test agents_worktree_plans` | 13+9+10+13+7+10+4+9 passed, 0 failed (1 ignored) | ✓ PASS |
+| Agents unit tests | `cargo test --lib agents` | 103 passed, 0 failed | ✓ PASS |
+| Byte-identical dashboard regressions | `cargo test --lib byte_identical` | 3 phase-25 tests `ok` | ✓ PASS |
+| Detail screen | `cargo test --lib ui::screens::detail` | 432 passed, 0 failed | ✓ PASS |
+| Full suite (collected gate, HEAD 54a73bf, source unchanged since) | `rtk proxy cargo test --no-fail-fast` | 3183 passed, 0 failed, 17 ignored; clippy `-D warnings` and `fmt --check` exit 0 | ✓ PASS (cited, not re-run) |
+| Rendered TUI | detached tmux 160x45, throwaway `$HOME`/XDG under the scratchpad, fixture with two `.claude/worktrees/agent-*` worktrees and subagent meta | Status cell, Waves pane and Agents tab as in Truths 2, 5 and 6. Session killed afterwards. | ✓ PASS |
+
+### Probe Execution
+
+SKIPPED. The phase declares no probes (`probe-*.sh`), and `scripts/*/tests/probe-*.sh` is not part of its plans.
 
 ### Requirements Coverage
 
 | Requirement | Source Plan | Description | Status | Evidence |
-|-------------|-------------|--------------|--------|----------|
-| AGENT-01 | 25-01 | Enumerate agent worktrees, non-intrusive git | ✓ SATISFIED | Unchanged; regression-checked |
-| AGENT-02 | 25-03, 25-07 | Wave model from frontmatter, done/running/stalled/queued | ✓ SATISFIED | `waves.rs` tiered vote and running-only gates |
-| AGENT-03 | 25-01, 25-02 | Adapter seam degrades gracefully | ✓ SATISFIED | Unchanged; regression-checked |
-| AGENT-04 | 25-02, 25-07 | Claude Code adapter: metadata + liveness | ✓ SATISFIED | New orphan-aging tests pass |
-| AGENT-05 | 25-04, 25-07 | Dashboard summary, unchanged with no active agents | ✓ SATISFIED — CR-01 closed | Age bound + running-only activation; byte-identical regressions pass |
-| AGENT-06 | 25-05 | Detail Agents sub-view | ✓ SATISFIED | Unchanged; regression-checked |
-| AGENT-07 | 25-06, 25-07 | Fixed/total estimate, labelled as estimate | ✓ SATISFIED (WR-06 accuracy caveat, not blocking) | Running-fixer gate added; the estimate's own phase/count math still needs a tiered vote (follow-up) |
+|-------------|-------------|-------------|--------|----------|
+| AGENT-01 | 25-01, 25-07 | Enumerate agent worktrees non-intrusively | ✓ SATISFIED | Truth 1 |
+| AGENT-02 | 25-03, 25-07 | Wave model from frontmatter | ✓ SATISFIED | Truth 2 |
+| AGENT-03 | 25-01, 25-02 | Adapter seam degrades gracefully | ✓ SATISFIED | Truth 3 |
+| AGENT-04 | 25-02, 25-07 | Claude adapter | ✓ SATISFIED | Truth 4 |
+| AGENT-05 | 25-04, 25-07 | Dashboard summary | ✓ SATISFIED | Truth 5 |
+| AGENT-06 | 25-05, 25-07 | Agents sub-view | ✓ SATISFIED | Truth 6 |
+| AGENT-07 | 25-06, 25-07 | Fixed/total estimate | ✓ SATISFIED | Truth 7 |
 
-All seven requirement IDs (AGENT-01..07) are declared across the phase's PLAN frontmatter (including 25-07) and are listed in `.planning/REQUIREMENTS.md` under "Agent Observation (AGENT)" with a Traceability row each. `.planning/REQUIREMENTS.md`'s per-requirement checkbox table (lines 108-114) is still unchecked and its traceability table (lines 190-196) still reads "Gaps Found" for all seven IDs — this is stale bookkeeping from before the 25-07 gap closure and this re-verification; it does not reflect code state and should be updated to "Complete" as part of closing out this re-verification, but it is a documentation-sync item, not a code gap.
+All seven IDs appear in PLAN frontmatter (`requirements:` of plans 25-01..25-07). All seven are `[x]` in `.planning/REQUIREMENTS.md` (lines 109-115) with `Complete` in the traceability table (lines 370-376). No orphaned requirements are mapped to Phase 25.
 
 ### Anti-Patterns Found
 
-None. No `TBD`/`FIXME`/`XXX`/`TODO`/`HACK`/`placeholder` markers in any phase-25 file touched by 25-07 (`src/agents/mod.rs`, `src/agents/waves.rs`, `src/agents/fixers.rs`, `src/ui/screens/normal.rs`, `tests/agents_claude.rs`, `tests/agents_waves.rs`, `tests/agents_fixers.rs`) — checked directly with grep, zero matches.
-
-### Code Review Cross-Reference (25-REVIEW.md, re-review after 25-07, commit `5579bbc`)
-
-The re-review (`status: issues_found`, 0 critical / 5 warning / 7 info) confirms CR-01 and WR-01 resolved and reports one new warning (WR-06) plus carried-forward warnings/infos. Independent judgment on each, against the phase's must-haves:
-
-- **CR-01 — Resolved, confirmed independently.** I read `src/agents/mod.rs:113-137`, `src/agents/waves.rs:319-336,431-434`, `src/ui/screens/normal.rs:896-901` myself and ran the cited regression tests; they match the review's evidence exactly. This is the truth-5/AGENT-05 gap from the prior verification, now closed.
-- **WR-01 — Resolved in `waves.rs`.** The tiered vote (`derive`'s `vote` closure) is confirmed by reading the code and by `running_agents_outvote_orphans_for_the_active_phase` passing.
-- **WR-06 (new) — judged a non-blocking Warning, not a gap.** `fixers::estimate`'s running-fixer *gate* (fixers.rs:219-224) is real and does exactly what AGENT-07 needs — no estimate switches on unless something is running. But past that gate, `is_active_fixer` still keeps `Finished` (fixers.rs:137-148), and the phase vote (fixers.rs:240-258) and the finding-id union (fixers.rs:266-286) treat every `Finished` fixer as equal to the running one(s). So when an aborted fix run's orphaned (but not yet aged-out) fixers outnumber a genuinely running one, the estimate's `fixers` count, `phase`, and `fixed` numerator can all point at the wrong, already-finished run. I confirmed the untiered vote directly in the code (`votes` loop at fixers.rs:243-249 has no `is_running()` filter). This is the same *shape* of defect as CR-01/WR-01, but it does not defeat AGENT-07's stated truth — "the summary shows an estimated fixed/total count ... labelled as an estimate" — because a labelled `~k/N fixed` estimate is still shown while something is running; it can just be attributed to the wrong phase or count the wrong fixers. This is an accuracy/quality defect in the estimate's own math, in the same family as the already-deferred WR-03/WR-04 (wrong REVIEW file, uncapped double-counting) that the prior verification correctly classified as non-blocking warnings under the same "truth only requires a labelled estimate" reasoning. I apply that same standard here rather than a stricter one merely because the new instance resembles CR-01's shape. **Recommendation:** fold WR-06 into the same follow-up as WR-03/WR-04/WR-05 (a small, scoped fixer-estimate accuracy pass), not into this phase's gap-closure loop.
-- **WR-02 (hung git call freezes the scan) — carried forward, unchanged, non-blocking.** No must-have promises a scan timeout; this is an availability/robustness concern for follow-up.
-- **WR-03, WR-04 (fixer estimate file-selection and double-count) — carried forward, unchanged, non-blocking**, per the same reasoning as the prior verification.
-- **WR-05 (long-path prefix fallback can misattribute subagents) — carried forward, unchanged, non-blocking.** An edge case (>200-unit encoded paths colliding on a 200-unit prefix), not covered by any must-have's specific wording.
-- **IN-01 through IN-07 — info-level, non-gating.** IN-01 (redraw-storm from orphan rows) is a performance/comment-accuracy note, not a correctness defect in what is shown. IN-04's impact is "increased" per the review but remains explicitly unconfirmed ([inferred], no locking runtime observed that doesn't lock) — left as an open info item, not escalated to human verification, because it is a hypothesis about adapter behavior the review itself flags as unproven, not an observed defect.
+None blocking. A grep for `TBD|FIXME|XXX|TODO|HACK` over `src/agents/**` and `tests/agents_*.rs` returned no unreferenced markers. The three items in `deferred-items.md` (WINDOWS.md drift, clippy warnings, fmt) are closed with evidence in that file.
 
 ### Human Verification Required
 
-None. Every item above — including the new CR-01 closure and the new WR-06 finding — was settled with direct code inspection (file:line citations above), independent test execution (not just re-stating SUMMARY/REVIEW claims), and a full-suite regression run. No visual, real-time, or external-service check was needed to reach a verdict.
+None. Everything was settled with tests, code reading and a tmux drive of the real binary.
 
 ### Gaps Summary
 
-No gaps. The prior blocking gap (CR-01: orphaned agent worktrees never aged out of `Finished`/`Stalled`, permanently overriding the dashboard Status cell and defeating AGENT-05's "unchanged otherwise") is closed by plan 25-07: `classify_facts` now returns `Ended` once inactivity exceeds `MAX_AGENT_AGE_SECS` (a day), and `AgentLiveness::is_running()` (Live\|Idle only) is the single predicate that switches the dashboard summary, the active-phase vote's first tier, executor mode, and the fixer estimate's gate. I independently reproduced the fix's regression tests (byte-identical dashboard output for an aged-out orphan and for a within-bound `Finished` orphan) and ran the full phase-25 test surface plus a full workspace regression pass (2488 passed / 1 expected-failure / 15 ignored) myself, rather than trusting the SUMMARY's counts.
-
-One new, non-blocking finding (WR-06) surfaced in the re-review: the fixer estimate's phase attribution and finding-count math, downstream of the new running-fixer gate, still weighs finished orphan fixers equally with running ones. I judged this a quality/accuracy issue for AGENT-07 (consistent with the prior verification's treatment of WR-03/WR-04), not a gap against any stated must-have — recommended for the same follow-up pass as the other open fixer-estimate warnings (WR-03, WR-04, WR-05).
-
-`.planning/REQUIREMENTS.md`'s checkbox and traceability tables for AGENT-01..07 are stale (unchecked / "Gaps Found") relative to this passing re-verification and should be updated as bookkeeping, not as a code gap.
+No gaps. All seven requirements hold at HEAD after the later review fixes and quick tasks, with 0 critical review findings. Four advisory items are recorded above (WR-07, WR-08, WR-09, and the UI-review `unmerged`/`done` wording). They are good candidates for a small follow-up pass. None defeats an AGENT-01..07 must-have.
 
 ---
 
-_Verified: 2026-09-26_
+_Verified: 2026-10-28_
 _Verifier: Claude (gsd-verifier)_
