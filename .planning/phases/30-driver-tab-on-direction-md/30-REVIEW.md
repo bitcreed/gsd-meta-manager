@@ -1,119 +1,112 @@
 ---
 phase: 30-driver-tab-on-direction-md
-reviewed: 2026-10-28T00:00:00Z
+reviewed: 2026-10-29T00:00:00Z
 depth: standard
-files_reviewed: 12
+files_reviewed: 3
 files_reviewed_list:
   - docs/DRIVER-SANDBOX.md
-  - src/driver/direction.rs
-  - src/driver/lock.rs
-  - src/driverctl/serve.rs
-  - src/driverctl/store.rs
   - src/launcher/config_dir.rs
-  - src/launcher/run.rs
-  - src/launcher/stop.rs
-  - src/state_reader/driver_frontmatter.rs
-  - tests/driverctl_serve.rs
-  - tests/driverctl_store.rs
   - tests/launcher_config_dir.rs
 findings:
   critical: 0
-  warning: 1
-  info: 3
+  warning: 2
+  info: 2
   total: 4
 status: issues_found
 ---
 
-# Phase 30: Code Review Report
+# Phase 30: Code Review Report (incremental, quick task 261028-v2z)
 
-**Reviewed:** 2026-10-28
+**Reviewed:** 2026-10-29
 **Depth:** standard
-**Files Reviewed:** 12
+**Files Reviewed:** 3
 **Status:** issues_found
 
 ## Summary
 
-Reviewed the diff since `5cd877b` for the twelve files, with the surrounding code read for context.
-No cargo build or test was run, as instructed.
+Incremental re-review of `git diff ec8f8fb HEAD` over the three scoped files (commits 601d20f, 1158139, 92dac7a, bfbd231), which fix WR-13. IN-10..IN-17 are still open and not re-raised.
 
-**WR-11 (lock.rs probe/holder opens): fix verified, no defect.**
-- `probe_at` and `read_holder_at` now go through the same `open_lock_file` as `acquire_at`: `O_NOFOLLOW | O_NONBLOCK`, a type check and link-count check on the open handle, and a 4096-byte cap on the holder read.
-- A symlink, hard link, FIFO or directory is `Unknown(EINVAL)` or `None`, and none of them blocks.
-- The type check runs before `flock`, so a FIFO never reaches it.
-- The callers I traced (`stop.rs`, `push.rs`, the detach loop in `run.rs`, `read_driver_run_text`) all treat `Unknown` and `None` fail-closed.
-- `O_NONBLOCK` stays on the descriptor held in `RunLock`. That is harmless on a regular file.
+**WR-13 verdict: VERIFIED FIXED on both paths.**
 
-**WR-12 (direction.rs exchange-back): fix verified, no defect.** I traced these cases through `exchange_or_restore`:
-- `DIRECTION.md` absent at the exchange-back: `Restored`, then `continue` re-reads the restored save.
-- `EEXIST` on the no-replace restore: the helper exchanges again, then `give_back_newest` fixes the ordering. The older save is back at `DIRECTION.md`, the newer one is at the temp name, and the next round swaps them.
-- Exhaustion and non-`NOENT` errors keep the displaced temp.
-- `Restored` consumes one of `SPLICE_TRIES`, which is bounded.
+- **Managed seed path (`managed_settings`, config_dir.rs:682-712).**
+  - Host `hooks` objects go through `well_formed_hooks` before `append_unique`. Every surviving event value is a non-empty array of well-formed matcher entries, so the old `or_insert_with(|| other.clone())` branch is gone.
+  - Host `permissions` objects go through `well_formed_permissions`. The four `PERMISSION_LISTS` keys survive only as string-item arrays. Any other key survives only as a string or bool.
+  - A host `deny` can therefore never arrive as a non-array, and a non-array `allow`, `ask` or `additionalDirectories` never reaches the file.
+  - The existing IN-03 and WR-08 guards stay in place.
+- **Degraded path (`settings_transform`, config_dir.rs:617-622).**
+  - The same two filters run on `settings["hooks"]` and `settings["permissions"]` before `filter_user_hooks` and before the gate and deny list are added. This is one code path for both postures.
+  - I traced the `wrong_shape_nested_host_docs()` corpus by hand against `settings_transform(json!({}), Some(gate))`. Every doc yields `hooks: {}`, then gate-only hooks, and `permissions: {}`, then deny-only. That equals the baseline, so the loop test `a_wrong_shape_nested_host_value_never_reaches_the_degraded_settings` is sound.
+- **Ordering.** `well_formed_hooks` runs before `filter_user_hooks`, so the "entries that were empty before keep their place" rule still holds. `hooks: []` entries pass the shape check and are kept. The `return true` branch for entries without a `hooks` array in `filter_user_hooks` is now unreachable (see IN-19).
+- **Tests.**
+  - The unit tests are loop-driven over one shared corpus for both postures.
+  - The new test `well_formed_host_values_still_merge_beside_wrong_shape_ones` pins that good entries still merge, in both postures.
+  - The integration test `a_managed_seed_drops_wrong_shape_nested_host_values_and_keeps_the_gate` exercises the file plus a drop-in through `seed()`.
+  - The doc edit in DRIVER-SANDBOX.md matches the code.
 
-No file is overwritten or unlinked on any path.
-
-The other changes are correct as written:
-- The guarded `state.json` reads in `store.rs`, `stop.rs` and `run.rs`. The wall-clock pre-check treating a refused file as zero time is covered by the store's later refusal. `connections` and `items` are bounded, so the 1 MiB cap on `state.json` is not a realistic regression.
-- `ensure_lock_file` in `serve.rs` and `run.rs`.
-- The `("hooks" | "permissions", _) => {}` arm. The arm order is right and nothing non-object reaches the catch-all.
-
-One warning and three infos follow. None of them re-raises IN-10 to IN-14.
+I found no critical issues and no regressions in the diff. Two warnings remain in the fix itself. One is a pre-existing inconsistency that the diff now codifies with a comment and a test. The other is a residual one nesting level deeper, of the same class WR-13 targets.
 
 ## Warnings
 
-### WR-13: `managed_settings` still copies non-array nested host values verbatim, one level below the WR-08 fix
+### WR-14: Scalar `permissions` settings use first-doc-wins while every other scalar uses last-doc-wins, contradicting drop-in precedence
 
-**File:** `src/launcher/config_dir.rs:593-616`
-**Issue:** The WR-08 / 29-REVIEW WR-02 fix stops a non-object host `hooks` or `permissions` from replacing the gate. Its own rationale is that "the safety tier must not depend on Claude Code refusing such a file". One level down, the same hole remains.
-- For `("hooks", Object)`, an event whose value is not an array goes through `ours.entry(event).or_insert_with(|| other.clone())`. That is also how a non-array `permissions.<list>` is handled.
-- For any event or list name the launcher does not already hold, that inserts the malformed value into the managed file. Examples are `{"hooks": {"Notification": "x"}}` and `{"permissions": {"allow": "x"}}`.
-- The managed file then carries a schema-invalid `hooks` or `permissions` block next to the gate hooks and the deny list.
-- If Claude Code rejects or drops an invalid managed file or block, the gate and the deny list go with it. That is the failure mode WR-08 closed at the top level.
-- IN-03's guard only protects names the launcher already holds (`deny`, `PreToolUse`, `Stop`).
-- The new tests (`non_object_shapes`, `a_managed_seed_keeps_the_gate_...`) only vary the top-level `hooks` / `permissions` value, so this is not pinned.
-- Whether Claude Code drops the whole file or only the bad block is unverified. The code-level hole is certain, and the project's own rule says to close it.
+**File:** `src/launcher/config_dir.rs:704-709`
+**Issue:**
+- For the string and bool `permissions` settings (`defaultMode`, `disableBypassPermissionsMode`, `blockReadsOutsideWorkingDirectories`), the merge does `ours.entry(key).or_insert(other)`. The first doc that sets the key wins.
+- The catch-all arm (line 720) does `settings.insert(key, value)`, so for every other scalar the last doc wins.
+- `host` is documented as "in precedence order: the file, then the drop-ins". As I recall, Claude Code lets later `managed-settings.d/*.json` files override earlier values; I did not re-verify this against current Claude Code docs.
+- So an administrator who sets `defaultMode: "default"` in `managed-settings.json` and tightens it to `"plan"` in `managed-settings.d/10-x.json` gets the base file's value in the sandbox. This is the opposite of what runs on the host.
+- The old code had the same `or_insert_with`, but only for non-array values. The diff now makes it the deliberate, commented behavior ("the first doc that sets it wins (I-6)"), and no test covers more than one doc setting the same scalar.
 
-**Fix:** Drop non-array entries instead of inserting them:
+**Fix:** Make last-doc-wins the rule for scalar permission settings, as at top level, and add a two-doc test:
 ```rust
-for (event, entries) in events {
-    if let Value::Array(entries) = entries {
-        append_unique(ours, event, entries);
-    }
-    // a non-array event value is ignored, like a non-object `hooks`
+other => {
+    ours.insert(key, other); // later doc (drop-in) overrides, like the catch-all
 }
 ```
-Apply the same change to the `permissions` lists. Extend `non_object_shapes` coverage to `{"hooks": {"Notification": <non-array>}, "permissions": {"allow": <non-array>}}`, and assert the output keeps only array-valued, launcher-known entries.
+Plus a test with the file setting `defaultMode: "default"` and a drop-in setting `"plan"`, asserting `"plan"`. If first-wins is a deliberate safety choice, document why it differs from top-level scalars.
+
+### WR-15: Hook-item validation stops at `type`, so `{"type":"command"}` or a non-string `command` still reaches the managed file beside the gate
+
+**File:** `src/launcher/config_dir.rs:365-378`
+**Issue:**
+- `is_well_formed_hook_entry` accepts any hook item that is an object with a string `type`. `command`, `url`, `prompt` and `timeout` are explicitly not checked.
+- A host entry such as `{"matcher":"Bash","hooks":[{"type":"command"}]}`, `{"type":"command","command":7}` or `{"type":"command","command":"x","timeout":"soon"}` therefore passes. It is merged into `hooks.PreToolUse` and so on in the managed file, next to the gate hooks.
+- WR-13's own rationale is that "the safety tier must not depend on Claude Code refusing such a file". The residual is the same failure mode one level deeper. The risk is that Claude Code rejects or drops the block, and the gate and deny list go with it. I did not verify what Claude Code does.
+- `command` is the one type that is stable across releases and is the only type `filter_user_hooks` ever keeps. The "varies by release" justification does not cover it.
+- In the degraded posture `filter_user_hooks` drops such an item. Only the managed seed is exposed, so the two postures diverge on this input.
+
+**Fix:** Require a string `command` when `type == "command"`:
+```rust
+.all(|hook| {
+    let Some(Value::String(ty)) = hook.get("type") else { return false };
+    ty != "command" || hook.get("command").is_some_and(Value::is_string)
+})
+```
+Add `{"hooks":[{"type":"command"}]}` and `{"hooks":[{"type":"command","command":7}]}` to `wrong_shape_nested_host_docs()`. Note that for the degraded path the baseline equality already holds for these, so the test would pin the managed path.
 
 ## Info
 
-### IN-15: `ensure_lock_file` documents a directory at the name as `InvalidData`, but it is `EISDIR`
+### IN-18: Dropped host policy is silent
 
-**File:** `src/driver/lock.rs:216-226`
-**Issue:** The doc says a symlink, hard link, FIFO "or a directory at the name is `InvalidData`". `ensure_lock_file` opens read+write, so `open(2)` on a directory fails with `EISDIR` (`ErrorKind::IsADirectory`) before the type check runs.
-- The read-only callers (`probe_at`, `read_holder_at`) do reach the type check for a directory. That is probably where the claim came from.
-- The serve / launch message therefore reads "Is a directory (os error 21)" rather than "is not a regular file".
-- No test covers the directory case, so the doc and the behavior can drift unnoticed.
+**File:** `src/launcher/config_dir.rs:384-424`
+**Issue:**
+- `well_formed_hooks` and `well_formed_permissions` discard host administrator policy (whole events, entries, rule items, unknown-shape permission keys) with no `tracing` event.
+- The doc promises that host policy is "merged in, never hidden". An operator whose valid-but-unrecognised policy is dropped has no way to learn why the sandbox is more permissive than the host.
+- `PERMISSION_LISTS` also treats every other `permissions` key as a string or bool setting. A future object-valued or array-valued key would be dropped for the same silent reason.
 
-**Fix:** Either reword the doc to "a directory is refused (`EISDIR`)" or map `IsADirectory` to the same `InvalidData` "is not a regular file" message inside `open_lock_file`. Add a directory test beside the FIFO one.
+**Fix:** Emit one `tracing::warn!` per dropped item, naming the file, event or key, and reason. The merge loop could pass a label in, or return the dropped keys. Reword the "never hidden" claim to "never hidden unless malformed".
 
-### IN-16: `probe_at` flattens every guard refusal to `Unknown(EINVAL)`, so `driver stop` and `push` print "Invalid argument"
+### IN-19: Dead branch in `filter_user_hooks`, and shadowed `key` in `managed_settings`
 
-**File:** `src/driver/lock.rs:438-446` (callers `src/launcher/stop.rs:105`, `src/launcher/push.rs:942`)
-**Issue:** `open_lock_file` words a precise reason: "is a symbolic link", "has 2 hard links, not exactly one" or "is not a regular file". `probe_at` discards that text and returns `Unknown(Errno::INVAL)`.
-- `stop_run` and the push path print only the errno: "could not probe the run lock: Invalid argument (os error 22)".
-- A user with a hard-linked or symlinked `launcher.lock` is told nothing actionable. That compounds IN-13's "no way out".
-- `acquire_at` does surface the full text through `LockError::Unavailable`, so the read side is the inconsistent one.
+**File:** `src/launcher/config_dir.rs:556-558`, `src/launcher/config_dir.rs:701`
+**Issue:**
+- `filter_user_hooks` is private and only called after `well_formed_hooks`. Its `let Some(Value::Array(inner)) = entry.get_mut("hooks") else { return true; }` branch (and the `Value::Array` guard at line 552) can no longer fire, so it is now misleading dead code.
+- In the `permissions` arm of `managed_settings`, `for (key, value) in well_formed_permissions(lists)` shadows the outer `(key, value)` of the `for (key, value) in doc` loop. This is harmless today but easy to misread next to the sibling arms.
 
-**Fix:** Keep `LockProbe::Unknown(Errno)` for compatibility and add a refusal variant that carries the text, for example `LockProbe::Refused(String)`. Have `stop.rs` and `push.rs` report that text. Alternatively, log the `InvalidData` message at the call site before collapsing it.
-
-### IN-17: `direction.rs` `read_run_file` duplicates `read_run_file_capped`, with a different error text
-
-**File:** `src/driver/direction.rs:605-621`
-**Issue:** `imp::read_run_file` re-implements `driver_frontmatter::read_run_file_capped`: open through `open_run_file`, check the handle's length, then `take(CAP + 1)`, then check the length again. The only difference is the message ("file is larger than 1 MiB" versus "<path>: larger than the N-byte limit"). Two copies of a security-relevant bounded read can drift, and the next cap or guard change has to land twice.
-
-**Fix:** Delete the local copy and call `crate::state_reader::driver_frontmatter::read_run_file_capped`, which already carries the path in its message. If the exact text matters to a test, adjust that test instead.
+**Fix:** Rename the inner binding to `(name, setting)`. Either keep the `filter_user_hooks` guards with a comment saying they are defensive, or tighten them with a `debug_assert!`.
 
 ---
 
-_Reviewed: 2026-10-28_
+_Reviewed: 2026-10-29_
 _Reviewer: Claude (gsd-code-reviewer)_
 _Depth: standard_
