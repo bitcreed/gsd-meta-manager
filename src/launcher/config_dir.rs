@@ -869,6 +869,81 @@ mod tests {
         assert_eq!(managed["permissions"]["ask"], "y");
     }
 
+    /// Every non-object JSON shape. I-2: the bool and the non-empty array complete the
+    /// string, empty array, null and number the finding names.
+    fn non_object_shapes() -> Vec<Value> {
+        vec![
+            json!("x"),
+            json!([]),
+            json!([{"matcher": "Bash", "hooks": [{"type": "command", "command": "admin-audit"}]}]),
+            json!(null),
+            json!(7),
+            json!(true),
+        ]
+    }
+
+    #[test]
+    fn a_non_object_host_hooks_or_permissions_never_replaces_the_managed_gate() {
+        // 28-REVIEW WR-08 / 29-REVIEW WR-02
+        let gate = GateCommands {
+            hook: "h".to_owned(),
+            stop_guard: "s".to_owned(),
+        };
+        let baseline = managed_settings(&gate, &[]);
+        for key in ["hooks", "permissions"] {
+            for shape in non_object_shapes() {
+                let mut doc = Map::new();
+                doc.insert(key.to_owned(), shape.clone());
+                assert_eq!(
+                    managed_settings(&gate, &[Value::Object(doc)]),
+                    baseline,
+                    "host {key} = {shape} changed the managed settings"
+                );
+            }
+        }
+
+        // A malformed value does not stop the rest of the merge, nor a later doc.
+        let admin_hook =
+            json!({"matcher": "Bash", "hooks": [{"type": "command", "command": "admin-audit"}]});
+        let host = vec![
+            json!({"hooks": "x", "permissions": null, "model": "admin"}),
+            json!({"permissions": {"deny": ["Edit"]}, "hooks": {"PreToolUse": [admin_hook]}}),
+        ];
+        let managed = managed_settings(&gate, &host);
+        assert_eq!(managed["model"], "admin");
+        let mut want_deny: Vec<Value> = DENY_TOOLS.iter().map(|t| json!(t)).collect();
+        want_deny.push(json!("Edit"));
+        assert_eq!(managed["permissions"]["deny"], Value::Array(want_deny));
+        let gate_entry = baseline["hooks"]["PreToolUse"][0].clone();
+        assert_eq!(
+            managed["hooks"]["PreToolUse"],
+            json!([gate_entry, admin_hook])
+        );
+    }
+
+    #[test]
+    fn a_non_object_host_hooks_or_permissions_never_replaces_the_degraded_gate() {
+        // 28-REVIEW WR-08 / 29-REVIEW WR-02; I-3: this already held at HEAD and is
+        // now pinned.
+        let gate = GateCommands {
+            hook: "h".to_owned(),
+            stop_guard: "s".to_owned(),
+        };
+        let home = Path::new("/home/u");
+        let baseline = settings_transform(json!({}), Some(&gate), home, &[]);
+        for key in ["hooks", "permissions"] {
+            for shape in non_object_shapes() {
+                let mut doc = Map::new();
+                doc.insert(key.to_owned(), shape.clone());
+                assert_eq!(
+                    settings_transform(Value::Object(doc), Some(&gate), home, &[]),
+                    baseline,
+                    "host {key} = {shape} changed the degraded settings"
+                );
+            }
+        }
+    }
+
     #[test]
     fn seed_without_a_host_dir_still_seeds_the_gate() {
         let root = TempDir::new().unwrap();
