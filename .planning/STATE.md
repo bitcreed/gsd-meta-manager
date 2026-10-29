@@ -4,8 +4,8 @@ milestone: v2.0
 milestone_name: Autonomous Orchestration
 status: completed
 stopped_at: Phase 28.1 complete — all phases complete
-last_updated: "2026-10-29T01:54:32.247Z"
-state_head: 7b90d25054358e9ef01a0bbf219e031f0bc328b1
+last_updated: "2026-10-29T03:42:31.241Z"
+state_head: 40870ca01c73cdcce8bf5a353bf6cc93ab118381
 progress:
   total_phases: 16
   completed_phases: 16
@@ -15,7 +15,7 @@ progress:
 last_activity: 2026-10-28
 current_phase: "28.1"
 current_phase_name: Sandbox Egress & Agent-Channel Isolation
-last_activity_desc: "Project cleanup: Phases 19/21/22/23/26 closed by supersession, the capabilities phase (formerly numbered 32) deferred to backlog 999.8, WINDOWS 0 open"
+last_activity_desc: "Completed quick task 261028-v2z: Fix WR-13 (managed_settings nested wrong-shape host values fail closed)"
 ---
 
 # Project State
@@ -505,6 +505,7 @@ Older entries (Phase 19 T-19-* rows, Phase 21 round-13 gaps, Phase 26 risks, 31-
 | 261028-t3d | Harden lock and state-file opens against FIFO/symlink blocking: apply the acquire_at guard (O_NOFOLLOW, nonblocking open, regular-file + single-link check, size cap; see batch 261028-n0u WR-10/WR-08) to src/driver/lock.rs probe_at and read_holder_at (Phase 27 WR-04, Phase 30 WR-11, Phase 31 WR-01) and to the startup opens of DIRECTION.lock in src/driverctl/serve.rs ~934-939 and state.json in src/driverctl/store.rs ~644 (Phase 27 WR-03); close the pending todo about two other lock-file opens lacking these guards if it is the same set; factor a shared helper where natural; add tests that a planted FIFO does not block and a symlink is refused; update dispositions to fixed in phases 27, 30, 31 | 2026-10-28 | 523aa75 | .planning/quick/261028-t3d-harden-lock-and-state-file-opens-against-fifo-symlink-blocki |
 | 261028-t3e | Keep the human's save when DIRECTION.md is missing at the first exchange-back in src/driver/direction.rs run_loop ~901-914 (Phase 30 WR-12, Phase 31 WR-03, completes WR-10): the save must not be left at a hidden temp file the next sweep deletes nor error, while a crashed run must still never dispatch on a missing DIRECTION.md (see the Phase 28 WR-04 deferral reasoning); add a test; update dispositions to fixed in phases 30, 31 | 2026-10-28 | b407eb7 | .planning/quick/261028-t3e-keep-the-human-s-save-when-direction-md-is-missing-at-the-fi |
 | 261028-t3f | Make host settings merge fail closed in src/launcher/config_dir.rs ~583-616 (Phase 28 WR-08, Phase 29 WR-02): a host hooks or permissions value that is not a JSON object must never replace the launcher's gate hooks or deny list; add tests for string, array, null and number host values; update dispositions to fixed in phases 28, 29 | 2026-10-28 | 5dfbeb6 | .planning/quick/261028-t3f-make-host-settings-merge-fail-closed-in-src-launcher-config |
+| 261028-v2z | Fix WR-13: managed_settings nested wrong-shape host values fail closed | 2026-10-28 | 40870ca | [261028-v2z-fix-wr-13-managed-settings-nested-wrong-](./quick/261028-v2z-fix-wr-13-managed-settings-nested-wrong-/) |
 
 ## Session Continuity
 
