@@ -1027,6 +1027,151 @@ mod tests {
         }
     }
 
+    /// Every wrong-shape nested host doc (30-REVIEW WR-13). Both posture tests loop
+    /// over this one list, so the postures cannot drift (I-4).
+    fn wrong_shape_nested_host_docs() -> Vec<Value> {
+        let mut docs = Vec::new();
+        for event in ["PreToolUse", "Stop", "Notification"] {
+            for wrong in [
+                json!("x"),
+                json!({"matcher": "Bash", "hooks": []}),
+                json!(null),
+                json!(7),
+                json!(true),
+            ] {
+                docs.push(json!({"hooks": {event: wrong}}));
+            }
+        }
+        for event in ["PreToolUse", "Notification"] {
+            for entry in [
+                json!("x"),
+                json!(7),
+                json!(null),
+                json!([]),
+                json!({"matcher": "Bash"}),
+                json!({"hooks": "x"}),
+                json!({"hooks": {}}),
+                json!({"hooks": [7]}),
+                json!({"hooks": [{"command": "x"}]}),
+                json!({"hooks": [{"type": 7, "command": "x"}]}),
+                json!({"matcher": 7, "hooks": []}),
+            ] {
+                docs.push(json!({"hooks": {event: [entry]}}));
+            }
+        }
+        for list in PERMISSION_LISTS {
+            for wrong in [
+                json!("x"),
+                json!({"x": 1}),
+                json!(null),
+                json!(7),
+                json!(true),
+            ] {
+                docs.push(json!({"permissions": {*list: wrong}}));
+            }
+            docs.push(json!({"permissions": {*list: [7, null, true, {}, ["Edit"]]}}));
+        }
+        for key in ["defaultMode", "disableBypassPermissionsMode", "x"] {
+            for wrong in [json!([]), json!({}), json!(null), json!(7)] {
+                docs.push(json!({"permissions": {key: wrong}}));
+            }
+        }
+        docs
+    }
+
+    fn test_gate() -> GateCommands {
+        GateCommands {
+            hook: "h".to_owned(),
+            stop_guard: "s".to_owned(),
+        }
+    }
+
+    #[test]
+    fn a_wrong_shape_nested_host_value_never_reaches_the_managed_file() {
+        // 30-REVIEW WR-13; I-1, I-2, I-3
+        let gate = test_gate();
+        let baseline = managed_settings(&gate, &[]);
+        for doc in wrong_shape_nested_host_docs() {
+            assert_eq!(
+                managed_settings(&gate, std::slice::from_ref(&doc)),
+                baseline,
+                "host doc {doc} changed the managed settings"
+            );
+        }
+    }
+
+    #[test]
+    fn a_wrong_shape_nested_host_value_never_reaches_the_degraded_settings() {
+        // 30-REVIEW WR-13; I-4
+        let gate = test_gate();
+        let home = Path::new("/home/u");
+        let baseline = settings_transform(json!({}), Some(&gate), home, &[]);
+        for doc in wrong_shape_nested_host_docs() {
+            assert_eq!(
+                settings_transform(doc.clone(), Some(&gate), home, &[]),
+                baseline,
+                "host doc {doc} changed the degraded settings"
+            );
+        }
+    }
+
+    #[test]
+    fn well_formed_host_values_still_merge_beside_wrong_shape_ones() {
+        // 30-REVIEW WR-13; I-2, I-6; both postures
+        let gate = test_gate();
+        let home = Path::new("/home/u");
+        let h = json!({"matcher": "Bash", "hooks": [{"type": "command", "command": "rtk hook claude"}]});
+        let host = json!({
+            "hooks": {"PreToolUse": ["x", h, {"hooks": "x"}]},
+            "permissions": {
+                "deny": [7, "Edit"],
+                "allow": "x",
+                "defaultMode": "default",
+                "disableBypassPermissionsMode": "disable",
+                "blockReadsOutsideWorkingDirectories": true,
+                "x": 7
+            }
+        });
+
+        let managed = managed_settings(&gate, std::slice::from_ref(&host));
+        let base_managed = managed_settings(&gate, &[]);
+        assert_eq!(
+            managed["hooks"]["PreToolUse"],
+            json!([base_managed["hooks"]["PreToolUse"][0].clone(), h])
+        );
+        let mut want_deny: Vec<Value> = DENY_TOOLS.iter().map(|t| json!(t)).collect();
+        want_deny.push(json!("Edit"));
+        assert_eq!(managed["permissions"]["deny"], Value::Array(want_deny));
+
+        let degraded = settings_transform(host, Some(&gate), home, &[]);
+        let base_degraded = settings_transform(json!({}), Some(&gate), home, &[]);
+        assert_eq!(
+            degraded["hooks"]["PreToolUse"],
+            json!([base_degraded["hooks"]["PreToolUse"][0].clone(), h])
+        );
+        let mut want_deny = vec![json!("Edit")];
+        want_deny.extend(DENY_TOOLS.iter().map(|t| json!(t)));
+        assert_eq!(degraded["permissions"]["deny"], Value::Array(want_deny));
+
+        for out in [&managed, &degraded] {
+            assert!(out["permissions"].get("allow").is_none());
+            assert!(out["permissions"].get("x").is_none());
+            assert_eq!(out["permissions"]["defaultMode"], "default");
+            assert_eq!(
+                out["permissions"]["disableBypassPermissionsMode"],
+                "disable"
+            );
+            assert_eq!(
+                out["permissions"]["blockReadsOutsideWorkingDirectories"],
+                true
+            );
+            let hooks = out["hooks"].as_object().unwrap();
+            assert_eq!(&well_formed_hooks(hooks), hooks);
+            let permissions = out["permissions"].as_object().unwrap();
+            assert_eq!(&well_formed_permissions(permissions), permissions);
+        }
+    }
+
     #[test]
     fn seed_without_a_host_dir_still_seeds_the_gate() {
         let root = TempDir::new().unwrap();
