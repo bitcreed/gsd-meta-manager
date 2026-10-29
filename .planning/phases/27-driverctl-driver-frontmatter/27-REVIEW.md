@@ -1,6 +1,6 @@
 ---
 phase: 27-driverctl-driver-frontmatter
-reviewed: 2026-10-19T00:00:00Z
+reviewed: 2026-10-28T00:00:00Z
 depth: standard
 files_reviewed: 28
 files_reviewed_list:
@@ -33,139 +33,208 @@ files_reviewed_list:
   - tests/fixtures/driverctl/spike003/r261a/state.json
   - tests/fixtures/driverctl/spike003/run1/LOG.md
 findings:
-  critical: 1
-  warning: 9
-  info: 3
-  total: 13
+  critical: 0
+  warning: 6
+  info: 10
+  total: 16
 status: issues_found
 ---
 
 # Phase 27: Code Review Report
 
-**Reviewed:** 2026-10-19
+**Reviewed:** 2026-10-28
 **Depth:** standard
 **Files Reviewed:** 28
 **Status:** issues_found
 
+This is a re-review at current HEAD. It replaces the earlier round's report. Phase 31 deleted `drive` and the goal layer, and Phases 28, 28.1 and 30 plus the cleanup batches have since changed these files.
+
 ## Summary
 
-Phase 27 adds the `driverctl` client, the `serve` socket server, the `RunStore` single writer, the LOG/counter/protocol modules, the DIRECTION.md exchange-splice and the frontmatter schema. The core is carefully built: validation precedes mutation, the run lock is in the type, the frontmatter emitter escapes every control character, and the client gate fails closed. Pre-existing files (`cli.rs`, `main.rs`, `lib.rs`, `driver/lock.rs`, `driver/mod.rs`, `state_reader/mod.rs`) were reviewed only for the phase-27 diff and look sound. `main`'s early synchronous dispatch and the fallible `init_tracing` are correct.
+The core is sound. The single-writer store, the validate-then-apply commit order, the run-lock-by-type design, the exchange-verify splice and the fail-closed hook client all hold up under tracing. I found no correctness defect that loses data or opens the dispatch gate.
 
-The code has one real defect against its own hostile-driver threat model. The gap-round scan reads project files the sandboxed driver can plant, with no file-type or size guard, while holding the one store mutex. Beyond that there are several robustness gaps where the code or docs claim more than the implementation delivers. These are the per-read-only connection timeout, the stale-socket "never steals" claim, header-value hardening and the fresh-exit terminal case. Fixtures were treated as data and not reviewed for defects. No structural (fallow) findings were supplied.
+Two findings were reproduced against the built binary or a scratch crate rather than inferred:
 
-## Critical Issues
+- **WR-01:** clap rejects hyphen-leading values on `driverctl log`.
+- **IN-02:** the YAML alias-expansion cost.
 
-### CR-01: Gap scan reads driver-plantable files with no type or size guard, under the store mutex
+Most of the warnings share one cause. The WR-08 and WR-02 hardening (`O_NOFOLLOW | O_NONBLOCK`, size cap) was applied to `acquire_at`, the scan and the DIRECTION reader, but not to the remaining opens of run-directory files. Those opens are the lock probe, the holder read, the `state.json` read at store open, and the `DIRECTION.lock` create. The run directory is documented as writable by sibling sandboxes and `--unsandboxed` runs.
 
-**File:** `src/driverctl/scan.rs:76-79` (called from `src/driverctl/serve.rs:547-548` and `src/driverctl/store.rs:975-983`)
-**Issue:** `scan_verifications` runs `fs::metadata(&path)` then `fs::read(&path)` on every `*-VERIFICATION.md` under `<project>/.planning/phases/*/`. That tree lives in the project root, which is writable by the sandboxed driver (it writes these very files). There is no `is_file()` check, no `symlink_metadata`, no `O_NONBLOCK`/`O_NOFOLLOW` and no size cap. A hostile or prompt-injected driver can:
-- `mkfifo .planning/phases/01-x/01-VERIFICATION.md`. The launcher's `fs::read` then blocks forever in `open(2)` with no writer.
-- or `ln -s /dev/zero .planning/phases/01-x/01-VERIFICATION.md`. `metadata` succeeds and `fs::read` grows without bound (OOM-kill of the launcher/serve).
-
-The ticker takes the store mutex before calling `scan_tick` (`serve.rs:547`), so a blocked read wedges every `handle_json` call. No log, show or hook request is ever answered, and every gate hook times out client-side and is denied. This defeats T-27-24 ("a stalled connection never blocks a gate hook") and the single-writer liveness the whole phase relies on. The thread also cannot be interrupted by SIGTERM: shutdown does `ticker_handle.join()` before anything else (`serve.rs:641`), so a ticker stuck in `open(2)` blocks graceful shutdown for good.
-**Fix:**
-```rust
-// scan.rs: only regular, non-symlink files, bounded read, never block on open.
-use std::io::Read;
-use std::os::unix::fs::OpenOptionsExt;
-
-const MAX_VERIFICATION_BYTES: u64 = 1 << 20;
-
-let Ok(meta) = fs::symlink_metadata(&path) else { continue };
-if !meta.file_type().is_file() || meta.len() > MAX_VERIFICATION_BYTES { continue; }
-let Ok(mut f) = fs::OpenOptions::new()
-    .read(true)
-    .custom_flags(rustix::fs::OFlags::NONBLOCK.bits() as i32 | rustix::fs::OFlags::NOFOLLOW.bits() as i32)
-    .open(&path) else { continue };
-let mut raw = Vec::new();
-if f.take(MAX_VERIFICATION_BYTES).read_to_end(&mut raw).is_err() { continue; }
-```
-Also do the filesystem scan outside the mutex. Have the ticker call `scan_verifications(&project)` first, then take the lock only to feed `observe_verification`. A slow scan must never hold the writer. Apply the same `symlink_metadata`/`is_dir` discipline to `visible_children` for symlinked phase directories. Add a test that plants a FIFO and asserts that `scan_verifications` returns promptly.
+No Critical issues.
 
 ## Warnings
 
-### WR-01: Connection timeout is per-read, so trickling clients hold all 32 slots indefinitely
+### WR-01: `driverctl log` rejects any value that starts with `-`, where the argparse client accepted it
 
-**File:** `src/driverctl/serve.rs:423-462, 471-482, 509`
-**Issue:** `CONN_TIMEOUT` is a per-`read` socket timeout. A client that sends one byte every ~9 s is never timed out. It can keep a handler thread for up to `MAX_REQUEST_BYTES * 9 s`. `MAX_CONNECTIONS = 32` such connections make every other request, including every gate hook, answer `busy`, which the client turns into a deny. The test `a_flood_of_idle_connections_is_answered_busy_and_the_gate_denies` shows 32 idle connections already lock everyone out for the timeout, and trickling extends that without bound. The client side was given a total deadline for exactly this reason (`driverctl_cli.rs:50-55`, T-27-14) and the server side was not. The sandboxed driver owns a connectable 0600 socket, so this is reachable from the stated adversary.
-**Fix:** Track a total deadline in `read_request` (for example `Instant::now() + CONN_TIMEOUT`) and, before each `read`, call `set_read_timeout(Some(deadline.saturating_duration_since(now)))`. Return `TimedOut` once the deadline passes.
+**File:** `src/cli.rs:426-459`
+**Issue:** The 17 flags of `DriverctlLog` are plain `#[arg(long)] Option<String>`. clap treats a value that begins with `-` as another flag. The spike's argparse client accepted any such value that contains a space, so a driver prompt that worked under it now fails with rc 2 before the server sees it.
 
-### WR-02: `end --reason fresh-exit` followed by shutdown leaves status `running`, so the reader derives a false `crashed`
+Reproduced against `target/debug/gsd-meta-manager`:
 
-**File:** `src/driverctl/store.rs:1002-1004` (with `1174-1179` and `src/driverctl/serve.rs:646`)
-**Issue:** `fresh-exit` records `RunStatus::Running` and sets `ended_by_driver = true`. `set_terminal` returns `KeptDriverEnd` whenever `ended_by_driver` is set, even when the kept status is not terminal. For `driverctl serve` there is no relaunch after a fresh-exit, so SIGTERM leaves `status: running` with the lock released, and `derive_status` reports `Crashed` for a run that was stopped cleanly. No test covers set_terminal after `fresh-exit`; the only keep-driver-end test uses `all-done`.
+- `driverctl log status --item I-01 --state done --outcome "- note"` gives `error: unexpected argument '- ' found`, rc 2.
+- `--outcome "-5 failing"` fails the same way.
+- `dispatched ... --round -1` fails the same way.
+
+`outcome`, `evidence`, `question`, `reason` and `step` are free text a driver LLM writes, and a leading `- ` or `-N` is plausible. The server's `one_line` accepts these values, so only the client is stricter. The comment at `cli.rs:415` says the client must be a pass-through ("adding a `value_parser` would be a second judge"), and this is the same kind of second judge. The failure is reported as a clap usage error, not a `REJECTED:` line.
 **Fix:**
 ```rust
-if self.state.ended_by_driver && self.state.status.is_terminal() {
-    return Ok(TerminalOutcome::KeptDriverEnd);
-}
+#[arg(long, allow_hyphen_values = true)]
+pub outcome: Option<String>,
+// ...repeat for every one of the 17 value flags (or set it on the Command via
+// #[command(allow_hyphen_values = true)] on DriverctlLog's Args derive).
 ```
-Add a store test for `fresh-exit` followed by `set_terminal(Stopped, ..)`.
+Add a client test that sends `--outcome "- note"` and expects the recorded request to carry it.
 
-### WR-03: LOG.md line is appended before `state.json` is durable, so a failed save leaves them diverged
+### WR-02: A failed `FileWatcher::new` leaves the terminal in raw mode on the alternate screen
 
-**File:** `src/driverctl/store.rs:507-523`
-**Issue:** `commit` appends to LOG.md (508-513), then calls `write_state` (522). If `write_state` fails (ENOSPC, EIO) the LOG already carries the event but `self.state` is unchanged and the caller gets `internal: ...`. The module doc promises that an I/O failure "leaves the in-memory state as it was and writes nothing further". A driver that retries a rejected `dispatched` writes a second `dispatched` line while `dispatches` counts it once. `outstanding_dispatch` (counters.rs) and the crash/stall classification read LOG.md as the audit source, so the two records then disagree.
-**Fix:** Write `state.json` first and append the LOG only on success, or document and test the divergence. At minimum, correct the doc claim and make the LOG append failure the only abort point before the state write.
+**File:** `src/main.rs:457-472`
+**Issue:** `tui::init()` (line 457) enters raw mode and the alternate screen. `FileWatcher::new(event_bus.tx.clone())?` at line 472 comes after it and returns early on error. `FileWatcher::new` returns `anyhow::Result`, and it fails when inotify instances are exhausted. The `?` skips `tui::restore()`, so the shell is left raw and the error text is drawn on the alternate screen.
 
-### WR-04: Early returns after `begin_launch` leave status `running` and a stale socket file
+The comments at `main.rs:401-405` and `main.rs:546-548` say all fallible startup `?` calls precede `tui::init()`. That is not true of this one.
+**Fix:** Construct the watcher before `tui::init()`:
+```rust
+let mut watcher = FileWatcher::new(event_bus.tx.clone())?;   // move above tui::init()
+let mut terminal = tui::init();
+```
+Alternatively wrap the startup in a block that calls `tui::restore()` on `Err`.
 
-**File:** `src/driverctl/serve.rs:604-632`
-**Issue:** `begin_launch` writes `running` (605). The bind-failure path correctly records `serve:bind-failed`. The ticker spawn failure path (`.map_err(...)?` at 631) returns without `set_terminal`, without unlinking the freshly bound socket (path remains after `listener` drops), and without stopping accept. The lock is released as the store drops, so readers derive `crashed` for a run that never served. The same applies if a later `?` is added.
-**Fix:** Wrap the post-bind setup in a closure or guard, so any error calls `set_terminal(Stopped, "serve:startup-failed")` and `fs::remove_file(&sock)` before returning.
+### WR-03: Run-start opens of untrusted run-dir names are unhardened (`DIRECTION.lock`, `state.json`)
 
-### WR-05: Stale-socket replacement never checks that the socket is actually stale
+**File:** `src/driverctl/serve.rs:934-939`, `src/driverctl/store.rs:644`, `src/launcher/run.rs:696-701` (same pattern, outside this phase's list)
+**Issue:** `serve` takes the run lock and then does the following:
 
-**File:** `src/driverctl/serve.rs:314-336, 602, 615`
-**Issue:** `existing_socket` returns `true` for any socket file. `replace_and_bind` then unlinks it. Holding this run's lock does not make the socket this run's. An explicit `--sock` pointing at another live run's socket (or a default-path 32-bit hash collision) unlinks and rebinds a live server's socket, orphaning that server. `driverctl/mod.rs` fact 9 and serve.rs fact 3 claim it "never steals a live run's socket"; the tests only cover the same-run case, which the lock already blocks.
-**Fix:** Before unlinking, probe with `UnixStream::connect(sock)`. Treat success as `SocketPath { "socket is live" }` and only `ECONNREFUSED` as stale. Add a test with two runs and a shared `--sock`.
+- It opens `DIRECTION.lock` with `OpenOptions::new().create(true).write(true).truncate(false)`. That open has no `O_NOFOLLOW` or `O_NONBLOCK`. A FIFO pre-planted at that name blocks `open(2)` for good while the run lock is held, so the run can never start and can only be killed. A symlink there makes `create(true)` create an empty file at the link target.
+- `RunStore::open_with_clock` then calls `fs::read(&state_path)`, which follows symlinks, blocks on a FIFO and is uncapped.
 
-### WR-06: Driver-supplied header values may carry control characters other than CR/LF
+`acquire_at` was hardened for exactly these cases (WR-08), and `read_run_file_capped` and `open_run_file` exist for the reads. These two opens do not use them. `driver_frontmatter.rs:810-814` states that a run directory is writable from inside an `--unsandboxed` run, which is the leftover-plant scenario.
+**Fix:**
 
-**File:** `src/driverctl/log.rs:154-165` (used by `src/driverctl/protocol.rs:379-386, 479-557`)
-**Issue:** `one_line` rejects `\n`, `\r` and `|` only. `step`, `phase`, `evidence`, `outcome`, `question`, `reason`, `session` and `loop-mode` come from the sandboxed LLM and are written verbatim to LOG.md. They can carry ESC (terminal escape injection when a human `cat`s or `less`es the log, or when a Phase 30 view renders the line), NUL, VT/FF/FS-RS and U+0085/U+2028/U+2029 (line breaks to Python's `splitlines`, which the spike tooling uses). The module's own tightening list adds CR and rejects control characters in report bodies, and the launcher-side `header_safe` strips all of them, so the driver side is the inconsistent one.
-**Fix:** In `one_line`, reject `c.is_control() || c == '\u{2028}' || c == '\u{2029}'` (tab optional) in addition to `|`. Add a table test for ESC, NUL, VT, U+0085 and U+2028.
+- Create `DIRECTION.lock` through the same open flags as `acquire_at`: `custom_flags(O_NOFOLLOW | O_NONBLOCK)`, then check on the handle that it is a regular file. Put this in one helper that both `serve` and `launcher::run` call.
+- Read `state.json` through `read_run_file_capped`. Map `InvalidData` to `StoreError::CorruptState` and `NotFound` to the fresh-run branch.
 
-### WR-07: Gap-round `seen` is keyed by digest alone, so identical files in different phases collapse
+### WR-04: `probe_at` and `read_holder_at` can block, follow links and read without a bound
 
-**File:** `src/driverctl/counters.rs:80-83`
-**Issue:** `observe_gap` returns `Duplicate` if `state.seen` contains the digest, regardless of phase. Two phases whose `gaps_found` VERIFICATION.md bytes are identical (a stub, a templated minimal file) hash identically. The second phase's round is never counted, and the cap the launcher enforces under-counts. The same happens when a file is reverted to earlier bytes (v1, v2, v1). The `scan.rs` test only avoids this by putting the same bytes in dirs that are never observed together.
-**Fix:** Key `seen` by `format!("{phase}:{digest}")` (or keep the digest key and compare `seen[digest].phase` to the current phase), keeping the `state.json` shape tolerant of the spike layout.
+**File:** `src/driver/lock.rs:304-312` and `src/driver/lock.rs:370-385`, reached from `src/state_reader/driver_frontmatter.rs:959`
+**Issue:** Both functions use `File::open(path)`. That open has no `O_NONBLOCK` or `O_NOFOLLOW`, and no type or size check. `probe_at` is called by `read_driver_run_text`, which the TUI runs in `spawn_blocking` for every listed run (`list_driver_runs`). `launcher/stop.rs` and `launcher/push.rs` call it too.
 
-### WR-08: Client `connect` has no timeout, contradicting the documented total deadline
+- A FIFO renamed over `launcher.lock` parks that worker forever.
+- A symlink at `launcher.lock` makes the status derive from a different file's flock. A dead run can read `Held` and so as written, or the reverse.
+- `read_holder_at` does an unbounded `read_to_string`.
 
-**File:** `src/driverctl_cli.rs:50-55, 166-175`
-**Issue:** `CLIENT_TIMEOUT` is documented as the total for "a connect, a write or the wait for a reply", but `UnixStream::connect(&path)` is a blocking call with no timeout. When a listener exists but its owner is stopped or wedged (SIGSTOP, the CR-01 hang), the backlog fills and `connect(2)` blocks indefinitely. A gate hook then hangs until Claude Code kills it, which is only safe if the hook seed carries `onFailure: block` (the Phase 28 hand-off).
-**Fix:** Connect on a helper thread with `mpsc::recv_timeout(CLIENT_TIMEOUT)`, or use a non-blocking `connect` via `rustix` and poll for writability. At minimum, correct the doc to say connect is unbounded.
+The same module's `acquire_at` and the DIRECTION reader already refuse all of this, so the two read paths are the inconsistent ones.
+**Fix:** Open both through the `acquire_at` flag pair. Check `file.metadata()?.file_type().is_file()`. Treat anything else as `LockProbe::Unknown(Errno::INVAL)` in `probe_at` and as `None` in `read_holder_at`. Bound the holder read with `take(4096)`.
 
-### WR-09: Wall-clock assertions in default-run tests are flake-prone
+### WR-05: `serve` shutdown overwrites a driver's `paused` end with `stopped`
 
-**File:** `tests/driverctl_lock_race.rs:181-188`, `tests/driverctl_race.rs:349-352`, `tests/driverctl_serve.rs:681-685`
-**Issue:** These tests assert absolute timings on a shared machine. `real_holder_is_still_refused_within_budget` requires `elapsed < 500 ms + 100 ms`; any scheduler pause after the final retry sleep fails it. `editor_race_smoke` bounds in-place losses by a Poisson 99th percentile with an expectation near 0.07 (so exactly one loss is tolerated, two fail) on a 1 s run under CPU contention. `stalled_connection_does_not_block_the_gate` asserts a 2 s ceiling. All run in the default suite, and the working tree is shared with other agents.
-**Fix:** Widen slack (for example `+ 500 ms`), assert only the lower bound plus "did not hang", or mark the in-place statistical bound `#[ignore]` like `editor_race_full` and keep only the rename-save `lost == 0` check in the smoke test.
+**File:** `src/driverctl/store.rs:1375`, reached from `src/driverctl/serve.rs:1008`
+**Issue:** `set_terminal` keeps a driver `RUN end` only when `ended_by_driver && status.is_terminal()`. `RunStatus::is_terminal()` is false for `Paused` (`driver_frontmatter.rs:152-161`). After `end --reason pause`, a SIGTERM to `driverctl serve` therefore rewrites the status to `stopped` with reason `serve:signal` and discards the driver's `paused`.
+
+The module docs (`serve.rs` fact 8) say the stop is written "unless the driver logged `RUN end`". The WR-02 comment in `set_terminal` justifies the exception only for `fresh-exit` (`Running`). `derive` treats `paused` as a clean end that should read as written, so serve's own shutdown contradicts it.
+**Fix:** Keep every driver end except the `fresh-exit` one:
+```rust
+let driver_end_is_final = self.state.ended_by_driver
+    && (self.state.status.is_terminal() || self.state.status == RunStatus::Paused);
+if driver_end_is_final { return Ok(TerminalOutcome::KeptDriverEnd); }
+```
+Add a store test: `end --reason pause`, then `set_terminal(Stopped, ...)`, and expect `KeptDriverEnd` with status `paused`.
+
+### WR-06: Log-directory fallback to `/tmp` is a predictable path in a shared directory
+
+**File:** `src/main.rs:28-30`
+**Issue:** `init_tracing` falls back to `PathBuf::from("/tmp")` when `dirs::data_local_dir()` is `None`. `RollingFileAppender` then opens `/tmp/gsd-meta-manager.log.<date>` with create and append. The path is fixed, and the open does not refuse a pre-created symlink or a file owned by another user. Another local user can plant a symlink there, and the process then appends log text to the link target.
+
+`serve.rs` refuses a `/tmp` fallback for its socket for exactly this reason ("a shared directory is exactly where a squatter pre-creates the path"). The comment at `main.rs:15-24` is careful about failing without a panic, but not about this path.
+**Fix:** Drop the fallback and return, installing no subscriber, as the builder-error branch already does:
+```rust
+let Some(base) = dirs::data_local_dir() else { return };
+let log_dir = base.join("gsd-meta-manager");
+```
 
 ## Info
 
-### IN-01: Orphaned `state.json` temp files are never swept
+### IN-01: Wrong binary name in the duplicate-alias hint
 
-**File:** `src/driverctl/store.rs:480` (and `src/driver/direction.rs:354-372`)
-**Issue:** `write_state` creates `NamedTempFile` with a random `.tmpXXXX` name in the run dir. A SIGKILL between create and persist leaves it behind. `sweep_stale_temps` only matches the `.DIRECTION.md.fm.` prefix. Orphans accumulate, one per crash.
-**Fix:** Give the state temp a distinct prefix via `tempfile::Builder::new().prefix(".state.json.tmp.")` and sweep that prefix at startup too.
+**File:** `src/main.rs:161`
+**Issue:** The message says `Provide an explicit alias: gsd-manager add ...`. The binary is `gsd-meta-manager`, and line 136 uses the right name. A user who pastes the hint gets "command not found".
+**Fix:** Change `gsd-manager` to `gsd-meta-manager`.
 
-### IN-02: A panic in the ticker thread is silent and permanent
+### IN-02: A 447-byte DIRECTION.md frontmatter costs about 0.8 s of CPU per parse
 
-**File:** `src/driverctl/serve.rs:538-553, 641`
-**Issue:** If `scan_tick` or `flush_heartbeat` panics, the ticker thread dies, no gap rounds are counted and no heartbeat flush occurs for the rest of the run. `ticker_handle.join()` discards the result, so nothing is logged. The connection path wraps panics in `catch_unwind`; the ticker does not.
-**Fix:** Wrap the tick body in `catch_unwind` and log the failure to stderr, or check the `join()` result and report it.
+**File:** `src/state_reader/driver_frontmatter.rs:488-498`
+**Issue:** `parse_driver_frontmatter` parses the block twice, once for `VersionProbe` and once for the full schema. The YAML backend is now `noyalib`, behind the `serde_yml 0.0.13` shim. A nested-alias "lol" document of 447 bytes ended in `alias expansion limit exceeded` after about 0.8 s in a release build and 2 s in a debug build, measured in a scratch crate. The error is typed, so T-27-10 holds. But a hostile `DIRECTION.md` in an `--unsandboxed` run costs a `spawn_blocking` worker about 1.6 s per refresh per run row.
+**Fix:** Cheap guard before parsing. The emitter never writes anchors or aliases, so refuse a block containing an unquoted `&`/`*` token. Or parse once by folding `driver_frontmatter_version` into the main struct and checking it after.
 
-### IN-03: Replay test silently accepts a changed dispatch budget
+### IN-03: Module docs cite a RUSTSEC advisory in a parser the crate no longer uses
 
-**File:** `tests/driverctl_replay.rs:289-311, 338-341`
-**Issue:** When the recorded `dispatch=N/B` budget differs from the fixture body, the test only prints `REPLAY-NOTE` and compares the regenerated budget to the body. SC1 asserts the same events with the same values, so a budget regression that moves the value together with the body would pass. The counter `N` is still compared exactly, which keeps the main property.
-**Fix:** Keep an explicit allow-list of known budget edits (run id, event index, expected values) and fail on any difference outside it.
+**File:** `src/state_reader/driver_frontmatter.rs:54-58`, `Cargo.toml:43`
+**Issue:** The docs justify hand-written emission with "RUSTSEC-2025-0068 sits in its emitter path". `serde_yml 0.0.13` is a deprecated compatibility shim over `noyalib` (its `lib.rs` carries `#![deprecated]`), and the libyml chain is gone. The rationale is stale. Every call site also compiles against a deprecated crate.
+**Fix:** Update the paragraph. Plan a move to `noyalib` or `serde-saphyr` directly.
+
+### IN-04: `fm_status` regex lets `\s*` cross a newline
+
+**File:** `src/driverctl/counters.rs:138-139`
+**Issue:** `(?m)^status:\s*["']?([A-Za-z_]+)` allows `\s*` to span lines. A frontmatter line `status:` with an empty value followed by `gaps_found: x` captures `gaps_found`, and `status:\nfoo: 1` captures `foo`. Real files are unlikely to hit this, but the counter is the cap the launcher enforces and the intent is "the value on this line".
+**Fix:** Use `[ \t]*` instead of `\s*`. If the spike's regex was identical, record the deviation next to D-27.
+
+### IN-05: The lock module's "worst case is a misleading string" claim is no longer true
+
+**File:** `src/driver/lock.rs:87-96`, with `src/launcher/stop.rs:134-147`
+**Issue:** The `LockHolder` docs say a forged record "can never grant a second lock, so the worst outcome of tampering is a misleading string (T-17-08)". `driver stop` now takes `holder.pgid` from that record and sends `SIGTERM` to it. In a bwrap run the file is bound to `/dev/null`, so this only matters for `--unsandboxed` runs, where the driver already runs as the same user. The stop path does verify `probe_at == Held` first, but that does not tie the pid to the lock holder.
+**Fix:** Amend the doc to say the record is a signal target for `driver stop`. Optionally verify before signalling that `/proc/<pid>` still holds the lock file open.
+
+### IN-06: Stale references to the deleted `drive` command and goal layer
+
+**File:** `src/cli.rs:530`, `src/state_reader/mod.rs:87` and `src/state_reader/mod.rs:977`
+**Issue:**
+
+- A test message mentions "the TUI's `drive` respawn".
+- Two comments mention a "legal driver goal target" and "the DRIVE-05 gate set". Phase 31 removed both concepts, and `disk_status.rs` still cites DRIVE-05.
+
+The test message and comments now describe code that does not exist.
+**Fix:** Reword to current behaviour, or delete the clauses.
+
+### IN-07: Report-body handling: Unicode line separators allowed, stdin unbounded, over-1-MiB reports rejected whole
+
+**File:** `src/driverctl/protocol.rs:433-440`, `src/driverctl_cli.rs:416`, `src/driverctl/serve.rs:729-737`
+**Issue:**
+
+- **Line separators:** `report_body` rejects `char::is_control` characters but allows U+2028 and U+2029. `one_line` and the launcher-side `header_safe` treat U+2028/U+2029 as line breaks (U+2028/U+2029 are not `is_control`). `parse_log` splits on `\n` only, so nothing forges an event today. It is an inconsistent rule, and the doc comment on `one_line` says some readers treat them as breaks.
+- **Unbounded stdin:** the client reads stdin with an unbounded `read_to_end`, while the server caps a request at 1 MiB. A worker report whose JSON exceeds 1 MiB is therefore refused with `request too large`, so the 15-line truncation never applies and the event is lost.
+
+**Fix:**
+
+- Apply the same `unsafe_char` predicate in `report_body`.
+- Cap the client's stdin read, for example at 512 KiB. Keep the first lines and flag truncation, or fail with a clear message.
+
+### IN-08: `read_driver_run_text` does not re-check size after reading and fails on non-UTF-8
+
+**File:** `src/state_reader/driver_frontmatter.rs:939-953`
+**Issue:** The size is checked on the handle before reading. After `take(CAP+1).read_to_string` there is no post-read length check, unlike `read_run_file_capped` (lines 901-903), so a file that grew past the cap during the read returns a 1-byte-over buffer as success. `read_to_string` also errors on non-UTF-8, so a `DIRECTION.md` with one stray byte reads as an unreadable row. The store reads the same file with `from_utf8_lossy` and carries on.
+**Fix:** Reuse `read_run_file_capped` and decode with `String::from_utf8_lossy`.
+
+### IN-09: Test reliability notes
+
+**File:** `tests/driverctl_client.rs:32`, `tests/driverctl_replay.rs:45`, `tests/driverctl_lock_race.rs:163-190`, `tests/driverctl_serve.rs:799-802`
+**Issue:**
+
+- **Unwritable data dir:** the T-27-11 guard (`XDG_DATA_HOME=/proc/nonexistent-gsdmm`) only has an effect where `dirs` honours `XDG_DATA_HOME`, which is Linux. On macOS the variable is ignored, so these tests pass without exercising an unwritable data dir.
+- **Lock budget race:** `real_holder_is_still_refused_within_budget` has the holder release after 800 ms while the budget is 500 ms. A 300 ms scheduler stall makes the second acquire succeed.
+- **Flood test:** `a_flood_of_idle_connections...` waits 500 ms for 32 accepts to land, a fixed sleep that is load-sensitive.
+
+**Fix:**
+
+- Set `HOME` to the unwritable path as well, or assert with a Linux gate.
+- Hold the lock until the second attempt finishes (join on a channel) instead of a fixed 800 ms.
+- Poll `/proc/net/unix` or retry the client until the `busy` answer appears.
+
+### IN-10: Committed fixtures carry a real username, hostname and session id
+
+**File:** `tests/fixtures/driverctl/spike003/r261a/state.json:4,68-90` (and the run1 and s002-R2 fixtures)
+**Issue:** The fixtures contain `/home/blk/.local/state/...` project paths, the hostname `mediabox` and a real Claude `session_id`. The repository is public. This is low impact, but it is identifying data in a published test fixture.
+**Fix:** Replace the user and host with neutral values (`/home/user`, `testhost`) and regenerate the affected replay expectations if any depend on them.
 
 ---
 
-_Reviewed: 2026-10-19_
+_Reviewed: 2026-10-28_
 _Reviewer: Claude (gsd-code-reviewer)_
 _Depth: standard_
