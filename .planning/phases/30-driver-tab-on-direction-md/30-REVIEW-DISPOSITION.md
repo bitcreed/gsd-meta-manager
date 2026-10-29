@@ -3,6 +3,22 @@ phase: 30
 review: 30-REVIEW.md
 titles: json
 findings:
+  - id: WR-14
+    severity: warning
+    disposition: open
+    title: "Scalar `permissions` settings use first-doc-wins while every other scalar uses last-doc-wins, contradicting drop-in precedence"
+  - id: WR-15
+    severity: warning
+    disposition: open
+    title: "Hook-item validation stops at `type`, so `{\"type\":\"command\"}` or a non-string `command` still reaches the managed file beside the gate"
+  - id: IN-18
+    severity: info
+    disposition: open
+    title: "Dropped host policy is silent"
+  - id: IN-19
+    severity: info
+    disposition: open
+    title: "Dead branch in `filter_user_hooks`, and shadowed `key` in `managed_settings`"
   - id: WR-13
     severity: warning
     disposition: fixed
@@ -123,19 +139,23 @@ findings:
     severity: info
     disposition: fixed
     title: "The launch form and the launcher read the `control` word with different readers"
-open: 8
-total: 30
-recorded: 2026-10-29T03:20:02.797Z
+open: 12
+total: 34
+recorded: 2026-10-29T05:46:11.945Z
 ---
 
 # Phase 30: Code Review Disposition
 
 | Finding | Severity | Disposition | Source |
 |---------|----------|-------------|--------|
-| WR-13 | warning | fixed | fixed by quick 261028-v2z 1158139 (managed_settings drops a wrong-shape nested host value instead of copying it: a hook event value that is not an array, a matcher entry that is not an object or whose matcher is not a string or whose hooks is not an array of objects with a string type, a permissions list (allow, ask, deny, additionalDirectories) that is not an array and every non-string rule inside one, and any other permissions key whose value is neither a string nor a bool; well-formed entries and string or bool settings such as defaultMode and disableBypassPermissionsMode still merge, which narrows the review's drop-every-non-array fix so host policy is not hidden; the degraded settings.json runs the same filter in bfbd231; RED-first bwrap seed test from host files on disk plus shared shape tables in both postures [inferred — cleanup 2026-10-28]) |
-| IN-15 | info | open | - |
-| IN-16 | info | open | - |
-| IN-17 | info | open | - |
+| WR-14 | warning | open | - |
+| WR-15 | warning | open | - |
+| IN-18 | info | open | - |
+| IN-19 | info | open | - |
+| WR-13 | warning | fixed | fixed by quick 261028-v2z 1158139 (managed_settings drops a wrong-shape nested host value instead of copying it: a hook event value that is not an array, a matcher entry that is not an object or whose matcher is not a string or whose hooks is not an array of objects with a string type, a permissions list (allow, ask, deny, additionalDirectories) that is not an array and every non-string rule inside one, and any other permissions key whose value is neither a string nor a bool; well-formed entries and string or bool settings such as defaultMode and disableBypassPermissionsMode still merge, which narrows the review's drop-every-non-array fix so host policy is not hidden; the degraded settings.json runs the same filter in bfbd231; RED-first bwrap seed test from host files on disk plus shared shape tables in both postures [inferred — cleanup 2026-10-28]) (not in the current review) |
+| IN-15 | info | open | - (not in the current review) |
+| IN-16 | info | open | - (not in the current review) |
+| IN-17 | info | open | - (not in the current review) |
 | WR-11 | warning | fixed | fixed by quick 261028-t3d 4977318 (probe_at and read_holder_at open through acquire_at's guard (open_lock_file): a symlink, hard link or FIFO is Unknown(EINVAL) or None without blocking, and the holder read is capped at 4096 bytes; read_driver_run_text derives LivenessUnknown for a FIFO launcher.lock; the separate marker-scan in-flight flag is in todo 2026-10-28-launcher-marker-scan-in-flight-flag.md [inferred — cleanup 2026-10-28]) (not in the current review) |
 | WR-12 | warning | fixed | fixed by quick 261028-t3e 7f4fc49 (run_loop's exchange back and give_back_newest share exchange_or_restore: an ENOENT restores the raced save by no-replace rename, EEXIST exchanges again, and the splice retries on the restored save; the D-17 gate stays fail-closed for an absent DIRECTION.md, pinned by a guard test b42e57c [retry-after-restore inferred — cleanup 2026-10-28]) (not in the current review) |
 | IN-10 | info | open | - (not in the current review) |
