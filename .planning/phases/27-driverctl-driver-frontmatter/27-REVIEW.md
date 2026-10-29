@@ -1,6 +1,6 @@
 ---
 phase: 27-driverctl-driver-frontmatter
-reviewed: 2026-10-28T00:00:00Z
+reviewed: 2026-10-29T00:00:00Z
 depth: standard
 files_reviewed: 28
 files_reviewed_list:
@@ -42,23 +42,27 @@ status: issues_found
 
 # Phase 27: Code Review Report
 
-**Reviewed:** 2026-10-28
+**Reviewed:** 2026-10-29
 **Depth:** standard
 **Files Reviewed:** 28
 **Status:** issues_found
 
-This is a re-review at current HEAD. It replaces the earlier round's report. Phase 31 deleted `drive` and the goal layer, and Phases 28, 28.1 and 30 plus the cleanup batches have since changed these files.
+This is a re-review at current HEAD, after quick batch 261028-t3d (commits 65233b8 and 4977318). It replaces the previous report. Finding ids carry over from the prior report. A finding that is unchanged keeps its id and title, and the two new findings continue the numbering (WR-10 and WR-11). Gaps in the numbering are intentional.
 
 ## Summary
 
-The core is sound. The single-writer store, the validate-then-apply commit order, the run-lock-by-type design, the exchange-verify splice and the fail-closed hook client all hold up under tracing. I found no correctness defect that loses data or opens the dispatch gate.
+**Resolved since the prior review (not re-listed):**
 
-Two findings were reproduced against the built binary or a scratch crate rather than inferred:
+- **WR-03 is fixed.** `serve` and `driver launch` now create `DIRECTION.lock` through `lock::ensure_lock_file`. That function uses `O_NOFOLLOW | O_NONBLOCK`, checks on the open handle that the file is a regular file, and checks that the link count is exactly one. `RunStore::open_with_clock` reads `state.json` through `read_run_file_capped`. A symlink (live or dangling), a FIFO or an over-cap file is `CorruptState`, and the file is left alone. `check_wall_clock_budget` and `stop_orphaned_scope` use the same guarded read. Tests pin FIFO, dangling-symlink and over-cap cases in `lock.rs`, `store.rs` and `tests/driverctl_serve.rs`. I traced the `Err` arm order in `open_with_clock`: `NotFound` takes the fresh-run branch, `InvalidData` takes `CorruptState`, and a dangling symlink gives ELOOP, which maps to `InvalidData`, so it is not mistaken for a missing file.
+- **WR-04 is fixed.** `probe_at` and `read_holder_at` now go through the same private `open_lock_file` as `acquire_at`. A symlink, hard link, FIFO or directory is `Unknown(EINVAL)` in the probe and `None` in the holder read, and the open does not block. The holder read is capped at 4096 bytes. I found no remaining unguarded opens of `launcher.lock` or `DIRECTION.lock` in `src/`.
+- **The direction.rs change (`exchange_or_restore`) holds up.** It shares one put-back helper between `give_back_newest` and `run_loop`. Its `EEXIST` loop is bounded by `GIVE_BACK_ROUNDS`. In `run_loop`, `PutBack::Restored => continue` stays inside `SPLICE_TRIES`. The `EEXIST` then exchange path still reaches `give_back_newest` with a consistent `expect`.
 
-- **WR-01:** clap rejects hyphen-leading values on `driverctl log`.
-- **IN-02:** the YAML alias-expansion cost.
+**Still open:** WR-01, WR-02, WR-05, WR-06 and IN-01..IN-10 are unchanged at HEAD. I re-checked their line numbers, and WR-05 and IN-09 moved slightly.
 
-Most of the warnings share one cause. The WR-08 and WR-02 hardening (`O_NOFOLLOW | O_NONBLOCK`, size cap) was applied to `acquire_at`, the scan and the DIRECTION reader, but not to the remaining opens of run-directory files. Those opens are the lock probe, the holder read, the `state.json` read at store open, and the `DIRECTION.lock` create. The run directory is documented as writable by sibling sandboxes and `--unsandboxed` runs.
+**New:**
+
+- **WR-10:** the same class as WR-03, on a different file. `LOG.md` is appended with a plain `OpenOptions` and no `O_NOFOLLOW` or `O_NONBLOCK`.
+- **WR-11:** the new 1 MiB read cap on `state.json` has no matching write bound.
 
 No Critical issues.
 
@@ -98,35 +102,9 @@ let mut terminal = tui::init();
 ```
 Alternatively wrap the startup in a block that calls `tui::restore()` on `Err`.
 
-### WR-03: Run-start opens of untrusted run-dir names are unhardened (`DIRECTION.lock`, `state.json`)
-
-**File:** `src/driverctl/serve.rs:934-939`, `src/driverctl/store.rs:644`, `src/launcher/run.rs:696-701` (same pattern, outside this phase's list)
-**Issue:** `serve` takes the run lock and then does the following:
-
-- It opens `DIRECTION.lock` with `OpenOptions::new().create(true).write(true).truncate(false)`. That open has no `O_NOFOLLOW` or `O_NONBLOCK`. A FIFO pre-planted at that name blocks `open(2)` for good while the run lock is held, so the run can never start and can only be killed. A symlink there makes `create(true)` create an empty file at the link target.
-- `RunStore::open_with_clock` then calls `fs::read(&state_path)`, which follows symlinks, blocks on a FIFO and is uncapped.
-
-`acquire_at` was hardened for exactly these cases (WR-08), and `read_run_file_capped` and `open_run_file` exist for the reads. These two opens do not use them. `driver_frontmatter.rs:810-814` states that a run directory is writable from inside an `--unsandboxed` run, which is the leftover-plant scenario.
-**Fix:**
-
-- Create `DIRECTION.lock` through the same open flags as `acquire_at`: `custom_flags(O_NOFOLLOW | O_NONBLOCK)`, then check on the handle that it is a regular file. Put this in one helper that both `serve` and `launcher::run` call.
-- Read `state.json` through `read_run_file_capped`. Map `InvalidData` to `StoreError::CorruptState` and `NotFound` to the fresh-run branch.
-
-### WR-04: `probe_at` and `read_holder_at` can block, follow links and read without a bound
-
-**File:** `src/driver/lock.rs:304-312` and `src/driver/lock.rs:370-385`, reached from `src/state_reader/driver_frontmatter.rs:959`
-**Issue:** Both functions use `File::open(path)`. That open has no `O_NONBLOCK` or `O_NOFOLLOW`, and no type or size check. `probe_at` is called by `read_driver_run_text`, which the TUI runs in `spawn_blocking` for every listed run (`list_driver_runs`). `launcher/stop.rs` and `launcher/push.rs` call it too.
-
-- A FIFO renamed over `launcher.lock` parks that worker forever.
-- A symlink at `launcher.lock` makes the status derive from a different file's flock. A dead run can read `Held` and so as written, or the reverse.
-- `read_holder_at` does an unbounded `read_to_string`.
-
-The same module's `acquire_at` and the DIRECTION reader already refuse all of this, so the two read paths are the inconsistent ones.
-**Fix:** Open both through the `acquire_at` flag pair. Check `file.metadata()?.file_type().is_file()`. Treat anything else as `LockProbe::Unknown(Errno::INVAL)` in `probe_at` and as `None` in `read_holder_at`. Bound the holder read with `take(4096)`.
-
 ### WR-05: `serve` shutdown overwrites a driver's `paused` end with `stopped`
 
-**File:** `src/driverctl/store.rs:1375`, reached from `src/driverctl/serve.rs:1008`
+**File:** `src/driverctl/store.rs:1386`, reached from `src/driverctl/serve.rs:1008`
 **Issue:** `set_terminal` keeps a driver `RUN end` only when `ended_by_driver && status.is_terminal()`. `RunStatus::is_terminal()` is false for `Paused` (`driver_frontmatter.rs:152-161`). After `end --reason pause`, a SIGTERM to `driverctl serve` therefore rewrites the status to `stopped` with reason `serve:signal` and discards the driver's `paused`.
 
 The module docs (`serve.rs` fact 8) say the stop is written "unless the driver logged `RUN end`". The WR-02 comment in `set_terminal` justifies the exception only for `fresh-exit` (`Running`). `derive` treats `paused` as a clean end that should read as written, so serve's own shutdown contradicts it.
@@ -149,6 +127,41 @@ Add a store test: `end --reason pause`, then `set_terminal(Stopped, ...)`, and e
 let Some(base) = dirs::data_local_dir() else { return };
 let log_dir = base.join("gsd-meta-manager");
 ```
+
+### WR-10: `LOG.md` is appended with an unhardened open (follows symlinks, blocks on a FIFO) under the store mutex
+
+**File:** `src/driverctl/log.rs:91-101`, called from `src/driverctl/store.rs:796` and `src/driverctl/store.rs:904`; the read side is `src/launcher/run.rs:1074` (outside this phase's list)
+**Issue:** Quick 261028-t3d hardened `DIRECTION.lock`, `state.json` and the lock probes, but `LOG.md` is the other run-directory name the run opens, and it is still opened as `OpenOptions::new().append(true).create(true)` with no `O_NOFOLLOW` and no `O_NONBLOCK`, and no type check on the handle.
+
+- **Symlink:** a symlink at `LOG.md` (live, or dangling with `create`) is followed. `serve` runs outside the sandbox with the user's full rights, so every `commit` appends the event text, including driver-written fields such as `outcome`, to the link target. The LOG line format is only partly controlled, so this is an append-only write into a file the run does not own.
+- **FIFO:** a write-only open of a FIFO that has no reader blocks in `open(2)`. `commit` calls `log::append` while holding the store mutex, so the first `begin_launch` (or the first commit after the plant) parks the whole server: every client connection then waits on the mutex, and the dispatch gate cannot answer.
+- **Read side:** `finish_launch` does `fs::read_to_string(run_dir/LOG.md)` while holding the store lock. It follows links, blocks on a FIFO and is unbounded.
+
+A sandboxed driver cannot plant here, because the run directory is read-only bound inside bwrap. The reachable cases are an `--unsandboxed` run and a leftover plant from an earlier unsandboxed run, which is the same scenario `driver_frontmatter.rs:810-814` states for the other run-directory names. For that reason I rate this the same as WR-03 and WR-04 (Warning) [inferred — cleanup 2026-10-28].
+**Fix:** Open `LOG.md` through a shared guarded open, the same way `lock::open_lock_file` does:
+```rust
+opts.append(true).create(true).mode(0o644)
+    .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32 | rustix::fs::OFlags::NONBLOCK.bits() as i32);
+let f = opts.open(path)?;
+if !f.metadata()?.file_type().is_file() { /* InvalidData "not a regular file" */ }
+```
+Map ELOOP to `InvalidData`, as `open_run_file` does. The write can then fail without blocking, and `commit` already rolls `state.json` back on a failed append. Read `LOG.md` in `finish_launch` through `read_run_file_capped`. Add a FIFO test with `within_5s` and a symlink test with a sentinel target, as the new lock tests do.
+
+### WR-11: The new 1 MiB read cap on `state.json` has no matching write bound, so a large run can write a `state.json` it cannot reopen
+
+**File:** `src/driverctl/store.rs:650` (read, capped) against `src/driverctl/store.rs:742-763` (write, unbounded); also `src/launcher/stop.rs:203`
+**Issue:** The WR-03 fix reads `state.json` through `read_run_file_capped`, whose limit is `DIRECTION_READ_MAX_BYTES` (1 MiB). Before this change the read had no limit. `write_state` still has none. State growth that is not bounded by the file itself includes `ItemRecord.findings`, which gets one `i64` appended for every report that carries `FINDINGS: N` (`store.rs:1752`) with no cap, and `RunState.items`, which has one entry per DIRECTION item.
+
+Once the serialised state passes 1 MiB, the running server goes on writing it without complaint. The next `RunStore::open` (a relaunch, a resume) returns `CorruptState`, and the file is "never overwritten", so the run cannot be reopened until someone trims the file by hand. `stop_orphaned_scope` reads the same file through the capped read, so `driver stop` can no longer find the scope to stop for such a run. The pre-check `check_wall_clock_budget` treats an over-cap file as zero recorded time, so it hides the wall-clock use too.
+
+The practical likelihood is low: it takes tens of thousands of reports or thousands of items. The failure is also silent until the next open, and the asymmetry is new in this batch, so I count it as a regression risk of the fix rather than a pre-existing issue. Severity is an inferred judgement [inferred — cleanup 2026-10-28].
+**Fix:** Make the two sides agree. Either refuse the write that would exceed the cap, in `write_state`:
+```rust
+if json.len() as u64 > DIRECTION_READ_MAX_BYTES {
+    return Err(StoreError::Io { detail: "state.json would exceed the 1 MiB read cap".into() });
+}
+```
+(`commit` already restores the previous state on failure, so the event is refused cleanly), or use a separate, larger `STATE_READ_MAX_BYTES` for `state.json` and bound `findings` (keep the last N). Add a store test that a state written at the cap reopens.
 
 ## Info
 
@@ -179,8 +192,8 @@ let log_dir = base.join("gsd-meta-manager");
 ### IN-05: The lock module's "worst case is a misleading string" claim is no longer true
 
 **File:** `src/driver/lock.rs:87-96`, with `src/launcher/stop.rs:134-147`
-**Issue:** The `LockHolder` docs say a forged record "can never grant a second lock, so the worst outcome of tampering is a misleading string (T-17-08)". `driver stop` now takes `holder.pgid` from that record and sends `SIGTERM` to it. In a bwrap run the file is bound to `/dev/null`, so this only matters for `--unsandboxed` runs, where the driver already runs as the same user. The stop path does verify `probe_at == Held` first, but that does not tie the pid to the lock holder.
-**Fix:** Amend the doc to say the record is a signal target for `driver stop`. Optionally verify before signalling that `/proc/<pid>` still holds the lock file open.
+**Issue:** The `LockHolder` docs say a forged record "can never grant a second lock, so the worst outcome of tampering is a misleading string (T-17-08)". `driver stop` now takes `holder.pgid` from that record and sends `SIGTERM` to it. In a bwrap run the file is bound to `/dev/null`, so this only matters for `--unsandboxed` runs, where the driver already runs as the same user. The stop path does verify `probe_at == Held` first, but that does not tie the pid to the lock holder. The `read_holder_at` docs added by t3d (`lock.rs:358-360`) already say the record names the pgid `driver stop` signals, so the two doc comments in the same file now contradict each other. The t3d change does keep a symlinked or hard-linked file from supplying the record.
+**Fix:** Amend the `LockHolder` doc to say the record is a signal target for `driver stop`. Optionally verify before signalling that `/proc/<pid>` still holds the lock file open.
 
 ### IN-06: Stale references to the deleted `drive` command and goal layer
 
@@ -214,7 +227,7 @@ The test message and comments now describe code that does not exist.
 
 ### IN-09: Test reliability notes
 
-**File:** `tests/driverctl_client.rs:32`, `tests/driverctl_replay.rs:45`, `tests/driverctl_lock_race.rs:163-190`, `tests/driverctl_serve.rs:799-802`
+**File:** `tests/driverctl_client.rs:32`, `tests/driverctl_replay.rs:45`, `tests/driverctl_lock_race.rs:163-190`, `tests/driverctl_serve.rs:872-880`
 **Issue:**
 
 - **Unwritable data dir:** the T-27-11 guard (`XDG_DATA_HOME=/proc/nonexistent-gsdmm`) only has an effect where `dirs` honours `XDG_DATA_HOME`, which is Linux. On macOS the variable is ignored, so these tests pass without exercising an unwritable data dir.
@@ -235,6 +248,6 @@ The test message and comments now describe code that does not exist.
 
 ---
 
-_Reviewed: 2026-10-28_
+_Reviewed: 2026-10-29_
 _Reviewer: Claude (gsd-code-reviewer)_
 _Depth: standard_
