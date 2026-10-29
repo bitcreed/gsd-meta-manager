@@ -2018,6 +2018,45 @@ fn the_dispatch_gate_itself_refuses_until_each_running_item_is_recovered() {
     assert_eq!(fx.state_json()["hook_dispatches"], 1);
 }
 
+/// Guards the fail-closed half that 28 WR-04's deferral relies on (quick
+/// 261028-t3e). An absent DIRECTION.md reads as no items, and
+/// `blocking_recovery`'s `items.is_empty()` clause keeps every awaiting id
+/// blocking, so a crashed run never dispatches on a missing DIRECTION.md. The
+/// non-crashed counterpart, `an_absent_direction_is_the_no_direction_case_and_the_gate_allows`,
+/// allows.
+#[test]
+fn a_crashed_run_with_direction_md_absent_is_still_refused_dispatch() {
+    let fx = Fixture::new();
+    {
+        let mut store = fx.open();
+        store.begin_launch(standalone()).unwrap();
+        log_ok(&mut store, "start", &[("mode", "headless")]);
+        log_ok(
+            &mut store,
+            "dispatched",
+            &[("item", "I-01"), ("step", "go"), ("round", "0")],
+        );
+    }
+    let mut store = fx.open();
+    store.set_gate(CapGate::new(CapLimits::default(), new_tripped()).into_gate());
+    store.begin_launch(standalone()).unwrap();
+    fs::remove_file(fx.run_dir.join("DIRECTION.md")).unwrap();
+
+    let r = send(&mut store, GATE_REQ);
+    let deny = r
+        .deny
+        .expect("a crashed run with DIRECTION.md absent denies the dispatch");
+    assert!(
+        deny.starts_with("reconcile first: I-01 was running at launch start"),
+        "{deny}"
+    );
+    assert_eq!(
+        fx.state_json()["hook_dispatches"],
+        0,
+        "a denied dispatch is not counted"
+    );
+}
+
 #[test]
 fn a_control_hold_is_named_before_the_reconcile_rule_at_the_dispatch_gate() {
     let fx = Fixture::new();
