@@ -16,10 +16,12 @@
 |---|---|---|
 | Driver transport | `claude -p` drives; tmux is attach/watch only | User-locked; **rationale revised** — see below |
 | Autonomy level | Fully autonomous, including `git push` and PR creation | User-locked |
-| Hard requirements on autonomy | Kill switch + dry-run mode | User-locked |
+| Hard requirements on autonomy | Kill switch + dry-run mode *(dry-run superseded 2026-10-29 by user decision; see below)* | User-locked |
 | Container runtime | Auto-detect docker or podman | User-locked |
 | Sequencing | 999.2 plumbing before 999.3 decision layer | User-locked |
 | Version | v2.0 | User-locked |
+
+**2026-10-29 — user decision: CTRL-02/CTRL-03 superseded by sandboxed launcher + DIRECTION.md stop rules; Phase 31 retirement of drive dry-run/opt-in gate accepted.** Doc-only; no behaviour change. The sandboxed launcher (Phases 28/28.1: LNCH-01/03/04, LNCH-09..15) and the DIRECTION.md stop rules (Phases 29/30: PRMT-03, DTAB-03) bound the blast radius that dry-run and the opt-in gate were meant to bound. The opt-in record now shapes the push policy only (`launcher::push::policy_for`).
 
 **Revised rationale (not a reversal).** The locked decision was *"`claude -p` drives; tmux
 pane for human watch/interject"* — chosen because `tmux send-keys` was believed to be the
@@ -35,19 +37,19 @@ interleave and corrupt each other.
 
 ### Transport & Execution (TRANS)
 
-- [x] **TRANS-01**: The driver runs a GSD command by spawning `claude -p` with duplex `stream-json` over stdio, and parses the structured result envelope rather than scraping text
+- [ ] **TRANS-01**: The driver runs a GSD command by spawning `claude -p` with duplex `stream-json` over stdio, and parses the structured result envelope rather than scraping text *(superseded 2026-10-29; see Traceability)*
 - [x] **TRANS-02**: Run outcome is derived from the `type:"result"` envelope (`subtype`, `is_error`, `terminal_reason`, `permission_denials[]`), exit code, disk state, and git — never from the agent's prose summary
 - [x] **TRANS-03**: The TUI event loop reads input while a run is streaming output, so control keys stay responsive throughout a multi-hour run
-- [x] **TRANS-04**: The tool detects Claude CLI capabilities at runtime via `system/init` feature detection and refuses to start a run against an unsupported CLI, with a clear message
-- [x] **TRANS-05**: A user can execute a single GSD command against an opted-in project from the TUI and watch its output stream live (no autonomy yet — the manual ship point)
+- [ ] **TRANS-04**: The tool detects Claude CLI capabilities at runtime via `system/init` feature detection and refuses to start a run against an unsupported CLI, with a clear message *(superseded 2026-10-29; see Traceability)*
+- [ ] **TRANS-05**: A user can execute a single GSD command against an opted-in project from the TUI and watch its output stream live (no autonomy yet — the manual ship point) *(superseded 2026-10-29; see Traceability)*
 
 ### Run Control & Safety Envelope (CTRL)
 
 - [x] **CTRL-01**: A user can stop any run at any time from the TUI, and stopping terminates the entire process tree including `claude`'s Bash grandchildren
-- [x] **CTRL-02**: A user can start any run in dry-run mode, which reports the GSD commands it would issue plus the resulting diffstat and push refspecs, without executing them
-- [x] **CTRL-03**: A project is driven only when explicitly opted in; non-opted-in projects are never spawned against, enforced at the process-spawn seam
+- [ ] **CTRL-02**: A user can start any run in dry-run mode, which reports the GSD commands it would issue plus the resulting diffstat and push refspecs, without executing them *(superseded 2026-10-29; see Traceability)*
+- [ ] **CTRL-03**: A project is driven only when explicitly opted in; non-opted-in projects are never spawned against, enforced at the process-spawn seam *(superseded 2026-10-29; see Traceability)*
 - [x] **CTRL-04**: An autonomous run survives the TUI being closed, and the TUI reconciles live runs on restart
-- [x] **CTRL-05**: Only one driver may execute against a given project at a time, enforced by an OS-level lock
+- [ ] **CTRL-05**: Only one driver may execute against a given project at a time, enforced by an OS-level lock *(accepted partial, carried to the next milestone: the lock is per run dir rather than per project; see Traceability) [inferred — cleanup 2026-10-28]*
 - [x] **CTRL-06**: A run halts itself when it stops making progress, repeats a command, exceeds a step cap, or exceeds a wall-clock cap
 - [x] **CTRL-07**: A run parks rather than retrying when it hits a Claude subscription rate limit, and reports which quota window blocked it
 - [ ] **CTRL-08**: The policy for a human-judgement verification gate is user-configurable to skip, defer, or auto-validate — settable both per-run and per-project/session, with `defer` the default and every non-default choice visible in the run record *(superseded 2026-10-14; see Traceability)*
@@ -76,7 +78,7 @@ interleave and corrupt each other.
 ### Steering (STEER)
 
 - [x] **STEER-01**: A user can inject a message into a running driver from the TUI
-- [x] **STEER-02**: An injected message shows its delivery state — queued, delivered, and acted upon — rather than being fire-and-forget
+- [ ] **STEER-02**: An injected message shows its delivery state — queued, delivered, and acted upon — rather than being fire-and-forget *(superseded 2026-10-29; see Traceability)*
 - [x] **STEER-03**: Injected messages survive a TUI restart between queueing and delivery
 
 ### Autonomous Driver (DRIVE)
@@ -320,36 +322,36 @@ the previous milestone (last shipped phase was 13), so v2.0 spans Phases 14-31 (
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| TRANS-01 | Phase 15: Transport Foundation | Complete |
+| TRANS-01 | Phase 15: Transport Foundation (superseded) | Superseded 2026-10-29 by LNCH-01 (user decision B); the in-process transport was deleted by 31-07 |
 | TRANS-02 | Phase 15: Transport Foundation | Complete |
 | TRANS-03 | Phase 15: Transport Foundation | Complete |
-| TRANS-04 | Phase 15: Transport Foundation | Complete |
-| TRANS-05 | Phase 18: Driver Tab, Live Watch & Durable Injection | Complete |
+| TRANS-04 | Phase 15: Transport Foundation (superseded) | Superseded by LNCH-07 `[inferred — cleanup 2026-10-28]`: `host::decide` (`src/launcher/host.rs:40` `MIN_CLAUDE_VERSION`, `:286-307`) refuses an absent, unparseable or too-old `claude` in both postures with a clear `LauncherError::ClaudeVersion` message; `system/init` detection was replaced by a pre-launch version floor, so the refuse-an-unsupported-CLI outcome survives and this counts as a clean supersession |
+| TRANS-05 | Phase 18: Driver Tab, Live Watch & Durable Injection (superseded) | Superseded 2026-10-29 by DTAB-04 (user decision B) |
 | CTRL-01 | Phase 17: Supervisor | Complete |
-| CTRL-02 | Phase 17: Supervisor | Complete |
-| CTRL-03 | Phase 17: Supervisor | Complete |
+| CTRL-02 | Phase 17: Supervisor (superseded) | Superseded 2026-10-29 by user decision A, by the sandboxed launcher (LNCH-01/03/04, LNCH-09..15) plus the DIRECTION.md stop rules (PRMT-03, DTAB-03); Phase 31 retirement of the drive dry-run accepted |
+| CTRL-03 | Phase 17: Supervisor (superseded) | Superseded 2026-10-29 by user decision A, by the sandboxed launcher (LNCH-01/03/04, LNCH-09..15) plus the DIRECTION.md stop rules (PRMT-03, DTAB-03); Phase 31 retirement of the opt-in gate accepted. The opt-in record now shapes push policy only |
 | CTRL-04 | Phase 17: Supervisor | Complete |
-| CTRL-05 | Phase 17: Supervisor | Complete |
+| CTRL-05 | Phase 17: Supervisor | Partial, accepted, carried to the next milestone `[inferred — cleanup 2026-10-28]`: the lock is per run dir (`src/driver/lock.rs:85`, `src/launcher/run.rs:667`), not per project, so two run ids can drive one project at once; narrowed rather than superseded (LNCH-02 reuses Phase 17 CTRL-05) |
 | CTRL-06 | Phase 20: Deterministic Decision Router & Run Bounds | Complete (20-VERIFICATION 5/5) [inferred]; hard caps re-homed to Phase 28 (LNCH-03) |
 | CTRL-07 | Phase 20: Deterministic Decision Router & Run Bounds | Complete (20-VERIFICATION 5/5) [inferred]; launcher-side park in Phase 28 (LNCH-03) |
 | CTRL-08 | Phase 23 (superseded) | Superseded by per-item done-when + standing rules, Phase 29 (PRMT-02/03) |
 | SAFE-01 | Phase 19 (superseded) | Complete in code; enforcement moves to push step outside sandbox, Phase 28 (LNCH-06) |
 | SAFE-02 | Phase 19 (superseded) | Superseded by capability removal (no push creds in sandbox, LNCH-04/06); guard retired in Phase 31 |
 | SAFE-03 | Phase 19 (superseded) | Complete in code; reused by the Phase 28 push step (LNCH-06) |
-| SAFE-04 | Phase 16: Run Journal & State Substrate | Complete |
+| SAFE-04 | Phase 16: Run Journal & State Substrate | Complete: master stdout/stderr is redacted line by line before it reaches `launch-N.jsonl` (quick 261029-1dp, f4cfa01), and push-step stderr is redacted at `push.rs:254`. driverctl LOG.md holds driver-authored records rather than captured output and is tracked in todo `2026-10-29-driverctl-log-values-unredacted` `[inferred — 2026-10-29]` |
 | SAFE-05 | Phase 19 (superseded) | Moot: sandbox holds no credentials (LNCH-04); guard retired in Phase 31 |
 | SAFE-06 | Phase 19 (superseded) | Complete in code; reused by the Phase 28 push step (LNCH-06) |
 | SAFE-07 | Phase 21 (superseded) | Superseded: injection contained by sandbox (LNCH-04), not prevented; guard retired in Phase 31 |
 | SAFE-08 | Phase 21 (superseded) | Superseded: blast radius bounded by sandbox + launcher caps (LNCH-03/04); guard retired in Phase 31 |
 | OBS-01 | Phase 16: Run Journal & State Substrate | Complete |
 | OBS-02 | Phase 18: Driver Tab, Live Watch & Durable Injection | Complete |
-| OBS-03 | Phase 18: Driver Tab, Live Watch & Durable Injection | Complete |
+| OBS-03 | Phase 18: Driver Tab, Live Watch & Durable Injection | Complete via replacement PRMT-02/DTAB-03 `[inferred — 2026-10-29]` |
 | OBS-04 | Phase 18: Driver Tab, Live Watch & Durable Injection | Complete |
 | OBS-05 | Phase 18: Driver Tab, Live Watch & Durable Injection | Complete |
 | OBS-06 | Phase 16: Run Journal & State Substrate | Complete |
 | OBS-07 | Phase 18: Driver Tab, Live Watch & Durable Injection | Complete |
 | STEER-01 | Phase 18: Driver Tab, Live Watch & Durable Injection | Complete |
-| STEER-02 | Phase 18: Driver Tab, Live Watch & Durable Injection | Complete |
+| STEER-02 | Phase 18: Driver Tab, Live Watch & Durable Injection (superseded) | Superseded 2026-10-29 by DTAB-03/PRMT-04 (user decision B) |
 | STEER-03 | Phase 18: Driver Tab, Live Watch & Durable Injection | Complete |
 | DRIVE-01 | Phase 28/29 (re-mapped) | Complete: Phase 28 launcher half evidenced live (28-09: d33 real-Opus driver, organic deny then scope kill); Phase 29 master prompt half closed by operator sign-off 2026-10-20 accepting o1 ADJUST x2 (29-UAT.md) |
 | DRIVE-02 | Phase 20: Deterministic Decision Router & Run Bounds | Complete (20-VERIFICATION 5/5) [inferred]; now an advisory hint (PRMT-05) |

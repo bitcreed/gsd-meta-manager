@@ -1,5 +1,7 @@
 # Phase 17: Supervisor — Detach, Kill Switch, Dry-Run, Opt-In Gate - Context
 
+> **Superseded in part, 2026-10-29 — user decision: CTRL-02/CTRL-03 superseded by sandboxed launcher + DIRECTION.md stop rules; Phase 31 retirement of drive dry-run/opt-in gate accepted.** This affects the opt-in gate decision D-14 (the record no longer gates a launch; it shapes push policy only) and the dry-run decisions D-22, D-23 and D-24 (CTRL-02). CTRL-01, CTRL-04 and CTRL-05 are not affected (CTRL-05 is accepted-partial, see REQUIREMENTS.md). The text below is the historical record.
+
 **Gathered:** 2026-07-29
 **Status:** Ready for planning
 **Mode:** Autonomous — grey areas proposed and auto-accepted by the orchestrator per user

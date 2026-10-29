@@ -159,8 +159,10 @@ LLM-goal-layer design, were superseded by spikes 001/002. See Active and Key Dec
   as before. v1.x's blanket "must not interfere with running GSD instances" is
   deliberately narrowed here, not dropped: interference is now a per-project choice the
   user makes, and the default remains no interference.
+  **Amended 2026-10-29 — user decision: CTRL-02/CTRL-03 superseded by sandboxed launcher + DIRECTION.md stop rules; Phase 31 retirement of drive dry-run/opt-in gate accepted.** The opt-in record now shapes push policy only; a run starts only through an explicit `driver launch` or a Driver-tab new run.
 - **Stoppable**: Any autonomous run must be interruptible from the TUI at any point, and
   must support a dry-run mode that reports the commands it would issue without issuing them.
+  **Amended 2026-10-29 — user decision: CTRL-02/CTRL-03 superseded by sandboxed launcher + DIRECTION.md stop rules; Phase 31 retirement of drive dry-run/opt-in gate accepted.** The dry-run clause is superseded; stoppability stands.
 - **Portability**: Should work for any GSD user, not hardcoded to one user's setup
 
 ## Key Decisions
@@ -178,7 +180,8 @@ LLM-goal-layer design, were superseded by spikes 001/002. See Active and Key Dec
 | LLM-agnostic queue execution design | GSD could use any LLM backend, not just Claude | ✓ Good — Executor trait interface designed |
 | Ship v1.3–v1.6 via `/gsd-quick` instead of formal phases | Each was a bounded, well-understood change; phase overhead wasn't earning its keep | ✓ Good — 4 milestones shipped, but PROJECT.md/MILESTONES.md drifted 3 milestones behind (backfilled at v2.0 start) |
 | v2.0 driver transport: `claude -p` drives, tmux pane watches | `-p` gives real exit codes and reliable completion signals; `tmux send-keys` is screen-scraping with no delivery confirmation. Splitting the roles keeps reliability *and* live watch/interject | ✓ Kept: headless `claude -p` and no tmux on the control path. Steering moved from stdin injection to DIRECTION.md edits (2026-10-14) |
-| v2.0 autonomy: fully autonomous including push and PR | User's explicit choice for maximum leverage; kill switch and dry-run made hard requirements to bound the blast radius | — Pending v2.0 |
+| v2.0 autonomy: fully autonomous including push and PR | User's explicit choice for maximum leverage; kill switch and dry-run made hard requirements to bound the blast radius | Amended 2026-10-29 by user decision (dry-run and the opt-in gate superseded; see next row) |
+| CTRL-02/CTRL-03 superseded (v2.0 audit closure) | 2026-10-29 — user decision: CTRL-02/CTRL-03 superseded by sandboxed launcher + DIRECTION.md stop rules; Phase 31 retirement of drive dry-run/opt-in gate accepted. The sandbox plus DIRECTION.md stop rules bound the blast radius instead | ✓ User decision 2026-10-29; doc-only |
 | Container runtime auto-detected (docker or podman) | Hardcoding either one contradicts the portability constraint; probing costs little | ✗ Superseded 2026-10-14 (Phase 22 dropped; bwrap + scope instead) |
 | 999.2 injection plumbing sequenced before 999.3 driver | The driver is a decision layer built on top of injection/monitoring — building it first would mean stubbing the transport twice | — Pending v2.0 |
 | Major version bump to v2.0 | The tool's category changes from passive dashboard to active orchestrator, and it narrows a stated constraint | — Pending v2.0 |
@@ -223,4 +226,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-10-28 after Phase 28.1 (Sandbox egress & agent-channel isolation, LNCH-13/14; verification 7/7 passed, UAT 1/1 — D-11 setup-token reach probe, SECURITY threats_open 0)*
+*Last updated: 2026-10-29 after quick 261029-1dp (v2.0 audit blockers closed: CTRL-02/CTRL-03 superseded by user decision, SAFE-04 fixed in code)*

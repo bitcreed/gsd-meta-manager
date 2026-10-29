@@ -256,6 +256,10 @@ Not in scope:
   produce.
 - Exact wording of the closure rows.
 
+### Post-phase user decision (2026-10-29)
+
+2026-10-29 — user decision: CTRL-02/CTRL-03 superseded by sandboxed launcher + DIRECTION.md stop rules; Phase 31 retirement of drive dry-run/opt-in gate accepted. Doc-only, no behaviour change; recorded in REQUIREMENTS.md, PROJECT.md and the Phase 17 context.
+
 </decisions>
 
 <canonical_refs>
