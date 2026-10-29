@@ -1000,6 +1000,56 @@ fn a_managed_seed_keeps_the_gate_when_the_hosts_hooks_or_permissions_is_not_an_o
     assert_eq!(managed["model"], "admin");
 }
 
+// 30-REVIEW WR-13: the nested counterpart of 28 WR-08 / 29 WR-02. A host hook event
+// that is not a list, a malformed matcher entry, a permissions list that is not a
+// list of strings and a permissions setting that is neither a string nor a bool
+// (across the file and a drop-in) must never reach the managed file beside the gate
+// hooks and the deny list, and must not stop the rest of the host policy.
+#[test]
+fn a_managed_seed_drops_wrong_shape_nested_host_values_and_keeps_the_gate() {
+    let root = TempDir::new().unwrap();
+    let mut spec = spec_in(root.path());
+    spec.managed = true;
+    seed(&spec).unwrap();
+    let managed_path = spec.config_dir.join(MANAGED_SUBDIR).join(MANAGED_FILE);
+    let baseline = read_json(&managed_path);
+
+    spec.host_managed_dir = root.path().join("etc-claude-code");
+    fs::create_dir_all(spec.host_managed_dir.join("managed-settings.d")).unwrap();
+    fs::write(
+        spec.host_managed_dir.join(MANAGED_FILE),
+        r#"{"hooks": {"Notification": "x", "PreToolUse": {"matcher": "Bash"}, "Stop": [7, {"hooks": "x"}]}, "permissions": {"allow": "x", "deny": "Edit", "ask": [7, null]}, "model": "admin"}"#,
+    )
+    .unwrap();
+    fs::write(
+        spec.host_managed_dir
+            .join("managed-settings.d")
+            .join("10-nested.json"),
+        r#"{"hooks": {"SessionStart": [{"matcher": 7, "hooks": []}, {"hooks": [7]}, {"hooks": [{"command": "x"}]}]}, "permissions": {"additionalDirectories": {}, "defaultMode": 7, "disableBypassPermissionsMode": "disable"}}"#,
+    )
+    .unwrap();
+    seed(&spec).unwrap();
+
+    let managed = read_json(&managed_path);
+    assert_eq!(managed["hooks"], baseline["hooks"]);
+    assert_eq!(
+        managed["permissions"]["deny"],
+        baseline["permissions"]["deny"]
+    );
+    assert_eq!(
+        managed["permissions"]["deny"].as_array().unwrap().len(),
+        DENY_TOOLS.len()
+    );
+    let mut keys: Vec<&String> = managed["permissions"].as_object().unwrap().keys().collect();
+    keys.sort();
+    assert_eq!(keys, ["deny", "disableBypassPermissionsMode"]);
+    assert_eq!(
+        managed["permissions"]["disableBypassPermissionsMode"],
+        "disable"
+    );
+    assert_eq!(managed["model"], "admin");
+}
+
 #[test]
 fn degraded_seed_keeps_the_gate_and_the_deny_list_in_settings_json() {
     let root = TempDir::new().unwrap();

@@ -865,8 +865,9 @@ mod tests {
         let deny = managed["permissions"]["deny"].as_array().expect("array");
         assert_eq!(deny.len(), DENY_TOOLS.len());
         assert!(deny.iter().any(|v| v == "RemoteTrigger"));
-        // A list the launcher does not hold is passed through, as before.
-        assert_eq!(managed["permissions"]["ask"], "y");
+        // 30-REVIEW WR-13: a non-array host list is dropped even when the launcher
+        // does not hold it, so it never reaches the managed file.
+        assert!(managed["permissions"].get("ask").is_none());
     }
 
     /// Every non-object JSON shape. I-2: the bool and the non-empty array complete the
