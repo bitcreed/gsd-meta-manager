@@ -74,7 +74,9 @@ use super::gate::{new_tripped, trip, tripped_cap, CapGate, Tripped};
 use super::home::HomeSetup;
 use super::host::{decide, detect, protections_absent, Posture};
 use super::outcome::{self, LaunchEnd, StreamAccumulator, StreamSummary, Verdict};
-use super::process::{respawn_detached, run_bounded, spawn_launch_child};
+use super::process::{
+    respawn_detached, run_bounded, spawn_launch_child, CAPTURE_FINISH_BUDGET, MAX_STREAM_LINE,
+};
 use super::prompt::{self, ResolvedPrompt};
 use super::push::{self, planted};
 use super::sandbox::{
@@ -187,9 +189,6 @@ fn gateway_warning(names: &[&str]) -> String {
 
 /// The `state.json` key counting auth relaunches (D-23).
 const EXTRA_AUTH_RELAUNCHES: &str = "auth_relaunches";
-
-/// A stream-json line longer than this is skipped when looking for the result.
-const MAX_STREAM_LINE: u64 = 4 * 1024 * 1024;
 
 /// The master prompt's `{MODE}` value (spike `--loop-mode`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1636,7 +1635,7 @@ fn supervise(
         .open(&out_path)
         .map_err(|e| io_error(&format!("create {}", out_path.display()), e))?;
 
-    let mut child =
+    let (mut child, capture) =
         spawn_launch_child(&argv, &env, &ctx.project, out).map_err(|e| LauncherError::Spawn {
             detail: format!(
                 "{}: {e}",
@@ -1685,6 +1684,10 @@ fn supervise(
     }
     // The driver is gone: stop the egress server and keep what it counted (D-14).
     let egress = egress_guard.map(EgressGuard::finish).unwrap_or_default();
+    // Let the capture pump redact and write the last of the master's output before the
+    // file is read (SAFE-04). A leftover that still holds the pipe cannot hang the
+    // launcher: on timeout the launcher reads what is on disk.
+    capture.finish(CAPTURE_FINISH_BUDGET);
 
     let rc = status
         .code()
