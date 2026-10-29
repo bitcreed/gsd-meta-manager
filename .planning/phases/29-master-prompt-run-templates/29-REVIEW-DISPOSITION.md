@@ -9,7 +9,7 @@ findings:
     title: "lint and store still disagree on which line is `- control:` (WR-01 only half closed)"
   - id: WR-02
     severity: warning
-    disposition: open
+    disposition: fixed
     title: "`managed_settings` lets a non-object host `hooks`/`permissions` replace the launcher's gate and deny list"
   - id: WR-03
     severity: warning
@@ -51,7 +51,7 @@ findings:
     severity: info
     disposition: skipped
     title: "`shell_quote` is lossy for non-UTF-8 paths"
-open: 6
+open: 5
 total: 12
 recorded: 2026-10-28T23:48:38.570Z
 ---
@@ -61,7 +61,7 @@ recorded: 2026-10-28T23:48:38.570Z
 | Finding | Severity | Disposition | Source |
 |---------|----------|-------------|--------|
 | WR-01 | warning | open | - |
-| WR-02 | warning | open | - |
+| WR-02 | warning | fixed | quick 261028-t3f 6a55713: same defect as 28-REVIEW WR-08; managed_settings ignores a host managed hooks or permissions value that is not a JSON object (string, array, null, number, bool), so the launcher's gate hooks and the DENY_TOOLS deny list survive whatever shape the host value has; RED-first bwrap seed test from host files on disk plus a shape table for both keys in both postures; doc claims corrected in config_dir.rs and docs/DRIVER-SANDBOX.md [inferred — cleanup 2026-10-28] |
 | WR-03 | warning | open | - |
 | IN-01 | info | open | - |
 | IN-02 | info | open | - |
