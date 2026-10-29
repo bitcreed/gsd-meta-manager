@@ -21,7 +21,6 @@
 //! instant between the lock probe and the signal, and pid `0`, `1` and our own
 //! are refused outright.
 
-use std::fs;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -32,7 +31,9 @@ use super::LauncherError;
 use crate::driver::lock::{probe_at, read_holder_at, run_lock_path, LockProbe};
 use crate::driverctl::serve::{valid_run_id, validate_run_dir, DRIVERS_REL};
 use crate::driverctl::store::RunState;
-use crate::state_reader::driver_frontmatter::{read_driver_run, DerivedStatus};
+use crate::state_reader::driver_frontmatter::{
+    read_driver_run, read_run_file_capped, DerivedStatus,
+};
 
 /// How long `systemctl --user is-active` may take.
 const PROBE_BUDGET: Duration = Duration::from_secs(10);
@@ -196,12 +197,15 @@ fn plausible_scope(unit: &str) -> bool {
 /// No launcher: stop the last recorded scope by name if it is still alive.
 fn stop_orphaned_scope(run_dir: &Path) -> Result<StopReport, LauncherError> {
     let state_path = run_dir.join("state.json");
-    let text = match fs::read_to_string(&state_path) {
-        Ok(text) => text,
+    // The guarded read, as every other run-directory reader uses (quick 261028-t3d
+    // [inferred — cleanup 2026-10-28]): a FIFO or symlink at `state.json` is a
+    // refusal, not a parked `driver stop`.
+    let bytes = match read_run_file_capped(&state_path) {
+        Ok(bytes) => bytes,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(StopReport::NotRunning),
         Err(e) => return Err(io_error(&format!("read {}", state_path.display()), e)),
     };
-    let state: RunState = serde_json::from_str(&text).map_err(|e| LauncherError::Store {
+    let state: RunState = serde_json::from_slice(&bytes).map_err(|e| LauncherError::Store {
         detail: format!("{} does not parse: {e}", state_path.display()),
     })?;
     let Some(unit) = state
@@ -251,6 +255,22 @@ fn stop_orphaned_scope(run_dir: &Path) -> Result<StopReport, LauncherError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// quick 261028-t3d: the orphan path reads `state.json` through the guarded read,
+    /// so a FIFO there is a refusal and not a parked `driver stop`.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_orphan_stop_does_not_block_on_a_fifo_state_json() {
+        use crate::state_reader::driver_frontmatter::fifo_test_support::{mkfifo, within_5s};
+        let tmp = tempfile::TempDir::new().unwrap();
+        mkfifo(&tmp.path().join("state.json"));
+        let dir = tmp.path().to_owned();
+
+        let outcome = within_5s(move || stop_orphaned_scope(&dir).map_err(|e| e.to_string()));
+
+        let message = outcome.expect_err("a FIFO state.json is refused");
+        assert!(message.contains("not a regular file"), "message: {message}");
+    }
 
     #[test]
     fn only_a_real_launcher_pid_is_a_signal_target() {

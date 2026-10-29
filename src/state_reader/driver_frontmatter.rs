@@ -1180,6 +1180,33 @@ mod tests {
         );
     }
 
+    /// 30-REVIEW WR-11 (quick 261028-t3d): a FIFO planted at `launcher.lock` must not
+    /// park the marker-scan worker; the run reads as liveness-unknown.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn read_driver_run_text_with_a_fifo_launcher_lock_derives_liveness_unknown_without_blocking() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join(DRIVER_RUNS_REL).join("20261019-run");
+        std::fs::create_dir_all(&dir).unwrap();
+        let text = RUN1B
+            .replace("s003-run1b", "20261019-run")
+            .replace("status: crashed", "status: running");
+        assert!(text.contains("status: running"));
+        std::fs::write(dir.join("DIRECTION.md"), &text).unwrap();
+        fifo_test_support::mkfifo(&crate::driver::lock::run_lock_path(&dir));
+
+        let derived = fifo_test_support::within_5s(move || {
+            read_driver_run_text(&dir).map(|(view, _)| view.derived)
+        });
+
+        assert_eq!(
+            derived.map_err(|e| e.to_string()),
+            Ok(DerivedStatus::LivenessUnknown {
+                written: RunStatus::Running
+            })
+        );
+    }
+
     #[test]
     fn read_driver_run_refuses_an_oversized_direction() {
         let tmp = tempfile::tempdir().unwrap();

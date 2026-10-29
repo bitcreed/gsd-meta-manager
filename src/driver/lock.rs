@@ -42,7 +42,11 @@
 //!    that took `LOCK_EX` would make two concurrent readers see each other as a
 //!    holder. [`probe_at`] opens read-only (never creating the file) and takes
 //!    [`FlockOperation::NonBlockingLockShared`], so any number of readers agree
-//!    the file is free while an exclusive holder still shows as held.
+//!    the file is free while an exclusive holder still shows as held. That open is
+//!    the guarded one every lock-file open in this module shares (`O_NOFOLLOW |
+//!    O_NONBLOCK`, a single-link regular file checked on the handle), so a symlink,
+//!    hard link or FIFO planted at the name is `Unknown`, not a hang and not a
+//!    verdict from a file the run does not own.
 //! 7. **The acquirer retries for a bounded budget (D-20, 27-RESEARCH E6).** A
 //!    probe's shared hold is momentary but real: an acquirer that happens to land
 //!    inside it would be refused and report a false "already running" naming a
@@ -137,6 +141,12 @@ impl RunLock {
         &self.holder
     }
 }
+
+/// The largest holder record [`read_holder_at`] will read (27-REVIEW WR-04).
+///
+/// A record is a three-field JSON document of under 200 bytes, so anything larger
+/// is not one and reads as no holder.
+const HOLDER_READ_MAX_BYTES: u64 = 4096;
 
 /// Open a lock file: never follow a link, never block, and check the type on the
 /// open handle. The one open every function in this module uses.
@@ -342,15 +352,24 @@ fn write_holder(file: &mut File, holder: &LockHolder) -> std::io::Result<()> {
 /// to read (D-20.3) — after which every subsequent loser would be told the
 /// holder is unknown.
 ///
+/// The open is [`open_lock_file`]'s read-only form (27-REVIEW WR-04, 30-REVIEW
+/// WR-11, 31-REVIEW WR-01, quick 261028-t3d): a symlink, a hard link, a FIFO or a
+/// directory at the name reads as `None` without blocking, and a record over
+/// [`HOLDER_READ_MAX_BYTES`] is not a record. A holder record names the pgid
+/// `driver stop` signals, so a file outside the run directory must not be able to
+/// supply one.
+///
 /// Every failure — an absent file, an empty file, a short read, invalid JSON —
 /// answers `None`. The **caller** turns `None` into
 /// [`LockError::HeldByUnknownRun`], never into "not held": this function
 /// answers "who", and the kernel has already answered "whether".
 pub fn read_holder_at(path: &Path) -> Option<LockHolder> {
-    let mut file = File::open(path).ok()?;
+    let file = open_lock_file(path, OpenOptions::new().read(true)).ok()?;
     let mut raw = String::new();
-    file.read_to_string(&mut raw).ok()?;
-    if raw.trim().is_empty() {
+    file.take(HOLDER_READ_MAX_BYTES + 1)
+        .read_to_string(&mut raw)
+        .ok()?;
+    if raw.len() as u64 > HOLDER_READ_MAX_BYTES || raw.trim().is_empty() {
         return None;
     }
     serde_json::from_str(&raw).ok()
@@ -408,14 +427,20 @@ pub enum LockProbe {
 
 /// Probe whether `path` is exclusively held, without ever disturbing it (fact 6).
 ///
-/// `File::open` is `O_RDONLY` and so never creates the file; `NotFound` is
-/// `Absent`. A `LOCK_SH | LOCK_NB` that succeeds means `Free` (the shared lock is
-/// released when the `File` drops at the end of this function); `EWOULDBLOCK`
-/// means `Held`; any other errno means `Unknown`.
+/// The open is [`open_lock_file`]'s read-only form, so it never creates the file
+/// and `NotFound` is `Absent`. A symlink, a hard link, a FIFO or a directory at the
+/// name is `Unknown(EINVAL)`: never `Free`, and never `Held` on the strength of a
+/// foreign inode and without blocking (27-REVIEW WR-04, 30-REVIEW WR-11, 31-REVIEW
+/// WR-01, quick 261028-t3d). A `LOCK_SH | LOCK_NB` that succeeds means `Free` (the
+/// shared lock is released when the `File` drops at the end of this function);
+/// `EWOULDBLOCK` means `Held`; any other errno means `Unknown`.
 pub fn probe_at(path: &Path) -> LockProbe {
-    let file = match File::open(path) {
+    let file = match open_lock_file(path, OpenOptions::new().read(true)) {
         Ok(file) => file,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return LockProbe::Absent,
+        Err(err) if err.kind() == std::io::ErrorKind::InvalidData => {
+            return LockProbe::Unknown(rustix::io::Errno::INVAL)
+        }
         Err(err) => {
             return LockProbe::Unknown(
                 rustix::io::Errno::from_io_error(&err).unwrap_or(rustix::io::Errno::IO),
@@ -687,5 +712,116 @@ mod tests {
         let detail = unavailable_detail(within_5s(move || acquire_at(&path, "r1", 1)));
 
         assert!(detail.contains("not a regular file"), "detail: {detail}");
+    }
+
+    /// 27-REVIEW WR-04, 30-REVIEW WR-11, 31-REVIEW WR-01: a symlink to a lock that
+    /// is HELD elsewhere must not make this run's lock read as Held.
+    #[test]
+    fn probe_at_reads_a_symlink_to_a_held_lock_as_unknown_not_held() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let other = tempfile::TempDir::new().expect("target dir");
+        let target = run_lock_path(other.path());
+        let _guard = acquire_at(&target, "r1", 1).expect("the target lock is held");
+        let path = run_lock_path(dir.path());
+        std::os::unix::fs::symlink(&target, &path).expect("symlink");
+
+        assert_eq!(
+            probe_at(&path),
+            LockProbe::Unknown(rustix::io::Errno::INVAL),
+            "a link is never followed, so it is neither Held nor Free"
+        );
+    }
+
+    /// A hard link is a regular file, so only the link count refuses it.
+    #[test]
+    fn probe_at_reads_a_hard_linked_lock_file_as_unknown() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let other = tempfile::TempDir::new().expect("sentinel dir");
+        let sentinel = sentinel_in(&other, "sentinel");
+        let path = run_lock_path(dir.path());
+        std::fs::hard_link(&sentinel, &path).expect("hard link");
+
+        assert_eq!(
+            probe_at(&path),
+            LockProbe::Unknown(rustix::io::Errno::INVAL)
+        );
+        assert_sentinel_untouched(&sentinel);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn probe_at_reads_a_fifo_as_unknown_without_blocking() {
+        use crate::state_reader::driver_frontmatter::fifo_test_support::{mkfifo, within_5s};
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let path = run_lock_path(dir.path());
+        mkfifo(&path);
+
+        assert_eq!(
+            within_5s(move || probe_at(&path)),
+            LockProbe::Unknown(rustix::io::Errno::INVAL)
+        );
+    }
+
+    #[test]
+    fn read_holder_at_refuses_a_symlink_or_hard_link_to_a_valid_record() {
+        let other = tempfile::TempDir::new().expect("record dir");
+        let record = run_lock_path(other.path());
+        drop(acquire_at(&record, "r1", 4242).expect("a real record"));
+        assert!(
+            read_holder_at(&record).is_some(),
+            "the record stays on disk after the guard drops"
+        );
+
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let symlinked = dir.path().join("symlinked.lock");
+        std::os::unix::fs::symlink(&record, &symlinked).expect("symlink");
+        assert_eq!(
+            read_holder_at(&symlinked),
+            None,
+            "a symlink is not followed"
+        );
+
+        let hard = dir.path().join("hard.lock");
+        std::fs::hard_link(&record, &hard).expect("hard link");
+        assert_eq!(
+            read_holder_at(&hard),
+            None,
+            "a multiply-linked inode is refused"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn read_holder_at_reads_a_fifo_as_none_without_blocking() {
+        use crate::state_reader::driver_frontmatter::fifo_test_support::{mkfifo, within_5s};
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let path = run_lock_path(dir.path());
+        mkfifo(&path);
+
+        assert_eq!(within_5s(move || read_holder_at(&path)), None);
+    }
+
+    #[test]
+    fn read_holder_at_refuses_a_record_over_the_cap_and_reads_one_at_it() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let path = run_lock_path(dir.path());
+        let holder = LockHolder {
+            run_id: "r1".to_owned(),
+            pgid: 4242,
+            started_at: "2026-10-28T00:00:00Z".to_owned(),
+        };
+        let cap = usize::try_from(HOLDER_READ_MAX_BYTES).expect("cap fits usize");
+        let padded = |len: usize| {
+            let mut bytes = serde_json::to_vec_pretty(&holder).expect("serialize");
+            assert!(bytes.len() < len);
+            bytes.resize(len, b' ');
+            bytes
+        };
+
+        std::fs::write(&path, padded(cap)).expect("a record of exactly the cap");
+        assert_eq!(read_holder_at(&path), Some(holder.clone()));
+
+        std::fs::write(&path, padded(cap + 1)).expect("a record one byte over");
+        assert_eq!(read_holder_at(&path), None, "over the cap is not a record");
     }
 }
