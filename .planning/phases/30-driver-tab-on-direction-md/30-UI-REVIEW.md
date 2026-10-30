@@ -109,3 +109,13 @@ Not applicable (Rust/ratatui, no `components.json`).
 - src/ui/screens/help.rs (759-777)
 - src/launcher/config_dir.rs and tests/launcher_config_dir.rs (diff only, confirmed non-UI)
 - 30-UI-SPEC.md and the prior 30-UI-REVIEW.md
+
+## Delta vs prior refresh (e9de71b) — no re-audit
+
+`[inferred — cleanup 2026-10-28]` Existing review kept (the workflow's unattended path reuses it; the auditor was not re-spawned) because quick 261029-1dp (f4cfa01, ce86206) has no user-visible TUI surface:
+- `git diff --stat e9de71b HEAD -- src/ui src/app.rs`: only `src/ui/screens/detail.rs` (test doc comment + assert message in `mod tests`, ~21257-21277) and `src/ui/screens/mod.rs:1389-1393` (doc comment on `AppContext::experimental`). No rendered string, layout, style or key binding changed.
+- The corrected wording ("opt-in gates no launch; it only shapes the push policy") already matches the rendered copy: `driver_confirm.rs:118,132` speak of PR caps / the push step, and `help.rs:370,627,980` say "Toggle driver opt-in for this project". No copy drift.
+- f4cfa01 (SAFE-04 stdout/stderr redaction pump) touches only `src/launcher/`; ce86206 drops the dead `AgentRuntime` key, and `grep -rn AgentRuntime src/ui` is empty.
+- `cargo test --no-fail-fast --lib ui::screens`: 853 passed, 0 failed.
+
+Scores unchanged: 22/24, 0 blockers; top fixes as listed above. Method: git diff + grep + render tests.
