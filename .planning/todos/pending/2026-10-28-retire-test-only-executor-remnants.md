@@ -11,6 +11,9 @@ files:
   - src/state_reader/git_ops.rs (head_sha)
   - src/registry.rs (check_prompt_input_drift)
   - src/driver/rate_limit.rs (the only stream_json user, in tests)
+audit_acknowledged:
+  milestone: v2.0
+  at: 2026-10-29
 ---
 
 ## Problem

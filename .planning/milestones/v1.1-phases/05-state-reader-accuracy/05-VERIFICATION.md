@@ -25,6 +25,10 @@ human_verification:
   - test: "Verify completed milestone display on dashboard"
     expected: "Projects where all phases are complete show 'v1.0 Complete' in dimmed gray instead of the pipeline"
     why_human: "Requires running the TUI with a completed milestone project"
+audit_acknowledged:
+  milestone: v2.0
+  at: 2026-10-29
+  status: human_needed
 ---
 
 # Phase 05: State Reader Accuracy Verification Report

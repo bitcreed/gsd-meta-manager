@@ -7,7 +7,7 @@ dependency_graph:
   requires: []
   provides:
     - DiskInference.has_security
-    - "Security" row in Plan sub-stages drill-down
+    - '"Security" row in Plan sub-stages drill-down'
   affects:
     - src/state_reader/disk_status.rs
     - src/ui/screens/detail.rs
@@ -31,6 +31,10 @@ metrics:
   commits: 3
 requirements:
   - QUICK-260512-ecm
+audit_acknowledged:
+  milestone: v2.0
+  at: 2026-10-29
+  status: unknown
 ---
 
 # quick-260512-ecm: Add support for GSD's optional secure-phase artifact

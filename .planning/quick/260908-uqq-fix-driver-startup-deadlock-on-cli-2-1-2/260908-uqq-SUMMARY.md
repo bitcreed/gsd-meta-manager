@@ -8,7 +8,7 @@ requires:
   - phase: 15 (executor transport)
     provides: the `system/init` capability gate, the Coordinator's two-layer supervisor loop, the stdin writer task
   - phase: 17 (driver run journal)
-    provides: `JournalEvent::Diagnostic`, `finish_run`, `outcome_label`'s terminal-label vocabulary
+    provides: '`JournalEvent::Diagnostic`, `finish_run`, `outcome_label`''s terminal-label vocabulary'
 provides:
   - "`ExecutionOptions::prompt_release_grace` — a startup-specific bound that releases the first user message when the child has not announced itself"
   - "A grace-release arm in `Coordinator::run`'s unconditional enforcement block, with `prompt_released` threaded into `handle_item`"
@@ -144,6 +144,10 @@ coverage:
 duration: 55min
 completed: 2026-09-09
 status: complete
+audit_acknowledged:
+  milestone: v2.0
+  at: 2026-10-29
+  status: complete
 ---
 
 # Quick 260908-uqq: Fix the driver startup deadlock on CLI 2.1.266

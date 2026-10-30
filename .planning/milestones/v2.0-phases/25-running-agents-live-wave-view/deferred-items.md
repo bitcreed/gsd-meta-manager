@@ -12,6 +12,7 @@
   files 25-01 touched; `cargo clippy -- -D warnings` (lib + bin) is clean.
 - **The repository is not `rustfmt`-clean** (`cargo fmt --check` reports most files). 25-01 formatted only
   its new files (`src/agents/**`, `tests/agents_scan.rs`), not `git_ops.rs` or `lib.rs`.
+  status: acknowledged
 
 ## Resolution (re-verification, 2026-10-28, HEAD 54a73bf)
 

@@ -4,6 +4,10 @@ phase: 21-llm-goal-layer-prompt-injection-hardening
 source: [21-VERIFICATION.md]
 started: 2026-08-28T02:05:00Z
 updated: 2026-08-28T02:05:00Z
+audit_acknowledged:
+  milestone: v2.0
+  at: 2026-10-29
+  gap_snapshot: "testing::scenarios=10"
 ---
 
 ## Current Test

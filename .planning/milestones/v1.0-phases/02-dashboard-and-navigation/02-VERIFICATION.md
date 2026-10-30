@@ -14,6 +14,10 @@ human_verification:
   - test: "Help overlay is visually centered and legible"
     expected: "Centered popup with bordered block, keybinding list, and filter syntax visible"
     why_human: "centered_rect calculation is correct but visual appearance (overlap with dashboard, readability at various terminal sizes) requires running the TUI"
+audit_acknowledged:
+  milestone: v2.0
+  at: 2026-10-29
+  status: human_needed
 ---
 
 # Phase 2: Dashboard and Navigation Verification Report

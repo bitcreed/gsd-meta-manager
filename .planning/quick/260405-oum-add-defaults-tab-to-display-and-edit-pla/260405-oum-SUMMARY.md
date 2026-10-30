@@ -28,6 +28,10 @@ metrics:
   completed: 2026-04-06
   tasks: 2
   files: 4
+audit_acknowledged:
+  milestone: v2.0
+  at: 2026-10-29
+  status: unknown
 ---
 
 # Quick Task 260405-oum: Add Defaults Tab Summary

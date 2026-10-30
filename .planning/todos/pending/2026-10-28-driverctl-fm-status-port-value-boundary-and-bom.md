@@ -8,6 +8,9 @@ files:
   - src/driverctl/counters.rs:138-157
   - src/driverctl/scan.rs:428-439
   - .planning/spikes/003-divergent-gap-loop-validation/tools/gapcount.py:63
+audit_acknowledged:
+  milestone: v2.0
+  at: 2026-10-29
 ---
 
 ## Problem

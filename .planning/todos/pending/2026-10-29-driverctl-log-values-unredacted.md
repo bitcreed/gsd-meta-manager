@@ -6,6 +6,9 @@ severity: minor
 source: .planning/v2.0-MILESTONE-AUDIT.md (SAFE-04 evidence), split out by quick 261029-1dp [inferred — 2026-10-29]
 files:
   - src/driverctl/log.rs (format_line)
+audit_acknowledged:
+  milestone: v2.0
+  at: 2026-10-29
 ---
 
 ## Problem

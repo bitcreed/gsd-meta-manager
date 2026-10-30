@@ -6,6 +6,9 @@ severity: minor
 files:
   - src/state_reader/disk_status.rs:101-111
   - .planning/spikes/003-divergent-gap-loop-validation/tools/gapcount.py:63-73
+audit_acknowledged:
+  milestone: v2.0
+  at: 2026-10-29
 ---
 
 ## Problem

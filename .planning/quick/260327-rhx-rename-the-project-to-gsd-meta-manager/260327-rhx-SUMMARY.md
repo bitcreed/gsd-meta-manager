@@ -24,6 +24,10 @@ decisions: []
 metrics:
   duration: 2min
   completed: 2026-03-28
+audit_acknowledged:
+  milestone: v2.0
+  at: 2026-10-29
+  status: unknown
 ---
 
 # Quick Task 260327-rhx: Rename the project to gsd-meta-manager Summary

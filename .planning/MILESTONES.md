@@ -1,5 +1,28 @@
 # Milestones
 
+## v2.0 Autonomous Orchestration (Shipped: 2026-10-29)
+
+**Released as:** v2.0.0 (interim releases v1.7.0 through v1.15.0 shipped during the milestone)
+**Phases completed:** 20 phases (14-31 incl. 26.1 and 28.1), 195 plans, 400 tasks, plus 111 quick tasks
+**Closed by supersession:** Phases 19, 21, 22, 23 (re-plan 2026-10-14, spikes 001/002); Phase 26 by 26.1. Phase 32 deferred to backlog 999.8.
+**Audit:** tech_debt — requirements 70/71 (CTRL-05 accepted partial), phases 20/20, integration 0 gaps, flows 8/8 (`milestones/v2.0-MILESTONE-AUDIT.md`)
+**Git range:** v1.6.0..v2.0.0, ~2,300 commits; src+tests ~198K lines Rust
+
+**Key accomplishments:**
+
+- Sandboxed driver launcher: the headless Opus master runs in bwrap under `systemd-run --user --scope`, with hard caps enforced from outside (dispatches, wall clock, gap deny/kill, rate-limit park), no push credential inside, stored setup-token auth, and `driver push` outside the sandbox into `gsd-auto/<alias>/<run-id>` (Phase 28)
+- Sandbox egress and agent-channel isolation: `--unshare-net` with an allowlisting egress proxy, `$HOME` allowlist, planted-file guard, agent-tool denies and the nested-agent cap check (Phase 28.1)
+- `driverctl` as the single writer of run state, LOG.md and DIRECTION.md frontmatter via an exchange-verify splice, with 0 lost saves under an editor race (Phase 27)
+- Versioned master prompt with DIRECTION/LOG templates, one 8-rule stop precedence, and crash-and-relaunch reconciliation (Phase 29); Driver tab that observes runs through their files and steers by editing DIRECTION.md (Phase 30)
+- Driver behaviour validated on a real GSD phase before the Rust was written (spike 003 re-run, Phase 26.1); superseded envelope and goal-layer code retired (Phase 31)
+- TUI: roadmap tab redesign with dependency lanes and eight detail tabs (Phase 24), running-agents and live wave view (Phase 25), four UI fixes (Phase 14)
+
+**Known tech debt:** 123 open/deferred review entries (0 critical, 41 warning, 82 info) across Phases 24-31, recorded per phase in `milestones/v2.0-phases/*/*-REVIEW-DISPOSITION.md`. Security-adjacent clusters carried forward as todos `2026-10-29-v2-carry-*` `[inferred — release 2026-10-29]`.
+
+Known verification overrides: 91 newly acknowledged, 0 carried forward from a prior close (see STATE.md Deferred Items). 241 further `deferred_items` hits in the Phase 19/21/25 `deferred-items.md` narrative logs could not be anchored by the acknowledge writer (table rows, duplicate bullets) and are disclosed per file in STATE.md instead `[inferred — release 2026-10-29]`.
+
+---
+
 ## v1.6.0 GSD 1.8.0 Catch-up (Shipped: 2026-07-22)
 
 **Phases completed:** 0 phases, 1 quick task (10 plans, 5 waves) + 2 fast tasks

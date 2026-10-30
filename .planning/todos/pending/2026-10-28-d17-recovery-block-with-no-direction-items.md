@@ -10,6 +10,9 @@ files:
   - tests/driverctl_reconcile.rs
   - tests/launcher_reconcile.rs
   - src/launcher/assets/MASTER-PROMPT.md
+audit_acknowledged:
+  milestone: v2.0
+  at: 2026-10-29
 ---
 
 ## Problem

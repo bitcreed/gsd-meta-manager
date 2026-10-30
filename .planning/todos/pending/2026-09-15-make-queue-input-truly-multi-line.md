@@ -7,6 +7,9 @@ files:
   - src/ui/screens/enqueue.rs:38-45
   - src/ui/screens/enqueue.rs:90-95
   - src/ui/screens/enqueue.rs:126-128
+audit_acknowledged:
+  milestone: v2.0
+  at: 2026-10-29
 ---
 
 ## Problem

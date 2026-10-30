@@ -11,6 +11,9 @@ files:
   - src/ui/screens/normal.rs (AppContext literal)
   - src/ui/screens/driver_confirm.rs (AppContext literal)
   - src/ui/screens/detail.rs (AppContext literal)
+audit_acknowledged:
+  milestone: v2.0
+  at: 2026-10-29
 ---
 
 ## Problem

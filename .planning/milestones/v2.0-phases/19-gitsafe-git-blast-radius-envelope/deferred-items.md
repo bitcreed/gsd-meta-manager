@@ -10,6 +10,7 @@ boundary rule: they are not caused by the current plan's changes.
 - `a_fresh_scan_finds_the_orphaned_run_live_with_its_last_journal_step` —
   `assertion left == right failed: exactly one project has a run to observe`,
   `left: 0`.
+  status: acknowledged
 - `a_run_killed_without_an_ending_is_reported_crashed_and_nothing_on_disk_is_repaired`
   — `the run record is on disk: Os { code: 2, kind: NotFound }`.
 
@@ -29,6 +30,7 @@ needs, not a deviation of this plan.
 
 **Suggested owner.** A follow-up quick task, or plan 19-06 if it finds the same
 race while wiring the envelope into the driver's spawn path.
+  status: acknowledged
 
 ### Ownership settled by the orchestrator (wave 4 post-merge gate)
 
@@ -135,6 +137,7 @@ on neighbouring findings. Recorded so the count is not mistaken for a 19-11 regr
 19-11's gate is 1245 passed / 2 failed / 13 ignored, and the 2 are this pair.
 
 ---
+  status: acknowledged
 
 ## `T-19-86` — a governed program's own operand naming a governed command (registered by 19-13)
 
@@ -238,6 +241,7 @@ permitted — is pinned as a pair.
 Pinned in `tests/envelope_expansion_slots.rs` (the re-homed rows, the severed-prefix
 spellings, the cost pair, the grouping rows and the opener-exclusion permits) and in
 `tests/envelope_wrapper_class.rs` (the `SEVERED_PREFIXES` generative alphabet).
+  status: acknowledged
 
 ## `T-19-91` — a git classifier's own decision operand, assembled by expansion (registered by 19-14)
 
@@ -504,6 +508,7 @@ at `high`: `T-19-86`, `T-19-91`, `T-19-92`, `T-19-93`.
 `T-19-91`.
 
 ---
+  status: acknowledged
 
 ## `T-19-96` — a glob in a PUSH FLAG (registered by 19-16)
 
@@ -590,6 +595,7 @@ is cwd-dependent — exit 0 in the namespace a driven run is designed to be in,
 exit 2 outside it under an unrelated arm.
 
 ---
+  status: acknowledged
 
 ## Round-5 closure status (recorded by 19-17) — `T-19-92` … `T-19-95` CLOSED
 
@@ -613,6 +619,7 @@ execution record.
   whole-word rather than per-`{`, because a per-`{` scan answers `g` and `it` for
   `{g..g}{i..i}t`; quote-removed, because otherwise `"g"{i,i}"t"` reads
   `"g"i"t"`. `SEPARATORS` is unchanged and `(`/`)` were not touched.
+  status: acknowledged
 * **`T-19-93` — CLOSED, by COUNT, in the tokenizer's literal-brace branch and
   nothing else.** `gh api repos/{owner}/{repo}/pulls -f title=x` now writes
   exactly one ledger line and a second creation in the same root is refused under
@@ -620,11 +627,13 @@ execution record.
   changed.** The rejected alternative — a placeholder tolerance in
   `endpoint_is_pulls` — is recorded in that function's own doc with its three
   reasons.
+  status: acknowledged
 * **`T-19-94` — CLOSED, by clause 1**, subsumed by the inversion rather than
   added beside it: `*`, `?` and `[` are three of the classes that clear
   `Token.literal`, read in the ONE closure that read `Token.expansion`, over a
   region that did not move. Operands stay free — `git add src/*.rs` and
   `rg "x" src/*` are re-measured permitted.
+  status: acknowledged
 * **`T-19-95` — CLOSED.** The rule is certified by a corpus that can draw a brace
   expansion, a literal brace pair, a concatenated splice, a multi-expansion word,
   a range, a glob and a tilde, with per-alphabet and per-class floors — and that
@@ -632,6 +641,7 @@ execution record.
   earned its keep beyond the enumerated rows: the generative forge-slot property
   caught `gh api repos/o/r/pulls -? title=x`, a cell no enumerated row covered,
   after clauses 1 and 2 had already landed.
+  status: acknowledged
 
 ### Still OPEN and untouched by 19-17
 
@@ -649,6 +659,7 @@ execution record.
 * **`T-19-74`** — accepted (AR-19-10); core rows re-measured permitted.
 * **`T-19-61` … `T-19-73`, `T-19-84`, `T-19-85`** — open, unaccepted, untouched.
   `cred.rs`, `advisory.rs`, `scan.rs` and `config.rs` were not opened.
+  status: acknowledged
 
 ### Newly disclosed cost, accepted (`T-19-17r`)
 
@@ -771,6 +782,7 @@ Both pinned pre-fix in the two `#[test]` fns `19-19` is required to replace:
 `the_redirected_in_namespace_push_is_falsely_refused_today_and_19_19_must_move_it`
 and `the_continued_in_namespace_push_is_falsely_refused_today_and_19_19_must_move_it`.
 **The round removes two measured over-refusals rather than adding any.**
+  status: acknowledged
 
 ### `T-19-17r` — the bookkeeping gap, OUTSTANDING and the acceptance NOT made
 
@@ -832,6 +844,7 @@ together.** `T-19-86` and `T-19-91` remain OPEN at `high`. Only the
 are both sub-classes of it and both remain open.
 
 ---
+  status: acknowledged
 
 ## Round-6 closure (recorded by 19-19) — `T-19-97`, `T-19-98`, `T-19-99` CLOSED
 
@@ -1204,6 +1217,7 @@ registered as new threat IDs:
   `CALLEE_KNOWN_LEADING_PREFIX` (`tests/envelope_wrapper_class.rs:5197`) with
   round 7's whole generative property spliced behind it; refusing it would be
   permanently red in a file `19-23` may not edit.
+  status: acknowledged
 
 ### `T-19-104` — `GIT_CONFIG_PARAMETERS` is absent from `ENVELOPE_ENV_KEYS` — OPEN, `high`
 
@@ -1444,6 +1458,7 @@ either.
 cleared by this plan.** Only the WRAPPER-OPERAND sub-class of `T-19-60` is closed.
 
 ---
+  status: acknowledged
 
 ## Plan 19-24 — round 9's CORPUS (the rules are `19-25`'s)
 
@@ -1483,6 +1498,7 @@ one; confirmed against real git 2.43.0 with the envelope's own
 
 **`T-19-108` will close only AS SCOPED.** The non-shell alias body closes; audit
 7's `!`-bodied destructive pair does NOT — that is `T-19-86`.
+  status: acknowledged
 
 ### `T-19-109` — the counted-completeness claim — OPEN, `low`
 
@@ -1609,6 +1625,7 @@ here and left for a later round.
 - **the three documented flakes** — the two `tests/driver_reattach.rs` failures and
   the `tests/envelope_tracer.rs` ETXTBSY stub-write race, all pre-existing,
   environmental and out of scope.
+  status: acknowledged
 
 ## Plan 19-25 — the rules (round 9's second half)
 
@@ -1649,6 +1666,7 @@ condition plus a non-skipping version witness was added to BOTH
 SCHEDULE, not a CONTROL** — it says WHEN to look and cannot say WHAT changed —
 so the residues stay uncovered. **No `AR-` row was added and no risk was
 accepted.**
+  status: acknowledged
 
 ### `T-19-109` — the counted-completeness claim — **CLOSED**, `low`
 
@@ -1751,6 +1769,7 @@ threshold alone.
 - **the three documented flakes** — the two `tests/driver_reattach.rs` failures and
   the `tests/envelope_tracer.rs` ETXTBSY stub-write race. **None fired in this
   plan's gate run**; absence is not evidence they are fixed.
+  status: acknowledged
 
 ## Plan 19-26 — the corpus (round 10's first half)
 
@@ -1804,6 +1823,7 @@ by file and line:
    **Corrected here, beside it: the exclusion is the CARRIER as well as the body,
    and `T-19-108`'s closure does not cover a `.git/config` written by a means the
    guard never watched.** The entry at `:1619` is NOT edited.
+  status: acknowledged
 
 ### `T-19-112` — the SAFE-06 PR-cap ledger as a FILE — OPEN, `high`, corpus RED
 
@@ -1903,6 +1923,7 @@ and floors whose arithmetic is derived, stated and checked as exact equalities.
   are git verbs and layer 2 permits a segment reaching no governed program.
   Measured exit 0 with an EMPTY walk. **Whether the loaded project-tier file makes
   that reachable in practice is UNMEASURED.** RECORDED, never asserted.
+  status: acknowledged
 
 ### `C-15` — `~/.config/gsd-meta-manager/config.json` — a DISTINCT ROUTE to SAFE-06 — OPEN, control (e), NO RULE PLANNED
 
@@ -2036,6 +2057,7 @@ present at `policy.rs:5141`; exactly ONE `#[cfg(test)]` sentinel per file
   plan's gate run**; absence is not evidence they are fixed.
 
 ---
+  status: acknowledged
 
 ## Plan 19-27 — the rules and the corrections (round 10's second half)
 
@@ -2075,6 +2097,7 @@ reason.
   make silently.
 - **the DEFERRED option (b)**, below, which leaves the guard as the cap's only
   observation point (`T-19-35`, `AR-19-05`).
+  status: acknowledged
 
 ### `T-19-113` — the hook stubs as FILES — **NARROWED, NOT CLOSED**, `medium`
 
@@ -2184,6 +2207,7 @@ bytes, and the file carries 842 multi-byte characters. **The FLOOR stays at
   cover a write DURING the run. **RECORDED beside it and nothing more; NOT
   un-accepted.** `AR-19-05` likewise. No `AR-` row was added, edited, renumbered,
   accepted or un-accepted.
+  status: acknowledged
 
 ### Still OPEN and unchanged
 
@@ -2216,6 +2240,7 @@ bytes, and the file carries 842 multi-byte characters. **The FLOOR stays at
   `a_run_killed_without_an_ending_is_reported_crashed_and_nothing_on_disk_is_repaired`
   — and was neither fixed nor worked around. It did not fire on the final gate run;
   absence is not evidence it is fixed.
+  status: acknowledged
 
 ## Plan 19-28 — round 11's CORPUS (the rules are `19-29`'s)
 
@@ -2476,6 +2501,7 @@ through a command layer 2 permits — while `env -u GIT_CONFIG_COUNT` is REFUSED
   is created and the word "accepted" is not applied to `T-19-17r` anywhere.
 
 ---
+  status: acknowledged
 
 ## Plan 19-29 — round 11's RULES (the corpus was `19-28`'s)
 
@@ -2639,6 +2665,7 @@ and is recorded as correct.
 **Only the WRAPPER-OPERAND sub-class of `T-19-60` is closed.**
 
 ---
+  status: acknowledged
 
 ## Plan 19-30 — round 12's CORPUS (the rules are `19-31`'s)
 
@@ -2669,6 +2696,7 @@ Driven END TO END twice with a control beside every leg:
 It reaches `C-01` … `C-10`. **Corpus:** `tests/envelope_interior_path.rs`
 (8 rows RED) and `CONTROL_CARRIER_INTERIOR_PATH` in
 `tests/envelope_wrapper_class.rs` (1 property RED).
+  status: acknowledged
 
 ### `T-19-121` — registered at `high`, corpus RECORDED (not asserted)
 
@@ -2720,6 +2748,7 @@ handed to a pin, a schedule or a version witness.
   from a write. **`dd if=<ledger> of=/tmp/stolen` is exit 0** — the guard refuses
   it NEITHER way. If the fix lands the sentence becomes TRUE and needs a WR-02
   note; if it is severed the example must be replaced by `tee F`.
+  status: acknowledged
 
 ### `policy.rs:9719`'s comment — `19-31`'s WR-02 correction, named in advance
 
@@ -2783,6 +2812,7 @@ observation.
 **Only the WRAPPER-OPERAND sub-class of `T-19-60` is closed.**
 
 ---
+  status: acknowledged
 
 ## Plan 19-31 — the rules and the honesty repairs
 
@@ -2816,6 +2846,7 @@ described as a closure.**
   any spelling that names no leading option. `--config-env` IS reached, which
   `19-30` had recorded as unreachable by a by-name clause — a planning-time
   expectation corrected by measurement.
+  status: acknowledged
 
 ### NARROWED FURTHER and still OPEN at `high`
 
@@ -2829,6 +2860,7 @@ described as a closure.**
   `cd <binary-parent> && cp /bin/true gsd-meta-manager` (relative);
   and a `PATH` symlink whose target `current_exe()` reports (link).
   **None of the four is an option attachment. `T-19-116` remains OPEN at `high`.**
+  status: acknowledged
 
 ### OPEN with NO rule, condition RESTATED rather than closed
 
@@ -2837,6 +2869,7 @@ described as a closure.**
   needs the FILESYSTEM, which the latency and TOCTOU rules forbid. Its condition
   is RESTATED as part of the predicate's new condition. **Restated is not closed,
   and no acceptance is made for it.**
+  status: acknowledged
 
 ### The residue, wherever this plan states it
 
@@ -2882,6 +2915,7 @@ driven agent TODAY.
 **Only the WRAPPER-OPERAND sub-class of `T-19-60` is closed.**
 
 ---
+  status: acknowledged
 
 ## Plan 19-32 — round 13's CORPUS (the rules are `19-33`'s)
 
@@ -2945,6 +2979,7 @@ LITERAL NON-PATHNAME target words, chained as a THIRD word class at the SAME
 reading site. Widening `pathname_target` is FORBIDDEN — it turns
 `only_a_literal_pathname_target_reaches_the_segment_and_the_tokens_do_not_move`
 and the twelve-operator grammar pin RED, and the second field turns neither.
+  status: acknowledged
 
 ### `T-19-123` — high, BLOCKING, OPEN. Corpus written and RED.
 
@@ -3033,6 +3068,7 @@ forward.
   own DELETION removes the binary — an HONESTY gap `19-33` repairs in that doc.**
 
 The four original residues stay at exit 0 and `T-19-116` stays OPEN at `high`.
+  status: acknowledged
 
 ### Still OPEN and unchanged
 
@@ -3076,6 +3112,7 @@ The four original residues stay at exit 0 and `T-19-116` stays OPEN at `high`.
 **Only the WRAPPER-OPERAND sub-class of `T-19-60` is closed.**
 
 ---
+  status: acknowledged
 
 ## Plan 19-33 — the word set, the path set and the scan's work. NARROWED-or-CORRECTED, and NOT CLOSED.
 
@@ -3140,6 +3177,7 @@ deliberately-unruled residues is audit 13's judgement.
   therefore still unspelled there, but for a checkable reason about where the
   slice begins rather than the vacuity claim it used to give. `T-19-126`(ii) —
   entry 7's tar re-spelling — is unchanged by this plan.
+  status: acknowledged
 
 ### NEW, registered here for the first time
 
@@ -3161,6 +3199,7 @@ deliberately-unruled residues is audit 13's judgement.
   fixed; the file is fenced beyond this plan's two authorised changes. Green in
   every unloaded run including the final gate; **absence is not evidence it is
   fixed.**
+  status: acknowledged
 
 ### The RESIDUE, as a CONDITION over THREE axes, with NO COUNT on any of them
 
@@ -3228,6 +3267,7 @@ handed to a pin, a schedule or a version witness.**
 **Only the WRAPPER-OPERAND sub-class of `T-19-60` is closed.**
 
 ---
+  status: acknowledged
 
 ## Phase 31 closure (2026-10-25)
 

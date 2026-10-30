@@ -5,6 +5,9 @@ area: ui
 severity: minor
 files:
   - src/state_reader/disk_status.rs:1436-1446
+audit_acknowledged:
+  milestone: v2.0
+  at: 2026-10-29
 ---
 
 ## Problem

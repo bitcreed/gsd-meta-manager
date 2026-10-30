@@ -1,3 +1,10 @@
+---
+audit_acknowledged:
+  milestone: v2.0
+  at: 2026-10-29
+  status: unknown
+---
+
 # Quick Task 260405-urb: Write a README.md for GitHub
 
 ## Summary

@@ -8,6 +8,9 @@ files:
   - src/ui/screens/driver.rs
   - src/ui/screens/driver_steer.rs
   - src/ui/screens/driver_launch.rs
+audit_acknowledged:
+  milestone: v2.0
+  at: 2026-10-29
 ---
 
 ## Problem

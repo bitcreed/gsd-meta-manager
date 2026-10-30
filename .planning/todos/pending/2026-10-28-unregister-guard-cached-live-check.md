@@ -9,6 +9,9 @@ files:
   - src/ui/screens/detail.rs (driver_live_for)
   - docs/CONFIGURATION.md
   - tests/async_blocking_guard.rs
+audit_acknowledged:
+  milestone: v2.0
+  at: 2026-10-29
 ---
 
 ## Problem

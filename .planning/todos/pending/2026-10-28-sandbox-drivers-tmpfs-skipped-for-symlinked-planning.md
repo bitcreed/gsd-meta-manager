@@ -8,6 +8,9 @@ files:
   - src/launcher/sandbox.rs (bwrap_argv drivers tmpfs)
   - src/driverctl/serve.rs (validate_run_dir)
   - tests/launcher_live_isolation.rs
+audit_acknowledged:
+  milestone: v2.0
+  at: 2026-10-29
 ---
 
 ## Problem

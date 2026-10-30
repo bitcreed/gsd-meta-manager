@@ -16,6 +16,10 @@ human_verification:
   - test: "Switch from Archive tab to another tab and back — confirm milestones appear immediately without a Loading... flash"
     expected: "On return to Archive tab, previously loaded milestone list is still visible instantly (no re-discovery triggered)"
     why_human: "Caching behavior requires observing timing in the running TUI; cannot be verified by static analysis"
+audit_acknowledged:
+  milestone: v2.0
+  at: 2026-10-29
+  status: human_needed
 ---
 
 # Phase 12: Milestone Archive Browser Verification Report

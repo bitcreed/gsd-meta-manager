@@ -465,6 +465,7 @@ differently and no committed control in this tree would report it.
 **Under-detection, disclosed.** What bounds it is
 `the_screen_renders_identity_escaped`, which renders through the REAL
 `Screen::render` and so inspects whatever family a screen actually used.
+  status: acknowledged
 
 ## RE-SURFACED, UNCHANGED — ROADMAP success criterion 4
 
@@ -586,6 +587,7 @@ There is an in-repo tripwire for it now:
 `false`) and `ProbeSink::ListItem` (must answer `true`). If a ratatui upgrade
 moves either family, that test goes red and points here. It is a tripwire, not a
 substitute for the per-family re-measurement: it covers two of the four families.
+  status: acknowledged
 
 ## 2026-08-27 (`21-26`) — PROCESS LESSON from IN-04: an exemption is where a prohibition gets falsified
 
@@ -621,6 +623,7 @@ Round 9 applied it, and it paid twice in this plan alone:
   `filtered_aliases`/`selected_alias`; re-measured at `21-26` HEAD it is **94**,
   because round 9's own diff added one. Small, and exactly the kind of drift an
   inherited number hides.
+  status: acknowledged
 
 ## 2026-08-27 (`21-26`) — DEFERRED, not fixed: IN-02 and IN-03 (`src/ui/roadmap_widget.rs`)
 
@@ -716,6 +719,7 @@ HEAD: **8 passed; 0 failed; 0 ignored**. Both cap directions green, named:
 
 `rtk proxy git diff --stat dfa11c6..HEAD -- tests/driver_escalation_cap.rs` is
 EMPTY: the file is unchanged across the whole round.
+  status: acknowledged
 
 ## 2026-08-27 (`21-26`) — the round-9 self-audit, with its controls
 
@@ -811,6 +815,7 @@ table.
 
 Recorded in those terms deliberately. Presenting CR-02 and CR-03 as things round
 10 *found* would repeat the error one level up.
+  status: acknowledged
 
 ## 2026-08-27 (`21-30`) — the CORRECTED carrier table
 
@@ -1016,6 +1021,7 @@ Presence and wiring verified for the **eleventh** consecutive pass; behaviour
 not, and round 10 does not claim it is. **It is permanently agent-unclosable by
 construction.** It is expected and correct for ROADMAP to remain at 4/5 after
 this round.
+  status: acknowledged
 
 ## 2026-08-27 (`21-30`) — the two DRIVE-04 backstops, re-run
 
@@ -1284,6 +1290,7 @@ binary; (iv) `--test-threads=1` with the same concurrent load — at HEAD and at
 `0a84023`, and record all eight rates with N large enough that a five-run streak
 cannot decide it. **Direction is unchanged: false-red, LOUD.** The fix is still
 not attempted here.
+  status: acknowledged
 
 ### The correction's completeness, established by inventory rather than by memory
 
@@ -1647,6 +1654,7 @@ frontmatter — command, expected result and why-human, not paraphrased:
 
 * `git diff --stat 2c13fcf HEAD -- tests/driver_injection_corpus.rs` — **empty.**
   The file was RUN by round 11 and EDITED by no plan of it.
+  status: acknowledged
 * `cargo test --test driver_injection_corpus` — **13 passed / 0 failed / 10
   ignored.** Identical to every figure since pass 10.
 
@@ -1707,13 +1715,17 @@ change, and phase 21 has no `21-UI-SPEC.md` and never has across twelve rounds.
    12's two source files — but makes **no visual-design changes**. Its edits are
    to argv construction, parsing, escaping and test controls; never to layout,
    sizing, styling or colour.
+  status: acknowledged
 2. That is why the absence of a `21-UI-SPEC.md` is acceptable **for this phase**:
    a UI spec governs visual design, and there is no visual design in this
    phase's diff to govern.
+  status: acknowledged
 3. **Round 11 overrode the gate** on exactly this ground — a diff containing
    zero `Layout::` / `Constraint::` / `Style::` / `Color::` changes.
+  status: acknowledged
 4. **Round 12 did not need to.** The orchestrator ran the deterministic gate and
    it returned **`block: false`** on its own; no override was applied:
+  status: acknowledged
 
    ```
    $ gsd-tools check ui-plan-gate 21
@@ -1912,6 +1924,7 @@ list:
 * `git diff --stat 69f99e2 HEAD` — `tests/driver_injection_corpus.rs` is
   **ABSENT** from the round's diff. The file was RUN by round 12 and EDITED by no
   task of it; it is not in `files_modified`.
+  status: acknowledged
 * `cargo test --test driver_injection_corpus` — **13 passed / 0 failed / 10
   ignored.** Identical to every figure since pass 10.
 
@@ -2083,6 +2096,7 @@ invisible to the detector that finds it again.** The CLI's own short spelling
   than inferring forward from a version number. A future release adding a second
   `r`-initial short option falsifies a written claim rather than silently
   changing what this build reports.
+  status: acknowledged
 
 ### WR-05 — the subsumed duplicate control, deleted with its safety OBSERVED
 
@@ -2109,8 +2123,10 @@ failing** on the class at issue:
 
 * round 10 certified a CWE-88 fix with a corpus carrying **no leading-hyphen
   fixture**;
+  status: acknowledged
 * round 12 certified a byte-identity claim with a corpus carrying **no
   whitespace-padded fixture**;
+  status: acknowledged
 * the non-UTF-8 class was not merely unenumerated but **unrepresentable**,
   because the harness was `&str`-typed while the parser had taken `&[u8]` all
   along.
@@ -2120,17 +2136,22 @@ mechanism intact and guarantees the next round. Adding entries to a list is
 closing an enumeration by moving it down a level.
 
 **What changed this round, on four axes at once:**
+  status: acknowledged
 
 1. **The CLAIM became total** — a disjunction with exactly two NAMED refusal
    classes (R1 ill-formed UTF-8, R2 empty after trim) and no third outcome, both
    directions asserted. *"These 28 fixtures round-trip"* could not be false;
    this can.
+  status: acknowledged
 2. **The INPUT SPACE became generated** — a fixed-seed five-arm mixture over
    `Vec<u8>`, with the 28 fixtures retained and consumed by its `seed` arm.
+  status: acknowledged
 3. **The HARNESS became byte-typed** — the encoding class became constructible
    rather than unrepresentable.
+  status: acknowledged
 4. **The PRODUCER SET became a source census** — derived from the tree and
    adjudicated, rather than a set someone remembers.
+  status: acknowledged
 
 ### The `proptest` decision, with its MEASURED graph cost
 
@@ -2191,6 +2212,7 @@ as `src/ui/screens/terminal_switch.rs:57`. **The file is at
 `src/terminal_switch.rs`** — a top-level module, declared in `src/lib.rs`. There
 is no `src/ui/screens/terminal_switch.rs`. Corrected here so a later round greps
 for a path that exists.
+  status: acknowledged
 
 ### Why it is not fixed in this phase
 
@@ -2287,6 +2309,7 @@ standing item **by explicit user decision**.
 failure.** A future verification pass that scores this phase 4/5 has scored it
 correctly. A future round that opens a plan against criterion 4 is doing work
 that cannot succeed.
+  status: acknowledged
 
 ### RE-AFFIRMED, UNCHANGED — the `driver_reattach` flake (round 13)
 

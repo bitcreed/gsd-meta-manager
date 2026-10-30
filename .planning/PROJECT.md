@@ -2,7 +2,7 @@
 
 ## What This Is
 
-A Rust TUI command center for managing multiple GSD-run projects from a single interface. Users register their GSD projects and get a unified dashboard showing phase status, workflow progress, and pending actions across all of them — with live filesystem watching, ASCII roadmap visualization, project creation, work enqueueing, paused project detection, milestone archive browsing, and a read-only view of running GSD agents with live executor-wave progress.
+A Rust TUI command center for managing multiple GSD-run projects from a single interface. Users register their GSD projects and get a unified dashboard showing phase status, workflow progress, and pending actions across all of them — with live filesystem watching, ASCII roadmap visualization, project creation, work enqueueing, paused project detection, milestone archive browsing, and a read-only view of running GSD agents with live executor-wave progress. Since v2.0 it can also drive a GSD project: an Opus master driver works through a human-owned DIRECTION.md inside a credential-free bwrap sandbox bounded by launcher hard caps, watched and steered from the TUI's Driver tab through the run's files.
 
 ## Core Value
 
@@ -63,8 +63,30 @@ See the state of every GSD project at a glance and act on any of them without le
 - ✓ Sandboxed driver launcher — `driver launch` runs the headless master in bwrap under `systemd-run --user --scope` (scope kill on stop, flock against a second launcher, `crash-detected` on relaunch); hard caps enforced from outside (dispatch, wall clock + RuntimeMaxSec, gap deny L+1 / kill L+2, rate-limit park); RO host `~/.claude`, masked credentials and scrubbed env, per-run `CLAUDE_CONFIG_DIR`; stored `claude setup-token` auth with `driver auth setup|status`; `driver push` outside the sandbox into `gsd-auto/<alias>/<run-id>` with secret scan, protected-branch refusal and PR cap; explicit `--unsandboxed` degraded mode (refused by default, posture recorded, `!`/UNSANDBOXED in the Driver tab), proven on a real macOS host (LNCH-01..08, DRIVE-01 launcher half). Network egress and agent-channel isolation gaps from the 2026-10-24 audit move to Phase 28.1 — Phase 28
 - ✓ Driver tab on DIRECTION.md — the TUI observes runs only through the run's files (status, caps, heartbeat and crash from the tool-written frontmatter, lock-probe status rule) and steers by editing DIRECTION.md (`control`, answer, unhold, `$EDITOR` edit under `DIRECTION.lock`, polite stop; nothing is killed); launch form and relaunch from the tab; FULL tier legible at 100x30 (DTAB-01..04). Re-verified 2026-10-24 after quick 261023-v1s hardened the give-back exchange — Phase 30
 - ✓ Sandbox egress & agent-channel isolation — `--unshare-net` plus an allowlisting egress proxy, a `$HOME` allowlist, the planted-file guard, agent-tool denies and the nested-agent cap check close the Phase 28 audit channels (LNCH-13, LNCH-14); the D-11 setup-token probe shows the token refused (401/403) on all four account endpoints — Phase 28.1
+- ✓ UI fixes — HANDOFF pause badge, DRPEV leading blank, markdown edit mode, PageDown clamp (UIFIX-01..04) — Phase 14 / v2.0
+- ✓ Run journal & redaction substrate — append-only redacted NDJSON journal, run dirs with an ignore posture, SAFE-04 capture-time redaction (journal half Phase 16, launcher pump half quick 261029-1dp) — v2.0
+- ✓ Driver validation — spike 003 re-run proved gap rounds 1+2 and divergence parking on Opus (VALID-01; VALID-02 accepted as ADJUST) — Phase 26.1 / v2.0
+- ✓ Advisory router hint — deterministic `next <project> --json` (Phase 20, kept advisory after the re-plan) — v2.0
+- ✓ Retirement — superseded Phase 19/21/22 envelope and goal-layer code removed or rewired, their threat ids closed as superseded (RETIRE-01..03) — Phase 31 / v2.0
+- Superseded in v2.0 (not shipped, by re-plan or user decision): CTRL-02/CTRL-03 (dry-run, opt-in gate), CTRL-08, SAFE-02/05/07/08, DRIVE-04, TRANS-01/04/05, STEER-02; moved to future: DRIVE-07, CTNR-01..05. CTRL-05 accepted partial (lock per run dir, not per project). See `.planning/milestones/v2.0-REQUIREMENTS.md`.
 
 ### Active
+
+**Next milestone — not yet defined** (start with `/gsd-new-milestone`). Carried forward from v2.0
+`[inferred — release 2026-10-29]`:
+
+- **Security-adjacent review findings from v2.0** — five clustered todos in `.planning/todos/pending/`
+  (`2026-10-29-v2-carry-*`): capture-pump redaction edge cases, unsupervised child on capture/parent
+  failure, lock hard-link denial of `driver stop`, managed-policy shape validation, and run-file
+  open/size hardening. Full per-finding status lives in each archived phase's `*-REVIEW-DISPOSITION.md`
+  under `.planning/milestones/v2.0-phases/` (123 entries: 0 critical, 41 warning, 82 info).
+- **CTRL-05 per-project lock** — accepted partial in v2.0; the lock is per run dir.
+- **Master prompt 1.1** — backlog 999.7. **GSD capabilities visibility** — backlog 999.8 (formerly Phase 32).
+- **Open human calls** — OQ-R1, OQ-R2 and the Phase 26 INCONCLUSIVE reading (Key Decisions, ⚠️ Revisit).
+
+<details>
+<summary>v2.0 Active list as it stood at close (historical)</summary>
+
 
 **Milestone v2.0 — Autonomous Orchestration.** Requirements are defined in
 `.planning/REQUIREMENTS.md` and mapped to phases in `.planning/ROADMAP.md`.
@@ -101,7 +123,9 @@ Phases 26-31 replace them.*
   60 s sweep can delete; fix: NOREPLACE rename on ENOENT), WR-08 (`DIRECTION.lock` opened following
   symlinks, `src/driver/lock.rs`) and WR-09 (`read_run_file` has no 1 MiB cap) are open in
   30-REVIEW-DISPOSITION.md; none blocked verification `[inferred — audit]`.
-- **Retirement.** The superseded Phase 19, 21 and 22 code is removed or rewired.
+- **Retirement.** The superseded Phase 19, 21 and 22 code is removed or rewired. *Done — Phase 31.*
+
+</details>
 
 ### Out of Scope
 
@@ -112,6 +136,18 @@ Phases 26-31 replace them.*
 
 ## Current State
 
+Shipped v2.0.0 Autonomous Orchestration (2026-10-29): Phases 14-31 (20 phases incl. 26.1 and
+28.1; 19/21/22/23 closed by supersession, 26 superseded by 26.1) plus 111 quick tasks, with interim
+releases v1.7.0 through v1.15.0 cut along the way. The tool now runs GSD projects as well as
+watching them: `driver new|check|launch|push|auth`, `driverctl` as the single writer of run state,
+a sandboxed launcher with hard caps, and a Driver tab that steers through DIRECTION.md. Audit
+verdict tech_debt (70/71 requirements, 1 accepted partial; 123 open/deferred review entries, none
+critical). Archive: `.planning/milestones/v2.0-ROADMAP.md`, `v2.0-REQUIREMENTS.md`,
+`v2.0-MILESTONE-AUDIT.md`, `v2.0-phases/`.
+
+<details>
+<summary>Before v2.0</summary>
+
 Shipped v1.6.0. 13 phases + 20 quick tasks across 7 milestones. Milestones v1.3
 through v1.6.0 all shipped via `/gsd-quick` rather than formal phases: v1.3
 (Defaults tab, pipeline sub-stage drill-down, tmux Tab-to-switch), v1.4 (session
@@ -119,7 +155,16 @@ auto-discovery, Docs browser tab), v1.5.0 (UAT/SPEC/EVAL-REVIEW artifact
 detection, crates.io publish), and v1.6.0 (GSD 1.8.0 on-disk format catch-up
 across state readers, config schema, and UI).
 
-## Current Milestone: v2.0 Autonomous Orchestration
+</details>
+
+## Next Milestone Goals
+
+Not yet defined — run `/gsd-new-milestone`. Candidates are the carried-forward items under
+Active: the v2.0 security-adjacent review clusters, CTRL-05, backlog 999.7 and 999.8
+`[inferred — release 2026-10-29]`.
+
+<details>
+<summary>v2.0 Autonomous Orchestration — milestone goal (shipped 2026-10-29)</summary>
 
 **Goal:** Turn the meta-manager from a dashboard that watches GSD projects into one that runs them.
 An Opus master driver works through a human-owned DIRECTION.md, one fresh subagent per GSD step. It
@@ -136,9 +181,13 @@ LLM-goal-layer design, were superseded by spikes 001/002. See Active and Key Dec
 - Container support — start/stop/resume Claude sessions in containers mapped to project dirs, runtime auto-detected (docker or podman), with injection and output monitoring from the TUI
 - UI fixes — HANDOFF.md pause badge, DRPEV leading blank, markdown edit mode activation, PageDown scroll clamp
 
+</details>
+
 ## Context
 
-- Shipped v1.6.0; ~7,000 LOC Rust across 7 milestones, distributed via crates.io
+- Shipped v2.0.0; ~166K lines Rust in `src/` plus ~32K in `tests/`, across 8 milestones, distributed via crates.io
+- v2.0 driver stack: `src/driverctl/` (single writer), `src/launcher/` (bwrap + `systemd-run --user --scope`, egress proxy, push step), `src/driver/` (DIRECTION.md, lock), embedded master prompt; Linux sandboxed, macOS degraded `--unsandboxed`
+- Known technical debt: 123 open/deferred review entries across Phases 24-31 (see `*-REVIEW-DISPOSITION.md` in `.planning/milestones/v2.0-phases/`); security-adjacent clusters tracked as todos
 - Tech stack: Rust, ratatui 0.30, crossterm 0.29, tokio, notify-debouncer-full
 - `src/driverctl/` + `src/driver/direction.rs` (Phase 27): run-store, unix-socket server, client/hook, DIRECTION.md splice and run lock
 - Screen trait architecture; detail view is 8 tabs + Driver since Phase 24 (Archive lives under Docs › Milestones; Sessions › Agents since Phase 25)
@@ -183,8 +232,8 @@ LLM-goal-layer design, were superseded by spikes 001/002. See Active and Key Dec
 | v2.0 autonomy: fully autonomous including push and PR | User's explicit choice for maximum leverage; kill switch and dry-run made hard requirements to bound the blast radius | Amended 2026-10-29 by user decision (dry-run and the opt-in gate superseded; see next row) |
 | CTRL-02/CTRL-03 superseded (v2.0 audit closure) | 2026-10-29 — user decision: CTRL-02/CTRL-03 superseded by sandboxed launcher + DIRECTION.md stop rules; Phase 31 retirement of drive dry-run/opt-in gate accepted. The sandbox plus DIRECTION.md stop rules bound the blast radius instead | ✓ User decision 2026-10-29; doc-only |
 | Container runtime auto-detected (docker or podman) | Hardcoding either one contradicts the portability constraint; probing costs little | ✗ Superseded 2026-10-14 (Phase 22 dropped; bwrap + scope instead) |
-| 999.2 injection plumbing sequenced before 999.3 driver | The driver is a decision layer built on top of injection/monitoring — building it first would mean stubbing the transport twice | — Pending v2.0 |
-| Major version bump to v2.0 | The tool's category changes from passive dashboard to active orchestrator, and it narrows a stated constraint | — Pending v2.0 |
+| 999.2 injection plumbing sequenced before 999.3 driver | The driver is a decision layer built on top of injection/monitoring — building it first would mean stubbing the transport twice | ✗ Superseded by the 2026-10-14 re-plan (stdin injection replaced by DIRECTION.md steering) |
+| Major version bump to v2.0 | The tool's category changes from passive dashboard to active orchestrator, and it narrows a stated constraint | ✓ Shipped as v2.0.0 on 2026-10-29 |
 | ROADMAP `Build phase` headings kept in `planned_phases`, never `phases` (Phase 24) | GSD's own heading grammar does not count them; keeping them out keeps the driver router/frontier GSD-conformant | ✓ Good — conformance test green, build phases still drawn |
 | Roadmap list as a pure model (no ratatui types) with key-based cursor targets (Phase 24) | Layout/lanes testable as exact strings; folding can't strand a row-index cursor | ✓ Good — mockups pinned by unit tests on real-roadmap fixtures |
 | Archive kept as a Docs sub-view sharing Docs' tab index; `switch_to_sub_view` is the single arrival rule (Phase 24) | Removing the variant would churn archive discovery; one arrival path covers digits, Enter and `m` | — Inferred during autonomous run, audit |
@@ -196,8 +245,8 @@ LLM-goal-layer design, were superseded by spikes 001/002. See Active and Key Dec
 | Spike 003 verdict read as INCONCLUSIVE, not NO-GO (Phase 26) `[inferred]` | The rubric's NO-GO (d)/(e) conditions hold literally on the two STALLED runs. They are judged only on a Run 1 with a VALID seed, and none exists; the literal reading would leave the INCONCLUSIVE clauses unreachable | ⚠️ Revisit. Human to confirm; a literal reading gives NO-GO. Routing is the same either way: Phase 27 is blocked until a redesign or re-plan |
 | VALID-02 accepted as ADJUST (Phase 26.1, operator decision 2026-10-18) | Launcher deny/kill is model-independent launcher code, proven by the scripted Haiku run r261-l7; the Opus driver self-limited at gap count 2, so a further paid run would test the model, not the launcher. The prereg terminal rule barred more Run 2s inside 26.1 | — Pending. Phases 28/29 must exercise launcher deny/kill under the real driver |
 | Spike 003 rubric and instruments frozen before spend; post-hoc fixes recorded only as redesign inputs (Phase 26) | Pre-registration (PREREG_SHA 4ba6195) keeps the verdict mechanical. Adapting the instruments to the results would launder it | ✓ Good. The verdict is honest, and the gap double-count was identified as a redesign input |
-| Phases 19/21/22/23 superseded, code kept until a dedicated retirement phase (31) `[inferred]` | Removing code before the launcher's push step owns SAFE-01/03/06 would leave a gap. An explicit phase keeps the removal reviewable | — Pending |
-| v2.0 restructured in place, not closed and reopened `[inferred]` | Closing would need a release tag and an audit of two phases that cannot close. v2.0 never released, and the major-bump rationale still holds | — Pending |
+| Phases 19/21/22/23 superseded, code kept until a dedicated retirement phase (31) `[inferred]` | Removing code before the launcher's push step owns SAFE-01/03/06 would leave a gap. An explicit phase keeps the removal reviewable | ✓ Good — Phase 31 removed it (13ba5ac) and closed the threat ids as superseded |
+| v2.0 restructured in place, not closed and reopened `[inferred]` | Closing would need a release tag and an audit of two phases that cannot close. v2.0 never released, and the major-bump rationale still holds | ✓ Good — closed as one milestone, audit tech_debt with no blockers |
 | Containers (Phase 22) replaced by bwrap + `systemd-run --user --scope` on Linux, with a recorded degraded mode on macOS `[inferred]` | Verified with auth in spikes 001/002, with no new dependency (bollard never added). Containers move to Future Requirements | ✓ Good — Phase 28 (live bwrap isolation + scope kill on Linux; `--unsandboxed` degraded run proven on macOS 26.6.2). Egress/agent-channel gaps → Phase 28.1 |
 | Status frontmatter on DIRECTION.md is tool-written by driverctl (single writer, exchange-verify splice), never by the model | Spike 002 measured 0 lost rename-saves in 12,943. The driver made 18 driverctl calls with 0 hand-edits. The Rust reader already parses it | ✓ Good — Phase 27 shipped it (verification 4/4; ported editor race 0 lost saves; SC1 replay identical); CR-01 + WR-01..09 review findings open |
 | driverctl Gate denies on transport error, unset socket, unreadable reply and server `ok:false` (Phase 27, D-25 deviation from the spike) | A sandboxed driver must fail closed when the single writer is unreachable | — Pending (Phase 28 wires the Gate) |
@@ -226,4 +275,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-10-29 after quick 261029-1dp (v2.0 audit blockers closed: CTRL-02/CTRL-03 superseded by user decision, SAFE-04 fixed in code)*
+*Last updated: 2026-10-29 after v2.0 milestone (shipped as v2.0.0)*

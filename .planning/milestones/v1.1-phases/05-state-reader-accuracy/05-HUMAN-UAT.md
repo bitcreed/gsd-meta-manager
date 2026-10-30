@@ -4,6 +4,10 @@ phase: 05-state-reader-accuracy
 source: [05-VERIFICATION.md]
 started: 2026-03-26T00:00:00Z
 updated: 2026-03-26T00:00:00Z
+audit_acknowledged:
+  milestone: v2.0
+  at: 2026-10-29
+  gap_snapshot: "diagnosed::scenarios=0"
 ---
 
 ## Current Test

@@ -7,6 +7,9 @@ needs_human: true
 source: .planning/phases/18-driver-tab-live-watch-durable-injection/18-VERIFICATION.md
 files:
   - src/ui/screens/help.rs
+audit_acknowledged:
+  milestone: v2.0
+  at: 2026-10-29
 ---
 
 ## Problem

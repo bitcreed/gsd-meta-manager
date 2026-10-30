@@ -2,20 +2,20 @@
 gsd_state_version: "1.0"
 milestone: v2.0
 milestone_name: Autonomous Orchestration
-status: completed
+status: Awaiting next milestone
 stopped_at: Phase 28.1 complete — all phases complete
-last_updated: "2026-10-29T23:41:48.755Z"
-state_head: 0d18fe9640b962d71cad4499dbc5b844dc6f41c0
+last_updated: "2026-10-30T02:53:42.781Z"
+last_activity: 2026-10-29
+last_activity_desc: Milestone v2.0 completed and archived
+state_head: 2afd2557825ce8cf0390bb5cad5d8312470c6bd8
 progress:
   total_phases: 16
   completed_phases: 16
   total_plans: 125
   completed_plans: 125
   percent: 100
-last_activity: 2026-10-29
 current_phase: "28.1"
 current_phase_name: Sandbox Egress & Agent-Channel Isolation
-last_activity_desc: "Completed quick task 261029-1dp: close v2.0 audit blockers A-F"
 ---
 
 # Project State
@@ -29,18 +29,10 @@ See: .planning/PROJECT.md (updated 2026-10-28)
 
 ## Current Position
 
-Status: All phases complete
-  - Phases 19, 21, 22, 23 closed by supersession (spikes 001/002, Phases 26-31; Phase 31 deleted their code).
-    The Phase 19 and Phase 21 gap-closure loops are closed by supersession, not resumed.
-  - Phase 26 closed as superseded by 26.1 (not re-verified). the capabilities phase (formerly numbered 32) deferred to backlog 999.8.
-  - WINDOWS.md 0 open; obsolete todos closed; new todos for 26.1 IN-06, 30 WR-08/09/10, help popup 80x24.
-  Next:
-  1. Quick-task fixes from `.planning/todos/pending/` (`/gsd-quick`).
-  2. Re-verify 14, 24, 25, 27, 28, 29, 30 (`/gsd-verify-work N`). 28.1 closed 2026-10-28: verification passed 7/7, UAT 1/1 (D-11 probe).
-  3. Milestone audit (`/gsd-audit-milestone`).
-  History before 2026-10-28: `.planning/STATE-ARCHIVE.md`.
-
-Progress: [██████████] 100%
+Phase: Milestone v2.0 complete
+Plan: —
+Status: Awaiting next milestone
+Last activity: 2026-10-29 — Milestone v2.0 completed and archived
 
 ## Deferred Verification
 
@@ -517,3 +509,7 @@ Resume file: None
 Next: re-verify phases whose VERIFICATION.md reads `stale`, re-run `/gsd-audit-milestone v2.0`, then `/gsd-complete-milestone`. [inferred — cleanup 2026-10-28: milestone completion not auto-invoked; the audit comes first]
 Phase 19's gap-closure loop is closed by supersession (2026-10-28), not halted; do not resume it.
 Earlier session history: `.planning/STATE-ARCHIVE.md`.
+
+## Operator Next Steps
+
+- Start the next milestone with /gsd-new-milestone

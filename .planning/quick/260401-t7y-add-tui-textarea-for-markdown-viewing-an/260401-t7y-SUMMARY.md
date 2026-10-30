@@ -30,6 +30,10 @@ metrics:
   completed: "2026-04-02T04:11:05Z"
   tasks: 2
   files: 7
+audit_acknowledged:
+  milestone: v2.0
+  at: 2026-10-29
+  status: unknown
 ---
 
 # Quick Task 260401-t7y: Add tui-textarea for Markdown Viewing and $EDITOR Shell-out Summary
