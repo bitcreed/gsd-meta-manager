@@ -1,4 +1,24 @@
-# Phase 31 — UI Review (post-cleanup 261028-n0u re-audit, HEAD c378704)
+# Phase 31 — UI Review (re-verification refresh, HEAD 765c9d2; previous audit at c378704)
+
+**Re-verification refresh `[inferred — cleanup 2026-10-28]` (2026-10-29, HEAD 765c9d2, diff base c378704, 83 commits):** nothing that renders changed, so the score stays at 19/24 and every finding below stands. Evidence:
+- `git diff --stat c378704 HEAD -- src/ui` gives `src/ui/screens/detail.rs | 9 +++++----` and `src/ui/screens/mod.rs | 4 ++--`. Both hunks are from ce86206 (quick 261029-1dp). One rewords a test doc comment and an assertion message in `detail.rs` (the opt-in record "gates no launch"). The other rewords the `AppContext::experimental` doc comment in `mod.rs`. No render path, string constant or key binding changed.
+- Quick batches 261028-t3c and 261028-v2z and quick 261029-1dp touch only non-UI modules: `driver/lock.rs`, `driver/direction.rs`, `driverctl/store.rs`, `launcher/{config_dir,process,run,stop}.rs`, `config.rs`, `registry.rs`, `executor/`, `state_reader/`. Their user-visible effects were checked one by one:
+  - **SAFE-04 redacting pump (`launcher/process.rs`).** It redacts the launch capture file, including the new `OVERLONG_STREAM_NOTE`. No `src/ui` file reads that capture: a grep for `last_line_of_tail`, `capture` and `launch log` under `src/ui` finds nothing. It is UI-neutral.
+  - **Lock open hardening.** A FIFO or symlink at the run lock now resolves to `DerivedStatus::LivenessUnknown` without blocking. A new test, `read_driver_run_text_with_a_fifo_launcher_lock_derives_liveness_unknown_without_blocking`, covers this. The state was already rendered, and the launch refusal is `driver_launch.rs:84,106`. This is a UX positive: a hostile lock file can no longer freeze the dashboard refresh. No new surface.
+  - **AgentRuntime removal.** The Preferences screen already no longer edits `default_runtime` (module doc at `preferences.rs:7`), and the test at `preferences.rs:209` still asserts that it is absent. No UI change.
+  - **Opt-in copy.** The `driver_confirm.rs` `prompt_text` copy at lines 118-133 already says the record only feeds the PR caps of the push step. It agrees with the corrected "gates no launch" claim, so there is no new copy mismatch.
+- All prior open findings were re-checked at HEAD and their citations are unchanged:
+  - `driver_confirm.rs:186-195`: the opt-in popup renders NormalScreen.
+  - `driver_confirm.rs:267`: "driver seam".
+  - `delete_confirm.rs:121-142`: the WR-03 guard.
+  - `preferences.rs:85-89`: "Phase 31".
+  - `help.rs:105`: "legacy needs-a-human".
+  - `driver_run.rs:37,990,1724,2101`: `DRY_RUN_LOADING`.
+  - No `[o]` footer token in `detail.rs`.
+
+  `git diff --stat c378704 HEAD` on `delete_confirm.rs`, `preferences.rs`, `help.rs`, `driver_confirm.rs` and `driver_run.rs` is empty.
+- `rtk proxy cargo test --no-fail-fast --lib ui::` reports 961 passed and 0 failed.
+- New findings: none. Blocking findings: none.
 
 **Audited:** 2026-10-28 (post-cleanup 261028-n0u re-audit at HEAD c378704, diff base c6b282c; earlier post-31-07 re-audit; supersedes the 2026-10-27 post-31-08 review, 19/24, and the 2026-10-25 review, 16/24)
 **Baseline:** abstract 6-pillar standards (no UI-SPEC.md), read for a ratatui TUI (colour = style semantics, typography = bold/dim hierarchy, spacing = layout, popup sizing and blank-line structure)
