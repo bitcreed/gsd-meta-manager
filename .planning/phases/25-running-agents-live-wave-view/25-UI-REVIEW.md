@@ -79,3 +79,15 @@
 - `/home/blk/projects/rust/gsd-meta-manager/src/agents/waves.rs` (`summary_forms` 686)
 - Phase 25 SUMMARY/CONTEXT files; format precedent: the Phase 31 and Phase 28 UI reviews.
 - Rendered frames listed in the header.
+
+---
+
+## Delta vs prior audit (eafb2d5) — no re-audit
+
+`[inferred — cleanup 2026-10-28]` Existing review kept (the workflow's unattended path reuses it; the auditor was not re-spawned) because quick 261029-1dp (ce86206) has no user-visible TUI surface:
+- `git diff --stat eafb2d5 HEAD -- src/ui src/app.rs src/agents`: only `src/ui/screens/detail.rs` (test doc comment + assert message in `mod tests`, ~21257-21277), `src/ui/screens/mod.rs:1389-1393` (doc comment on `AppContext::experimental`) and `src/agents/adapters/mod.rs:15-17` (module doc comment). No rendered string, layout, style or key binding changed; `normal.rs`, `src/agents/waves.rs` and the render paths audited above did not change.
+- ce86206 drops the dead `AgentRuntime` key; `grep -rn AgentRuntime src/ui` is empty.
+- Audited anchors still hold: `render_waves_pane` at `src/ui/screens/detail.rs:7682`, `render_agents_tab` at `:7968`, `agent_summary_line` at `src/ui/screens/normal.rs:519`. All three top fixes remain open as recorded.
+- `rtk proxy cargo test --no-fail-fast --lib -- ui::`: 961 passed, 0 failed.
+
+Scores unchanged: 17/24, 0 blockers; top fixes as listed above. Method: git diff + grep + render tests.
