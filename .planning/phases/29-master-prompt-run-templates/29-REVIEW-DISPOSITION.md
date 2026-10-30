@@ -3,6 +3,14 @@ phase: 29
 review: 29-REVIEW.md
 titles: json
 findings:
+  - id: WR-14
+    severity: warning
+    disposition: open
+    title: "the capture pump redacts line by line, so a multi-line PEM private key printed as plain text reaches `launch-N.jsonl` unredacted (new, 2026-10-29)"
+  - id: WR-15
+    severity: warning
+    disposition: open
+    title: "a failure to start the pump thread leaves the already-running sandboxed child unsupervised (new, 2026-10-29)"
   - id: WR-01
     severity: warning
     disposition: open
@@ -23,6 +31,26 @@ findings:
     severity: warning
     disposition: open
     title: "wrong-shape and unrecognised host policy is dropped with no diagnostic, unlike the top-level refusal (new, 2026-10-29)"
+  - id: IN-07
+    severity: info
+    disposition: open
+    title: "the pump can emit a line the stream reader will skip, contradicting the \"one constant for both sides\" claim (new, 2026-10-29)"
+  - id: IN-08
+    severity: info
+    disposition: open
+    title: "a capture-finish timeout is ignored and leaves no trace, so a truncated `launch-N.jsonl` looks like a normal end (new, 2026-10-29)"
+  - id: IN-09
+    severity: info
+    disposition: open
+    title: "the redaction-corpus assertion message still describes five subjects including the removed `UnrecognizedRuntime` (new, 2026-10-29)"
+  - id: IN-10
+    severity: info
+    disposition: open
+    title: "`RegisteredProject::driver_egress_allowlist` doc still refers to the removed `runtime()` accessor (new, 2026-10-29)"
+  - id: IN-11
+    severity: info
+    disposition: open
+    title: "no test pins the per-project legacy `runtime` key surviving a load and save, and `RUNTIME_KEY` is now referenced only from comments (new, 2026-10-29)"
   - id: IN-01
     severity: info
     disposition: open
@@ -67,20 +95,27 @@ findings:
     severity: info
     disposition: skipped
     title: "`shell_quote` is lossy for non-UTF-8 paths"
-open: 8
-total: 16
-recorded: 2026-10-29T05:12:27.186Z
+open: 15
+total: 23
+recorded: 2026-10-30T00:04:07.151Z
 ---
 
 # Phase 29: Code Review Disposition
 
 | Finding | Severity | Disposition | Source |
 |---------|----------|-------------|--------|
+| WR-14 | warning | open | - |
+| WR-15 | warning | open | - |
 | WR-01 | warning | open | - |
 | WR-03 | warning | open | - |
 | WR-08 | warning | open | - |
 | WR-09 | warning | open | - |
 | WR-10 | warning | open | - |
+| IN-07 | info | open | - |
+| IN-08 | info | open | - |
+| IN-09 | info | open | - |
+| IN-10 | info | open | - |
+| IN-11 | info | open | - |
 | IN-01 | info | open | - |
 | IN-02 | info | fixed | quick 261028-v2z bfbd231 (30 WR-13): managed settings transform runs well_formed_hooks before filter_user_hooks (src/launcher/config_dir.rs:617-619) and is_well_formed_hook_entry (:365-378) drops any entry that is not an object with an array `hooks`, so a flat entry never reaches the filter; the `return true` at :556-558 is now unreachable; verified at HEAD in the 2026-10-29 re-review [inferred — cleanup 2026-10-28] |
 | IN-03 | info | open | - |
