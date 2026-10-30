@@ -2,29 +2,39 @@
 phase: 29-master-prompt-run-templates
 reviewed: 2026-10-29T00:00:00Z
 depth: standard
-files_reviewed: 12
+files_reviewed: 22
 files_reviewed_list:
+  - docs/CONFIGURATION.md
   - docs/DRIVER-SANDBOX.md
+  - docs/GSD-CORE-SYNC.md
+  - src/agents/adapters/mod.rs
+  - src/config.rs
   - src/driver/direction.rs
   - src/driver/lock.rs
   - src/driverctl/serve.rs
   - src/driverctl/store.rs
+  - src/executor/mod.rs
   - src/launcher/config_dir.rs
+  - src/launcher/process.rs
   - src/launcher/run.rs
   - src/launcher/stop.rs
+  - src/registry.rs
+  - src/state_reader/config_json.rs
   - src/state_reader/driver_frontmatter.rs
+  - src/ui/screens/detail.rs
+  - src/ui/screens/mod.rs
   - tests/driverctl_serve.rs
   - tests/driverctl_store.rs
   - tests/launcher_config_dir.rs
 findings:
   critical: 0
-  warning: 5
-  info: 3
-  total: 8
+  warning: 7
+  info: 8
+  total: 15
 new_findings:
   critical: 0
-  warning: 3
-  info: 1
+  warning: 2
+  info: 5
 status: issues_found
 ---
 
@@ -32,10 +42,51 @@ status: issues_found
 
 **Reviewed:** 2026-10-29
 **Depth:** standard
-**Files Reviewed:** 12
+**Files Reviewed:** 22
 **Status:** issues_found
 
 ## Summary
+
+This review is the union of two passes. The first (`e6c0d9e..9eb4dff`) is preserved verbatim
+below under "Prior review (9eb4dff)". The second is an incremental pass over
+`git diff 9eb4dff HEAD` for quick task 261029-1dp: `f4cfa01` (the SAFE-04 redacting capture pump,
+`src/launcher/process.rs` and `src/launcher/run.rs`) and `ce86206` (removal of the dead
+`AgentRuntime` config key, `src/executor/runtime.rs` deleted, doc-comment corrections).
+
+**Delta 9eb4dff..HEAD, what was traced.**
+
+* The capture pump (`process.rs:96-209`, `run.rs:1629-1700`). Every byte the master writes to
+  stdout or stderr goes through one pipe (`process.rs:105-115`), a single pump thread, and one
+  `File`; `launch-N.jsonl` has no other writer (`grep` over `src/` finds the path only at
+  `run.rs:1629` and the reader at `run.rs:1698`). The parent's copies of the write end are
+  released by `drop(cmd)` (`:119`) so EOF is reachable; the pipe fds are `O_CLOEXEC`, so a
+  concurrent spawn in another launcher thread cannot inherit them. A write error switches to
+  drain-and-discard (`:168-170`), so the child cannot block on a full pipe because of the file.
+  An over-long line is replaced by a fixed note with no fragment (`:161-164`). A JSON line is
+  redacted by tree walk, a non-JSON or unparseable line as text, with an unterminated final line
+  handled at EOF. The launcher waits at most `CAPTURE_FINISH_BUDGET` for EOF and a pump panic
+  reads as a disconnect, so the launcher cannot hang on the pump. `summarize_stream_file` reads
+  the redacted file, so the outcome now rests on redacted text (the OAuth-revoked marker and
+  `type`/`result` survive; pinned by a unit test).
+* The AgentRuntime removal: `RegisteredProject::runtime()`, `Preferences::default_runtime()` and
+  `executor/runtime.rs` are gone and nothing in `src/`, `tests/`, `docs/` or `Cargo.toml` refers
+  to them. Both keys stay in the `#[serde(flatten)] extra` maps (`config.rs:67-68`, `:515-516`),
+  so an old config still loads and round-trips; `default_runtime` is pinned by
+  `old_preference_keys_still_load_from_a_config_file` (`ui/screens/preferences.rs:218-241`).
+  The docs now say "kept and written back unchanged", which is accurate. The claim in
+  `registry.rs:958-961` that no launch is gated on the opt-in record was checked:
+  `driver_opt_in` is read only for `policy_for` at `driver_cli.rs:291-298`, `:523-525`,
+  `app.rs:1053-1058` and the Driver-tab form, never to refuse a launch.
+
+No critical defect in the delta. Two new warnings: a gap in the pump's redaction (a multi-line
+credential printed as plain text is written to disk unredacted) and a child left running when the
+pump thread cannot be started. Five new info items: a stale assertion message, a dangling doc
+reference, an unpinned per-project round trip, a silently ignored capture timeout, and an
+over-cap output line the reader would skip. All carried findings from the prior review are
+unchanged; their files are byte-identical since 9eb4dff (`git diff --stat 9eb4dff HEAD` over
+them is empty).
+
+### Prior review (9eb4dff)
 
 Incremental re-review of the diff `e6c0d9e..HEAD` (quick tasks 261028-t3d/t3e/t3f and the
 261028-v2z WR-13 fix). The changes were traced end to end:
@@ -61,7 +112,62 @@ inconsistent precedence rule in the managed `permissions` merge, and the silent 
 policy; one new info item concerns an uninformative refusal message. Prior findings are
 re-checked below under their original IDs.
 
+## Critical Issues
+
+None.
+
 ## Warnings
+
+### WR-14: the capture pump redacts line by line, so a multi-line PEM private key printed as plain text reaches `launch-N.jsonl` unredacted (new, 2026-10-29)
+
+**File:** `src/launcher/process.rs:161-167,179-187` (rule: `src/journal/redact.rs:107-110`)
+**Issue:** SAFE-04 is the stated purpose of the pump ("a credential-shaped token the master prints
+never reaches the file", `process.rs:83-86`). The pump hands `redact` exactly one physical line at
+a time (`:165-166`), and `redact_line` falls back to text redaction for any line that is not one
+JSON document (`:185`). The `pem` rule is the one rule in the table that is inherently multi-line:
+`-----BEGIN [A-Z ]*PRIVATE KEY-----(?s:.)*?-----END [A-Z ]*PRIVATE KEY-----` needs both fences in
+one haystack. Fed line by line, the BEGIN fence, every base64 body line and the END fence each fail
+to match, so the whole key is written to disk verbatim. Checked with the same pattern on
+`BEGIN`, body, body and `END` lines: no line matches (all `False`), while the joined text matches.
+Inside stream-json this does not happen (a JSON string escapes its newlines, so the key is one
+leaf and the rule fires, which is why the unit tests are green), but the same pipe also carries
+stderr and any non-JSON output of the master or of a leftover descendant (`cat id_rsa` in a shell
+that writes to the inherited stderr, a Node stack trace printing a key). The module doc and the
+pump doc ("Any other line is redacted as text") present the text path as equivalent; it is not,
+and no test covers a multi-line block.
+**Fix:** Make the text path block-aware for the one multi-line rule: in `pump_redacted`, when a
+non-JSON line contains `-----BEGIN ` and `PRIVATE KEY-----` without a matching END, switch to a
+"inside key block" state that writes `[REDACTED:private-key]` once and discards lines until the
+`-----END ... PRIVATE KEY-----` line (or EOF, or a bounded line count), then resumes. Add a test
+that feeds a four-line PEM through `pump_chunks` and asserts no body line survives, and one where
+the END fence never arrives.
+
+### WR-15: a failure to start the pump thread leaves the already-running sandboxed child unsupervised (new, 2026-10-29)
+
+**File:** `src/launcher/process.rs:116-129`; caller `src/launcher/run.rs:1638-1646`
+**Issue:** `cmd.spawn()` succeeds at `:116` and the `Child` is held in a local. The next fallible
+step, `std::thread::Builder::new()...spawn(...)?` at `:123-128`, returns `Err` on thread or
+resource exhaustion, dropping the `Child` without `kill`/`wait` (dropping a `std::process::Child`
+does neither). `supervise` maps the error to `LauncherError::Spawn` (`run.rs:1639-1646`) and
+returns, before `containment` and `CapMonitor` exist (`:1653-1661`), so no cap, user stop or
+teardown ever applies to a live `systemd-run`/`claude` that has full write access to the project.
+The thread closure owns `reader`, so it is dropped on the failure and the child's next write raises
+`SIGPIPE`/`EPIPE`; a master in a long tool call or a quiet phase keeps running until then. The old
+code had no step between spawn and the return of the `Child`, so this window is new.
+**Fix:** Start the pump thread so its failure can be handled with the child in hand, and stop the
+child on that path:
+```rust
+let handle = std::thread::Builder::new().name("launch-capture".to_owned()).spawn(...);
+if let Err(e) = handle {
+    let _ = signal_group(child.id(), Signal::KILL); // it is a group leader (process_group(0))
+    let _ = child.kill();
+    let _ = child.wait();
+    return Err(e);
+}
+```
+For the `BwrapScope` posture the scope must be stopped as well, or the pump thread should be
+created before the child (the reader and `out` are available first), so a thread failure costs
+nothing.
 
 ### WR-01: lint and store still disagree on which line is `- control:` (WR-01 only half closed)
 
@@ -91,6 +197,7 @@ if let Some(caps) = control_re().captures(line) {
 diff base; `KEY_VALUE` is still `^- ([A-Za-z][A-Za-z-]*):` at `lint.rs:51-53` and the `control` arms
 at `lint.rs:286-295` still key on it, while `control_re()` at `src/driver/direction.rs:157-163`
 is still the loose `(?mi)` form.
+_Carried unchanged — source byte-identical since 9eb4dff._
 
 ### WR-03: `hook_is_kept` treats any script under `~/.claude/hooks/` or `~/.claude/scripts/` as a GSD hook
 
@@ -111,6 +218,7 @@ under `~/.claude/hooks`, per the installer), or an explicit allowlist of basenam
 `src/launcher/config_dir.rs:429-434` and `hook_is_kept` still accepts on the directory substring
 alone at `config_dir.rs:523-533` (the cited line numbers above are from the earlier revision; the
 code moved down by the WR-13 helpers).
+_Carried unchanged — source byte-identical since 9eb4dff._
 
 ### WR-08: the read-side link-count refusal turns a held run lock into `Unknown` after any hard link is made (new, 2026-10-29)
 
@@ -140,6 +248,7 @@ fn open_lock_file(path: &Path, options: &mut OpenOptions, writer: bool) -> io::R
 ```
 Update `probe_at_reads_a_hard_linked_lock_file_as_unknown` and the
 `read_holder_at_refuses_a_symlink_or_hard_link...` test accordingly.
+_Carried unchanged — source byte-identical since 9eb4dff._
 
 ### WR-09: managed `permissions` scalars resolve first-wins while every other managed key resolves last-wins (new, 2026-10-29)
 
@@ -164,6 +273,7 @@ other => { ours.insert(key, other); }   // later doc wins; `deny` only ever arri
 ```
 Add a two-document test (`defaultMode` in the file, a different value in a drop-in) asserting the
 drop-in's value.
+_Carried unchanged — source byte-identical since 9eb4dff._
 
 ### WR-10: wrong-shape and unrecognised host policy is dropped with no diagnostic, unlike the top-level refusal (new, 2026-10-29)
 
@@ -185,8 +295,77 @@ warning naming the file and JSON pointer), and either treat an unknown list/obje
 `permissions` key as pass-through (append lists, keep objects) or refuse the launch for it the way
 a non-object file is refused. At minimum emit one line per dropped value so the weakening is
 visible.
+_Carried unchanged — source byte-identical since 9eb4dff._
 
 ## Info
+
+### IN-07: the pump can emit a line the stream reader will skip, contradicting the "one constant for both sides" claim (new, 2026-10-29)
+
+**File:** `src/launcher/process.rs:40-43,161-168`; reader `src/launcher/run.rs:1891-1893`
+**Issue:** `MAX_STREAM_LINE` is documented as the single cap so "the pump never writes a line the
+reader would have to skip". The cap is applied to the INPUT line (`:151-154`); the written line is
+the redacted one, which can be longer. Redaction replacements are longer than many matches
+(`sk-ant-` plus 8 characters, 15 bytes, becomes the 24-byte `[REDACTED:anthropic-key]`), and the
+JSON path re-serialises the tree. A line a little under 4 MiB that carries many short
+credential-shaped strings can therefore be written at over 4 MiB, and `summarize_stream_file`
+then drops it unread (`skip_line`). If that line is the `result` event, the run is summarised as
+having no result. Needs a hostile or pathological output, so it is cosmetic in practice, but the
+documented invariant is not what the code enforces.
+**Fix:** Check the rendered length before writing; if `rendered.len() as u64 >= MAX_STREAM_LINE`
+write `OVERLONG_STREAM_NOTE` instead (or lower the pump's input cap to leave headroom), and reword
+the constant's doc comment.
+
+### IN-08: a capture-finish timeout is ignored and leaves no trace, so a truncated `launch-N.jsonl` looks like a normal end (new, 2026-10-29)
+
+**File:** `src/launcher/run.rs:1690`; `src/launcher/process.rs:65-71`
+**Issue:** `CaptureHandle::finish` returns `false` when the pump did not reach EOF within
+`CAPTURE_FINISH_BUDGET` (a descendant that escaped the group or scope still holds the pipe, or a
+very large backlog). `supervise` discards the value and reads the file at once
+(`run.rs:1690-1698`), so the summary can lack the last events, including the `result`, and the
+launch is judged on a partial file with no log line or `launch-end` field saying the capture was
+cut. The `[inferred]` rationale only covers "must not hang the launcher", not "must not mislead".
+**Fix:** Keep the boolean and record it where the outcome is recorded (a `tracing::warn!` with the
+run id, and a note on the `launch-end` event / `Exited`), e.g.
+`let capture_complete = capture.finish(CAPTURE_FINISH_BUDGET);`.
+
+### IN-09: the redaction-corpus assertion message still describes five subjects including the removed `UnrecognizedRuntime` (new, 2026-10-29)
+
+**File:** `src/registry.rs:2362-2372`
+**Issue:** The count was re-measured to `corpus.len() * 4` and the comment explains why, but the
+failure message in the same `assert!` still says "Each member must reach all FIVE subjects —
+`UnrecognizedRuntime`, both halves of `remove`, and the two opt-in functions". Anyone who sees
+the assertion fire will be told to look for a subject that no longer exists and that there are
+five, which sends them hunting for a missing one. The `messages_for` doc (`:2131-2133`) was
+updated; this string was not.
+**Fix:** "Each member must reach all FOUR subjects — both halves of `remove` and the two opt-in
+functions".
+
+### IN-10: `RegisteredProject::driver_egress_allowlist` doc still refers to the removed `runtime()` accessor (new, 2026-10-29)
+
+**File:** `src/config.rs:89`
+**Issue:** "The key lives in the flattened `extra` map like `runtime()`, so a typo is a refusal at
+drive time". `RegisteredProject::runtime()` was deleted by ce86206 (`grep -rn "runtime()" src docs`
+finds only this line), so the comparison points at nothing, and the comment block above the `extra`
+field (`:63-66`) now describes `runtime` as unvalidated and selecting nothing, which makes the
+"typo is a refusal" half of the sentence contradict its own analogy.
+**Fix:** Reword to "The key lives in the flattened `extra` map, so a typo is a refusal at
+drive time and the key round-trips untouched `[inferred — audit]`."
+
+### IN-11: no test pins the per-project legacy `runtime` key surviving a load and save, and `RUNTIME_KEY` is now referenced only from comments (new, 2026-10-29)
+
+**File:** `src/config.rs:71-72`; tests `src/ui/screens/preferences.rs:218-241`, `src/config.rs:1110-1138`
+**Issue:** The docs promise per-project `runtime` is "kept and written back unchanged"
+(`docs/CONFIGURATION.md:84`). The only round-trip test of a legacy runtime key is the
+`preferences.default_runtime` one; the per-project key relies on the generic `FUTURE_CONFIG` test,
+which carries `driver_quarantine_until` and `driver_nice_level`, not `runtime`. The deleted
+`executor/runtime.rs` tests and the removed `RegisteredProject::runtime()` were the only code that
+named the key (`grep -n '"runtime"'` over `tests/` and `src/` finds only GSD's own `runtime` in
+`config_json.rs`), and `RUNTIME_KEY` now has no code reference at all (doc comments only). The
+behaviour is structurally guaranteed by `#[serde(flatten)]`, so this is a regression guard, not a
+live bug.
+**Fix:** Add `old_per_project_runtime_key_survives_load_and_save` next to the preferences test
+(a project entry with `RUNTIME_KEY: "codex"`, load, save, reload, assert), which also gives
+`RUNTIME_KEY` a user; or drop the constant and use the string in the test.
 
 ### IN-01: store comment says "every other event still records" when DIRECTION.md is unreadable, but item events are rejected
 
@@ -203,6 +382,7 @@ unreadable (kind)" message, and correct the comment.
 unchanged in behaviour: only `event == "dispatched"` returns early on `Err(kind)`, and
 `read.unwrap_or_default()` feeds an empty id list to `protocol::validate_log` for every other
 event; the comment "Every other event still records" is still at `:1127-1128`.
+_Carried unchanged — source byte-identical since 9eb4dff._
 
 ### IN-02: `filter_user_hooks` keeps any event entry that has no `hooks` array
 
@@ -220,6 +400,7 @@ runs `well_formed_hooks` before the filter (`src/launcher/config_dir.rs:617-619`
 `return true` at `:556-558` is now an unreachable branch (private function, one caller); it could
 become `return false` for defence in depth but no longer lets a hook bypass D-19. Not counted as
 open.
+_Carried unchanged — source byte-identical since 9eb4dff._
 
 ### IN-03: `next` refusal escapes the target twice
 
@@ -233,6 +414,7 @@ control character reaches the terminal either way.
 **Re-check (2026-10-29):** Still present. `src/next_cli.rs` is unchanged since the diff base;
 `let shown = render_for_terminal(target).to_string();` (`:152`) is still formatted with
 `{shown:?}` (`:154`).
+_Carried unchanged — source byte-identical since 9eb4dff._
 
 ### IN-06: a refused or link-flipped run lock surfaces as "Invalid argument" with the cause discarded (new, 2026-10-29)
 
@@ -245,6 +427,7 @@ Together with WR-08 an operator cannot tell why `driver stop` refuses a live run
 **Fix:** Add the refusal text to the `Unknown` payload (or a `LockProbe::Refused(String)` variant)
 and print it in `stop_run` and the push preflight; keep `Unknown(EINVAL)` only for the genuine
 `EINVAL` case.
+_Carried unchanged — source byte-identical since 9eb4dff._
 
 ---
 
@@ -265,6 +448,7 @@ degraded path is covered by `settings_transform` (`:608-613` replaces a non-obje
 `a_non_object_host_hooks_or_permissions_never_replaces_the_managed_gate` and
 `..._the_degraded_gate` (`config_dir.rs:984-1042`) plus the seed test in
 `tests/launcher_config_dir.rs:964-1000` pin every shape in both postures. Not counted as open.
+_Carried unchanged — source byte-identical since 9eb4dff._
 
 ---
 
