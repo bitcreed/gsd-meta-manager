@@ -73,7 +73,7 @@ created: "2026-10-20"
 | T-30-28 | Elevation of Privilege | `$VISUAL` / `$EDITOR` interpreted by `sh` | low | accept | see Accepted Risks AR-30-04 | closed |
 | T-30-29 | Spoofing | `LaunchFormScreen` body on short terminals | medium | mitigate | `essential_lines` puts spend/detach/sandbox first (`driver_launch.rs:810`); `fitted_body_lines` (`:985`); clip guard keeps `y` inert; tests `launcher_launch_the_spend_and_sandbox_rows_outlive_the_findings` (`:2739`, 80x18) and the 80x24 / 80x12 siblings | closed |
 | T-30-30 | Tampering | `commit_edit` model value | medium | mitigate | `model_name_ok` (`driver_launch.rs:232`) + clap on typed path (`:643`) and prefill (`:269`); only writers of `form.args.model`; tests `launcher_launch_a_typed_model_that_looks_like_a_flag_is_refused` (`:2912`), `..._prefill_distrusts_a_hostile_model_and_a_forged_cap` | closed |
-| T-30-31 | Spoofing | `launch_preflight` control verdict | low | mitigate | uses launcher's `driver_templates::lint::control_line` (`driver_launch.rs:380-414`; `src/launcher/run.rs:91`, `:313`); exact `!= "run"` (`driver_launch.rs:499`); test `launcher_launch_preflight_reads_control_like_the_launcher` (`:2958`) | closed |
+| T-30-31 | Spoofing | `launch_preflight` control verdict | low | mitigate | uses launcher's `driver_templates::lint::control_line` (`driver_launch.rs:380-414`; `src/launcher/run.rs:94`, `:313`); exact `!= "run"` (`driver_launch.rs:499`); test `launcher_launch_preflight_reads_control_like_the_launcher` (`:2958`) | closed |
 | T-30-SC | Tampering | npm/pip/cargo installs | high | accept | see Accepted Risks AR-30-03; no package added by any phase-30 plan (dependency changes since e485c07 belong to 28.1/31 and the v1.15.0 release, not phase 30) | closed |
 
 *Status: open · closed · open — below high threshold (non-blocking)*
@@ -103,6 +103,8 @@ created: "2026-10-20"
 
 7. 2026-10-29 re-audit at e9de71b after quick 261028-v2z (601d20f, 1158139, 92dac7a, bfbd231: 30 WR-13). The only source/test files changed since a8f4672 are `src/launcher/config_dir.rs` (new `is_well_formed_hook_entry` / `well_formed_hooks` / `well_formed_permissions` filters: wrong-shape nested host `hooks` / `permissions` values are dropped from the managed file and the degraded settings, well-formed siblings still merge) and `tests/launcher_config_dir.rs` (+50 lines, additions only). Both sit outside this phase's register (as in note 6d); the change is fail-closed hardening of the sandboxed driver's settings, not a weakening of any launch-path mitigation (T-30-15/16/19 anchors in `driver_launch.rs`, `app.rs`, `run.rs` untouched). The 30-08 ETXTBSY fix in `tests/launcher_config_dir.rs` (`EXEC_LOCK` `:39`, `run_shim` `:710`) is intact. No `Cargo.toml`/`Cargo.lock` change (AR-30-03 holds). No mitigation weakened, no new threat. `[inferred — cleanup 2026-10-28]`
 
+8. 2026-10-29 re-audit at 1d22f34 after quick 261029-1dp (f4cfa01 SAFE-04 redacting stdout pump in `src/launcher/process.rs`; ce86206 dead `AgentRuntime` key removed from `src/config.rs`, `src/executor/{mod,runtime}.rs`, `src/registry.rs`, `src/state_reader/config_json.rs`, `src/agents/adapters/mod.rs`, plus comment-only edits). Of the cited files only `src/launcher/run.rs` (+2 import lines at `:77`, -3 at `:191`, `capture.finish` in `supervise`), `src/ui/screens/detail.rs` (test doc comments at `:21260-21277`) and `src/ui/screens/mod.rs` (`AppContext` doc comment at `:1392`) changed. The run.rs `control_line` import moved `:91` -> `:94` (refreshed in T-30-31); the `check_limits` / `preflight_direction` / `launch_detached` refs (`:260`, `:313`, `:635`, `:1450`, `:1462`) were one line stale at e9de71b and are exact again at HEAD after the -3 hunk. The detail.rs / mod.rs hunks sit far from every cited anchor (`detail.rs:5714-6003`, `mod.rs:387-587`), which were re-read unchanged. The reworded comments ("`driver_opt_in` ... gates no launch; it only shapes the push policy") describe behaviour no Phase 30 threat relies on (T-30-15 rests on the explicit unsandboxed confirm, not the opt-in record). `process.rs`, `config.rs`, `registry.rs` and `executor/` are cited by no Phase 30 closure; the SAFE-04 pump's own threats are recorded in 28/29-SECURITY. No `Cargo.toml`/`Cargo.lock` change (AR-30-03 holds). No mitigation weakened, no new threat. `[inferred — cleanup 2026-10-28]`
+
 ---
 
 ## Accepted Risks Log
@@ -128,6 +130,7 @@ created: "2026-10-20"
 | 2026-10-28 | 32 | 32 | 0 | /gsd-secure-phase 30 (L1 short-circuit, ASVS 1) re-run at 7902043 after 28.1, 31 deletions and 261028-n0u (30 WR-08/09/10); all 32 rows re-anchored, T-30-10/T-30-23 strengthened, T-30-14 re-scoped to Linux+macOS (auditor note 5); lib filters launcher_ 272, steer_ 62, model 23, answer_ 19, render_escape_guard 18, confirm_popup 12 + 13 smaller filters, `tests/editor_command.rs` 5, `tests/driverctl_race.rs` 4 (+1 ignored) green, 0 failed |
 | 2026-10-28 | 32 | 32 | 0 | /gsd-secure-phase 30 (L1 short-circuit, ASVS 1) re-run at a8f4672 after quick batch 261028-t3c (30 WR-11/WR-12); T-30-01/T-30-10 strengthened, T-30-10/T-30-23/T-30-25/AR-30-02 re-anchored (auditor note 6); lib filters driver::, driver_frontmatter, launcher::, steer_, render_escape_guard, confirm_popup, model, answer_, editor_command, status_cell 568 passed, `tests/editor_command.rs` 5, `tests/driverctl_race.rs` 4 (+1 ignored), `tests/launcher_config_dir.rs` 27 green, 0 failed |
 | 2026-10-29 | 32 | 32 | 0 | /gsd-secure-phase 30 (L1 short-circuit, ASVS 1) re-run at e9de71b after quick 261028-v2z (30 WR-13, `src/launcher/config_dir.rs` fail-closed nested hooks/permissions); outside register, no anchor moved (auditor note 7); `tests/launcher_config_dir.rs` 28, lib `launcher::` 260 passed, 0 failed |
+| 2026-10-29 | 32 | 32 | 0 | /gsd-secure-phase 30 (L1 short-circuit, ASVS 1) verify:post re-run at 1d22f34 after quick 261029-1dp (SAFE-04 pump, dead `AgentRuntime` key); T-30-31 run.rs import ref refreshed, other anchors re-checked (auditor note 8); lib `launcher` filter 534, `tests/launcher_e2e.rs` 41, `tests/editor_command.rs` 5 passed, 0 failed `[inferred — cleanup 2026-10-28]` |
 
 ---
 
@@ -138,7 +141,7 @@ created: "2026-10-20"
 - [x] `threats_open: 0` confirmed
 - [x] `status: verified` set in frontmatter
 
-**Approval:** verified 2026-10-20; re-verified 2026-10-21 (30-06..30-09); re-verified 2026-10-24 (717d724); re-verified 2026-10-28 (HEAD 7902043, after 28.1 / 31 / 261028-n0u); re-verified 2026-10-28 (HEAD a8f4672, after 261028-t3c); re-verified 2026-10-29 (HEAD e9de71b, after 261028-v2z)
+**Approval:** verified 2026-10-20; re-verified 2026-10-21 (30-06..30-09); re-verified 2026-10-24 (717d724); re-verified 2026-10-28 (HEAD 7902043, after 28.1 / 31 / 261028-n0u); re-verified 2026-10-28 (HEAD a8f4672, after 261028-t3c); re-verified 2026-10-29 (HEAD e9de71b, after 261028-v2z); re-verified 2026-10-29 (HEAD 1d22f34, after 261029-1dp)
 
 ## Security Audit 2026-10-28
 
