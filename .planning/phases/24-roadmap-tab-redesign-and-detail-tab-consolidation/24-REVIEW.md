@@ -1,48 +1,93 @@
 ---
 phase: 24-roadmap-tab-redesign-and-detail-tab-consolidation
-reviewed: 2026-10-28T00:00:00Z
+reviewed: 2026-10-29T00:00:00Z
 depth: standard
-files_reviewed: 19
+files_reviewed: 22
 files_reviewed_list:
-  - README.md
-  - docs/ARCHITECTURE.md
-  - src/app.rs
-  - src/state_reader/mod.rs
-  - src/state_reader/roadmap_md.rs
-  - src/ui/mod.rs
-  - src/ui/roadmap_graph.rs
-  - src/ui/roadmap_view.rs
+  - docs/CONFIGURATION.md
+  - docs/DRIVER-SANDBOX.md
+  - docs/GSD-CORE-SYNC.md
+  - src/agents/adapters/mod.rs
+  - src/config.rs
+  - src/driver/direction.rs
+  - src/driver/lock.rs
+  - src/driverctl/serve.rs
+  - src/driverctl/store.rs
+  - src/executor/mod.rs
+  - src/launcher/config_dir.rs
+  - src/launcher/process.rs
+  - src/launcher/run.rs
+  - src/launcher/stop.rs
+  - src/registry.rs
+  - src/state_reader/config_json.rs
+  - src/state_reader/driver_frontmatter.rs
   - src/ui/screens/detail.rs
-  - src/ui/screens/help.rs
   - src/ui/screens/mod.rs
-  - src/ui/screens/render_escape_guard.rs
-  - tests/fixtures/roadmaps/README.md
-  - tests/fixtures/roadmaps/daily-vow-ROADMAP.md
-  - tests/fixtures/roadmaps/daily-vow-STATE.md
-  - tests/fixtures/roadmaps/sentriq-ROADMAP.md
-  - tests/fixtures/roadmaps/sentriq-STATE.md
-  - tests/fixtures/roadmaps/ttbook-ROADMAP.md
-  - tests/fixtures/roadmaps/ttbook-STATE.md
+  - tests/driverctl_serve.rs
+  - tests/driverctl_store.rs
+  - tests/launcher_config_dir.rs
 findings:
   critical: 0
   warning: 7
-  info: 5
-  total: 12
+  info: 7
+  total: 14
+new_findings:
+  critical: 0
+  warning: 0
+  info: 2
 status: issues_found
 ---
 
-# Phase 24: Code Review Report (re-verification at HEAD)
+# Phase 24: Code Review Report (incremental re-review at HEAD)
 
-**Reviewed:** 2026-10-28
+**Reviewed:** 2026-10-29
 **Depth:** standard
-**Files Reviewed:** 19
+**Files Reviewed:** 22 (this pass); the 19 files of the prior pass are listed under "Prior review (e16a201)"
 **Status:** issues_found
 
 ## Narrative Findings (AI reviewer)
 
 ## Summary
 
+This file is the union of two passes. The first, the HEAD re-verification at `e16a201`, is preserved verbatim below under "Prior review (e16a201)", and its twelve findings (WR-01..WR-07, IN-01..IN-05) are carried into the sections that follow, unchanged and still open. The second is an incremental pass over `git diff e16a201 HEAD` for the 22 files in the frontmatter list. `git log` shows no Phase 24 task commit since the prior review, so this delta is not Phase 24 work. It is the quick batches 261028-t3c / 261028-v2z (driver lock and direction hardening, `driverctl` store and serve, the fail-closed managed-settings merge) and quick 261029-1dp (`f4cfa01`, the SAFE-04 redacting capture pump; `ce86206`, removal of the dead `AgentRuntime` config key and the doc-comment corrections).
+
+**What touches Phase 24's own surface.** Only two hunks do. `src/ui/screens/detail.rs:21260-21277` is a doc comment and an assertion message inside a test module, and `src/ui/screens/mod.rs:1389-1393` is the doc comment on `AppContext::experimental`. Neither changes the Roadmap tab, the Detail tab strip, the roadmap model, or any key handler. I read both against the code they describe. The claim that `driver_opt_in` "gates no launch; it only shapes the push policy" holds: `is_opted_in` has no caller outside `registry.rs` and the confirm popup, and the only readers of the record are `launcher::push::policy_for` (via `app.rs:1057`, `driver_cli.rs:292,523` and `driver_launch.rs:342`). The record is also documented as superseded in `REQUIREMENTS.md:24` (CTRL-03). The `GsdConfig::runtime` doc in `config_json.rs:207-217`, which the Defaults tab renders, agrees with the code.
+
+**What I traced in the rest of the delta.**
+- The shared guarded lock-file open (`lock.rs` `open_lock_file`, `ensure_lock_file`, and the read-side `probe_at` / `read_holder_at`). It is applied consistently, and all three refusal kinds (symlink, non-regular, hard link) reach `LockProbe::Unknown` or `LockError::Unavailable`.
+- `exchange_or_restore` and its two callers in `direction.rs`. The retry is bounded by `GIVE_BACK_ROUNDS` in the helper and by `SPLICE_TRIES` in `run_loop`.
+- The guarded `state.json` reads in `store.rs`, `stop.rs` and `run.rs`.
+- The pump, `pump_redacted` (`process.rs:96-209`), with its caller in `run.rs:1629-1703`. I found no live reader of `launch-N.jsonl` before the pump has finished, and `capture.finish` runs before `summarize_stream_file`.
+- The `well_formed_hooks` / `well_formed_permissions` merge in `config_dir.rs`, the new integration tests, and the `AgentRuntime` removal.
+
+No critical or security defect was found. Two new info items are recorded; no new warnings.
+
+**Already recorded elsewhere, not re-raised here.**
+- Multi-line PEM left unredacted by the line pump: Phase 29 WR-14, Phase 31 WR-01.
+- A pump-thread spawn failure leaves the child unsupervised: Phase 29 WR-15, Phase 31 WR-02.
+- The pump's launcher-death rationale does not hold for the degraded posture: Phase 30 WR-16.
+- The read-side link-count refusal turns a held run lock into `Unknown`: Phase 29 WR-08.
+- First-doc-wins for managed `permissions` scalars: Phase 29 WR-09, Phase 30 WR-14.
+- Hook-item validation stops at `type`: Phase 30 WR-15.
+- Silent drop of wrong-shape host policy: Phase 29 WR-10, Phase 30 IN-18, Phase 31 WR-03.
+- Dead branch and shadowed `key` in the managed merge: Phase 30 IN-19.
+- A stale test name, `opting_in_from_the_driver_tab_flips_the_spawn_seam` (`detail.rs:21271`, a Phase 24 file): Phase 30 IN-20.
+- A stale `driver_max_concurrent` enforcement claim: Phase 30 IN-21.
+- An over-cap line skipped by the reader: Phase 29 IN-07.
+- The ignored capture-finish timeout: Phase 29 IN-08.
+- The stale redaction-corpus assertion message: Phase 29 IN-09.
+- The dangling `runtime()` doc reference: Phase 29 IN-10.
+- The unpinned per-project `runtime` round trip: Phase 29 IN-11.
+- The `InvalidData` versus `EISDIR` doc claim for a directory at the lock name: Phase 31 IN-01.
+- The refused or link-flipped run lock surfacing as "Invalid argument": Phase 29 IN-06.
+
+The Phase 24 findings from the prior pass are not affected by this delta. None of the files that carry them (`roadmap_md.rs`, `roadmap_graph.rs`, `roadmap_view.rs`, `render_escape_guard.rs`, `help.rs`, `state_reader/mod.rs`, the roadmap fixtures, `docs/ARCHITECTURE.md`) changed between `e16a201` and HEAD. In `detail.rs` and `screens/mod.rs`, the `roadmap_nav` and `roadmap_list_viewport` code behind WR-07 and IN-01 is untouched.
+
+### Prior review (e16a201)
+
 This re-reviews Phase 24 as the code stands now, after the month of later quick tasks (workstream bands, lane corners, gsd-core 1.15 parsing parity). The sources read were `roadmap_md.rs`, `roadmap_graph.rs` and `roadmap_view.rs` in full outside their test modules. In `detail.rs` and `state_reader/mod.rs` the roadmap adapter, key handlers, render path and `phase_progress` were read. In `app.rs`, `ui/screens/mod.rs` and `ui/mod.rs` the roadmap-related code paths were read. The docs and fixtures were read too.
+
+Files reviewed in that pass (19): `README.md`, `docs/ARCHITECTURE.md`, `src/app.rs`, `src/state_reader/mod.rs`, `src/state_reader/roadmap_md.rs`, `src/ui/mod.rs`, `src/ui/roadmap_graph.rs`, `src/ui/roadmap_view.rs`, `src/ui/screens/detail.rs`, `src/ui/screens/help.rs`, `src/ui/screens/mod.rs`, `src/ui/screens/render_escape_guard.rs`, `tests/fixtures/roadmaps/README.md`, and the daily-vow, sentriq and ttbook ROADMAP/STATE fixtures.
 
 No security issues were found. Escaping discipline still holds for every new string: phase ids, names, goals, badges, band labels and workstream tags are escaped before they are stored in the model, and raw keys are used only for matching.
 
@@ -60,7 +105,13 @@ Probe results (debug build):
 | `### Phase 13` with no Depends line, then `#### Build phase 14 … Depends on: Build phases 8-13` and two plan lines | Phase 13 reads `depends_on = ["8"]` and plans `0/2` |
 | Bands `Über` and `über` | `j` cycles `Band(über), Phase 1, Band(über), Phase 1, …`; phases 2 and 3 are unreachable |
 
+## Critical Issues
+
+None.
+
 ## Warnings
+
+No new warnings in the 2026-10-29 pass. WR-01..WR-07 below are carried from the e16a201 pass, unchanged.
 
 ### WR-01: Colliding `BandKey`s deadlock `j`/`k` navigation and fold two bands at once (still present, probe-confirmed)
 
@@ -137,6 +188,8 @@ let block = pane_block().title_top(Line::from(" Roadmap "));
 
 ## Info
 
+IN-01..IN-05 are carried from the e16a201 pass, unchanged. IN-06 and IN-07 are new in the 2026-10-29 pass.
+
 ### IN-01: PageUp/PageDown steps targets, but the page size counts rows that include connectors (still present)
 
 **File:** `src/ui/screens/detail.rs:1605-1612`
@@ -167,6 +220,34 @@ let block = pane_block().title_top(Line::from(" Roadmap "));
 **Issue:** These patterns are rebuilt on every ROADMAP reload, which `parse_project_state` triggers for the project and each workstream. The file otherwise uses `OnceLock<Regex>` consistently. This is flagged for consistency only, not performance.
 **Fix:** Hoist the patterns into `static OnceLock<Regex>` helpers, as `checklist_re()` and the others do.
 
+### IN-06: `state.json` is read under DIRECTION.md's 1 MiB cap but written with no cap, so a run whose state outgrows it becomes permanently unopenable (new, 2026-10-29)
+
+**File:** `src/driverctl/store.rs:645` (read) against `:742-763` (`write_state`); the cap is `DIRECTION_READ_MAX_BYTES` at `src/state_reader/driver_frontmatter.rs:814` through `read_run_file_capped` (`:882`); other users `src/launcher/stop.rs:200-206`, `src/launcher/run.rs:1216-1223`
+**Issue:**
+- Quick 261028-t3c / 261028-v2z switched every `state.json` read to `read_run_file_capped`, which enforces the limit chosen for a hand-edited DIRECTION.md (`DIRECTION_READ_MAX_BYTES = 1 << 20`).
+- `RunStore::write_state` has no matching bound. It persists the pretty-printed `RunState` as is: the `items` map, a `findings: Vec<i64>` per item, and two flattened `extra` maps that keep any key the launcher adds.
+- A `state.json` that crosses 1 MiB therefore saves without complaint, and the next `RunStore::open` returns `StoreError::CorruptState` ("larger than the 1048576-byte limit") for good.
+- The orphan path in `stop_orphaned_scope` then returns an I/O error instead of stopping the recorded scope. `check_wall_clock_budget` reads the same file as "no recorded time", so the wall-clock pre-check passes with zero used time (the store's own refusal at open backstops the launch itself, as Phase 29 recorded).
+- Reaching 1 MiB takes a pathological run (thousands of items or findings), so this is latent rather than live. The defect is that the write side and the read side do not agree on a bound, and the failure mode is unrecoverable by the tool.
+
+**Fix:** Give `state.json` its own constant instead of borrowing DIRECTION.md's, and make the writer respect it, so that anything the store saves it can read back:
+```rust
+// in store.rs
+if json.len() as u64 > STATE_READ_MAX_BYTES {
+    return Err(StoreError::Io { detail: format!("state.json would exceed {STATE_READ_MAX_BYTES} bytes") });
+}
+```
+Pass that constant into the guarded read (a `read_run_file_capped_at(path, max)` variant), and pin both halves with a test that saves a state of exactly the cap and one byte over.
+
+### IN-07: The legacy-key wording is imprecise in two places: "since the Phase 28 launcher", and "written back unchanged" for a typed field (new, 2026-10-29)
+
+**File:** `src/config.rs:63-66` (the `RegisteredProject::extra` doc); `docs/CONFIGURATION.md:84`; contrast `docs/CONFIGURATION.md:84` / `docs/GSD-CORE-SYNC.md:400-405` and `src/config.rs:499-500`
+**Issue:**
+- Commit `ce86206` rewrote these comments to say what the retained keys do now. `src/config.rs:63-66` says the per-project `runtime` key "selects nothing since the Phase 28 launcher (Claude only)". `docs/CONFIGURATION.md:84` and `docs/GSD-CORE-SYNC.md:400-405` both say it stopped selecting an agent "since Phase 31". The docs are the accurate ones: the legacy `drive` path, which consumed the `AgentRuntime` value, lived until Phase 31 (per the new `executor/mod.rs` header). The in-code comment therefore misdates the behaviour change by three phases.
+- `docs/CONFIGURATION.md:84` now says all three legacy keys are "kept and written back unchanged". That is exact for `default_runtime` and the per-project `runtime`, which live in the flattened `extra` maps. It is not exact for `preferences.driver_max_concurrent`, which is a typed `usize` with `#[serde(default = "default_driver_max_concurrent")]` and no `skip_serializing_if` (`config.rs:499-500`). A config that never carried the key gains `"driver_max_concurrent": 1` on its next save, and a value that is not a non-negative integer fails the whole config load rather than being preserved. Phase 30 IN-21 covers the field's stale enforcement doc but not this claim.
+
+**Fix:** In `config.rs`, change "since the Phase 28 launcher" to "since Phase 31 retired the `drive` path" (matching the two docs). In `CONFIGURATION.md`, split the sentence: `default_runtime` and `runtime` are preserved verbatim, while `driver_max_concurrent` is still read and written as a number (default 1) and caps nothing.
+
 ## Resolved since 2026-09-24
 
 - **Old IN-02** (help row for `v` still read "graph / box view"): the row is gone from `help.rs` (see WR-05 for the pane-title remnant).
@@ -174,6 +255,6 @@ let block = pane_block().title_top(Line::from(" Roadmap "));
 
 ---
 
-_Reviewed: 2026-10-28_
+_Reviewed: 2026-10-29_
 _Reviewer: Claude (gsd-code-reviewer)_
 _Depth: standard_
