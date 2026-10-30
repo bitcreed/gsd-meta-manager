@@ -1,6 +1,6 @@
 ---
 phase: 25-running-agents-live-wave-view
-verified: 2026-10-28T20:00:00Z
+verified: 2026-10-29T12:00:00Z
 status: passed
 score: 7/7 must-haves verified
 covered_files:
@@ -47,7 +47,7 @@ covered_files:
   - "tests/agents_waves.rs"
   - "tests/agents_workstreams.rs"
   - "tests/agents_worktree_plans.rs"
-covered_digest: "v4:sha256:e34adaa2401465b1dd1f2b5b940ecf7fa4ce6ba1fc8ec8d2af3a3a03e0175f94"
+covered_digest: "v4:sha256:8915fcf554bbda511ef650cf7ef821e17e0ffa62d17c1a04e57719476876cd06"
 behavior_unverified: 0
 overrides_applied: 0
 re_verification:
@@ -80,9 +80,9 @@ advisory:
 # Phase 25: Running Agents & Live Wave View Verification Report
 
 **Phase Goal:** For each registered project, show which GSD agents are currently running in parallel and, for executors, which wave and plans are running / queued / done, read-only from files and git, no Claude invocation, non-intrusive to the running GSD session
-**Verified:** 2026-10-28
+**Verified:** 2026-10-29
 **Status:** passed
-**Re-verification:** Yes. The earlier `passed` verdict (2026-09-26) predates the review fixes WR-03..06 and four quick tasks that touched `src/agents/**`, `tests/agents_*` and the UI screens: unmerged-work detection (260929-szq), worktree-plan and ghost-phase views (261014-0jv, 23a947f), workstream scoping (261023-05i), and the process-table doctrine amendment (260926-06g). Every truth was re-checked at HEAD `2ec531d`. Source is unchanged since `54a73bf`; later commits are `.planning` docs only.
+**Re-verification:** Yes. The prior `passed` verdict (2026-10-28, HEAD 2ec531d) went stale after quick task 261029-1dp (ce86206), which removed the dead `AgentRuntime` config key. Re-checked at HEAD `450d12e`. `git diff 2ec531d HEAD -- src/agents src/ui/screens/detail.rs` shows 8 insertions and 6 deletions, all comments and test messages: `src/agents/adapters/mod.rs` doc text and `detail.rs` test doc and assertion message. No logic under `src/agents/**`, `src/ui/screens/normal.rs`, or `tests/agents_*.rs` changed. The other src changes since 2ec531d (driver, launcher, driverctl, config, registry, executor) are outside this phase's covered files.
 
 ## Goal Achievement
 
@@ -98,7 +98,9 @@ advisory:
 | 6 | AGENT-06: the Sessions tab has an Agents sub-view with summary, per-wave rows, scrollable list, worktree-less group, and explicit empty and degraded states | ✓ VERIFIED | tmux `6` then Right showed `P05 · w1/2 · 1 run · 1/4 done`, the wave row `▸w1 1 running  w2∙`, and per-agent rows `live 05-02 gsd-executor +0 ~1 25s`. `--lib ui::screens::detail` 432/432 pass, including `no_running_agents_is_the_empty_state`. |
 | 7 | AGENT-07: code-review fix runs show an estimated fixed/total from REVIEW.md `findings.total` and `fix(NN):` subjects, labelled as an estimate | ✓ VERIFIED | `tests/agents_fixers.rs` 10/10. The WR-03/04/06 fixes hold at HEAD: NN-REVIEW.md-only (`fixers.rs:172-175`), intersect-and-clamp (`fixers.rs:237-245`), running-first vote (`fixers.rs:318-342`), and the running-fixer gate. The `~` label is preserved. WR-09 (workstream-scoped review file) is an open, unconfirmed edge case. |
 
-Prohibitions (non-intrusive, read-only, no Claude invocation): `no_file_under_src_agents_writes_reads_proc_or_spawns` passes, and `Command::new` appears only in `src/session_detector.rs:132` (`pgrep -x codex`), outside `src/agents`.
+Anchors re-read at HEAD: `AgentLiveness::is_running` `src/agents/mod.rs:104`, day-age-out `mod.rs:155-159`, `agent_summary_line` `src/ui/screens/normal.rs:519`, `render_waves_pane` `detail.rs:7682`, `render_agents_tab` `detail.rs:7968`, `agent_state_word(Finished) => "done"` `detail.rs:10752`, `PaneState::Done` word `detail.rs:9539`. Line numbers inside `detail.rs` and `session_detector.rs` quoted elsewhere in this report predate later edits and may have shifted.
+
+Prohibitions (non-intrusive, read-only, no Claude invocation): `no_file_under_src_agents_writes_reads_proc_or_spawns` passes, and a grep of `src/agents` for `Command::new`, `/proc`, `File::create`, `fs::write` and `remove_file` finds hits only inside `#[cfg(test)]` fixtures (`fs::write` in tests of `claude.rs`, `unmerged.rs`, `worktree_plans.rs`, `workstream_scope.rs`). The `pgrep` spawn lives in `src/session_detector.rs`, outside `src/agents`.
 
 **Score:** 7/7 truths verified. 0 are behavior-unverified.
 
@@ -151,8 +153,9 @@ The goal says "read-only from files and git". Quick 260926-06g amended D-B01/D-B
 | Agents unit tests | `cargo test --lib agents` | 103 passed, 0 failed | ✓ PASS |
 | Byte-identical dashboard regressions | `cargo test --lib byte_identical` | 3 phase-25 tests `ok` | ✓ PASS |
 | Detail screen | `cargo test --lib ui::screens::detail` | 432 passed, 0 failed | ✓ PASS |
-| Full suite (collected gate, HEAD 54a73bf, source unchanged since) | `rtk proxy cargo test --no-fail-fast` | 3183 passed, 0 failed, 17 ignored; clippy `-D warnings` and `fmt --check` exit 0 | ✓ PASS (cited, not re-run) |
-| Rendered TUI | detached tmux 160x45, throwaway `$HOME`/XDG under the scratchpad, fixture with two `.claude/worktrees/agent-*` worktrees and subagent meta | Status cell, Waves pane and Agents tab as in Truths 2, 5 and 6. Session killed afterwards. | ✓ PASS |
+| Re-run at HEAD 450d12e | the eight `agents_*` suites, `--lib agents`, `--lib byte_identical`, `--lib ui::screens::detail` | 13+10+7+13+10+9+4+9 passed (1 ignored); 103; 4 (3 phase-25 `normal::tests` plus one launcher test); 432. 0 failed. | ✓ PASS |
+| Full suite (collected gate at HEAD 450d12e, cited, not re-run) | `rtk proxy cargo test --no-fail-fast` | 55 suites, 3216 passed, 0 failed, 17 ignored | ✓ PASS |
+| Rendered TUI (prior round; render code unchanged since, comment-only diff) | detached tmux 160x45, throwaway `$HOME`/XDG under the scratchpad, fixture with two `.claude/worktrees/agent-*` worktrees and subagent meta | Status cell, Waves pane and Agents tab as in Truths 2, 5 and 6. Session killed afterwards. | ✓ PASS |
 
 ### Probe Execution
 
@@ -186,5 +189,5 @@ No gaps. All seven requirements hold at HEAD after the later review fixes and qu
 
 ---
 
-_Verified: 2026-10-28_
+_Verified: 2026-10-29_
 _Verifier: Claude (gsd-verifier)_
