@@ -6,6 +6,8 @@ status: verified
 threats_open: 0
 asvs_level: 1
 created: "2026-10-28"
+updated: "2026-10-29"
+audited_at: "42a8e18"
 ---
 
 # Phase 25 — Security
@@ -17,6 +19,8 @@ Register source: the `<threat_model>` blocks of 25-01..25-07-PLAN.md (authored a
 Test evidence (`cargo test --no-fail-fast`, 2026-10-28, HEAD `54a73bf`): agents_claude 13/13, agents_fixers 10/10, agents_process 7/7, agents_scan 13/13, agents_unmerged 10/10, agents_waves 9/9, agents_workstreams 4/4, agents_worktree_plans 9/9 (1 ignored), async_blocking_guard 8/8, plus lib unit tests filtered to the named mitigation tests, `commits_ahead` and `render_escape_guard` 31/31. 0 failures.
 
 Dependency check: `git log <25-01 first commit>^..<25-07 last commit> -- Cargo.toml Cargo.lock` is empty.
+
+Re-checked 2026-10-29 at HEAD `42a8e18` after quick 261029-1dp (`ce86206`, removal of the dead `AgentRuntime` config key and doc-comment fixes). `git diff 54a73bf..HEAD` over every cited file: only `src/ui/screens/detail.rs` changed, and only a test doc comment and an assert message at `:21260-21277`, below every cited anchor in it (highest `:19157`), so no anchor moved; `src/agents/adapters/mod.rs` changed only a module doc comment (`:15-17`) that no row cites. `src/agents/**` no longer references `src/executor/runtime.rs` (deleted). No dependency changed (`Cargo.toml` / `Cargo.lock` untouched). Tests re-run: agents_claude 13, agents_fixers 10, agents_process 7, agents_scan 13, agents_unmerged 10, agents_waves 9, agents_workstreams 4, agents_worktree_plans 9 (1 ignored), async_blocking_guard 8, cited lib tests 37, all pass, 0 failures.
 
 ---
 
@@ -105,6 +109,7 @@ Dependency check: `git log <25-01 first commit>^..<25-07 last commit> -- Cargo.t
 | Audit Date | Threats Total | Closed | Open | Run By |
 |------------|---------------|--------|------|--------|
 | 2026-10-28 | 33 | 33 | 0 | gsd-secure-phase at HEAD `54a73bf` (orchestrator, L1 short-circuit; no auditor per ASVS 1 rule) |
+| 2026-10-29 | 33 | 33 | 0 | gsd-secure-phase (State A re-check at HEAD `42a8e18` after 261029-1dp; ASVS L1 short-circuit, auditor skipped; cited files diffed `54a73bf..HEAD`, only comment-level changes in `detail.rs` / `adapters/mod.rs`, no cited anchor moved; 9 integration suites + 37 cited lib tests pass via `rtk proxy cargo test --no-fail-fast`; no disposition changed `[inferred — cleanup 2026-10-28]`) |
 
 ---
 
@@ -115,4 +120,4 @@ Dependency check: `git log <25-01 first commit>^..<25-07 last commit> -- Cargo.t
 - [x] `threats_open: 0` confirmed
 - [x] `status: verified` set in frontmatter
 
-**Approval:** verified 2026-10-28 at HEAD `54a73bf`
+**Approval:** verified 2026-10-28 at HEAD `54a73bf`, re-verified 2026-10-29 at `42a8e18`
