@@ -112,7 +112,7 @@
 ## Milestone: v2.0 — Autonomous Orchestration
 
 **Shipped:** 2026-10-29 (v2.0.0; interim releases v1.7.0-v1.15.0)
-**Phases:** 20 (14-31 incl. 26.1, 28.1) | **Plans:** 195 | **Quick tasks:** 111
+**Phases:** 20 (14-31 incl. 26.1, 28.1) | **Plans:** 195 | **Quick tasks:** 109 (+1 fast)
 
 ### What Was Built
 - A sandboxed autonomous driver: bwrap + `systemd-run --user --scope` launcher with hard caps, egress proxy and no push credential inside; `driver push` outside the sandbox (Phases 28, 28.1)

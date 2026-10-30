@@ -2,12 +2,12 @@
 gsd_state_version: "1.0"
 milestone: v2.0
 milestone_name: Autonomous Orchestration
-status: Awaiting next milestone
-stopped_at: Phase 28.1 complete — all phases complete
-last_updated: "2026-10-30T02:53:42.781Z"
+status: shipped
+stopped_at: "v2.0.0 released locally (tag v2.0.0, not pushed) — milestone v2.0 Autonomous Orchestration shipped 2026-10-29"
+last_updated: "2026-10-30T02:58:21.564Z"
 last_activity: 2026-10-29
-last_activity_desc: Milestone v2.0 completed and archived
-state_head: 2afd2557825ce8cf0390bb5cad5d8312470c6bd8
+last_activity_desc: "Milestone v2.0 completed, archived and released as v2.0.0"
+state_head: 1059da8fd385b90e8e452e705475695522ecdb44
 progress:
   total_phases: 16
   completed_phases: 16
@@ -22,17 +22,22 @@ current_phase_name: Sandbox Egress & Agent-Channel Isolation
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-10-28)
+See: .planning/PROJECT.md (updated 2026-10-29)
 
 **Core value:** See the state of every GSD project at a glance and act on any of them without leaving the TUI.
-**Current focus:** Milestone v2.0 wrap-up — all phases complete; re-verifications, then milestone audit
+**Current focus:** Planning next milestone — v2.0 shipped as v2.0.0; start with `/gsd-new-milestone`
 
 ## Current Position
 
-Phase: Milestone v2.0 complete
+Milestone: v2.0 Autonomous Orchestration — SHIPPED 2026-10-29 as v2.0.0
+Phase: — (between milestones; Phases 14-31 archived to `.planning/milestones/v2.0-phases/`)
 Plan: —
-Status: Awaiting next milestone
-Last activity: 2026-10-29 — Milestone v2.0 completed and archived
+Status: shipped
+Last activity: 2026-10-29 — milestone v2.0 completed, archived, released as v2.0.0 (local tag, not pushed)
+
+Archive: `.planning/milestones/v2.0-ROADMAP.md`, `v2.0-REQUIREMENTS.md`, `v2.0-MILESTONE-AUDIT.md`.
+Carried forward: five security-adjacent review clusters as todos `2026-10-29-v2-carry-*`;
+CTRL-05 accepted partial; backlog 999.7 and 999.8 (formerly Phase 32) [inferred — release 2026-10-29].
 
 ## Deferred Verification
 
@@ -337,19 +342,23 @@ Recent decisions affecting current work:
 
 ### Pending Todos
 
-- [2026-07-29] [ui] Driver tab renders blank pipeline row at terminal heights 8-13 — [todo file](.planning/todos/pending/2026-07-29-driver-tab-layout-at-medium-terminal-heights.md)
 - [2026-09-15] [ui] Make queue input truly multi-line — [todo file](.planning/todos/pending/2026-09-15-make-queue-input-truly-multi-line.md)
 - [2026-10-18] [state_reader] Dashboard renders quoted VERIFICATION status as Unknown while driverctl counts it as a gap round — [todo file](.planning/todos/pending/2026-10-18-dashboard-verification-status-quote-divergence.md)
 - [2026-10-21] [ui] Borders and typography still draw 2 cells under ambiguous-wide settings; DarkGray remains outside the Driver tab — [todo file](.planning/todos/pending/2026-10-21-ambiguous-wide-typography-borders-and-darkgray.md)
-- [2026-10-24] [session_detector] Session detector binds the successor of -r/--resume although claude treats the value as optional — [todo file](.planning/todos/pending/2026-10-24-session-detector-resume-optional-arity.md)
-- [2026-10-25] [envelope] Two unpinned properties in surviving envelope code (scan Absent never permits, CredentialSource drift) — [todo file](.planning/todos/pending/2026-10-25-phase-19-surviving-pin-gaps-scan-and-credential-source.md)
-- [2026-10-25] [session_detector] Round-trip certificate for session ids omits the --session-id spellings the executor emits — [todo file](.planning/todos/pending/2026-10-25-session-detector-wire-forms-omit-session-id.md)
-- [2026-10-27] [ui] Enable TUI driver launch and steering on macOS (close 28-REVIEW WR-05) — [todo file](.planning/todos/pending/2026-10-27-enable-tui-driver-launch-and-steering-on-macos.md)
 - [2026-10-27] [ui] Add TUI badge for per-repo release maps — [todo file](.planning/todos/pending/2026-10-27-tui-badge-for-per-repo-release-maps.md)
-- [2026-10-28] [driver] A DIRECTION.md save can be lost when give-back hits ENOENT; restore with a NOREPLACE rename (30-REVIEW WR-10) — [todo file](.planning/todos/pending/2026-10-28-direction-give-back-enoent-loses-save.md)
-- [2026-10-28] [driver] Open DIRECTION.lock with O_NOFOLLOW + regular-file check, and cap read_run_file at 1 MiB (30-REVIEW WR-08, WR-09) — [todo file](.planning/todos/pending/2026-10-28-direction-lock-nofollow-and-run-file-read-cap.md)
-- [2026-10-28] [scripts] gapcount STATUS_RE has no value boundary and crosses lines; drift.py and the acceptance scripts still use it (26.1-REVIEW IN-06, the live drift.py status finding) — [todo file](.planning/todos/pending/2026-10-28-gapcount-status-re-value-boundary-used-by-drift-py.md)
-- [2026-10-28] [ui] Human check: does the help popup read as a scannable page at 80x24? (18-11 D6) — [todo file](.planning/todos/pending/2026-10-28-help-popup-scannable-at-80x24.md)
+- [2026-10-28] [driver] D-17 recovery block is unsatisfiable when DIRECTION.md parses no items (28-REVIEW WR-04) — [todo file](.planning/todos/pending/2026-10-28-d17-recovery-block-with-no-direction-items.md)
+- [2026-10-28] [driver] The driverctl fm_status port still has the IN-06 shapes (no value boundary, line-crossing whitespace, BOM -> None) — [todo file](.planning/todos/pending/2026-10-28-driverctl-fm-status-port-value-boundary-and-bom.md)
+- [2026-10-28] [ui] "Human check: does the help popup read as a scannable page at 80x24? (18-11 D6)" — [todo file](.planning/todos/pending/2026-10-28-help-popup-scannable-at-80x24.md)
+- [2026-10-28] [ui] Launcher-marker scan: add an in-flight flag like agents_scan_in_flight (30-REVIEW WR-11, separate part) — [todo file](.planning/todos/pending/2026-10-28-launcher-marker-scan-in-flight-flag.md)
+- [2026-10-28] [driver] Retire or cfg(test) the production-dead executor remnants (31-REVIEW IN-04) — [todo file](.planning/todos/pending/2026-10-28-retire-test-only-executor-remnants.md)
+- [2026-10-28] [driver] Sibling-run tmpfs is skipped when .planning or the drivers dir is reached through a symlink (28-REVIEW WR-02) — [todo file](.planning/todos/pending/2026-10-28-sandbox-drivers-tmpfs-skipped-for-symlinked-planning.md)
+- [2026-10-28] [ui] Unregister guard: read run locks at confirm time and share one live predicate (31-REVIEW IN-08, IN-10) — [todo file](.planning/todos/pending/2026-10-28-unregister-guard-cached-live-check.md)
+- [2026-10-29] [driver] driverctl LOG.md writes driver-supplied values without redaction — [todo file](.planning/todos/pending/2026-10-29-driverctl-log-values-unredacted.md)
+- [2026-10-29] [launcher] Capture-pump redaction edge cases (SAFE-04 follow-ups) — [todo file](.planning/todos/pending/2026-10-29-v2-carry-capture-pump-redaction-edge-cases.md)
+- [2026-10-29] [driver] A hard link to the run lock makes driver stop fail — [todo file](.planning/todos/pending/2026-10-29-v2-carry-lock-hard-link-blocks-driver-stop.md)
+- [2026-10-29] [launcher] Managed-policy values of the wrong shape are dropped silently or merged loosely — [todo file](.planning/todos/pending/2026-10-29-v2-carry-managed-policy-shape-validation.md)
+- [2026-10-29] [driverctl] Run-file open and size hardening in driverctl (LOG.md, log fallback, state.json) — [todo file](.planning/todos/pending/2026-10-29-v2-carry-run-file-open-and-size-hardening.md)
+- [2026-10-29] [launcher] Child left unsupervised when capture spawn fails or (degraded) the launcher dies — [todo file](.planning/todos/pending/2026-10-29-v2-carry-unsupervised-child-on-capture-or-parent-failure.md)
 
 ### Blockers/Concerns
 
@@ -358,10 +367,10 @@ Older entries (Phase 19 T-19-* rows, Phase 21 round-13 gaps, Phase 26 risks, 31-
 
 - [Phases 19/21/22/23] Closed by supersession 2026-10-28, not resumed. Live residue is in todos:
   session-detector CR-01 resume arity, CR-02 wire_forms session-id, Phase 19 surviving pin gaps T-19-72/73.
-- [Review advisories, not blocking] open findings remain in 28-REVIEW-DISPOSITION.md (10),
-  31-REVIEW-DISPOSITION.md (12) and 30-REVIEW-DISPOSITION.md (4 beyond WR-08/09/10, which are now todos).
-  24-REVIEW.md (5 warnings / 6 info) and 25-REVIEW.md (WR-02..06, IN-01..07) carry deferred warnings.
-  Triage these during the re-verify pass [inferred — cleanup 2026-10-28].
+- [Review advisories, not blocking] 123 open/deferred review entries (0 critical, 41 warning, 82 info)
+  across Phases 24-31, per phase in `.planning/milestones/v2.0-phases/*/*-REVIEW-DISPOSITION.md`.
+  The security-adjacent ones are carried forward as five clustered todos `2026-10-29-v2-carry-*`
+  [inferred — release 2026-10-29].
 - [Phase 24] Roadmap footer (91/87 cols) clips `[?]help` at 80 cols.
 - `--bare` is slated to become the `-p` default and is incompatible with subscription auth.
 - Known flake: `editor_race_smoke` (tests/driverctl_race.rs:348), 11/200 in container.
@@ -499,15 +508,60 @@ Older entries (Phase 19 T-19-* rows, Phase 21 round-13 gaps, Phase 26 risks, 31-
 | 261028-t3f | Make host settings merge fail closed in src/launcher/config_dir.rs ~583-616 (Phase 28 WR-08, Phase 29 WR-02): a host hooks or permissions value that is not a JSON object must never replace the launcher's gate hooks or deny list; add tests for string, array, null and number host values; update dispositions to fixed in phases 28, 29 | 2026-10-28 | 5dfbeb6 | .planning/quick/261028-t3f-make-host-settings-merge-fail-closed-in-src-launcher-config |
 | 261028-v2z | Fix WR-13: managed_settings nested wrong-shape host values fail closed | 2026-10-28 | 40870ca | [261028-v2z-fix-wr-13-managed-settings-nested-wrong-](./quick/261028-v2z-fix-wr-13-managed-settings-nested-wrong-/) |
 | 261029-1dp | Close v2.0 audit blockers A-F: SAFE-04 stdout redaction, supersede CTRL-02/03 TRANS-01/04/05 STEER-02, CTRL-05 partial, drop AgentRuntime, 28.1 probe closed | 2026-10-29 | 0d18fe9 | [261029-1dp-close-v2-0-audit-blockers-supersede-ctrl](./quick/261029-1dp-close-v2-0-audit-blockers-supersede-ctrl/) |
+| 261029-fst | Re-point the two self-roadmap tests at .planning/milestones/v2.0-ROADMAP.md after the v2.0 close collapsed ROADMAP.md (fast) | 2026-10-29 | 1059da8 | — |
+
+## Deferred Items
+
+Items acknowledged and deferred at milestone close, most recent first:
+
+| Category | Item | Status | Deferred At | Milestone |
+|----------|------|--------|-------------|-----------|
+| quick_tasks | 260325-reh-fix-6-tech-debt-items-from-v1-0-audit-in | unknown | 2026-10-29 | v2.0 |
+| quick_tasks | 260327-rhx-rename-the-project-to-gsd-meta-manager | unknown | 2026-10-29 | v2.0 |
+| quick_tasks | 260401-t7y-add-tui-textarea-for-markdown-viewing-an | unknown | 2026-10-29 | v2.0 |
+| quick_tasks | 260403-p84-add-pageup-pagedown-scrolling-to-markdow | unknown | 2026-10-29 | v2.0 |
+| quick_tasks | 260405-27p-fix-folder-appears-empty-after-returning | unknown | 2026-10-29 | v2.0 |
+| quick_tasks | 260405-oum-add-defaults-tab-to-display-and-edit-pla | unknown | 2026-10-29 | v2.0 |
+| quick_tasks | 260405-urb-write-a-readme-md-for-github | unknown | 2026-10-29 | v2.0 |
+| quick_tasks | 260512-ecm-add-support-for-gsd-s-optional-secure-su | unknown | 2026-10-29 | v2.0 |
+| quick_tasks | 260908-uqq-fix-driver-startup-deadlock-on-cli-2-1-2 | unknown | 2026-10-29 | v2.0 |
+| uat_gaps | 21/21-UAT.md | testing | 2026-10-29 | v2.0 |
+| uat_gaps | 05/05-HUMAN-UAT.md (archived v1.1) | diagnosed | 2026-10-29 | v2.0 |
+| verification_gaps | 12/12-VERIFICATION.md (archived v1.2) | human_needed | 2026-10-29 | v2.0 |
+| verification_gaps | 05/05-VERIFICATION.md (archived v1.1) | human_needed | 2026-10-29 | v2.0 |
+| verification_gaps | 02/02-VERIFICATION.md (archived v1.0) | human_needed | 2026-10-29 | v2.0 |
+| verification_gaps | 04/04-VERIFICATION.md (archived v1.0) | gaps_found | 2026-10-29 | v2.0 |
+| context_questions | 22/22-CONTEXT.md | 5 questions | 2026-10-29 | v2.0 |
+| todos | 2026-09-15-make-queue-input-truly-multi-line.md | (presence-only) | 2026-10-29 | v2.0 |
+| todos | 2026-10-18-dashboard-verification-status-quote-divergence.md | (presence-only) | 2026-10-29 | v2.0 |
+| todos | 2026-10-21-ambiguous-wide-typography-borders-and-darkgray.md | (presence-only) | 2026-10-29 | v2.0 |
+| todos | 2026-10-27-tui-badge-for-per-repo-release-maps.md | (presence-only) | 2026-10-29 | v2.0 |
+| todos | 2026-10-28-d17-recovery-block-with-no-direction-items.md | (presence-only) | 2026-10-29 | v2.0 |
+| todos | 2026-10-28-driverctl-fm-status-port-value-boundary-and-bom.md | (presence-only) | 2026-10-29 | v2.0 |
+| todos | 2026-10-28-help-popup-scannable-at-80x24.md | (presence-only) | 2026-10-29 | v2.0 |
+| todos | 2026-10-28-launcher-marker-scan-in-flight-flag.md | (presence-only) | 2026-10-29 | v2.0 |
+| todos | 2026-10-28-retire-test-only-executor-remnants.md | (presence-only) | 2026-10-29 | v2.0 |
+| todos | 2026-10-28-sandbox-drivers-tmpfs-skipped-for-symlinked-planning.md | (presence-only) | 2026-10-29 | v2.0 |
+| todos | 2026-10-28-unregister-guard-cached-live-check.md | (presence-only) | 2026-10-29 | v2.0 |
+| todos | 2026-10-29-driverctl-log-values-unredacted.md | (presence-only) | 2026-10-29 | v2.0 |
+| deferred_items | 19, 21, 25 deferred-items.md (64 anchorable bullets) | acknowledged | 2026-10-29 | v2.0 |
+
+Not acknowledgeable by the CLI writer (241 `deferred_items` hits; the writer refuses GFM table rows and
+non-unique bullets in these narrative logs). Disclosed per file instead [inferred — release 2026-10-29]:
+
+| Category | Item | Status | Deferred At | Milestone |
+|----------|------|--------|-------------|-----------|
+| deferred_items | 19/deferred-items.md (45 hits) | closed by supersession (Phase 31); unanchorable | 2026-10-29 | v2.0 |
+| deferred_items | 21/deferred-items.md (193 hits) | closed by supersession (Phase 31); unanchorable | 2026-10-29 | v2.0 |
+| deferred_items | 25/deferred-items.md (3 hits) | resolved in its own Resolution section; duplicate bullets | 2026-10-29 | v2.0 |
 
 ## Session Continuity
 
 Last session: 2026-10-29
-Stopped at: Quick 261029-1dp complete — v2.0 audit blockers A-F closed (pause handoff consumed)
+Stopped at: v2.0.0 released locally — milestone v2.0 archived, release commit and annotated tag v2.0.0 created; nothing pushed (origin is public; the user pushes)
 Resume file: None
 
-Next: re-verify phases whose VERIFICATION.md reads `stale`, re-run `/gsd-audit-milestone v2.0`, then `/gsd-complete-milestone`. [inferred — cleanup 2026-10-28: milestone completion not auto-invoked; the audit comes first]
-Phase 19's gap-closure loop is closed by supersession (2026-10-28), not halted; do not resume it.
+Next: push `dev`/`master` and tag `v2.0.0` (user), then `/gsd-new-milestone`.
 Earlier session history: `.planning/STATE-ARCHIVE.md`.
 
 ## Operator Next Steps

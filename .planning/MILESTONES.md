@@ -3,7 +3,7 @@
 ## v2.0 Autonomous Orchestration (Shipped: 2026-10-29)
 
 **Released as:** v2.0.0 (interim releases v1.7.0 through v1.15.0 shipped during the milestone)
-**Phases completed:** 20 phases (14-31 incl. 26.1 and 28.1), 195 plans, 400 tasks, plus 111 quick tasks
+**Phases completed:** 20 phases (14-31 incl. 26.1 and 28.1), 195 plans, 400 tasks, plus 109 quick tasks and 1 fast task
 **Closed by supersession:** Phases 19, 21, 22, 23 (re-plan 2026-10-14, spikes 001/002); Phase 26 by 26.1. Phase 32 deferred to backlog 999.8.
 **Audit:** tech_debt — requirements 70/71 (CTRL-05 accepted partial), phases 20/20, integration 0 gaps, flows 8/8 (`milestones/v2.0-MILESTONE-AUDIT.md`)
 **Git range:** v1.6.0..v2.0.0, ~2,300 commits; src+tests ~198K lines Rust

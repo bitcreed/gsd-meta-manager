@@ -137,7 +137,7 @@ Phases 26-31 replace them.*
 ## Current State
 
 Shipped v2.0.0 Autonomous Orchestration (2026-10-29): Phases 14-31 (20 phases incl. 26.1 and
-28.1; 19/21/22/23 closed by supersession, 26 superseded by 26.1) plus 111 quick tasks, with interim
+28.1; 19/21/22/23 closed by supersession, 26 superseded by 26.1) plus 109 quick tasks and 1 fast task, with interim
 releases v1.7.0 through v1.15.0 cut along the way. The tool now runs GSD projects as well as
 watching them: `driver new|check|launch|push|auth`, `driverctl` as the single writer of run state,
 a sandboxed launcher with hard caps, and a Driver tab that steers through DIRECTION.md. Audit
