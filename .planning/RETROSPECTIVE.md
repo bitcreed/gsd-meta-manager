@@ -109,6 +109,40 @@
 
 ---
 
+## Milestone: v2.0 — Autonomous Orchestration
+
+**Shipped:** 2026-10-29 (v2.0.0; interim releases v1.7.0-v1.15.0)
+**Phases:** 20 (14-31 incl. 26.1, 28.1) | **Plans:** 195 | **Quick tasks:** 111
+
+### What Was Built
+- A sandboxed autonomous driver: bwrap + `systemd-run --user --scope` launcher with hard caps, egress proxy and no push credential inside; `driver push` outside the sandbox (Phases 28, 28.1)
+- `driverctl` as single writer of run state and DIRECTION.md frontmatter (Phase 27); versioned master prompt and run templates (Phase 29); Driver tab steering through DIRECTION.md (Phase 30)
+- TUI work that shipped independently: roadmap tab redesign (24), running agents and live wave view (25), UI fixes (14)
+
+### What Worked
+- Spikes before Rust: spikes 001/002 and the spike 003 re-run settled the safety model and driver behaviour cheaply, and the 2026-10-14 re-plan replaced two non-converging phases
+- Interim point releases (v1.7.0-v1.15.0) kept shipping TUI value while the orchestration work was in flight
+- Container pre-tag check closed the gap between a green local run and the CI publish job
+
+### What Was Inefficient
+- Phases 19 and 21 ran 13 gap rounds each without converging (every round found a new carrier class); capability removal made both moot
+- Narrative deferred-items logs grew to ~300 audit hits that the acknowledge writer cannot anchor
+- Review findings accumulated (123 open/deferred at close) faster than they were triaged
+
+### Patterns Established
+- Safety by capability removal and outside-enforced caps, not by parsing what the model asks to run
+- Tool-written state only (single writer, exchange-verify splice); the model never writes its own status or counters
+- Supersession as an explicit closure record rather than silently abandoning a phase
+
+### Key Lessons
+- When a guard needs a new rule every round, remove the capability instead
+- Pre-register a spike's rubric before spending; post-hoc instrument fixes are redesign inputs, not verdict inputs
+- Self-referential tests that read the live ROADMAP.md break at milestone close; read the archive (fast task 261029-fst)
+
+### Cost Observations
+- Spike 003: $7.81 of a $60 ceiling for the first attempt; Opus re-run in 26.1
+- Notable: the two superseded gap loops were the largest single cost of the milestone
+
 ## Cross-Milestone Trends
 
 ### Process Evolution
@@ -118,6 +152,7 @@
 | v1.0 | 83 | 4 | Initial build — established TEA pattern, file watching, state reader |
 | v1.1 | 79 | 5 | Screen trait refactor, 7-tab detail view, disk-based inference |
 | v1.2 | 41 | 4 | Autonomous mode, archive browser, paused detection, queue execution design |
+| v2.0 | ~2,300 | 20 | Sandboxed autonomous driver; spike-first re-plan; interim point releases |
 
 ### Cumulative Quality
 
@@ -126,6 +161,7 @@
 | v1.0 | 3,887 | 12 integration | Full requirement coverage (22/22) |
 | v1.1 | 6,319 | 20 integration | Screen trait arch, 7 tabs |
 | v1.2 | 7,630 | 25 integration | Zero warnings, 8 tabs, 9/9 requirements |
+| v2.0 | ~198K (src+tests) | ~3,200 | Requirements 70/71 (1 accepted partial), 0 critical review findings |
 
 ### Top Lessons (Verified Across Milestones)
 
