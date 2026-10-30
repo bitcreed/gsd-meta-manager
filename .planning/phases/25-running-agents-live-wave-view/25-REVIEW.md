@@ -1,34 +1,32 @@
 ---
 phase: 25-running-agents-live-wave-view
-reviewed: 2026-10-28T00:00:00Z
+reviewed: 2026-10-29T00:00:00Z
 depth: standard
-review_kind: re-verification at HEAD (54a73bf), full re-review; carry-forward base 5579bbc
-files_reviewed: 24
+review_kind: incremental re-review at HEAD 0a2ef70, diff base 9faf0be (the prior full re-review, taken at 54a73bf); the 22 files are everything changed in `git diff 9faf0be..HEAD`, and only the quick 261029-1dp slice (ce86206) is Phase 25-owned
+files_reviewed: 22
 files_reviewed_list:
-  - src/agents/mod.rs
+  - docs/CONFIGURATION.md
+  - docs/DRIVER-SANDBOX.md
+  - docs/GSD-CORE-SYNC.md
   - src/agents/adapters/mod.rs
-  - src/agents/adapters/claude.rs
-  - src/agents/fixers.rs
-  - src/agents/processes.rs
-  - src/agents/unmerged.rs
-  - src/agents/waves.rs
-  - src/agents/workstream_scope.rs
-  - src/agents/worktree_phases.rs
-  - src/agents/worktree_plans.rs
-  - src/agents/worktrees.rs
-  - src/state_reader/git_ops.rs
-  - src/app.rs
-  - src/ui/screens/normal.rs
-  - src/ui/screens/help.rs
+  - src/config.rs
+  - src/driver/direction.rs
+  - src/driver/lock.rs
+  - src/driverctl/serve.rs
+  - src/driverctl/store.rs
+  - src/executor/mod.rs
+  - src/launcher/config_dir.rs
+  - src/launcher/process.rs
+  - src/launcher/run.rs
+  - src/launcher/stop.rs
+  - src/registry.rs
+  - src/state_reader/config_json.rs
+  - src/state_reader/driver_frontmatter.rs
   - src/ui/screens/detail.rs
-  - tests/agents_claude.rs
-  - tests/agents_fixers.rs
-  - tests/agents_process.rs
-  - tests/agents_scan.rs
-  - tests/agents_unmerged.rs
-  - tests/agents_waves.rs
-  - tests/agents_workstreams.rs
-  - tests/agents_worktree_plans.rs
+  - src/ui/screens/mod.rs
+  - tests/driverctl_serve.rs
+  - tests/driverctl_store.rs
+  - tests/launcher_config_dir.rs
 findings:
   critical: 0
   warning: 3
@@ -37,14 +35,76 @@ findings:
 status: issues_found
 ---
 
-# Phase 25: Code Review Report (re-verification at HEAD)
+# Phase 25: Code Review Report (incremental re-review at HEAD 0a2ef70)
 
-**Reviewed:** 2026-10-28
+**Reviewed:** 2026-10-29
 **Depth:** standard
-**Files Reviewed:** 24. The `src/agents/**` files, `git_ops.rs` (agent-worktree helpers `:199-256`, `:600-726`) and all eight `tests/agents_*.rs` files were read in full or in their production sections. `app.rs`, `normal.rs`, `help.rs` and `detail.rs` were reviewed only at the agents and wave-view call sites. Those are `app.rs:1822-1870` and `:2188-2249`, `normal.rs:506-530` and `:1129-1163`, `help.rs:151-190`, and `detail.rs:3233-3253`, `:9723-9830` and `:10797-11110`.
-**Status:** issues_found
+**Files Reviewed:** 22 (this pass). The 24 files of the prior full pass (9faf0be / 54a73bf) are listed under "Prior review (9faf0be)" below and are verified here by `git diff --stat`, not re-read.
+**Status:** issues_found (no new findings; 19 carried findings remain open)
+
+## Narrative Findings (AI reviewer)
 
 ## Summary
+
+This file is the union of two passes. The first is the full HEAD re-verification at 54a73bf (review commit 9faf0be). It is preserved verbatim below under "Prior review (9faf0be)", with every finding kept: CR-01, WR-01..WR-09 and IN-01..IN-16. The second is this incremental pass over `git diff 9faf0be..HEAD`. The scope resolver returned `status: degraded, source: phase-range`, and `git log` shows no Phase 25 task commit since the prior review. So the 22-file window is not Phase 25 work. It is quick 261028-t3c / 261028-v2z (driver lock and direction hardening, `driverctl` store and serve, the managed-settings merge) and quick 261029-1dp (`f4cfa01`, the SAFE-04 redacting capture pump; `ce86206`, removal of the dead `AgentRuntime` config key and doc-comment corrections).
+
+**What touches Phase 25's own surface.** Three hunks, none of them behavioural.
+- `src/agents/adapters/mod.rs:12-17`. The doc paragraph "Why `Box<dyn>`" used to cite `src/executor/runtime.rs`. That file is gone. The new text says "the enum dispatch the retired executor used for its runtime value (removed in quick 261029-1dp)". I checked it against `git show 9faf0be:src/executor/runtime.rs`. `AgentRuntime` was an `enum` with `match` arms in `as_str`, `program` and `from_config_value`, so the rationale ("every new variant there was an edit to every `match`") was true and is stated correctly. The comment still reads well, and the D-A07 argument it makes (one module plus one registration line) rests on `registered_adapters`, which is unchanged. No stale pointer remains in `src/agents/**`: `grep executor src/agents` finds only the unrelated `executor_mode` and "thirteen live executors" wave-model names.
+- `src/ui/screens/detail.rs:21257-21277`. This is a test doc comment and an assertion message in the Driver-tab opt-in test. It is far from every range this phase cited in `detail.rs` (`:3233-3253`, `:9723-9830`, `:10797-11110`), and the hunk is net +1 line after all of them. No Phase 25 line citation shifted.
+- `src/ui/screens/mod.rs:1389-1393`. This is the doc comment on `AppContext::experimental`. It is not in the agents or wave-view path.
+
+**Did the agents scan, adapters, wave view or Agents sub-view regress?** No. `git diff --stat 9faf0be HEAD` over `src/agents/**`, `src/app.rs`, `src/state_reader/git_ops.rs`, `src/ui/screens/normal.rs`, `src/ui/screens/help.rs` and `tests/agents_*.rs` shows exactly one changed file, `src/agents/adapters/mod.rs`, and the change is 3 insertions and 2 deletions, all `//!` lines. I also ran the targeted suites at HEAD with `--no-fail-fast`: `agents_claude` 13, `agents_fixers` 10, `agents_process` 7, `agents_scan` 13, `agents_unmerged` 10, `agents_waves` 9, `agents_workstreams` 4, `agents_worktree_plans` 9 passed with 1 ignored, and the `agents::` library filter 82. All passed, none failed. I checked the dangling-reference risk the `AgentRuntime` removal creates. `grep` for `AgentRuntime`, `executor::runtime`, `executor/runtime`, `UnrecognizedRuntime`, `::default_runtime` and `.runtime()` across `src`, `tests`, `docs` and `README.md` finds only the three deliberate "removed in 261029-1dp" prose mentions (`src/executor/mod.rs:13`, `src/config.rs:66`, `src/registry.rs:2363`) and the stale assertion message already recorded elsewhere (below). The legacy `runtime` and `default_runtime` keys are still round-tripped through the flattened `extra` maps: `src/ui/screens/preferences.rs:228-240` asserts that `default_runtime` survives a save.
+
+**Did any prior finding resolve or move?** None. Every file that carries a carried-forward finding is unchanged since 9faf0be, and I re-grepped the sites that are cheap to check. WR-07 is still live: the handler's skip list at `src/app.rs:2221-2227` still omits `worktree_phases`. IN-08 is still live: `src/agents/mod.rs:12` still says `git_ops::git_read_raw`, `src/agents/worktrees.rs:9` still says `git_read_raw`, and `src/agents/unmerged.rs:31` still says U+25D0 above a constant of `"\u{25D2}"`. All line numbers cited in the prior review remain exact. [inferred — cleanup 2026-10-28]
+
+**New findings:** none. The rest of the delta was read for anything that could reach the agents scan or the wave view. It could not, since none of it is on that path (`driver/lock.rs` and `direction.rs`, `driverctl`, `launcher/**`, the registry, the config reader). Every defect I found in it is already recorded by an earlier re-review of the same 22-file window, so by the task's rule I cross-reference them and do not re-raise them as Phase 25 findings:
+- Stale `FIVE subjects` / `UnrecognizedRuntime` assertion message at `src/registry.rs:2368-2371`, still stale after 261029-1dp even though the count beside it is `* 4`: Phase 29 IN-09, Phase 28 (`28-REVIEW.md:383`), Phase 31 (`31-REVIEW.md:107`).
+- Multi-line PEM unredacted by the line pump: Phase 29 WR-14, Phase 31 WR-01. Pump-thread spawn failure leaves the child unsupervised: Phase 29 WR-15, Phase 31 WR-02. Pump launcher-death rationale: Phase 30 WR-16.
+- Read-side link-count refusal turns a held lock into `Unknown`: Phase 29 WR-08. First-doc-wins for managed `permissions`: Phase 29 WR-09, Phase 30 WR-14. Hook-item validation: Phase 30 WR-15.
+- Everything else in the Phase 24 re-review list (`24-REVIEW.md`, IN-06 and IN-07 and its "Already recorded elsewhere" list).
+
+The one user-visible claim in the window that I verified independently is the new `is_opted_in` doc (`src/registry.rs:955-960`) and the `AppContext::experimental` doc: "no launch is gated on the record; it feeds only `launcher::push::policy_for`". `grep is_opted_in\|driver_opt_in` over non-test `src` finds no launch gate, and `REQUIREMENTS.md:24,50,332` record CTRL-03 as superseded by user decision, so the docs agree with the code.
+
+No security issue was found in the Phase 25 scope. Findings counts in the frontmatter count only open findings, as before: 3 warnings and 16 infos, all carried, none new.
+
+## Prior Findings Status
+
+Verdicts are at HEAD 0a2ef70. "Unchanged" means `git diff --stat 9faf0be HEAD -- <file>` is empty, so the finding and its line numbers stand as written below.
+
+| ID | Verdict | Evidence at HEAD 0a2ef70 |
+|----|---------|--------------------------|
+| CR-01 | Resolved (unchanged) | `src/agents/mod.rs` unchanged since 9faf0be. `AgentLiveness::is_running` (`mod.rs:104-106`), age-out at `:157-159`, consumers `waves.rs:655`, `:425-427`, `fixers.rs:289`. |
+| WR-01 | Resolved (unchanged) | `src/agents/waves.rs` unchanged. Tiered vote at `waves.rs:411-427`. |
+| WR-02 | Resolved for one hang; aggregate open as WR-08 | `src/state_reader/git_ops.rs` unchanged. `git_read_raw_within` `:243-256`, `AGENT_GIT_BUDGET` `:235`. |
+| WR-03 | Resolved (unchanged) | `src/agents/fixers.rs` unchanged. `is_code_review_name` `:172-175`. |
+| WR-04 | Resolved (unchanged) | `fixers.rs:237-245` intersect and clamp. |
+| WR-05 | Resolved (unchanged) | `src/agents/adapters/claude.rs` unchanged. `project_dirs` `:282-307`. |
+| WR-06 | Resolved (unchanged) | `fixers.rs:318-342` running-first vote. |
+| WR-07 | Open, still present (re-grepped) | `src/app.rs` unchanged. `app.rs:2221-2227` skip list still lacks `worktree_phases`; `grep worktree_phases src/app.rs` is still empty. |
+| WR-08 | Open (unchanged) | `src/agents/mod.rs`, `unmerged.rs`, `git_ops.rs`, `app.rs` unchanged. No scan-level deadline added. |
+| WR-09 | Open (unchanged) [inferred] | `src/agents/fixers.rs` unchanged. `fixers.rs:352-353` still resolves against the project `.planning` only. |
+| IN-01 | Open (unchanged) | `app.rs:2195-2196`, `:2221-2248` unchanged. |
+| IN-02 | Open (unchanged) | `tests/agents_scan.rs:565`, `tests/agents_unmerged.rs:315`, `app.rs:5506`, `mod.rs:640` unchanged. |
+| IN-03 | Open (unchanged) | `src/agents/worktrees.rs` unchanged. `:395-398`. |
+| IN-04 | Open (unchanged) [inferred] | `claude.rs:342` unchanged. |
+| IN-05 | Open (unchanged) [inferred] | `waves.rs:654-656`, `:703-707`, `:740-745` unchanged. |
+| IN-06 | Open (unchanged) | `waves.rs:323-326` unchanged. |
+| IN-07 | Open (unchanged) | `tests/agents_fixers.rs` unchanged. `:557-573`. |
+| IN-08 | Open, still present (re-grepped) | `src/agents/mod.rs:12`, `worktrees.rs:9`, `unmerged.rs:31-32` read at HEAD: still name `git_read_raw` and U+25D0. The one agents file touched since 9faf0be (`adapters/mod.rs`) is not one of the three sites. |
+| IN-09 | Open (unchanged) | `src/agents/workstream_scope.rs` unchanged. `:66-71`. |
+| IN-10 | Open (unchanged) | `mod.rs:503-520` unchanged. |
+| IN-11 | Open (unchanged) | `src/agents/worktree_phases.rs` unchanged. `:95-122`. |
+| IN-12 | Open (unchanged) | `tests/agents_process.rs`, `tests/agents_unmerged.rs` unchanged. |
+| IN-13 | Open (unchanged) | `tests/agents_scan.rs:595-614` unchanged. |
+| IN-14 | Open (unchanged) | `waves.rs:688-697`, `src/ui/screens/normal.rs:524-528` unchanged. |
+| IN-15 | Open (unchanged) [inferred] | `worktrees.rs:240-251`, `waves.rs:53-56,86-92`, `phase_num.rs` unchanged. |
+| IN-16 | Open (unchanged) [inferred] | `src/agents/processes.rs:104-114` unchanged. |
+
+### Prior review (9faf0be)
+
+The text below is the 9faf0be report, kept verbatim. Its "Prior Findings Status" table is superseded by the table above, which extends it to every id.
+
+#### Summary (as of 9faf0be)
 
 Prior review (5579bbc): CR-01 and WR-01 were resolved by plan 25-07. WR-02 through WR-06 were fixed by commits 4728936, 7efe219, 3a2b838, 6b5e034 and 6d0b5a3. This re-review verified every fix against source and found no regression. No critical issue was found.
 
@@ -55,24 +115,11 @@ The code added since then is mostly sound. That covers unmerged detection, works
 
 All seven prior info findings (IN-01..IN-07) are still present, with updated locations below. Nine new info items follow.
 
-## Prior Findings Status
+Files reviewed in that pass (24): `src/agents/**` (`mod.rs`, `adapters/mod.rs`, `adapters/claude.rs`, `fixers.rs`, `processes.rs`, `unmerged.rs`, `waves.rs`, `workstream_scope.rs`, `worktree_phases.rs`, `worktree_plans.rs`, `worktrees.rs`), `src/state_reader/git_ops.rs` (agent-worktree helpers `:199-256`, `:600-726`), `src/app.rs`, `src/ui/screens/normal.rs`, `src/ui/screens/help.rs`, `src/ui/screens/detail.rs`, and the eight `tests/agents_*.rs` files. The `src/agents/**` files, `git_ops.rs` and the tests were read in full or in their production sections. `app.rs`, `normal.rs`, `help.rs` and `detail.rs` were reviewed only at the agents and wave-view call sites. Those are `app.rs:1822-1870` and `:2188-2249`, `normal.rs:506-530` and `:1129-1163`, `help.rs:151-190`, and `detail.rs:3233-3253`, `:9723-9830` and `:10797-11110`.
 
-| ID | Verdict | Evidence at HEAD |
-|----|---------|------------------|
-| CR-01 | Resolved | `AgentLiveness::is_running` (`mod.rs:104-106`) is the single predicate. `classify_facts` ages out at `mod.rs:157-159`. `waves.rs:655` (`is_active`), `:425-427` (tiered vote) and `fixers.rs:289` (gate) all use it. |
-| WR-01 | Resolved | `waves.rs:411-427` is the tiered vote, in both the project scope and each workstream scope. |
-| WR-02 | Resolved for a single hang; the aggregate remains (see new WR-08) | `git_ops.rs:243-256` `git_read_raw_within`, `:235` `AGENT_GIT_BUDGET = 10 s`. Every agent-scan git call uses it (`:637-651`, `:682`, `:693`, `:714`). `bounded_output.rs` drains stdout on a reader thread, kills and reaps at the deadline, and never joins a reader a grandchild holds open. |
-| WR-03 | Resolved | `fixers.rs:172-175` `is_code_review_name` accepts only `<NN>-REVIEW.md`. EVAL and UI reviews are rejected because their stems fail `PhaseNum::parse`. |
-| WR-04 | Resolved | `fixers.rs:237-245` `fixed_count` intersects with the review's headings and clamps to `total`. `review_file` (`:182-196`) has no REVIEW-FIX early return. |
-| WR-05 | Resolved | `claude.rs:282-307` `project_dirs` keeps only the exact encoded directories. The prefix fallback is gone. |
-| WR-06 | Resolved | `fixers.rs:318-342` `vote_over(is_running)`, then `vote_over(\|_\| true)`, then the retain filter. |
-| IN-01 | Present, carried forward | `app.rs:2195-2196`, `:2221-2248` (below) |
-| IN-02 | Present, carried forward; one more call site | (below) |
-| IN-03 | Present, carried forward | `worktrees.rs:395-398` (below) |
-| IN-04 | Present, carried forward | `claude.rs:342` (below) |
-| IN-05 | Present, carried forward | `waves.rs:654-656` (below) |
-| IN-06 | Present, carried forward | `waves.rs:323-326` (below) |
-| IN-07 | Present, carried forward | `tests/agents_fixers.rs:557-573` (below) |
+## Critical Issues
+
+None.
 
 ## Warnings
 
@@ -220,6 +267,6 @@ Add a handler test with a `ProjectAgents` holding only `worktree_phases`. Assert
 
 ---
 
-_Reviewed: 2026-10-28_
+_Reviewed: 2026-10-29_
 _Reviewer: Claude (gsd-code-reviewer)_
 _Depth: standard_
