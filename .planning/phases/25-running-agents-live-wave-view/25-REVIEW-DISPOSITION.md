@@ -101,7 +101,7 @@ findings:
     title: "Finished orphan fixers outvote the running fixer and inflate `N fixers` and `fixed`"
 open: 19
 total: 24
-recorded: 2026-10-29T00:37:32.503Z
+recorded: 2026-10-30T00:50:21.900Z
 ---
 
 # Phase 25: Code Review Disposition
@@ -149,3 +149,7 @@ history survives. [inferred — cleanup 2026-10-28]
 IN-01..IN-07 keep their ids. The HEAD review re-confirmed each one as present (carried forward), and none was ever
 triaged, so they stay `open`. WR-07..09 and IN-08..16 are NEW at HEAD and stay `open`. No code was changed in this
 round. WR-09, IN-15 and IN-16 are reviewer inferences and are not yet confirmed. [inferred — cleanup 2026-10-28]
+
+## Re-verification notes
+
+- 2026-10-29, incremental re-review `ad44023` (window `9faf0be..HEAD`, 22 files, after quick 261029-1dp `ce86206`): no new findings (no CR-02, WR-10 or IN-17). WR-07..09 and IN-01..16 carried unchanged and stay `open`; WR-02..06 stay `fixed` with their recorded evidence, because none of their files changed since `9faf0be`. The ledger regenerator replaced the WR-02..06 evidence cells with a bare `25-REVIEW-FIX.md` and deleted the hand-written section above; both were restored by hand. No code was changed in this round. [inferred — cleanup 2026-10-28]
