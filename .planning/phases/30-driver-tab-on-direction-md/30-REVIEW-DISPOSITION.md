@@ -3,6 +3,10 @@ phase: 30
 review: 30-REVIEW.md
 titles: json
 findings:
+  - id: WR-16
+    severity: warning
+    disposition: open
+    title: "the pump's launcher-death rationale does not hold for the degraded posture, and the new design stops capturing exactly when the unsupervised child matters most (new, 2026-10-29)"
   - id: WR-14
     severity: warning
     disposition: open
@@ -11,6 +15,14 @@ findings:
     severity: warning
     disposition: open
     title: "Hook-item validation stops at `type`, so `{\"type\":\"command\"}` or a non-string `command` still reaches the managed file beside the gate"
+  - id: IN-20
+    severity: info
+    disposition: open
+    title: "test `opting_in_from_the_driver_tab_flips_the_spawn_seam` still names a seam that no longer exists (new, 2026-10-29)"
+  - id: IN-21
+    severity: info
+    disposition: open
+    title: "`Preferences::driver_max_concurrent` still documents an enforcement site that is gone, next to docs that say it caps nothing (new, 2026-10-29)"
   - id: IN-18
     severity: info
     disposition: open
@@ -139,17 +151,20 @@ findings:
     severity: info
     disposition: fixed
     title: "The launch form and the launcher read the `control` word with different readers"
-open: 12
-total: 34
-recorded: 2026-10-29T05:46:11.945Z
+open: 15
+total: 37
+recorded: 2026-10-30T00:13:16.008Z
 ---
 
 # Phase 30: Code Review Disposition
 
 | Finding | Severity | Disposition | Source |
 |---------|----------|-------------|--------|
+| WR-16 | warning | open | - |
 | WR-14 | warning | open | - |
 | WR-15 | warning | open | - |
+| IN-20 | info | open | - |
+| IN-21 | info | open | - |
 | IN-18 | info | open | - |
 | IN-19 | info | open | - |
 | WR-13 | warning | fixed | fixed by quick 261028-v2z 1158139 (managed_settings drops a wrong-shape nested host value instead of copying it: a hook event value that is not an array, a matcher entry that is not an object or whose matcher is not a string or whose hooks is not an array of objects with a string type, a permissions list (allow, ask, deny, additionalDirectories) that is not an array and every non-string rule inside one, and any other permissions key whose value is neither a string nor a bool; well-formed entries and string or bool settings such as defaultMode and disableBypassPermissionsMode still merge, which narrows the review's drop-every-non-array fix so host policy is not hidden; the degraded settings.json runs the same filter in bfbd231; RED-first bwrap seed test from host files on disk plus shared shape tables in both postures [inferred — cleanup 2026-10-28]); re-review a5ac2aa confirms on both the managed seed and the degraded settings.json path (not in the current review) |
