@@ -83,3 +83,15 @@ Further minor items (not top 3):
 - `src/ui/glyphs.rs`
 - `.planning/phases/24-roadmap-tab-redesign-and-detail-tab-consolidation/` MOCKUPS.md, 24-CONTEXT.md, 24-0{1..7}-SUMMARY.md and PLAN.md (design reference)
 - `tests/fixtures/roadmaps/*` (renders via the real binary)
+
+---
+
+## Delta vs prior audit (7175083) — no re-audit
+
+`[inferred — cleanup 2026-10-28]` Existing review kept (the workflow's unattended path reuses it; the auditor was not re-spawned) because quick 261029-1dp (ce86206) has no user-visible TUI surface:
+- `git diff --stat 7175083 HEAD -- src/ui src/app.rs`: only `src/ui/screens/detail.rs` (test doc comment + assert message in `mod tests`, ~21257-21277) and `src/ui/screens/mod.rs:1389-1393` (doc comment on `AppContext::experimental`). No rendered string, layout, style or key binding changed; none of the Roadmap-tab files (`roadmap_view.rs`, `roadmap_graph.rs`, `glyphs.rs`) changed.
+- ce86206 drops the dead `AgentRuntime` key; `grep -rn AgentRuntime src/ui` is empty.
+- Fix 3's anchor still holds: `DiskStatus::NoDirectory => "Not started"` at `src/ui/screens/detail.rs:2721`. All three top fixes remain open as recorded.
+- `rtk proxy cargo test --locked --no-fail-fast --lib -- ui::`: 961 passed, 0 failed.
+
+Scores unchanged: 18/24, 0 blockers; top fixes as listed above. Method: git diff + grep + render tests.
