@@ -911,14 +911,20 @@ fn test_this_repositorys_own_planning_dir_reads_without_panicking() {
          every assertion below would be checking nothing"
     );
     let state = parse_project_state(&planning);
+    // Between milestones the live ROADMAP.md lists no active phases (the
+    // closed milestone is collapsed into a `<details>` block), so the phase
+    // assertions read the permanent v2.0 archive instead of the live file.
+    let archived = std::fs::read_to_string(planning.join("milestones/v2.0-ROADMAP.md"))
+        .expect("this repository ships its own .planning/milestones/v2.0-ROADMAP.md");
+    let phases = gsd_meta_manager::state_reader::roadmap_md::parse_roadmap_phases(&archived);
     assert!(
-        !state.phases.is_empty(),
-        "the roadmap declares phases; if this is empty the reader found nothing \
-         to assert against and the checks below are vacuous"
+        !phases.is_empty(),
+        "the archived roadmap declares phases; if this is empty the reader found \
+         nothing to assert against and the checks below are vacuous"
     );
-    // Task 3: the roadmap's declared dependencies survive the trip onto
-    // ProjectState, where the router's dependency condition will read them.
-    let phase_20 = state.phases.iter().find(|p| p.number == "20");
+    // Task 3: the roadmap's declared dependencies survive parsing, where the
+    // router's dependency condition will read them.
+    let phase_20 = phases.iter().find(|p| p.number == "20");
     if let Some(phase) = phase_20 {
         assert_eq!(
             phase.depends_on,

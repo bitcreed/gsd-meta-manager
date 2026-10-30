@@ -2066,16 +2066,21 @@ mod tests {
 
     #[test]
     fn test_depends_on_is_read_from_this_repositorys_own_roadmap() {
+        // The v2.0 milestone archive, not the live ROADMAP.md: closing a
+        // milestone collapses the live roadmap's phases into a closed
+        // `<details>` block, while the archive is a permanent, committed copy
+        // of the roadmap these phases were declared in.
         let roadmap = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join(".planning")
-            .join("ROADMAP.md");
+            .join("milestones")
+            .join("v2.0-ROADMAP.md");
         // `expect`, not an early return (IN-07). This file is committed and
         // always present, so the escape hatch bought nothing and cost the one
         // thing the rest of this phase's guards are careful about: a test that
         // cannot read its own subject must fail, not pass having checked
         // nothing.
         let content = std::fs::read_to_string(&roadmap)
-            .expect("this repository ships its own .planning/ROADMAP.md");
+            .expect("this repository ships its own .planning/milestones/v2.0-ROADMAP.md");
         let phases = parse_roadmap_phases(&content);
         let find = |number: &str| {
             phases
