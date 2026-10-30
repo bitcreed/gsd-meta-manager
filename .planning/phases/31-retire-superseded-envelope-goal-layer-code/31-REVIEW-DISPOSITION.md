@@ -5,25 +5,49 @@ titles: json
 findings:
   - id: WR-01
     severity: warning
+    disposition: deferred
+    title: "SAFE-04 pump does not redact a multi-line PEM private key in non-JSON output"
+  - id: WR-02
+    severity: warning
+    disposition: deferred
+    title: "`spawn_launch_child` leaks a running child when the pump thread cannot be spawned"
+  - id: WR-03
+    severity: warning
+    disposition: deferred
+    title: "A dropped host-managed policy value is silent, and the dropped value is a restriction"
+  - id: IN-01
+    severity: info
+    disposition: deferred
+    title: "Doc claims a directory at the lock name is `InvalidData`; the write-side open gives `EISDIR`"
+  - id: IN-02
+    severity: info
+    disposition: deferred
+    title: "Stale assertion message in the registry hostile-corpus test"
+  - id: IN-03
+    severity: info
+    disposition: deferred
+    title: "`RUNTIME_KEY` no longer has a code user"
+  - id: WR-201
+    severity: warning
     disposition: fixed
     title: "Lock hardening covers `acquire_at` only; `probe_at` and `read_holder_at` still follow symlinks and block on a FIFO"
-  - id: WR-02
+  - id: WR-202
     severity: warning
     disposition: open
     title: "Socket publish via `hard_link` has no fallback on filesystems without hard-link support"
-  - id: WR-03
+  - id: WR-203
     severity: warning
     disposition: fixed
     title: "The first exchange-back in `run_loop` still fails on an absent `DIRECTION.md` (WR-10 fix is incomplete)"
-  - id: IN-01
+  - id: IN-201
     severity: info
     disposition: open
     title: "Two copies of the capped, guarded reader with divergent messages"
-  - id: IN-02
+  - id: IN-202
     severity: info
     disposition: open
     title: "Stale \"Linux-only\" comments after the macOS widening"
-  - id: IN-03
+  - id: IN-203
     severity: info
     disposition: open
     title: "A planted FIFO, symlink or oversized `DIRECTION.md` is reported to the operator only as \"invalid data\""
@@ -96,22 +120,28 @@ findings:
     disposition: fixed
     title: "Retargeted app tests keep \"driver maps\" names but now assert a non-driver map"
 open: 5
-total: 23
-recorded: 2026-10-29T01:13:37.226Z
+total: 29
+recorded: 2026-10-30T00:22:33.055Z
 ---
 
 # Phase 31: Code Review Disposition
 
 | Finding | Severity | Disposition | Source |
 |---------|----------|-------------|--------|
-| WR-01 | warning | fixed | fixed by quick 261028-t3d 4977318 (probe_at and read_holder_at open through acquire_at's guard (open_lock_file): a symlink, hard link or FIFO is Unknown(EINVAL) or None without blocking, and the holder read is capped at 4096 bytes; the acquire_at doc claim now holds for every lock-file open in the module) |
-| WR-02 | warning | open | - |
-| WR-03 | warning | fixed | fixed by quick 261028-t3e 7f4fc49 (same defect as 30 WR-12; run_loop's exchange back and give_back_newest share exchange_or_restore: an ENOENT restores the raced save by no-replace rename, EEXIST exchanges again, and the splice retries on the restored save; guard test b42e57c pins the fail-closed D-17 gate [retry-after-restore inferred — cleanup 2026-10-28]) |
-| IN-01 | info | open | - |
-| IN-02 | info | open | - |
-| IN-03 | info | open | - |
-| IN-04 | info | open | - |
-| IN-05 | info | deferred | deferred with prior-round IN-04 (now IN-104): same issue (head_sha and registry::check_prompt_input_drift have no production caller); todo 2026-10-28-retire-test-only-executor-remnants.md. The config.rs DriverOptIn doc-prose sub-point is new this round and goes in the same todo, since that doc is rewritten when check_prompt_input_drift is retired [inferred — cleanup 2026-10-28] |
+| WR-01 | warning | deferred | duplicate of Phase 28 WR-13 and Phase 29 WR-14 (SAFE-04 pump redacts line by line; a multi-line PEM body in plain-text output reaches launch-N.jsonl); tracked there, not new; not fixed here [inferred — cleanup 2026-10-28] |
+| WR-02 | warning | deferred | duplicate of Phase 29 WR-15 (pump thread spawn failure leaves the running sandboxed child unsupervised); related Phase 30 WR-16; tracked there, not new; not fixed here [inferred — cleanup 2026-10-28] |
+| WR-03 | warning | deferred | duplicate of Phase 28 WR-10, Phase 29 WR-10 and Phase 30 IN-18 (wrong-shape host managed policy dropped with no diagnostic); tracked there, not new; not fixed here [inferred — cleanup 2026-10-28] |
+| IN-01 | info | deferred | duplicate of Phase 30 IN-15 (directory at the lock name documented as InvalidData, actually EISDIR on the read+write open); tracked there, not new [inferred — cleanup 2026-10-28] |
+| IN-02 | info | deferred | duplicate of Phase 29 IN-09 (registry redaction-corpus assertion message still says five subjects and names UnrecognizedRuntime); tracked there, not new [inferred — cleanup 2026-10-28] |
+| IN-03 | info | deferred | duplicate of Phase 29 IN-11 (RUNTIME_KEY referenced only from comments after the AgentRuntime removal); tracked there, not new [inferred — cleanup 2026-10-28] |
+| WR-201 | warning | fixed | fixed by quick 261028-t3d 4977318 (probe_at and read_holder_at open through acquire_at's guard (open_lock_file): a symlink, hard link or FIFO is Unknown(EINVAL) or None without blocking, and the holder read is capped at 4096 bytes; the acquire_at doc claim now holds for every lock-file open in the module) [prior-round id WR-01; renumbered because the 2026-10-29 re-review reuses WR-01 for a different finding [inferred — cleanup 2026-10-28]] (not in the current review) |
+| WR-202 | warning | open | - [prior-round id WR-02; renumbered because the 2026-10-29 re-review reuses WR-02 for a different finding [inferred — cleanup 2026-10-28]] (not in the current review) |
+| WR-203 | warning | fixed | fixed by quick 261028-t3e 7f4fc49 (same defect as 30 WR-12; run_loop's exchange back and give_back_newest share exchange_or_restore: an ENOENT restores the raced save by no-replace rename, EEXIST exchanges again, and the splice retries on the restored save; guard test b42e57c pins the fail-closed D-17 gate [retry-after-restore inferred — cleanup 2026-10-28]) [prior-round id WR-03; renumbered because the 2026-10-29 re-review reuses WR-03 for a different finding [inferred — cleanup 2026-10-28]] (not in the current review) |
+| IN-201 | info | open | - [prior-round id IN-01; renumbered because the 2026-10-29 re-review reuses IN-01 for a different finding [inferred — cleanup 2026-10-28]] (not in the current review) |
+| IN-202 | info | open | - [prior-round id IN-02; renumbered because the 2026-10-29 re-review reuses IN-02 for a different finding [inferred — cleanup 2026-10-28]] (not in the current review) |
+| IN-203 | info | open | - [prior-round id IN-03; renumbered because the 2026-10-29 re-review reuses IN-03 for a different finding [inferred — cleanup 2026-10-28]] (not in the current review) |
+| IN-04 | info | open | - (not in the current review) |
+| IN-05 | info | deferred | deferred with prior-round IN-04 (now IN-104): same issue (head_sha and registry::check_prompt_input_drift have no production caller); todo 2026-10-28-retire-test-only-executor-remnants.md. The config.rs DriverOptIn doc-prose sub-point is new this round and goes in the same todo, since that doc is rewritten when check_prompt_input_drift is retired [inferred — cleanup 2026-10-28] (not in the current review) |
 | IN-06 | info | skipped | coverage note only. The MCP posture is pinned at the boundary that matters. ENABLE_CLAUDEAI_MCP_SERVERS=false is in the child env (sandbox.rs). The 28.1 egress body policy refuses mcp_servers and MCP tool blocks, with tests in egress/policy.rs. A local MCP server would run inside the same bwrap sandbox and egress allowlist with no capability beyond the agent's own Bash, so a --mcp-config scan would add no protection [inferred — cleanup 2026-10-28] (not in the current review) |
 | IN-07 | info | fixed | fixed by quick 261028-n12 715cebe (DriverOptIn docs say the digests are recorded at opt-in and nothing on the launcher path compares them; re-confirm sentences qualified as the retired executor gate only) (not in the current review) |
 | IN-08 | info | deferred | still present (delete_confirm.rs restates detail::driver_live_for); the IN-10 fix changes the guard's predicate (drops the ctx.experimental clause and re-reads the locks at confirm time), so sharing the helper now would be undone by that fix; done together with IN-10 in todo 2026-10-28-unregister-guard-cached-live-check.md [inferred — cleanup 2026-10-28] (not in the current review) |
