@@ -8,7 +8,8 @@ asvs_level: 1
 block_on: high
 register_authored_at_plan_time: true
 created: "2026-10-28"
-audited_at: "4e424e2"
+updated: "2026-10-29"
+audited_at: "e15f3e6"
 ---
 
 # Phase 24 — Security
@@ -23,6 +24,13 @@ audited_at: "4e424e2"
 > SUMMARY files. `PhaseList`, `layout_graph` and `RoadmapGraphWidget` were removed
 > on purpose. The `PhaseList` hits that remain are `archive::ArchiveDepth::PhaseList`
 > (unrelated), comments and test strings.
+>
+> Re-checked 2026-10-29 at HEAD `e15f3e6` after quick 261029-1dp (`ce86206`, removal of
+> the dead `AgentRuntime` config key, doc-comment fixes in `src/ui/screens/detail.rs` and
+> `src/ui/screens/mod.rs`). Of the files cited below only `detail.rs` changed since
+> `4e424e2`, and only a test doc comment and an assert message at `:21260-21277`, below
+> every cited anchor (highest `:18886`), so no anchor moved. No dependency changed
+> (`Cargo.toml` / `Cargo.lock` untouched). See the audit trail.
 
 ---
 
@@ -93,6 +101,7 @@ audited_at: "4e424e2"
 | Audit Date | Threats Total | Closed | Open | Run By |
 |------------|---------------|--------|------|--------|
 | 2026-10-28 | 26 | 26 | 0 | gsd-secure-phase (State B, ASVS L1 short-circuit; mitigations re-checked at HEAD `4e424e2`; 49 + 5 + 3 lib tests, `spawn_seam_guard` 10, `driver_router_conformance` 6, all pass) |
+| 2026-10-29 | 26 | 26 | 0 | gsd-secure-phase (State A re-check at HEAD `e15f3e6` after 261029-1dp; ASVS L1 short-circuit, auditor skipped; cited files diffed `4e424e2..HEAD`, only `detail.rs` test doc comment changed; anchors spot-checked; 32 cited lib tests, `spawn_seam_guard` 10, `driver_router_conformance` 6 pass via `rtk proxy cargo test --locked --no-fail-fast`; no disposition changed `[inferred — cleanup 2026-10-28]`) |
 
 ---
 
@@ -103,4 +112,4 @@ audited_at: "4e424e2"
 - [x] `threats_open: 0` confirmed
 - [x] `status: verified` set in frontmatter
 
-**Approval:** verified 2026-10-28 (AR-24-01 operator acknowledgement still advisable `[inferred — cleanup 2026-10-28]`)
+**Approval:** verified 2026-10-28, re-verified 2026-10-29 at `e15f3e6` (AR-24-01 operator acknowledgement still advisable `[inferred — cleanup 2026-10-28]`)
