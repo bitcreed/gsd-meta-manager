@@ -1227,6 +1227,82 @@ fn split_table_row(line: &str) -> Vec<String> {
         .collect()
 }
 
+/// An ATX heading line as gsd-core's `tokenizeHeadings` reads it
+/// (`src/markdown-sectionizer.cts`): up to 3 leading spaces, 1-6 `#`, then
+/// end of line or a space/tab and the title. Returns `(level, title)`. The
+/// title has its leading blanks, a closing `#` run (preceded by a blank) and
+/// surrounding whitespace removed; a title made only of `#` is empty. A
+/// trailing `\r` is ignored. Four leading spaces, or `#` glued to the title
+/// (`##Progress`), make no heading.
+fn atx_heading(line: &str) -> Option<(usize, String)> {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    static CLOSING: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| Regex::new(r"^ {0,3}(#{1,6})([ \t]+.*|[ \t]*)$").unwrap());
+    let closing = CLOSING.get_or_init(|| Regex::new(r"[ \t]+#+[ \t]*$").unwrap());
+    let line = line.strip_suffix('\r').unwrap_or(line);
+    let caps = re.captures(line)?;
+    let rest = caps[2].trim_start_matches([' ', '\t']);
+    let rest = closing.replace(rest, "");
+    let rest = if rest.trim_end_matches([' ', '\t']).chars().all(|c| c == '#') {
+        ""
+    } else {
+        &rest
+    };
+    Some((caps[1].len(), rest.trim().to_string()))
+}
+
+/// Per line: whether it is a code-fence delimiter or sits inside a fenced code
+/// block. A port of the fence state machine in gsd-core's
+/// `src/markdown-sectionizer.cts` (`stripFencedCode` / `tokenizeHeadings`):
+/// - a delimiter is up to 3 spaces, then 3+ backticks or tildes, then anything;
+/// - with no fence open, a backtick run whose trailing text holds a backtick is
+///   an ordinary line (CommonMark 4.5); any other delimiter opens a fence;
+/// - inside a fence, a delimiter of the same character, at least as long and
+///   followed by only whitespace, closes it; every other line is content;
+/// - an unterminated fence runs to the end of the input.
+///
+/// A separate helper because [`is_fence_line`], used by the goals and phase
+/// section readers, is a looser, naive test that is out of scope here.
+fn fenced_line_mask(lines: &[&str]) -> Vec<bool> {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let delim = RE.get_or_init(|| Regex::new(r"^ {0,3}(`{3,}|~{3,})(.*)$").unwrap());
+    let mut open: Option<(char, usize)> = None;
+    lines
+        .iter()
+        .map(|raw| {
+            let line = raw.strip_suffix('\r').unwrap_or(raw);
+            let Some(caps) = delim.captures(line) else {
+                return open.is_some();
+            };
+            let run = &caps[1];
+            let ch = run.chars().next().unwrap_or('`');
+            match open {
+                None => {
+                    if ch == '`' && caps[2].contains('`') {
+                        return false;
+                    }
+                    open = Some((ch, run.len()));
+                }
+                Some((open_ch, open_len)) => {
+                    if ch == open_ch && run.len() >= open_len && caps[2].trim().is_empty() {
+                        open = None;
+                    }
+                }
+            }
+            true
+        })
+        .collect()
+}
+
+/// gsd-core's `isProgressHeadingTitle` (`src/roadmap-progress.cts`): the title
+/// starts with the word `Progress`, any suffix admitted (`Progress`, `Progress
+/// Tracker`, `Progress (v2.1)`), case-insensitive. `Progression` is not one.
+fn is_progress_heading_title(title: &str) -> bool {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"(?i)^Progress\b").unwrap())
+        .is_match(title.trim())
+}
+
 /// The milestone token gsd-core compares by identity, not spelling (#5165,
 /// `normalizeMilestoneToken` in `src/roadmap-progress.cts`): `v1.1`, `V1.1`,
 /// ` 1.1 `, `**v1.1**`, a backticked `v1.1`, `v1.1 (current)` and
@@ -1251,8 +1327,21 @@ fn normalize_milestone_token(value: &str) -> String {
     first.to_ascii_lowercase()
 }
 
-/// Parse the authoritative `## Progress` table from ROADMAP.md content, for the
+/// Parse the authoritative Progress table from ROADMAP.md content, for the
 /// current milestone.
+///
+/// **Which table (gsd-core #5761, `src/roadmap-progress.cts`).** The section is
+/// the first level-2 ATX heading outside fenced code whose title starts with the
+/// word `Progress` (`## Progress`, `## Progress Tracker`, `## Progress (v2.1)`;
+/// not `## Progression`, `### Progress`, `# Progress`, or a 4-space-indented
+/// heading), ending at the next level-1/2 heading outside fenced code. The table
+/// is the first one in that section whose header holds `Phase` and `Plans
+/// Complete`; a table without them (a milestone summary table, say) is skipped.
+/// A section with no such table gives `None` and never falls through to a later
+/// table (#2012). A document with no Progress heading also gives `None`: upstream
+/// scans the whole document there, but this app's only caller then keeps the
+/// STATE.md counts GSD itself writes, and a whole-document scan would reopen the
+/// decoy risk (inferred, I-1).
 ///
 /// Columns are matched by NAME (case-insensitive), not position, so both the
 /// flat 4-column layout (`Phase | Plans Complete | Status | Completed`) and the
@@ -1280,19 +1369,23 @@ fn normalize_milestone_token(value: &str) -> String {
 pub fn roadmap_progress(content: &str, state_milestone: &str) -> Option<RoadmapProgress> {
     let lines: Vec<&str> = content.lines().collect();
 
-    // Locate the `## Progress` section heading.
-    let progress_heading = Regex::new(r"(?i)^##[ \t]+Progress\b").unwrap();
-    // A following level-1 or level-2 heading closes the section scope.
-    let heading_boundary = Regex::new(r"^#{1,2}[ \t]").unwrap();
-
-    let start = lines.iter().position(|l| progress_heading.is_match(l))?;
-    let mut end = lines.len();
-    for (offset, l) in lines.iter().enumerate().skip(start + 1) {
-        if heading_boundary.is_match(l) {
-            end = offset;
-            break;
+    // #5761: the section is the first level-2 heading outside fenced code whose
+    // title starts with the word `Progress`; it ends at the next level-1/2
+    // heading outside fenced code. No such heading: no table (I-1).
+    let fenced = fenced_line_mask(&lines);
+    let heading_at = |i: usize| -> Option<(usize, String)> {
+        if fenced[i] {
+            None
+        } else {
+            atx_heading(lines[i])
         }
-    }
+    };
+    let start = (0..lines.len()).find(|&i| {
+        heading_at(i).is_some_and(|(level, title)| level == 2 && is_progress_heading_title(&title))
+    })?;
+    let end = (start + 1..lines.len())
+        .find(|&i| heading_at(i).is_some_and(|(level, _)| level <= 2))
+        .unwrap_or(lines.len());
     let scope = &lines[(start + 1)..end];
 
     // A markdown table header row is a `|`-delimited line immediately followed
@@ -1305,21 +1398,27 @@ pub fn roadmap_progress(content: &str, state_milestone: &str) -> Option<RoadmapP
             && t.chars().all(|c| matches!(c, '|' | '-' | ':' | ' ' | '\t'))
     };
 
-    let mut header_idx = None;
+    // The Progress table is the first table in the section whose header holds
+    // both `Phase` and `Plans Complete` (case-insensitive, I-5). A table
+    // without them is skipped and the scan goes on; a section with none yields
+    // `None` and never reaches past its own end (#2012 decoy avoidance). The
+    // probe reads the section's lines as they are, fenced ones included (I-6),
+    // as upstream `findTableWithColumns` does.
+    let mut found = None;
     for k in 0..scope.len() {
-        if is_row(scope[k]) && k + 1 < scope.len() && is_delimiter(scope[k + 1]) {
-            header_idx = Some(k);
+        if !(is_row(scope[k]) && k + 1 < scope.len() && is_delimiter(scope[k + 1])) {
+            continue;
+        }
+        let headers = split_table_row(scope[k]);
+        let col = |name: &str| headers.iter().position(|h| h.eq_ignore_ascii_case(name));
+        if let (Some(phase_col), Some(plans_col)) = (col("Phase"), col("Plans Complete")) {
+            found = Some((k, headers, phase_col, plans_col));
             break;
         }
     }
-    let header_idx = header_idx?;
-
-    let headers = split_table_row(scope[header_idx]);
+    let (header_idx, headers, phase_col, plans_col) = found?;
     let col = |name: &str| headers.iter().position(|h| h.eq_ignore_ascii_case(name));
 
-    // Required columns; without these the header cannot be interpreted.
-    let phase_col = col("Phase")?;
-    let plans_col = col("Plans Complete")?;
     let status_col = col("Status");
     let milestone_col = col("Milestone");
 
@@ -1332,7 +1431,8 @@ pub fn roadmap_progress(content: &str, state_milestone: &str) -> Option<RoadmapP
     }
     let slice = milestone_col.filter(|_| !want.is_empty());
 
-    let plans_re = Regex::new(r"(\d+)\s*/\s*(\d+)").unwrap();
+    static PLANS: OnceLock<Regex> = OnceLock::new();
+    let plans_re = PLANS.get_or_init(|| Regex::new(r"(\d+)\s*/\s*(\d+)").unwrap());
 
     let mut progress = RoadmapProgress::default();
     let mut matched_milestone = false;
@@ -2685,6 +2785,117 @@ Plans:
             | 2. Beta | 1/2 | In Progress | |\n";
         let p = roadmap_progress(content, "v1.1").expect("table parses");
         assert_eq!(counts(&p), (2, 1, 4, 3));
+    }
+
+    // ── quick 261103-em6: gsd-core #5761 Progress-section owner ────────────
+
+    const TABLE_5761: &str = "| Phase | Plans Complete | Status | Completed |\n\
+        | --- | --- | --- | --- |\n\
+        | 1. Real | 1/2 | In Progress | |\n";
+
+    #[test]
+    fn progress_5761_fenced_progress_heading_is_not_the_section() {
+        let content = format!(
+            "# Roadmap\n\n```markdown\n## Progress\n\n\
+            | Phase | Plans Complete | Status | Completed |\n\
+            | --- | --- | --- | --- |\n\
+            | 1. Decoy | 9/9 | Complete | x |\n```\n\n## Progress\n\n{TABLE_5761}"
+        );
+        let p = roadmap_progress(&content, "").expect("real table");
+        assert_eq!(counts(&p), (1, 0, 2, 1));
+    }
+
+    #[test]
+    fn progress_5761_fenced_heading_does_not_end_the_section() {
+        let content = format!("## Progress\n\n```\n## Example\n```\n\n{TABLE_5761}");
+        let p = roadmap_progress(&content, "").expect("table found past the fence");
+        assert_eq!(counts(&p), (1, 0, 2, 1));
+        // An unterminated fence runs to the end: the table inside is still read.
+        let content = format!("## Progress\n\n~~~\n# Not a heading\n{TABLE_5761}");
+        assert!(roadmap_progress(&content, "").is_some());
+    }
+
+    #[test]
+    fn progress_5761_progress_tracker_and_suffixed_titles_count() {
+        for heading in [
+            "## Progress Tracker",
+            "## progress (v2.1)",
+            "   ## Progress",
+            "## Progress ##",
+        ] {
+            let content = format!("{heading}\n\n{TABLE_5761}");
+            let p = roadmap_progress(&content, "")
+                .unwrap_or_else(|| panic!("{heading:?} should locate the table"));
+            assert_eq!(counts(&p), (1, 0, 2, 1), "{heading:?}");
+        }
+    }
+
+    #[test]
+    fn progress_5761_other_levels_and_words_are_not_the_section() {
+        for heading in [
+            "## Progression",
+            "### Progress",
+            "# Progress",
+            "    ## Progress",
+            "##Progress",
+        ] {
+            let content = format!("{heading}\n\n{TABLE_5761}");
+            assert_eq!(roadmap_progress(&content, ""), None, "{heading:?}");
+        }
+    }
+
+    #[test]
+    fn progress_5761_first_table_with_required_columns_wins() {
+        // The wordoclock shape: a milestone summary table first, the per-phase
+        // table under a level-3 heading that does not end the section.
+        let content = "## Progress\n\n\
+            | Milestone | Phases | Plans | Status | Shipped |\n\
+            | --- | --- | --- | --- | --- |\n\
+            | v2.1 | 4 | 9 | Shipped | x |\n\n\
+            ### v2.2 Phase Progress\n\n\
+            | Phase | Plans Complete | Status | Completed |\n\
+            | --- | --- | --- | --- |\n\
+            | 1. A | 2/2 | Complete | x |\n\
+            | 2. B | 0/1 | Planned | |\n";
+        let p = roadmap_progress(content, "").expect("second table counted");
+        assert_eq!(counts(&p), (2, 1, 3, 2));
+    }
+
+    #[test]
+    fn progress_5761_section_without_matching_table_does_not_fall_through() {
+        // #2012: the later `## Archive` table is a decoy, not the Progress table.
+        let content = format!(
+            "## Progress\n\n\
+            | Milestone | Phases | Status |\n| --- | --- | --- |\n| v1 | 3 | Shipped |\n\n\
+            ## Archive\n\n{TABLE_5761}"
+        );
+        assert_eq!(roadmap_progress(&content, ""), None);
+    }
+
+    #[test]
+    fn progress_5761_headingless_document_is_none() {
+        // Upstream scans a headingless document whole; this app returns None so
+        // the STATE.md counts stand (inferred, I-1).
+        assert_eq!(roadmap_progress(TABLE_5761, ""), None);
+    }
+
+    #[test]
+    fn progress_5761_atx_heading_and_fence_mask_edge_cases() {
+        assert_eq!(atx_heading("## Progress"), Some((2, "Progress".into())));
+        assert_eq!(atx_heading("## Progress ##"), Some((2, "Progress".into())));
+        assert_eq!(atx_heading("##"), Some((2, String::new())));
+        assert_eq!(atx_heading("## ##"), Some((2, String::new())));
+        assert_eq!(atx_heading("## Progress\r"), Some((2, "Progress".into())));
+        assert_eq!(atx_heading("    ## Progress"), None);
+        assert_eq!(atx_heading("####### seven"), None);
+        // A backtick fence whose info string holds a backtick is ordinary text.
+        let lines = [
+            "```a`b", "## H", "~~~", "x", "```", "~~~~", "y", "~~~", "z", "~~~~", "w",
+        ];
+        assert_eq!(
+            fenced_line_mask(&lines),
+            [false, false, true, true, true, true, false, true, true, true, false]
+        );
     }
 
     // ── quick 260923-md1: milestone membership ─────────────────────────────
