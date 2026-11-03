@@ -371,15 +371,15 @@ pub(super) fn help_lines(experimental: bool) -> Vec<Line<'static>> {
             // Quick 261103-f5y: one-off sandboxed tasks, no driver run needed.
             row(
                 "t",
-                "One-off task: pick a todo or type one; q = /gsd-quick, f = /gsd-fast (asks first)",
+                "One-off task: pick a todo or type one; q = /gsd-quick, f = /gsd-fast (asks first); starts another run even while one is live",
             ),
             row(
                 "T",
-                "One-off status and result: e SUMMARY, m merge, p push, d discard, x kill",
+                "One-off runs: j/k select, Enter details; m merge, p push, D discard, x kill, e SUMMARY, d merge diff",
             ),
             row(
                 "v",
-                "In T: live view of the one-off's stream (PgUp/PgDn, j/k, f, G; Esc closes)",
+                "In T: v live view of the selected run (r: its newest conflict-resolver session; PgUp/PgDn, j/k, f, G; Esc closes)",
             ),
             row("i", "In the live view: send a message to the running agent"),
             row(
@@ -645,15 +645,15 @@ mod tests {
             ("o", "Toggle driver opt-in for this project"),
             (
                 "t",
-                "One-off task: pick a todo or type one; q = /gsd-quick, f = /gsd-fast (asks first)",
+                "One-off task: pick a todo or type one; q = /gsd-quick, f = /gsd-fast (asks first); starts another run even while one is live",
             ),
             (
                 "T",
-                "One-off status and result: e SUMMARY, m merge, p push, d discard, x kill",
+                "One-off runs: j/k select, Enter details; m merge, p push, D discard, x kill, e SUMMARY, d merge diff",
             ),
             (
                 "v",
-                "In T: live view of the one-off's stream (PgUp/PgDn, j/k, f, G; Esc closes)",
+                "In T: v live view of the selected run (r: its newest conflict-resolver session; PgUp/PgDn, j/k, f, G; Esc closes)",
             ),
             ("i", "In the live view: send a message to the running agent"),
             (
@@ -1015,15 +1015,15 @@ mod tests {
             ("o", "Toggle driver opt-in for this project"),
             (
                 "t",
-                "One-off task: pick a todo or type one; q = /gsd-quick, f = /gsd-fast (asks first)",
+                "One-off task: pick a todo or type one; q = /gsd-quick, f = /gsd-fast (asks first); starts another run even while one is live",
             ),
             (
                 "T",
-                "One-off status and result: e SUMMARY, m merge, p push, d discard, x kill",
+                "One-off runs: j/k select, Enter details; m merge, p push, D discard, x kill, e SUMMARY, d merge diff",
             ),
             (
                 "v",
-                "In T: live view of the one-off's stream (PgUp/PgDn, j/k, f, G; Esc closes)",
+                "In T: v live view of the selected run (r: its newest conflict-resolver session; PgUp/PgDn, j/k, f, G; Esc closes)",
             ),
             ("i", "In the live view: send a message to the running agent"),
             (

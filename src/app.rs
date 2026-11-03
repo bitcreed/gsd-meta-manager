@@ -693,16 +693,29 @@ fn first_word(editor: &str) -> &str {
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 const ONEOFF_TAIL_POLL: std::time::Duration = std::time::Duration::from_millis(250);
 
+/// What the viewer's background tail follows (quick 261103-hx7, C-30).
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+struct TailSpec {
+    alias: String,
+    run_id: String,
+    epoch: u64,
+    /// The directory holding the followed `stream.jsonl`: the run dir, or its
+    /// `land/<n>` attempt dir.
+    stream_dir: PathBuf,
+    /// The project's one-off dir (the run dir's parent), for the liveness re-read.
+    project_dir: PathBuf,
+    /// The conflict-resolver attempt followed, `None` for the run's own stream.
+    attempt: Option<u32>,
+}
+
 /// The viewer's background tail (blocking file I/O, so always on `spawn_blocking`):
-/// replay the run's stream from the start, then follow it. It stops when `cancel` is
+/// replay the stream from the start, then follow it. It stops when `cancel` is
 /// set (the viewer dropped), when the channel is gone, or once the run is finished and
-/// the stream is drained.
+/// the stream is drained. A resolver attempt is live while its run's land lock is held
+/// and it is the newest attempt.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn oneoff_tail_loop(
-    alias: &str,
-    run_id: &str,
-    epoch: u64,
-    run_dir: &Path,
+    spec: &TailSpec,
     mut info: crate::ui::screens::oneoff_viewer::RunInfo,
     cancel: &std::sync::atomic::AtomicBool,
     tx: &UnboundedSender<Action>,
@@ -711,8 +724,7 @@ fn oneoff_tail_loop(
     use crate::oneoff::stream::{FollowBatch, Follower, Meter};
     use std::sync::atomic::Ordering;
 
-    let mut follower = Follower::new(run_dir);
-    let project_dir = run_dir.parent().map(Path::to_path_buf);
+    let mut follower = Follower::new(&spec.stream_dir);
     let mut last: Option<(Meter, crate::ui::screens::oneoff_viewer::RunInfo)> = None;
     let mut meter = Meter::default();
     let mut tick: u64 = 0;
@@ -727,14 +739,18 @@ fn oneoff_tail_loop(
         });
         meter = batch.meter.clone();
         if tick & 3 == 0 {
-            if let Some(view) = project_dir
-                .as_deref()
-                .and_then(|dir| read_view(dir, run_id))
-            {
-                info.live = view.live;
-                info.ended_at = view.record.ended_at.clone();
-                info.soft_cap_usd = view.record.soft_cap_usd;
-                info.soft_cap_hit_at = view.record.soft_cap_hit_at.clone();
+            if let Some(view) = read_view(&spec.project_dir, &spec.run_id) {
+                match spec.attempt {
+                    None => {
+                        info.live = view.live;
+                        info.ended_at = view.record.ended_at.clone();
+                        info.soft_cap_usd = view.record.soft_cap_usd;
+                        info.soft_cap_hit_at = view.record.soft_cap_hit_at.clone();
+                    }
+                    Some(n) => {
+                        info.live = resolver_live(&view, n);
+                    }
+                }
             }
         }
         tick += 1;
@@ -743,9 +759,9 @@ fn oneoff_tail_loop(
         let current = (meter.clone(), info.clone());
         if !drained || done || last.as_ref() != Some(&current) {
             let sent = tx.send(Action::OneoffStreamBatch {
-                alias: alias.to_owned(),
-                run_id: run_id.to_owned(),
-                epoch,
+                alias: spec.alias.clone(),
+                run_id: spec.run_id.clone(),
+                epoch: spec.epoch,
                 lines: batch.lines,
                 meter: meter.clone(),
                 info: info.clone(),
@@ -762,6 +778,21 @@ fn oneoff_tail_loop(
         if drained {
             std::thread::sleep(ONEOFF_TAIL_POLL);
         }
+    }
+}
+
+/// Whether the conflict-resolver attempt `n` of `view` is running right now: a landing
+/// is in progress and `n` is the newest attempt (a resolver's liveness is its run's
+/// land lock, C-30).
+fn resolver_live(
+    view: &crate::oneoff::store::OneoffView,
+    n: u32,
+) -> crate::oneoff::store::LiveState {
+    use crate::oneoff::store::LiveState;
+    if view.landing && view.land_attempts.last() == Some(&n) {
+        LiveState::Running
+    } else {
+        LiveState::Finished
     }
 }
 
@@ -1228,14 +1259,15 @@ impl App {
         self.needs_redraw = true;
     }
 
-    /// `v` in the `T` popup: open the live viewer on the cached latest run and start
-    /// ONE background tail (never on the render thread). The tail stops when the viewer
-    /// drops (its cancel flag) or, by itself, once the run is finished and drained.
+    /// `v` / `r` in the `T` run list: open the live viewer on the cached run `run_id`
+    /// (or on its conflict-resolver attempt `land/<n>`) and start ONE background tail
+    /// (never on the render thread). The tail stops when the viewer drops (its cancel
+    /// flag) or, by itself, once the stream is finished and drained.
     #[cfg_attr(
         not(any(target_os = "linux", target_os = "macos")),
         allow(unused_variables)
     )]
-    fn open_oneoff_viewer(&mut self, alias: &str) {
+    fn open_oneoff_viewer(&mut self, alias: &str, run_id: &str, attempt: Option<u32>) {
         use crate::ui::screens::oneoff_viewer::{OneoffStream, OneoffViewerScreen, RunInfo};
         use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
         use std::sync::Arc;
@@ -1248,36 +1280,63 @@ impl App {
             .ctx
             .view_cache
             .get(alias)
-            .and_then(|cache| cache.oneoff.as_deref())
+            .and_then(|cache| cache.oneoff_runs.iter().find(|v| v.record.run_id == run_id))
             .cloned()
         else {
             self.ctx.status_message = Some((
-                "No one-off run to view; press t to start one".to_owned(),
+                "No such one-off run to view; press T to list the runs".to_owned(),
                 std::time::Instant::now(),
             ));
             self.needs_redraw = true;
             return;
         };
-        let info = RunInfo {
-            live: view.live,
-            hard_usd: view.record.max_budget_usd,
-            started_at: view.record.started_at.clone(),
-            ended_at: view.record.ended_at.clone(),
-            soft_cap_usd: view.record.soft_cap_usd,
-            soft_cap_hit_at: view.record.soft_cap_hit_at.clone(),
+        if let Some(n) = attempt {
+            if !view.land_attempts.contains(&n) {
+                self.ctx.status_message = Some((
+                    "That run has no such resolver session".to_owned(),
+                    std::time::Instant::now(),
+                ));
+                self.needs_redraw = true;
+                return;
+            }
+        }
+        let info = match attempt {
+            None => RunInfo {
+                live: view.live,
+                hard_usd: view.record.max_budget_usd,
+                started_at: view.record.started_at.clone(),
+                ended_at: view.record.ended_at.clone(),
+                soft_cap_usd: view.record.soft_cap_usd,
+                soft_cap_hit_at: view.record.soft_cap_hit_at.clone(),
+            },
+            // A resolver session has no soft cap and its own clock the viewer does not
+            // show; its ceiling is the run's budget as the meter's denominator.
+            Some(n) => RunInfo {
+                live: resolver_live(&view, n),
+                hard_usd: view.record.max_budget_usd,
+                started_at: view.record.started_at.clone(),
+                ended_at: None,
+                soft_cap_usd: None,
+                soft_cap_hit_at: None,
+            },
         };
         let epoch = EPOCH.fetch_add(1, Ordering::SeqCst) + 1;
         let run_id = view.record.run_id.clone();
+        let stream_dir = match attempt {
+            None => view.run_dir.clone(),
+            Some(n) => view
+                .run_dir
+                .join(crate::oneoff::LAND_DIR)
+                .join(n.to_string()),
+        };
         self.ctx
             .view_cache
             .entry(alias.to_owned())
             .or_default()
-            .oneoff_stream = Some(OneoffStream::new(
-            run_id.clone(),
-            epoch,
-            view.run_dir.clone(),
-            info.clone(),
-        ));
+            .oneoff_stream = Some(
+            OneoffStream::new(run_id.clone(), epoch, stream_dir.clone(), info.clone())
+                .with_attempt(attempt),
+        );
         let cancel = Arc::new(AtomicBool::new(false));
         self.screen_stack.push(Box::new(OneoffViewerScreen::new(
             alias.to_owned(),
@@ -1287,12 +1346,67 @@ impl App {
         self.needs_redraw = true;
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
-            let alias = alias.to_owned();
-            let run_dir = view.run_dir;
+            let spec = TailSpec {
+                alias: alias.to_owned(),
+                run_id,
+                epoch,
+                stream_dir,
+                project_dir: view
+                    .run_dir
+                    .parent()
+                    .map(Path::to_path_buf)
+                    .unwrap_or_default(),
+                attempt,
+            };
             tokio::task::spawn_blocking(move || {
-                oneoff_tail_loop(&alias, &run_id, epoch, &run_dir, info, &cancel, &tx);
+                oneoff_tail_loop(&spec, info, &cancel, &tx);
             });
         }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        let _ = (run_id, stream_dir, info, cancel, tx);
+    }
+
+    /// `d` in the `T` run list: read the landed merge's diff off the render thread. The
+    /// run, its recorded merge commit and its conflicted files come from the cache; the
+    /// git read runs on `spawn_blocking` (quick 261103-hx7, C-30, I-22).
+    #[cfg_attr(
+        not(any(target_os = "linux", target_os = "macos")),
+        allow(unused_variables)
+    )]
+    fn request_oneoff_diff(&mut self, alias: &str, run_id: &str) {
+        let Some((project, tx)) = self.oneoff_target(alias) else {
+            return;
+        };
+        let landing = self
+            .ctx
+            .view_cache
+            .get(alias)
+            .and_then(|cache| cache.oneoff_runs.iter().find(|v| v.record.run_id == run_id))
+            .and_then(|view| view.record.last_merge_landing().cloned());
+        let Some((sha, conflicted)) = landing.and_then(|l| l.merge_sha.map(|s| (s, l.conflicted)))
+        else {
+            let _ = tx.send(Action::OneoffDiffLoaded {
+                alias: alias.to_owned(),
+                run_id: run_id.to_owned(),
+                result: Err("this run has no merge commit to show".to_owned()),
+            });
+            return;
+        };
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            let alias = alias.to_owned();
+            let run_id = run_id.to_owned();
+            tokio::task::spawn_blocking(move || {
+                let result = crate::oneoff::land::merge_diff(&project, &sha, &conflicted);
+                let _ = tx.send(Action::OneoffDiffLoaded {
+                    alias,
+                    run_id,
+                    result,
+                });
+            });
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        let _ = (project, sha, conflicted);
     }
 
     /// New lines from the viewer's tail: kept only for the viewer that asked.
@@ -2926,13 +3040,31 @@ impl App {
                     self.needs_redraw = true;
                 }
             }
-            Action::OneoffStatusRefreshed { alias, view } => {
+            Action::OneoffStatusRefreshed { alias, runs } => {
                 if self.ctx.experimental {
-                    self.ctx.view_cache.entry(alias).or_default().oneoff = view;
+                    self.ctx.view_cache.entry(alias).or_default().oneoff_runs = runs;
                     self.needs_redraw = true;
                 }
             }
-            Action::OneoffViewerOpen { alias } => self.open_oneoff_viewer(&alias),
+            Action::OneoffViewerOpen {
+                alias,
+                run_id,
+                attempt,
+            } => self.open_oneoff_viewer(&alias, &run_id, attempt),
+            Action::OneoffDiffRequested { alias, run_id } => {
+                self.request_oneoff_diff(&alias, &run_id)
+            }
+            Action::OneoffDiffLoaded {
+                alias,
+                run_id,
+                result,
+            } => {
+                if self.ctx.experimental {
+                    self.ctx.view_cache.entry(alias).or_default().oneoff_diff =
+                        Some((run_id, result));
+                    self.needs_redraw = true;
+                }
+            }
             Action::OneoffStreamBatch {
                 alias,
                 run_id,
@@ -8549,8 +8681,157 @@ mod tests {
         let view = crate::ui::screens::oneoff::tests::finished_view("x");
         app.update(Action::OneoffStatusRefreshed {
             alias: OBS_ALIAS.to_string(),
-            view: Some(Box::new(view.clone())),
+            runs: vec![view.clone()],
         });
-        assert_eq!(app.ctx.view_cache[OBS_ALIAS].oneoff.as_deref(), Some(&view));
+        assert_eq!(app.ctx.view_cache[OBS_ALIAS].oneoff_runs, vec![view]);
+    }
+
+    /// A run with a resolved merge landing, in the project's cache.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn cached_resolved_run(app: &mut App) -> String {
+        use crate::oneoff::store::{Landing, LandingKind, MergeHow};
+        let mut view = crate::ui::screens::oneoff::tests::finished_view("x");
+        view.land_attempts = vec![1, 2];
+        view.record.landed.push(Landing {
+            kind: LandingKind::Merged,
+            at: "2026-11-03T11:00:00Z".to_owned(),
+            detail: "main".to_owned(),
+            how: Some(MergeHow::Resolved),
+            merge_sha: Some("0123456789abcdef0123456789abcdef01234567".to_owned()),
+            conflicted: vec!["shared.txt".to_owned()],
+            attempts: vec!["land/1".to_owned()],
+        });
+        let id = view.record.run_id.clone();
+        app.ctx
+            .view_cache
+            .entry(OBS_ALIAS.to_string())
+            .or_default()
+            .oneoff_runs = vec![view];
+        id
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
+    async fn a_merge_diff_is_read_off_the_render_thread_and_kept_under_its_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, mut rx) = app_on_the_driver_tab(dir.path());
+        let id = cached_resolved_run(&mut app);
+
+        // The flag off: nothing is asked and nothing is stored.
+        app.ctx.experimental = false;
+        app.update(Action::OneoffDiffRequested {
+            alias: OBS_ALIAS.to_string(),
+            run_id: id.clone(),
+        });
+        app.update(Action::OneoffDiffLoaded {
+            alias: OBS_ALIAS.to_string(),
+            run_id: id.clone(),
+            result: Ok(vec!["x".to_owned()]),
+        });
+        assert!(app.ctx.view_cache[OBS_ALIAS].oneoff_diff.is_none());
+        assert!(rx.try_recv().is_err(), "inert with the flag off");
+
+        app.ctx.experimental = true;
+        // The project is not a git repository, so the blocking read answers an error:
+        // the answer comes through the channel, not from the update call.
+        app.update(Action::OneoffDiffRequested {
+            alias: OBS_ALIAS.to_string(),
+            run_id: id.clone(),
+        });
+        assert!(app.ctx.view_cache[OBS_ALIAS].oneoff_diff.is_none());
+        let loaded = next_matching(&mut rx, |a| matches!(a, Action::OneoffDiffLoaded { .. })).await;
+        let Action::OneoffDiffLoaded { run_id, result, .. } = &loaded else {
+            unreachable!()
+        };
+        assert_eq!(run_id, &id);
+        assert!(result.is_err(), "{result:?}");
+        app.update(loaded);
+        let (stored, result) = app.ctx.view_cache[OBS_ALIAS].oneoff_diff.clone().unwrap();
+        assert_eq!(stored, id);
+        assert!(result.is_err());
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
+    async fn a_run_without_a_merge_gets_an_error_answer_instead_of_a_git_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, mut rx) = app_on_the_driver_tab(dir.path());
+        app.ctx
+            .view_cache
+            .entry(OBS_ALIAS.to_string())
+            .or_default()
+            .oneoff_runs = vec![crate::ui::screens::oneoff::tests::finished_view("x")];
+        app.update(Action::OneoffDiffRequested {
+            alias: OBS_ALIAS.to_string(),
+            run_id: "oneoff-20261103-142233".to_owned(),
+        });
+        let loaded = rx.try_recv().expect("answered at once, no blocking task");
+        assert!(matches!(
+            loaded,
+            Action::OneoffDiffLoaded { result: Err(why), .. } if why.contains("no merge commit")
+        ));
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn the_viewer_opens_only_on_a_cached_run_and_a_real_resolver_attempt() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, _rx) = app_on_the_driver_tab(dir.path());
+        let id = cached_resolved_run(&mut app);
+        let depth = app.screen_stack.len();
+        let refused = |app: &App| {
+            app.ctx
+                .status_message
+                .as_ref()
+                .map(|(m, _)| m.clone())
+                .unwrap_or_default()
+        };
+
+        app.update(Action::OneoffViewerOpen {
+            alias: OBS_ALIAS.to_string(),
+            run_id: "oneoff-20261103-000001".to_owned(),
+            attempt: None,
+        });
+        assert!(
+            refused(&app).contains("No such one-off run"),
+            "{}",
+            refused(&app)
+        );
+        app.ctx.status_message = None;
+        app.update(Action::OneoffViewerOpen {
+            alias: OBS_ALIAS.to_string(),
+            run_id: id,
+            attempt: Some(7),
+        });
+        assert!(
+            refused(&app).contains("no such resolver"),
+            "{}",
+            refused(&app)
+        );
+        assert_eq!(app.screen_stack.len(), depth, "no viewer was opened");
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
+    async fn the_viewer_follows_the_chosen_resolver_attempt_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, _rx) = app_on_the_driver_tab(dir.path());
+        let id = cached_resolved_run(&mut app);
+        let depth = app.screen_stack.len();
+        app.update(Action::OneoffViewerOpen {
+            alias: OBS_ALIAS.to_string(),
+            run_id: id,
+            attempt: Some(2),
+        });
+        assert_eq!(app.screen_stack.len(), depth + 1);
+        let stream = app.ctx.view_cache[OBS_ALIAS]
+            .oneoff_stream
+            .as_ref()
+            .unwrap();
+        assert_eq!(stream.attempt, Some(2));
+        assert!(stream.run_dir.ends_with("land/2"), "{:?}", stream.run_dir);
+        // No landing is in progress, so the finished resolver session is not live.
+        assert_eq!(stream.info.live, crate::oneoff::store::LiveState::Finished);
+        assert_eq!(stream.info.soft_cap_usd, None);
     }
 }

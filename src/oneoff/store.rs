@@ -255,6 +255,17 @@ impl RunRecord {
         }
     }
 
+    /// The latest merge landing that made a merge commit (a clean `merge` or a
+    /// `resolved` one) and recorded its sha: the commit the TUI's `d` diffs against its
+    /// first parent (quick 261103-hx7, D-06, C-30).
+    pub fn last_merge_landing(&self) -> Option<&Landing> {
+        self.landed.iter().rev().find(|l| {
+            l.kind == LandingKind::Merged
+                && matches!(l.how, Some(MergeHow::Merge | MergeHow::Resolved))
+                && l.merge_sha.is_some()
+        })
+    }
+
     /// The sha of the latest push landing, if any.
     pub fn last_pushed_sha(&self) -> Option<String> {
         self.landed
@@ -427,10 +438,80 @@ pub struct OneoffView {
     pub record: RunRecord,
     pub live: LiveState,
     pub run_dir: PathBuf,
+    /// A landing of this run is in progress: its `land.lock` is held (or could not be
+    /// probed, which is never read as free) (quick 261103-hx7, I-21).
+    pub landing: bool,
+    /// The resolver attempt dirs `land/<n>` that exist, ascending (D-08, C-25).
+    pub land_attempts: Vec<u32>,
     /// The SUMMARY.md the TUI may open (T-f5y-13): `<run-dir>/work/<summary_path>`,
     /// checked off the render thread to be a regular file whose canonical path sits
     /// under the clone. `None` when there is no such file.
     pub summary_file: Option<PathBuf>,
+}
+
+/// The most runs the Driver tab reads and lists (quick 261103-hx7, I-21).
+pub const ONEOFF_RUNS_LISTED: usize = 20;
+
+/// What the Driver tab's one-off status line counts (quick 261103-hx7, C-26).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RunCounts {
+    /// Runs that may still be live.
+    pub running: usize,
+    /// Runs with a landing in progress.
+    pub landing: usize,
+    /// Finished runs with commits that no merge has landed yet.
+    pub to_land: usize,
+    /// Every run counted.
+    pub total: usize,
+}
+
+impl RunCounts {
+    /// `one-offs: 2 running, 1 to land (T)`, zero parts omitted; `3 finished` when
+    /// there is nothing else to say.
+    pub fn text(&self) -> String {
+        let mut parts = Vec::new();
+        if self.running > 0 {
+            parts.push(format!("{} running", self.running));
+        }
+        if self.landing > 0 {
+            parts.push(format!("{} landing", self.landing));
+        }
+        if self.to_land > 0 {
+            parts.push(format!("{} to land", self.to_land));
+        }
+        if parts.is_empty() {
+            parts.push(format!("{} finished", self.total));
+        }
+        format!("one-offs: {} (T)", parts.join(", "))
+    }
+}
+
+/// The counts of `runs` (pure). A run is *to land* when it is not live, has a head and
+/// commits, has no merge landing recorded and is not being landed right now.
+pub fn run_counts(runs: &[OneoffView]) -> RunCounts {
+    let mut counts = RunCounts {
+        running: 0,
+        landing: 0,
+        to_land: 0,
+        total: runs.len(),
+    };
+    for view in runs {
+        if view.live.may_be_live() {
+            counts.running += 1;
+        } else if view.landing {
+            counts.landing += 1;
+        } else if view.record.head.is_some()
+            && view.record.commits.unwrap_or(0) > 0
+            && !view
+                .record
+                .landed
+                .iter()
+                .any(|l| l.kind == LandingKind::Merged)
+        {
+            counts.to_land += 1;
+        }
+    }
+    counts
 }
 
 /// Why a run could not be picked (quick 261103-hx7, I-03).
@@ -481,7 +562,7 @@ mod fs_store {
         derive_live, summary_path_from, valid_oneoff_run_id, LockSeen, OneoffView, RunPick,
         RunRecord,
     };
-    use crate::oneoff::{LOCK_FILE, RUN_FILE, RUN_LOCK_FILE, WORK_DIR};
+    use crate::oneoff::{LAND_DIR, LAND_LOCK_FILE, LOCK_FILE, RUN_FILE, RUN_LOCK_FILE, WORK_DIR};
 
     /// `dirs::data_local_dir()/gsd-meta-manager/oneoff`, or `None` without a data dir.
     /// Never a `/tmp` fallback.
@@ -617,19 +698,40 @@ mod fs_store {
             .summary_path
             .as_deref()
             .and_then(|rel| verified_summary(&run_dir, rel));
+        let landing = landing_held(&run_dir);
+        let land_attempts = land_attempts_of(&run_dir);
         Some(OneoffView {
             record,
             live,
             run_dir,
+            landing,
+            land_attempts,
             summary_file,
         })
     }
 
-    /// The latest run of `project`, if any.
-    pub fn read_latest(project: &Path) -> Option<OneoffView> {
-        let project_dir = project_dir_for(project)?;
-        let run_id = latest_run_id(&project_dir)?;
-        read_view(&project_dir, &run_id)
+    /// Whether the run's `land.lock` is held. A lock that cannot be probed counts as
+    /// held, never as free (the same rule as `land::landing_in_progress`).
+    fn landing_held(run_dir: &Path) -> bool {
+        matches!(
+            probe_at(&run_dir.join(LAND_LOCK_FILE)),
+            LockProbe::Held | LockProbe::Unknown(_)
+        )
+    }
+
+    /// The numbered attempt dirs under `<run_dir>/land`, ascending. Symlinks and
+    /// non-numeric names are ignored.
+    pub fn land_attempts_of(run_dir: &Path) -> Vec<u32> {
+        let mut found: Vec<u32> = fs::read_dir(run_dir.join(LAND_DIR))
+            .into_iter()
+            .flatten()
+            .filter_map(Result::ok)
+            .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+            .filter_map(|e| e.file_name().into_string().ok())
+            .filter_map(|name| name.parse::<u32>().ok())
+            .collect();
+        found.sort_unstable();
+        found
     }
 
     /// Every valid run id under `project_dir`, newest first.
@@ -783,10 +885,18 @@ mod fs_store {
                 crate::oneoff::store::LiveState::Crashed
             );
             drop(project_lock);
-            assert_eq!(
-                read_view(project_dir.path(), legacy).unwrap().live,
-                crate::oneoff::store::LiveState::Crashed
-            );
+            // A process another test forks at this very moment holds a copy of the
+            // lock's file description until its exec, so a read right after the drop
+            // can still see the lock held: poll briefly instead of asserting once.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let mut seen = read_view(project_dir.path(), legacy).unwrap().live;
+            while seen != crate::oneoff::store::LiveState::Crashed
+                && std::time::Instant::now() < deadline
+            {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                seen = read_view(project_dir.path(), legacy).unwrap().live;
+            }
+            assert_eq!(seen, crate::oneoff::store::LiveState::Crashed);
         }
 
         #[test]
@@ -1085,5 +1195,70 @@ pub(crate) mod tests {
         assert!(text.contains(r#""how":"resolved""#), "{text}");
         let back: RunRecord = serde_json::from_str(&text).unwrap();
         assert_eq!(back, full);
+    }
+    fn view_of(live: LiveState, commits: u32, landed: bool, landing: bool) -> OneoffView {
+        let mut record = record();
+        record.head = Some("a".repeat(40));
+        record.commits = Some(commits);
+        if landed {
+            record.landed.push(Landing::plain(
+                LandingKind::Merged,
+                "2026-11-03T10:00:00Z".to_owned(),
+                "main".to_owned(),
+            ));
+        }
+        OneoffView {
+            record,
+            live,
+            run_dir: PathBuf::from("/r"),
+            landing,
+            land_attempts: Vec::new(),
+            summary_file: None,
+        }
+    }
+
+    #[test]
+    fn the_counts_name_running_landing_and_to_land_runs() {
+        let runs = [
+            view_of(LiveState::Running, 0, false, false),
+            view_of(LiveState::Preparing, 0, false, false),
+            view_of(LiveState::Finished, 2, false, false),
+            view_of(LiveState::Finished, 2, false, true),
+            view_of(LiveState::Finished, 2, true, false),
+            view_of(LiveState::Finished, 0, false, false),
+        ];
+        let counts = run_counts(&runs);
+        assert_eq!(
+            counts,
+            RunCounts {
+                running: 2,
+                landing: 1,
+                to_land: 1,
+                total: 6
+            }
+        );
+        assert_eq!(
+            counts.text(),
+            "one-offs: 2 running, 1 landing, 1 to land (T)"
+        );
+    }
+
+    #[test]
+    fn the_counts_omit_zero_parts_and_fall_back_to_finished() {
+        let runs = [
+            view_of(LiveState::Running, 0, false, false),
+            view_of(LiveState::Running, 0, false, false),
+            view_of(LiveState::Finished, 3, false, false),
+        ];
+        assert_eq!(
+            run_counts(&runs).text(),
+            "one-offs: 2 running, 1 to land (T)"
+        );
+        let done = [
+            view_of(LiveState::Finished, 1, true, false),
+            view_of(LiveState::Finished, 0, false, false),
+            view_of(LiveState::Crashed, 0, false, false),
+        ];
+        assert_eq!(run_counts(&done).text(), "one-offs: 3 finished (T)");
     }
 }

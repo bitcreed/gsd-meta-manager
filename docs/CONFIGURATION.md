@@ -167,11 +167,34 @@ work when you choose.
 (`.planning/todos/pending/*.md`) plus `type a task...`; `q` picks /gsd-quick, `f`
 picks /gsd-fast, Esc cancels. A confirm popup then shows the model, the spend
 ceiling and the wall clock; `m` switches between opus and sonnet and Enter
-launches (detached, off the render thread). The tab shows a one-line status of the
-latest one-off. `T` shows its status, headline, changed items, verifications,
-follow-ups and the SUMMARY path, labelled agent-reported versus host facts, with
-`e` (open SUMMARY.md from the clone in `$EDITOR`), `m` merge, `p` push, `d`
-discard and `x` kill (a live run); each of those asks first.
+launches (detached, off the render thread). `t` starts another run even while others
+are live. The tab shows a one-line count of the project's listed runs, for example
+`one-offs: 2 running, 1 to land (T)` (parts that are zero are left out; `landing` counts
+runs whose merge landing is in progress, and `N finished` stands in when nothing else
+is left to say).
+
+`T` opens the **run list**: the newest 20 runs, newest first, live and finished, one
+row each with its id, state, mode, outcome (the report status, else the host's
+outcome word), landing (`ff`, `merge`, `resolved`, `pushed`, `landing` while one runs,
+`land failed`, or `-`) and headline. `j`/`k` or the arrow keys select (the selection
+follows the run, not the row, when the list refreshes) and every action key acts on
+the SELECTED run: Enter shows its summary (status, headline, changed items,
+verifications, follow-ups, the SUMMARY path, spend and tracked branch, labelled
+agent-reported versus host facts; Esc goes back to the list, and Esc in the list
+closes it), `e` opens its SUMMARY.md from the clone in `$EDITOR`, `m` merges it, `p`
+pushes it, `D` discards it (a capital D: `d` is the merge diff now) and `x` kills it
+(a live run); each of those asks first, and a merge is refused while a landing of the
+same run is already in progress. A run an agent resolved a merge for is marked
+`resolved by agent` with its conflicted files and attempt dirs; a landing that
+failed shows `land failed: <reason>` with the files and the attempt dirs kept.
+`d` opens the landed merge's diff (`git diff <merge>^1 <merge>`, hardened git, no
+external diff or textconv) in a scrollable full-screen view headed by the conflicted
+files: `j`/`k`, PgUp/PgDn, `g`/`G`, Esc back. It is read off the render thread, cut at
+5000 lines or 512 KiB with a `... diff truncated` line, and exists only for a run
+landed by a `merge` or `resolved` landing (a fast-forward has no merge commit). `r`
+opens the live view on the run's newest conflict-resolver session (read-only: no
+message or soft cap; its header says `resolver land/<n>`), and says so when the run
+has none.
 
 **CLI.** `gsd-meta-manager task run <alias|path> (--todo <file> | --text <task>)
 [--mode quick|fast] [--model opus] [--max-budget-usd 10] [--cap-minutes 60]
@@ -186,8 +209,8 @@ into a message; `--no-input` only follows); `task land merge|push|discard <proje
 The defaults are the ones shown above (the same as `driver launch`). `task` is not
 gated by this variable: the flag is a discovery gate, as it is for `driver`.
 
-**Live view and messages.** `v` in the `T` popup opens a full-screen view of the
-run (live or finished): it replays `stream.jsonl` from the start and then follows
+**Live view and messages.** `v` in the `T` run list opens a full-screen view of the
+selected run (live or finished): it replays `stream.jsonl` from the start and then follows
 it, off the render thread, keeping at most the last 10,000 rendered lines. Each
 event is one or a few lines: assistant text, `* Tool: <short argument>`, a
 truncated tool result (`= <first line> (N lines)`), `[sub]` for subagent events,

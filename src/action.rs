@@ -370,10 +370,25 @@ pub enum Action {
         alias: String,
         message: String,
     },
-    /// `v` in the `T` popup (quick 261103-gt1): open the live viewer of the project's
-    /// latest one-off and start its background tail.
+    /// `v` / `r` in the `T` run list (quick 261103-gt1, 261103-hx7): open the live
+    /// viewer of the named run (`attempt: None`) or of its conflict-resolver attempt
+    /// `land/<n>`, and start its background tail.
     OneoffViewerOpen {
         alias: String,
+        run_id: String,
+        attempt: Option<u32>,
+    },
+    /// `d` in the `T` run list (quick 261103-hx7, C-30): read the named run's landed
+    /// merge diff off the render thread, answered by [`Action::OneoffDiffLoaded`].
+    OneoffDiffRequested {
+        alias: String,
+        run_id: String,
+    },
+    /// The merge diff of `run_id` (capped lines), or why it could not be read.
+    OneoffDiffLoaded {
+        alias: String,
+        run_id: String,
+        result: Result<Vec<String>, String>,
     },
     /// The viewer's tail found new lines (never read on the render thread).
     OneoffStreamBatch {
@@ -397,10 +412,11 @@ pub enum Action {
         alias: String,
         result: Result<String, String>,
     },
-    /// The project's latest one-off, read by the Driver tab's refresh.
+    /// The project's newest one-off runs (newest first, at most
+    /// `store::ONEOFF_RUNS_LISTED`), read by the Driver tab's refresh.
     OneoffStatusRefreshed {
         alias: String,
-        view: Option<Box<crate::oneoff::store::OneoffView>>,
+        runs: Vec<crate::oneoff::store::OneoffView>,
     },
 }
 

@@ -1082,6 +1082,20 @@ fn a_non_conflicting_merge_lands_as_a_merge_commit() {
     );
     let text = String::from_utf8_lossy(&merged.stdout);
     assert!(text.contains("merge commit"), "{text}");
+
+    // The TUI's `d` on a clean merge: no conflicted files, the run's own changes.
+    let sha = landing["merge_sha"].as_str().unwrap();
+    let diff = gsd_meta_manager::oneoff::land::merge_diff(fx.project(), sha, &[])
+        .expect("the merge diff reads");
+    assert_eq!(diff[0], "conflicted: none (a clean merge)", "{diff:?}");
+    assert!(
+        diff.len() > 3,
+        "the run's changes follow the header: {diff:?}"
+    );
+    assert!(
+        !diff.join("\n").contains("unrelated.txt"),
+        "the target's own commit is not in the diff against the first parent"
+    );
 }
 
 #[test]
@@ -1142,6 +1156,24 @@ fn a_conflicting_merge_is_resolved_by_the_agent_and_lands() {
         "{human}"
     );
     assert!(human.contains("[resolved]"), "{human}");
+
+    // The TUI's `d`: the merge against its first parent, headed by the conflicted files.
+    let sha = landing["merge_sha"].as_str().unwrap();
+    let diff =
+        gsd_meta_manager::oneoff::land::merge_diff(fx.project(), sha, &["shared.txt".to_owned()])
+            .expect("the merge diff reads");
+    assert_eq!(diff[0], "conflicted: shared.txt", "{diff:?}");
+    let body = diff.join("\n");
+    assert!(
+        body.contains("diff --git a/shared.txt b/shared.txt"),
+        "{body}"
+    );
+    assert!(
+        body.contains("-project-side") && body.contains("+merged"),
+        "{body}"
+    );
+    // A sha that is not one is refused before git runs.
+    assert!(gsd_meta_manager::oneoff::land::merge_diff(fx.project(), "HEAD", &[]).is_err());
 }
 
 /// Every landing that fails leaves the checkout and the branch as they were and says why.

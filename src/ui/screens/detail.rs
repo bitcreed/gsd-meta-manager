@@ -6027,7 +6027,7 @@ impl Screen for DetailScreen {
                     ));
                     return ScreenAction::None;
                 }
-                ScreenAction::Push(Box::new(super::oneoff::OneoffScreen::result(
+                ScreenAction::Push(Box::new(super::oneoff::OneoffScreen::list(
                     self.alias.clone(),
                 )))
             }
@@ -6920,14 +6920,12 @@ impl DetailScreen {
         let area = match ctx
             .view_cache
             .get(&self.alias)
-            .and_then(|cache| cache.oneoff.as_deref())
+            .map(|cache| cache.oneoff_runs.as_slice())
+            .filter(|runs| !runs.is_empty())
         {
-            Some(view) if area.height > 1 => {
+            Some(runs) if area.height > 1 => {
                 let line = Rect { height: 1, ..area };
-                frame.render_widget(
-                    Paragraph::new(super::oneoff::status_line(view, chrono::Utc::now())),
-                    line,
-                );
+                frame.render_widget(Paragraph::new(super::oneoff::status_line(runs)), line);
                 Rect {
                     y: area.y + 1,
                     height: area.height - 1,
@@ -20715,7 +20713,7 @@ mod tests {
         ctx.view_cache
             .entry(TEST_ALIAS.to_string())
             .or_default()
-            .oneoff = Some(Box::new(view));
+            .oneoff_runs = vec![view];
         let action = screen.handle_key(KeyCode::Char('t'), KeyModifiers::NONE, &mut ctx);
         assert_eq!(pushed_screen_name(&action).as_deref(), Some("oneoff"));
         assert!(matches!(
@@ -20747,7 +20745,7 @@ mod tests {
     }
 
     #[test]
-    fn the_driver_tab_draws_a_one_off_status_line_only_when_there_is_one() {
+    fn the_driver_tab_draws_the_one_off_counts_only_when_there_are_runs() {
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
         let (screen, mut ctx) = driver_fixture(10, 10, 0, false);
@@ -20764,14 +20762,18 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join("\n")
         };
-        assert!(!text(&ctx).contains("One-off"));
+        assert!(!text(&ctx).contains("one-offs"));
+        let mut running = crate::ui::screens::oneoff::tests::finished_view("x");
+        running.live = crate::oneoff::store::LiveState::Running;
         ctx.view_cache
             .entry(TEST_ALIAS.to_string())
             .or_default()
-            .oneoff = Some(Box::new(crate::ui::screens::oneoff::tests::finished_view(
-            "x",
-        )));
-        assert!(text(&ctx).contains("One-off oneoff-20261103-142233: finished"));
+            .oneoff_runs = vec![
+            running.clone(),
+            running,
+            crate::ui::screens::oneoff::tests::finished_view("x"),
+        ];
+        assert!(text(&ctx).contains("one-offs: 2 running, 1 to land (T)"));
     }
 
     // ── 30-01: the launcher-first Driver tab ─────────────────────────────

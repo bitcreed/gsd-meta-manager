@@ -132,6 +132,46 @@ pub fn recorded_names(names: &[String]) -> Vec<String> {
         .collect()
 }
 
+/// The longest drawn diff line, in characters. Longer lines are cut, not dropped.
+pub const DIFF_MAX_LINE_CHARS: usize = 1000;
+
+/// The lines the merge-diff popup shows (quick 261103-hx7, D-06, I-22): a
+/// `conflicted: ...` header, a blank line, then `diff` capped at [`DIFF_MAX_LINES`]
+/// lines and [`DIFF_MAX_BYTES`] bytes with a closing `... diff truncated` line when it
+/// was cut. The file names are control-cleaned like the recorded ones; the diff lines
+/// are cut by length only, because the screen escapes whatever it draws.
+pub fn diff_lines(conflicted: &[String], diff: &str) -> Vec<String> {
+    let mut lines = vec![
+        if conflicted.is_empty() {
+            "conflicted: none (a clean merge)".to_owned()
+        } else {
+            format!("conflicted: {}", recorded_names(conflicted).join(", "))
+        },
+        String::new(),
+    ];
+    let mut bytes = 0usize;
+    let mut truncated = false;
+    let mut kept = 0usize;
+    for line in diff.lines() {
+        let line: String = line.chars().take(DIFF_MAX_LINE_CHARS).collect();
+        bytes = bytes.saturating_add(line.len() + 1);
+        if kept >= DIFF_MAX_LINES || bytes > DIFF_MAX_BYTES {
+            truncated = true;
+            break;
+        }
+        lines.push(line);
+        kept += 1;
+    }
+    if truncated {
+        lines.push(format!(
+            "... diff truncated (the first {kept} lines are shown; run git diff <merge>^1 <merge> for all of it)"
+        ));
+    } else if kept == 0 {
+        lines.push("(the merge changed nothing against its first parent)".to_owned());
+    }
+    lines
+}
+
 /// The success line of a merge landing (C-21).
 pub fn landed_line(
     run_id: &str,
@@ -258,5 +298,28 @@ mod tests {
                    100644 ddd 2\ta b.md\0";
         assert_eq!(parse_unmerged(out), [" shared.txt", "a b.md"]);
         assert!(parse_unmerged("").is_empty());
+    }
+    #[test]
+    fn the_diff_is_headed_by_the_conflicted_files_and_capped() {
+        let small = diff_lines(&["a.txt".to_owned()], "diff --git a b\n+x\n");
+        assert_eq!(small[0], "conflicted: a.txt");
+        assert_eq!(small[1], "");
+        assert_eq!(small[2], "diff --git a b");
+        assert_eq!(small.len(), 4);
+        assert_eq!(diff_lines(&[], "+x")[0], "conflicted: none (a clean merge)");
+
+        let many = "+x\n".repeat(DIFF_MAX_LINES + 10);
+        let capped = diff_lines(&[], &many);
+        assert_eq!(capped.len(), 2 + DIFF_MAX_LINES + 1);
+        assert!(capped.last().unwrap().starts_with("... diff truncated"));
+
+        let wide = format!("+{}\n", "y".repeat(DIFF_MAX_BYTES));
+        let cut = diff_lines(&[], &wide);
+        assert_eq!(cut[2].chars().count(), DIFF_MAX_LINE_CHARS);
+
+        let bytes = format!("+{}\n", "z".repeat(900)).repeat(DIFF_MAX_BYTES / 900 + 5);
+        let by_size = diff_lines(&[], &bytes);
+        assert!(by_size.last().unwrap().starts_with("... diff truncated"));
+        assert!(by_size.len() < DIFF_MAX_LINES);
     }
 }

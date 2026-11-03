@@ -303,6 +303,44 @@ fn git_in(dir: &Path, args: &[&str]) -> push::GitRun {
     push::git_in(dir, args, push::GIT_QUICK)
 }
 
+/// The longest `git diff` of a landed merge may run.
+const DIFF_BUDGET: Duration = Duration::from_secs(60);
+
+/// The diff of a landed merge commit against its first parent, capped, for the TUI's
+/// `d` (quick 261103-hx7, D-06, I-22). Hardened git in the project (no hooks, pager,
+/// external diff driver or textconv), headed by the conflicted files. Blocking: the
+/// caller runs it on `spawn_blocking`.
+pub fn merge_diff(
+    project: &Path,
+    merge_sha: &str,
+    conflicted: &[String],
+) -> Result<Vec<String>, String> {
+    if !push::is_hex_sha(merge_sha) {
+        return Err("the recorded merge commit is not a commit id".to_owned());
+    }
+    let first_parent = format!("{merge_sha}^1");
+    let run = push::git_in(
+        project,
+        &[
+            "diff",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-color",
+            &first_parent,
+            merge_sha,
+        ],
+        DIFF_BUDGET,
+    );
+    if !run.success {
+        return Err(format!(
+            "git could not diff {}: {}",
+            &merge_sha[..12],
+            run.last_error
+        ));
+    }
+    Ok(super::merge::diff_lines(conflicted, &run.stdout))
+}
+
 /// Record a landing on the run.
 fn record_landing(view: &OneoffView, landing: Landing) {
     let mut record = view.record.clone();

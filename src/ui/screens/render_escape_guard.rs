@@ -2272,7 +2272,8 @@ fn fixture_for(type_name: &str) -> Option<Fixture> {
         // in a second set of states, the id the App says already exists.
         // The one-off popup (quick 261103-f5y): the picker with hostile todo titles and
         // file names, the input with the identity typed, the confirm popup with a hostile
-        // todo, and the result with a hostile agent report.
+        // todo, the run list, the result with a hostile agent report and an agent-resolved
+        // landing, and the merge diff (loaded and failed) (quick 261103-hx7).
         "OneoffScreen" => Some(|identity| {
             use super::oneoff::OneoffScreen;
             use crossterm::event::{KeyCode, KeyModifiers};
@@ -2282,9 +2283,31 @@ fn fixture_for(type_name: &str) -> Option<Fixture> {
                     file_name: format!("{identity}.md"),
                     title: identity.to_string(),
                 }]));
+                // A finished run an agent resolved a merge for, with the hostile
+                // identity in every run-derived field: its id, the conflicted file
+                // names and the land-failure reason; and a second, live one.
                 let mut view = super::oneoff::tests::finished_view(identity);
                 view.record.run_id = identity.to_string();
-                cache.oneoff = Some(Box::new(view));
+                view.land_attempts = vec![1];
+                view.record.landed.push(crate::oneoff::store::Landing {
+                    kind: crate::oneoff::store::LandingKind::Merged,
+                    at: "2026-11-03T11:00:00Z".to_string(),
+                    detail: identity.to_string(),
+                    how: Some(crate::oneoff::store::MergeHow::Resolved),
+                    merge_sha: Some("0123456789abcdef0123456789abcdef01234567".to_string()),
+                    conflicted: vec![identity.to_string()],
+                    attempts: vec![identity.to_string()],
+                });
+                view.record.land_failure = Some(crate::oneoff::store::LandFailure {
+                    at: "2026-11-03T11:00:00Z".to_string(),
+                    reason: identity.to_string(),
+                    conflicted: vec![identity.to_string()],
+                    attempts: vec![identity.to_string()],
+                });
+                let mut live = super::oneoff::tests::finished_view(identity);
+                live.record.run_id = format!("{identity}-2");
+                live.live = crate::oneoff::store::LiveState::Running;
+                cache.oneoff_runs = vec![live, view];
             };
             let mut states = states_over_sub_views(identity, &|identity, ctx| {
                 seed(identity, ctx);
@@ -2307,11 +2330,50 @@ fn fixture_for(type_name: &str) -> Option<Fixture> {
             states.push(one_state("confirm", confirm_ctx, Box::new(confirm)));
             let mut result_ctx = probe_ctx(identity);
             seed(identity, &mut result_ctx);
+            let mut result = OneoffScreen::list(identity.to_string());
+            // Down to the resolved run, then Enter opens its summary.
+            result.handle_key(KeyCode::Char('j'), KeyModifiers::NONE, &mut result_ctx);
+            result.handle_key(KeyCode::Enter, KeyModifiers::NONE, &mut result_ctx);
+            states.push(one_state("result", result_ctx, Box::new(result)));
+            let mut list_ctx = probe_ctx(identity);
+            seed(identity, &mut list_ctx);
             states.push(one_state(
-                "result",
-                result_ctx,
-                Box::new(OneoffScreen::result(identity.to_string())),
+                "run list",
+                list_ctx,
+                Box::new(OneoffScreen::list(identity.to_string())),
             ));
+            let mut diff_ctx = probe_ctx(identity);
+            seed(identity, &mut diff_ctx);
+            let mut diff = OneoffScreen::list(identity.to_string());
+            diff.handle_key(KeyCode::Char('j'), KeyModifiers::NONE, &mut diff_ctx);
+            diff.handle_key(KeyCode::Char('d'), KeyModifiers::NONE, &mut diff_ctx);
+            diff_ctx
+                .view_cache
+                .entry(identity.to_string())
+                .or_default()
+                .oneoff_diff = Some((
+                identity.to_string(),
+                Ok(vec![
+                    format!("conflicted: {identity}"),
+                    String::new(),
+                    format!("diff --git a/{identity} b/{identity}"),
+                    format!("@@ -1 +1 @@ {identity}"),
+                    format!("+{identity}"),
+                    format!("-{identity}"),
+                ]),
+            ));
+            states.push(one_state("merge diff", diff_ctx, Box::new(diff)));
+            let mut error_ctx = probe_ctx(identity);
+            seed(identity, &mut error_ctx);
+            let mut error = OneoffScreen::list(identity.to_string());
+            error.handle_key(KeyCode::Char('j'), KeyModifiers::NONE, &mut error_ctx);
+            error.handle_key(KeyCode::Char('d'), KeyModifiers::NONE, &mut error_ctx);
+            error_ctx
+                .view_cache
+                .entry(identity.to_string())
+                .or_default()
+                .oneoff_diff = Some((identity.to_string(), Err(identity.to_string())));
+            states.push(one_state("merge diff error", error_ctx, Box::new(error)));
             states
         }),
 

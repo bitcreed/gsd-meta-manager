@@ -3,6 +3,7 @@ created: 2026-11-03T00:00:00.000Z
 title: Allow more than one concurrent one-off per project
 area: driver
 severity: minor
+resolved_by: quick 261103-hx7
 source: .planning/quick/261103-f5y-one-off-sandboxed-task-dispatch-from-the/261103-f5y-CONTEXT.md
 files:
   - src/oneoff/launch.rs

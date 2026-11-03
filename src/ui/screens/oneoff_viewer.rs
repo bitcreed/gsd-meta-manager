@@ -1,4 +1,4 @@
-//! **The one-off live viewer** (quick 261103-gt1, C-20..C-24): `v` in the `T` popup
+//! **The one-off live viewer** (quick 261103-gt1, C-20..C-24): `v` in the `T` run list
 //! opens a full-screen view that replays a run's `stream.jsonl` from the start and then
 //! follows it, with a meter (notional spend and the rate limit) and, while the run is
 //! live, a one-line composer (`i`) that sends a message through the host-only inbox.
@@ -57,6 +57,10 @@ pub struct OneoffStream {
     pub meter: Meter,
     pub info: RunInfo,
     pub done: bool,
+    /// The conflict-resolver attempt (`land/<n>`) this buffer follows, `None` for the
+    /// run's own stream (quick 261103-hx7, C-30). A resolver session has no inbox, so
+    /// the composer and the soft cap are refused on it.
+    pub attempt: Option<u32>,
 }
 
 impl OneoffStream {
@@ -70,7 +74,14 @@ impl OneoffStream {
             meter: Meter::default(),
             info,
             done: false,
+            attempt: None,
         }
+    }
+
+    /// The buffer of resolver attempt `attempt` (`None`: the run's own stream).
+    pub fn with_attempt(mut self, attempt: Option<u32>) -> Self {
+        self.attempt = attempt;
+        self
     }
 
     /// Append rendered lines, dropping the oldest past [`ONEOFF_VIEWER_RING_LINES`].
@@ -265,6 +276,9 @@ crate::ui::screens::adjudicate_screen!(
      run id and hostile stream lines, and the composer holding a hostile typed message.",
 );
 
+/// What `i` and `b` say on a conflict-resolver stream (quick 261103-hx7, I-18).
+pub const RESOLVER_NOTICE: &str = "not available for a resolver session";
+
 /// `text` escaped, on one line.
 fn shown(text: &str) -> String {
     render_for_terminal(text).to_string()
@@ -324,6 +338,9 @@ impl Screen for OneoffViewerScreen {
                 }
             }
             KeyCode::Char('G') | KeyCode::End => self.follow = true,
+            KeyCode::Char('i' | 'b') if stream.attempt.is_some() => {
+                self.notice = Some(RESOLVER_NOTICE.to_owned());
+            }
             KeyCode::Char('i') => {
                 if self.live(ctx) {
                     self.composer = Some(String::new());
@@ -361,11 +378,25 @@ impl Screen for OneoffViewerScreen {
             LiveState::Crashed => "crashed",
             LiveState::Unknown => "unknown",
         };
+        let (kind, elapsed) = match stream.attempt {
+            Some(n) => (
+                format!("  resolver land/{n}"),
+                // A resolver session's clock is not the run's.
+                String::new(),
+            ),
+            None => (
+                String::new(),
+                elapsed_text(&stream.info, chrono::Utc::now()),
+            ),
+        };
         let header = [
             Line::from(vec![
                 Span::raw(shown(&stream.run_id)),
-                Span::styled(format!("  {state}  "), Style::default().fg(Color::Cyan)),
-                Span::raw(elapsed_text(&stream.info, chrono::Utc::now())),
+                Span::styled(
+                    format!("{kind}  {state}  "),
+                    Style::default().fg(Color::Cyan),
+                ),
+                Span::raw(elapsed),
             ]),
             Line::from(Span::raw(shown(&meter_text(
                 &stream.meter,
@@ -429,12 +460,12 @@ impl Screen for OneoffViewerScreen {
             )),
             (None, None) => {
                 let follow = if self.follow { " [following]" } else { "" };
-                Line::from(Span::styled(
-                    format!(
-                        "PgUp/PgDn j/k scroll · f follow · G end · i message · b soft cap · Esc close{follow}"
-                    ),
-                    dim,
-                ))
+                let keys = if stream.attempt.is_some() {
+                    "PgUp/PgDn j/k scroll · f follow · G end · Esc close"
+                } else {
+                    "PgUp/PgDn j/k scroll · f follow · G end · i message · b soft cap · Esc close"
+                };
+                Line::from(Span::styled(format!("{keys}{follow}"), dim))
             }
         };
 
@@ -760,5 +791,36 @@ pub(crate) mod tests {
         let wrapped = crate::oneoff::stream::StreamEvent::UserReplay { text: wrap.into() };
         r.render(&first);
         assert!(r.render(&wrapped)[0].starts_with("launcher: Budget reached"));
+    }
+    #[test]
+    fn a_resolver_stream_refuses_the_composer_and_the_soft_cap_and_names_the_attempt() {
+        let (mut ctx, mut screen) = viewer_over("oneoff-x", numbered(3), LiveState::Running);
+        ctx.view_cache
+            .get_mut(ALIAS)
+            .and_then(|c| c.oneoff_stream.take())
+            .map(|s| {
+                let s = s.with_attempt(Some(2));
+                ctx.view_cache.get_mut(ALIAS).unwrap().oneoff_stream = Some(s);
+            })
+            .unwrap();
+        let drawn = text(&screen, &ctx, 120, 20);
+        assert!(drawn.contains("resolver land/2"), "{drawn}");
+        assert!(!drawn.contains("elapsed"), "{drawn}");
+        for k in ['i', 'b'] {
+            key(&mut screen, &mut ctx, KeyCode::Char(k));
+            assert!(
+                screen.composer.is_none() && screen.soft_input.is_none(),
+                "{k}"
+            );
+            assert!(
+                text(&screen, &ctx, 120, 20).contains(RESOLVER_NOTICE),
+                "{k}"
+            );
+        }
+        // The run's own stream still opens the composer while it is live.
+        let (mut ctx, mut own) = viewer_over("oneoff-x", numbered(3), LiveState::Running);
+        key(&mut own, &mut ctx, KeyCode::Char('i'));
+        assert!(own.composer.is_some());
+        assert!(!text(&own, &ctx, 120, 20).contains("resolver land"));
     }
 }

@@ -1227,9 +1227,13 @@ pub struct ProjectViewCache {
     /// The pending todos the one-off picker lists (quick 261103-f5y): `None` while
     /// the listing is in flight, filled by `Action::OneoffTodosListed`.
     pub oneoff_todos: Option<Result<Vec<crate::oneoff::todos::PendingTodo>, String>>,
-    /// The project's latest one-off run, read by the Driver tab's slow-tick refresh
-    /// (`Action::OneoffStatusRefreshed`). `None` when the project has none.
-    pub oneoff: Option<Box<crate::oneoff::store::OneoffView>>,
+    /// The project's newest one-off runs, newest first, read by the Driver tab's
+    /// slow-tick refresh (`Action::OneoffStatusRefreshed`). Empty when the project has
+    /// none (quick 261103-hx7, C-27).
+    pub oneoff_runs: Vec<crate::oneoff::store::OneoffView>,
+    /// The merge diff the `T` list's `d` asked for, keyed by the run it belongs to
+    /// (`Action::OneoffDiffLoaded`); never shown for another run (I-22).
+    pub oneoff_diff: Option<(String, Result<Vec<String>, String>)>,
     /// The live viewer's bounded line buffer (quick 261103-gt1), filled by
     /// `Action::OneoffStreamBatch` from the background tail.
     pub oneoff_stream: Option<oneoff_viewer::OneoffStream>,
@@ -1687,7 +1691,7 @@ impl AppContext {
         let had_oneoff = self
             .view_cache
             .get(alias)
-            .is_some_and(|cache| cache.oneoff.is_some());
+            .is_some_and(|cache| !cache.oneoff_runs.is_empty());
         let alias = alias.to_string();
         tokio::task::spawn_blocking(move || {
             let launcher_runs = crate::state_reader::driver_frontmatter::list_driver_runs(
@@ -1730,13 +1734,17 @@ impl AppContext {
                 detail,
                 log,
             });
-            // Quick 261103-f5y: the latest one-off rides the same slow-tick rescan.
+            // Quick 261103-f5y: the one-offs ride the same slow-tick rescan (quick
+            // 261103-hx7: the newest runs, not only the latest).
             #[cfg(any(target_os = "linux", target_os = "macos"))]
-            let view = crate::oneoff::store::read_latest(&project).map(Box::new);
+            let runs = crate::oneoff::store::read_runs(
+                &project,
+                Some(crate::oneoff::store::ONEOFF_RUNS_LISTED),
+            );
             #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-            let view: Option<Box<crate::oneoff::store::OneoffView>> = None;
-            if view.is_some() || had_oneoff {
-                let _ = tx.send(crate::action::Action::OneoffStatusRefreshed { alias, view });
+            let runs: Vec<crate::oneoff::store::OneoffView> = Vec::new();
+            if !runs.is_empty() || had_oneoff {
+                let _ = tx.send(crate::action::Action::OneoffStatusRefreshed { alias, runs });
             }
         });
     }
