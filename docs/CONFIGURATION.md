@@ -373,9 +373,17 @@ lock, see "Several at once"), `run.json` (the host's record), `stream.jsonl` (th
 `launch.log`, `injections.jsonl` and `inbox/` (host-only, see above), `report/report.json`, `land/<n>/` (the attempts of a merge landing, see "Landing") with `land.lock`, the per-run config dir and `work/`, a
 `git clone --no-hardlinks` of the project on branch `gsd-oneoff/<run-id>`. The
 clone copies the whole object store, so each run costs about the repository's
-size on disk until it is discarded. **Uncommitted changes in the project are not
-included**: the clone starts at the project's last commit, and a todo must be
-committed to be picked.
+size on disk until it lands (a merge landing or a push) or is discarded: a successful
+landing then removes the clone, the resolver clones, the per-run config dir and every
+other bulky or temporary file, and keeps a small record (under 1 MB) so `task list` and
+the TUI still show the run. The record keeps `run.json` (with `pruned {at, note}` and
+the spend folded in), `report/report.json`, `injections.jsonl`, a copy of the run's
+SUMMARY.md as `summary.md` (the TUI's SUMMARY view opens it), the last 256 KiB of
+`stream.jsonl` cut at a line boundary behind a `{"type":"gsdmm_truncated",...}` marker
+line, the last 64 KiB of `launch.log`, and the small files of the resolver attempts the
+landing names. A cleanup that fails is a warning line, never a failed landing.
+**Uncommitted changes in the project are not included**: the clone starts at the
+project's last commit, and a todo must be committed to be picked.
 
 **Sandbox.** The driver launcher's posture is reused: bwrap under a
 `systemd-run --user` scope, the egress proxy holding the token, the managed deny
@@ -401,11 +409,26 @@ last good call wins. The host re-validates the file and never trusts it; the
 commit range, the commit count and the SUMMARY path are read from git on the
 host. A run without a valid report gets one synthesized from its outcome.
 
-**Landing.** `merge` lands the run's head in your checkout, and only when the checkout
-is clean and on a branch (a detached HEAD, a dirty tree, a live run, no head, no
-commits or a git-relevant planted file in the clone each refuse and change nothing;
-`discard` is the way out of a planted file). There are three ways it lands, recorded as
-`how` in `run.json` and shown by `task status`:
+**Landing.** `merge` lands the run's head in the branch `HEAD` pointed at when the run
+was dispatched (`dispatch_branch` in `run.json`, with `dispatch_tip` and
+`dispatch_detached`; a resume inherits them), not in whatever is checked out now.
+`task land merge ... --into <branch>` lands into another existing local branch
+instead. When that branch is the one your checkout has checked out, the checkout must
+be clean (a detached HEAD, a dirty tree, a live run, no head, no commits or a
+git-relevant planted file in the clone each refuse and change nothing; `discard` is the
+way out of a planted file). When it is NOT checked out, your working tree, your index
+and your checked-out branch are never touched and a dirty tree is no obstacle: a
+fast-forward is `git update-ref refs/heads/<branch> <new> <old>` with the expected old
+value, and a merge commit is made in the private land clone and then moved the same
+way. It refuses, changing nothing, when the run was dispatched on a detached HEAD and
+no `--into` is given, when the recorded branch was deleted since (the message says to
+pass `--into`), when the branch is checked out in another linked worktree of the
+project (`git worktree list` names it), and when the branch's tip changed during the
+landing. A `run.json` written before the target was recorded (a legacy record) lands
+into the checked-out branch exactly as before. `task list` shows the target as `→
+<branch>`, `→ detached @<sha7>` or `→ checked-out branch (legacy)`, `task status` as a
+`target:` line, and the TUI as a `Target:` line and in the merge question. There are
+three ways it lands, recorded as `how` in `run.json` and shown by `task status`:
 
 - `ff`: your branch is behind the head, so your own `git merge --ff-only` runs, hooks
   included. The message counts the commits your branch advanced by, which exceeds the

@@ -77,7 +77,10 @@ What it writes:
   run, or its conflict resolver, can be stopped, killed or paused (`task stop`,
   or `x` / `X` / `z` in the TUI), and a paused or stopped run resumed from its
   branch or from master (`task resume`, or `u`); a run's `run.json` records
-  the stop and the resume links, and its merge diff is bounded and exportable.
+  the stop and the resume links, and its merge diff is bounded and exportable. A run
+  lands into the branch `HEAD` pointed at when it was dispatched (`task land merge
+  --into <branch>` overrides), and once it has landed or been pushed its clone and
+  bulky files are removed, leaving a small record.
 
 What it never touches:
 
@@ -88,7 +91,9 @@ What it never touches:
   checkout; it pushes, or fast-forwards your checkout, only when you land an
   experimental driver or one-off run. A one-off run that cannot fast-forward is
   merged in a private clone first (a sandboxed agent session resolves conflicts),
-  and your checkout only fast-forwards to that merge.
+  and your checkout only fast-forwards to that merge. When the branch a one-off
+  run lands into is not the one you have checked out, the app moves that branch
+  with `git update-ref` (expected old value) and never touches your working tree.
 
 ## Features
 

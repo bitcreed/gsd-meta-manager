@@ -184,6 +184,27 @@ pub struct ResumeMerge {
     pub failure: Option<String>,
 }
 
+/// That a run's clone and bulky files were removed, and why (quick 261103-o2r, D-A,
+/// I-03). Written to `run.json` BEFORE anything is deleted, so a record with it set
+/// always lands from the tracked branch and a later scan can finish an interrupted slim.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Pruned {
+    pub at: String,
+    pub note: String,
+}
+
+/// Where a run's work lands (quick 261103-o2r, D-C): the branch HEAD pointed at when it
+/// was dispatched, or what a record written before that says.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LandTarget {
+    /// The branch the project's HEAD pointed at on dispatch.
+    Branch(String),
+    /// Dispatched on a detached HEAD at `tip`: landing needs `--into <branch>`.
+    Detached { tip: String },
+    /// A record from before the target was recorded: the checkout's current branch.
+    Legacy,
+}
+
 /// The sandbox posture the run had.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SandboxRecord {
@@ -270,6 +291,20 @@ pub struct RunRecord {
     /// The master merge of a `--from master` resume (klf, C-11).
     #[serde(default)]
     pub resume_merge: Option<ResumeMerge>,
+    /// The branch the project's HEAD pointed at when the run was dispatched (short name
+    /// from `symbolic-ref`); `None` on a detached HEAD and on a record from before
+    /// quick 261103-o2r. A resume inherits the old run's value.
+    #[serde(default)]
+    pub dispatch_branch: Option<String>,
+    /// The commit the clone started from at dispatch. `None` marks a legacy record.
+    #[serde(default)]
+    pub dispatch_tip: Option<String>,
+    /// The project's HEAD was detached at dispatch.
+    #[serde(default)]
+    pub dispatch_detached: bool,
+    /// Set once the clone and the bulky files were removed (o2r, D-A).
+    #[serde(default)]
+    pub pruned: Option<Pruned>,
 }
 
 impl RunRecord {
@@ -325,6 +360,32 @@ impl RunRecord {
             resumed_from: None,
             resumed_by: None,
             resume_merge: None,
+            dispatch_branch: None,
+            dispatch_tip: None,
+            dispatch_detached: false,
+            pruned: None,
+        }
+    }
+
+    /// Where this run's work lands (quick 261103-o2r, D-C). A record without a
+    /// `dispatch_tip` is legacy and lands into the checkout's branch as it always did.
+    pub fn land_target(&self) -> LandTarget {
+        match (&self.dispatch_tip, &self.dispatch_branch) {
+            (None, _) => LandTarget::Legacy,
+            (Some(_), Some(branch)) if !self.dispatch_detached => {
+                LandTarget::Branch(branch.clone())
+            }
+            (Some(tip), _) => LandTarget::Detached { tip: tip.clone() },
+        }
+    }
+
+    /// The land target as it is displayed, without the arrow: `main`,
+    /// `detached @<sha7>` or `checked-out branch (legacy)`.
+    pub fn land_target_text(&self) -> String {
+        match self.land_target() {
+            LandTarget::Branch(branch) => branch,
+            LandTarget::Detached { tip } => format!("detached @{}", &tip[..tip.len().min(7)]),
+            LandTarget::Legacy => "checked-out branch (legacy)".to_owned(),
         }
     }
 
@@ -679,7 +740,9 @@ mod fs_store {
         derive_live, summary_path_from, valid_oneoff_run_id, LockSeen, OneoffView, RunPick,
         RunRecord,
     };
-    use crate::oneoff::{LAND_DIR, LAND_LOCK_FILE, LOCK_FILE, RUN_FILE, RUN_LOCK_FILE, WORK_DIR};
+    use crate::oneoff::{
+        KEPT_SUMMARY_FILE, LAND_DIR, LAND_LOCK_FILE, LOCK_FILE, RUN_FILE, RUN_LOCK_FILE, WORK_DIR,
+    };
 
     /// `dirs::data_local_dir()/gsd-meta-manager/oneoff`, or `None` without a data dir.
     /// Never a `/tmp` fallback.
@@ -794,13 +857,26 @@ mod fs_store {
         summary_path_from(&[('A', rel.to_owned())])?;
         let work = run_dir.join(WORK_DIR);
         let candidate = work.join(rel);
-        let meta = fs::symlink_metadata(&candidate).ok()?;
+        let Ok(meta) = fs::symlink_metadata(&candidate) else {
+            // o2r D-A: with the clone gone the slimmed run keeps a copy of its SUMMARY.
+            return kept_summary(run_dir);
+        };
         if !meta.file_type().is_file() {
             return None;
         }
         let canonical = fs::canonicalize(&candidate).ok()?;
         let root = fs::canonicalize(&work).ok()?;
         canonical.starts_with(&root).then_some(candidate)
+    }
+
+    /// The SUMMARY copy a slimmed run keeps (`<run-dir>/summary.md`): a regular file,
+    /// never a symlink (quick 261103-o2r, D-A).
+    pub fn kept_summary(run_dir: &Path) -> Option<PathBuf> {
+        let path = run_dir.join(KEPT_SUMMARY_FILE);
+        fs::symlink_metadata(&path)
+            .ok()
+            .filter(|m| m.file_type().is_file())
+            .map(|_| path)
     }
 
     /// The view of one run.
@@ -954,6 +1030,24 @@ mod fs_store {
             std::os::unix::fs::symlink(&outside, dir.join("261103-abc-SUMMARY.md")).unwrap();
             assert_eq!(verified_summary(root.path(), rel), None, "symlink");
             assert_eq!(verified_summary(root.path(), "../secret.txt"), None);
+        }
+
+        #[test]
+        fn a_slimmed_run_offers_its_kept_summary_copy() {
+            let root = TempDir::new().unwrap();
+            let rel = ".planning/quick/261103-abc-x/261103-abc-SUMMARY.md";
+            assert_eq!(verified_summary(root.path(), rel), None);
+            fs::write(root.path().join("summary.md"), "kept").unwrap();
+            assert_eq!(
+                verified_summary(root.path(), rel),
+                Some(root.path().join("summary.md"))
+            );
+            // A symlink at the kept path is not offered.
+            fs::remove_file(root.path().join("summary.md")).unwrap();
+            let outside = root.path().join("secret.txt");
+            fs::write(&outside, "x").unwrap();
+            std::os::unix::fs::symlink(&outside, root.path().join("summary.md")).unwrap();
+            assert_eq!(verified_summary(root.path(), rel), None);
         }
 
         use crate::driver::lock::acquire_at;
@@ -1409,6 +1503,33 @@ pub(crate) mod tests {
                 why: NOTE_DELETED_AFTER_LANDING.to_owned()
             }
         );
+    }
+
+    #[test]
+    fn the_land_target_maps_the_three_field_shapes() {
+        let mut r = record();
+        assert_eq!(r.land_target(), LandTarget::Legacy);
+        assert_eq!(r.land_target_text(), "checked-out branch (legacy)");
+        r.dispatch_tip = Some("0123456789abcdef0123456789abcdef01234567".to_owned());
+        r.dispatch_branch = Some("main".to_owned());
+        assert_eq!(r.land_target(), LandTarget::Branch("main".to_owned()));
+        assert_eq!(r.land_target_text(), "main");
+        r.dispatch_branch = None;
+        r.dispatch_detached = true;
+        assert!(matches!(r.land_target(), LandTarget::Detached { .. }));
+        assert_eq!(r.land_target_text(), "detached @0123456");
+        // An old run.json without the fields deserializes as legacy.
+        let old: RunRecord = serde_json::from_str(PRE_KLF_RECORD).expect("parses");
+        assert_eq!(old.land_target(), LandTarget::Legacy);
+        assert!(old.pruned.is_none() && !old.dispatch_detached);
+        let mut pruned = record();
+        pruned.pruned = Some(Pruned {
+            at: "2026-11-03T10:00:00Z".to_owned(),
+            note: "removed after landing in main".to_owned(),
+        });
+        let back: RunRecord =
+            serde_json::from_str(&serde_json::to_string(&pruned).unwrap()).unwrap();
+        assert_eq!(back, pruned);
     }
 
     #[test]

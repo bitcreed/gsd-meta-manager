@@ -406,6 +406,14 @@ mod unix {
                 if stop.escalated { ", escalated" } else { "" }
             ));
         }
+        lines.push(format!("target:    {}", shown(&record.land_target_text())));
+        if let Some(pruned) = &record.pruned {
+            lines.push(format!(
+                "clone:     {} ({})",
+                shown(&pruned.note),
+                shown(&pruned.at)
+            ));
+        }
         lines.push(match record.branch_state() {
             BranchState::Tracked { name, head } => match head {
                 Some(head) => format!(
@@ -420,9 +428,15 @@ mod unix {
             BranchState::Untracked { note } => format!("branch:    none ({})", shown(&note)),
         });
         if let Some(path) = &record.summary_path {
+            let shown_path = if record.pruned.is_some() {
+                view.run_dir
+                    .join(gsd_meta_manager::oneoff::KEPT_SUMMARY_FILE)
+            } else {
+                view.run_dir.join("work").join(path)
+            };
             lines.push(format!(
                 "summary:   {}",
-                shown(&view.run_dir.join("work").join(path).display().to_string())
+                shown(&shown_path.display().to_string())
             ));
         }
         for warning in &record.warnings {
@@ -606,13 +620,19 @@ mod unix {
             (None, Some(from)) => format!("  resumed from {}", shown(from)),
             (None, None) => String::new(),
         };
+        let clone = if record.pruned.is_some() {
+            "  clone removed"
+        } else {
+            ""
+        };
         format!(
-            "{}  {:<9}  {}  {:<8}  {} commit(s)  branch {}  landed {}{resumed}",
+            "{}  {:<9}  {}  {:<8}  {} commit(s)  → {}  branch {}  landed {}{resumed}{clone}",
             shown(&record.run_id),
             view.live.as_str(),
             record.mode.as_str(),
             result,
             record.commits.unwrap_or(0),
+            shown(&record.land_target_text()),
             match record.branch_state() {
                 BranchState::Tracked { .. } => "yes",
                 BranchState::Gone { .. } => "gone",
@@ -1015,7 +1035,9 @@ mod unix {
 
     fn land_main(action: LandAction, config: Option<PathBuf>) -> i32 {
         let (verb, target, run_id) = match &action {
-            LandAction::Merge { project, run_id } => ("merge", project, run_id),
+            LandAction::Merge {
+                project, run_id, ..
+            } => ("merge", project, run_id),
             LandAction::Push { project, run_id } => ("push", project, run_id),
             LandAction::Discard { project, run_id } => ("discard", project, run_id),
         };
@@ -1027,7 +1049,7 @@ mod unix {
             }
         };
         let result = match action {
-            LandAction::Merge { .. } => {
+            LandAction::Merge { ref into, .. } => {
                 // I-8: the project's `driver.egress` allowlist, for a conflict resolver
                 // session, resolved as `task run` does.
                 let egress_allow = match registry
@@ -1044,7 +1066,10 @@ mod unix {
                 };
                 // I-12: Ctrl-C / TERM stops a resolver the way a run stop does.
                 match land::LandOptions::with_signal_handlers(egress_allow) {
-                    Ok(opts) => land::merge(&project, run_id, &opts),
+                    Ok(mut opts) => {
+                        opts.into = into.clone();
+                        land::merge(&project, run_id, &opts)
+                    }
                     Err(e) => Err(e),
                 }
             }

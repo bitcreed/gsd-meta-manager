@@ -16,6 +16,7 @@ const NEUTRAL_FILES: &[&str] = &[
     "src/oneoff/store.rs",
     "src/oneoff/launch.rs",
     "src/oneoff/land.rs",
+    "src/oneoff/recycle.rs",
     "src/oneoff/merge.rs",
     "src/oneoff/resolve.rs",
     "src/oneoff/stream.rs",

@@ -610,13 +610,21 @@ pub enum TaskAction {
 /// The verbs of `task land`.
 #[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
 pub enum LandAction {
-    /// Land the run's head: fast-forward, else a merge commit; conflicts are resolved by a
-    /// sandboxed agent session (clean checkout on a branch only)
+    /// Land the run's head into the branch HEAD pointed at when the run was dispatched:
+    /// fast-forward, else a merge commit; conflicts are resolved by a sandboxed agent
+    /// session. That branch is changed without touching the working tree unless it is the
+    /// checked-out one, which must then be clean. Afterwards the run's clone and bulky
+    /// files are removed; the small record stays
     Merge {
         /// Alias or path of a registered project
         project: String,
         /// The run id (`task status` shows it)
         run_id: String,
+        /// Land into this existing local branch instead of the branch HEAD pointed at on
+        /// dispatch (needed for a run dispatched on a detached HEAD, or when that branch
+        /// was deleted)
+        #[arg(long, value_name = "BRANCH")]
+        into: Option<String>,
     },
     /// Push the run's head to refs/heads/gsd-auto/<alias>/<run-id> (scanned first)
     Push {

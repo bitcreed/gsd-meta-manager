@@ -40,8 +40,8 @@ use crate::launcher::push::{
 
 use super::runtime::AgentRuntime;
 use super::store::{
-    project_dir_for, read_view, rfc3339, write_record, Landing, LandingKind, MergeHow, OneoffView,
-    RecordStatus, RunRecord, NOTE_ALREADY_GONE, NOTE_DELETED_AFTER_LANDING,
+    project_dir_for, read_view, rfc3339, write_record, LandTarget, Landing, LandingKind, MergeHow,
+    OneoffView, RecordStatus, RunRecord, NOTE_ALREADY_GONE, NOTE_DELETED_AFTER_LANDING,
     NOTE_DELETED_BY_DISCARD,
 };
 use super::BRANCH_PREFIX;
@@ -67,6 +67,9 @@ pub struct LandOptions {
     /// Set by the caller to stop a resolver session (the CLI's signal handlers). The TUI
     /// passes a flag that is never set: if it exits, the resolver dies with it.
     pub user_stop: Arc<AtomicBool>,
+    /// `--into <branch>`: land into this existing local branch instead of the run's
+    /// recorded dispatch branch (quick 261103-o2r, D-C).
+    pub into: Option<String>,
 }
 
 impl LandOptions {
@@ -75,6 +78,7 @@ impl LandOptions {
         LandOptions {
             egress_allow,
             user_stop: Arc::new(AtomicBool::new(false)),
+            into: None,
         }
     }
 
@@ -128,6 +132,10 @@ pub struct MergeFacts {
     pub planted: usize,
     /// `git status --porcelain` printed something.
     pub dirty: bool,
+    /// The landing target is the branch the project's checkout has checked out (quick
+    /// 261103-o2r, D-C). Only then do a dirty checkout and a detached HEAD refuse: any
+    /// other target is moved by `update-ref` and the working tree is never touched.
+    pub target_checked_out: bool,
     /// The checkout's branch; `None` on a detached HEAD.
     pub branch: Option<String>,
     /// The checkout's HEAD is an ancestor of the recorded head: the landing is a
@@ -152,13 +160,13 @@ pub fn merge_decision(facts: &MergeFacts) -> Result<(), String> {
             facts.planted
         ));
     }
-    if facts.dirty {
+    if facts.target_checked_out && facts.dirty {
         return Err(
             "the checkout has uncommitted or untracked changes; commit or stash them first"
                 .to_owned(),
         );
     }
-    if facts.branch.is_none() {
+    if facts.target_checked_out && facts.branch.is_none() {
         return Err("the checkout's HEAD is detached; check out a branch first".to_owned());
     }
     // `facts.ancestor` is not a refusal any more: it chooses between the fast-forward
@@ -449,17 +457,298 @@ fn record_landing(view: &OneoffView, landing: Landing) {
     }
 }
 
-/// Land the run's recorded head in the project's checkout: a fast-forward when the
-/// checkout's HEAD is an ancestor of it, otherwise a merge commit made in a private clone
-/// (with a sandboxed agent session resolving conflicts). Never a rebase (D-04).
+/// The branch a landing moves, and whether the project's checkout has it checked out.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Target {
+    pub branch: String,
+    pub checked_out: bool,
+}
+
+/// Which branch a landing aims at before it is looked up (pure, quick 261103-o2r, D-C).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TargetChoice {
+    /// A named local branch (`--into`, or the one recorded at dispatch).
+    Branch { name: String, explicit: bool },
+    /// A legacy record: the checkout's current branch, as before.
+    Checkout,
+}
+
+/// `--into` beats the recorded dispatch branch; a legacy record lands into the checkout's
+/// branch; a detached dispatch needs `--into`.
+pub(crate) fn choose_target(
+    into: Option<&str>,
+    recorded: &LandTarget,
+) -> Result<TargetChoice, String> {
+    match (into, recorded) {
+        (Some(name), _) => Ok(TargetChoice::Branch {
+            name: name.to_owned(),
+            explicit: true,
+        }),
+        (None, LandTarget::Branch(name)) => Ok(TargetChoice::Branch {
+            name: name.clone(),
+            explicit: false,
+        }),
+        (None, LandTarget::Legacy) => Ok(TargetChoice::Checkout),
+        (None, LandTarget::Detached { tip }) => Err(format!(
+            "the run was dispatched on a detached HEAD (@{}); pass --into <branch> to say \
+             where to land it",
+            &tip[..tip.len().min(7)]
+        )),
+    }
+}
+
+/// One entry of `git worktree list --porcelain`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Worktree {
+    pub path: PathBuf,
+    /// The full ref the worktree has checked out; `None` when detached or bare.
+    pub branch: Option<String>,
+}
+
+/// Parse `git worktree list --porcelain` output, with `-z` (NUL-separated fields) or
+/// without (newline-separated). Pure.
+pub(crate) fn parse_worktrees(text: &str) -> Vec<Worktree> {
+    let mut found: Vec<Worktree> = Vec::new();
+    for field in text.split(['\0', '\n']) {
+        if let Some(path) = field.strip_prefix("worktree ") {
+            found.push(Worktree {
+                path: PathBuf::from(path),
+                branch: None,
+            });
+        } else if let (Some(reference), Some(last)) =
+            (field.strip_prefix("branch "), found.last_mut())
+        {
+            last.branch = Some(reference.to_owned());
+        }
+    }
+    found
+}
+
+/// The path of a worktree other than the project's own that has `branch` checked out
+/// (I-06). A listing that cannot be read refuses: moving a branch another worktree has
+/// checked out would desync that worktree's index.
+fn checked_out_elsewhere(project: &Path, branch: &str) -> Result<Option<PathBuf>, String> {
+    let mut listed = git_in(project, &["worktree", "list", "--porcelain", "-z"]);
+    if !listed.success {
+        listed = git_in(project, &["worktree", "list", "--porcelain"]);
+    }
+    if !listed.success {
+        return Err(format!(
+            "could not list the project's worktrees: {}",
+            listed.last_error
+        ));
+    }
+    let wanted = format!("refs/heads/{branch}");
+    let own = fs::canonicalize(project).unwrap_or_else(|_| project.to_path_buf());
+    Ok(parse_worktrees(&listed.stdout)
+        .into_iter()
+        .filter(|w| w.branch.as_deref() == Some(wanted.as_str()))
+        .find(|w| fs::canonicalize(&w.path).unwrap_or_else(|_| w.path.clone()) != own)
+        .map(|w| w.path))
+}
+
+/// A branch name `--into` or a record names, checked before it reaches any git argv.
+fn check_branch_name(project: &Path, name: &str) -> Result<(), String> {
+    if name.starts_with('-') || !push::plausible_branch(name) {
+        return Err(format!("{name:?} is not a usable branch name"));
+    }
+    let checked = git_in(project, &["check-ref-format", "--branch", name]);
+    if !checked.success || checked.stdout != name {
+        return Err(format!("{name:?} is not a usable branch name"));
+    }
+    Ok(())
+}
+
+/// Look the chosen target up in `project` (D-C): the name is validated, a branch that
+/// is gone refuses with the `--into` hint, and a branch another worktree has checked
+/// out refuses naming that worktree.
+fn resolve_target(
+    project: &Path,
+    choice: TargetChoice,
+    checkout_branch: Option<&str>,
+) -> Result<Target, String> {
+    match choice {
+        TargetChoice::Checkout => Ok(Target {
+            branch: checkout_branch.unwrap_or_default().to_owned(),
+            checked_out: true,
+        }),
+        TargetChoice::Branch { name, explicit } => {
+            check_branch_name(project, &name)?;
+            if checkout_branch == Some(name.as_str()) {
+                return Ok(Target {
+                    branch: name,
+                    checked_out: true,
+                });
+            }
+            if ref_commit(project, &format!("refs/heads/{name}")).is_none() {
+                return Err(if explicit {
+                    format!("there is no local branch {name:?} to land into")
+                } else {
+                    format!(
+                        "the branch {name:?} the run was dispatched from no longer exists; pass \
+                         --into <branch>"
+                    )
+                });
+            }
+            if let Some(path) = checked_out_elsewhere(project, &name)? {
+                return Err(format!(
+                    "{name:?} is checked out in the worktree {}; land from that worktree or \
+                     check out another branch there first",
+                    path.display()
+                ));
+            }
+            Ok(Target {
+                branch: name,
+                checked_out: false,
+            })
+        }
+    }
+}
+
+/// Move `branch` of `project` from `old` to `new` with `git update-ref` and the expected
+/// old value, never touching a working tree or an index (quick 261103-o2r, D-C, I-05).
+/// The tip is read again and the worktree list checked right before; any change refuses
+/// with nothing changed.
+pub(crate) fn update_target(
+    project: &Path,
+    branch: &str,
+    new: &str,
+    old: &str,
+    run_id: &str,
+) -> Result<(), String> {
+    let reference = format!("refs/heads/{branch}");
+    let moved = || format!("the target branch {branch} moved during the landing; nothing changed");
+    if ref_commit(project, &reference).as_deref() != Some(old) {
+        return Err(moved());
+    }
+    let current = git_in(project, &["symbolic-ref", "-q", "--short", "HEAD"]);
+    if current.success && current.stdout == branch {
+        return Err(format!(
+            "the target branch {branch} was checked out during the landing; nothing changed"
+        ));
+    }
+    if let Some(path) = checked_out_elsewhere(project, branch)? {
+        return Err(format!(
+            "{branch:?} is checked out in the worktree {}; nothing changed",
+            path.display()
+        ));
+    }
+    let message = format!("gsd-meta-manager: land {run_id}");
+    let updated = git_in(
+        project,
+        &["update-ref", "-m", &message, &reference, new, old],
+    );
+    if updated.success {
+        Ok(())
+    } else {
+        Err(moved())
+    }
+}
+
+/// Where a landing takes the run's work from (quick 261103-o2r, D-A).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RunSource {
+    /// The run's own clone, behind the planted-file gate.
+    Clone(PathBuf),
+    /// The clone was removed: `refs/heads/gsd-oneoff/<id>` in the project holds the work.
+    Tracked,
+}
+
+/// What [`choose_source`] looks at.
+pub(crate) struct SourceFacts<'a> {
+    pub run_id: &'a str,
+    /// The record says the clone was removed.
+    pub pruned_note: Option<&'a str>,
+    /// `<run-dir>/work` is a real directory.
+    pub clone_present: bool,
+    /// `refs/heads/gsd-oneoff/<id>` in the project is at the recorded head.
+    pub tracked_at_head: bool,
+    /// The branch the latest merge landing went into, if there is one.
+    pub merged_into: Option<&'a str>,
+}
+
+/// Choose where the work comes from (pure). The clone only for a record that was not
+/// pruned and still has it; otherwise the tracked branch at the head; otherwise a refusal
+/// that says where the work is.
+pub(crate) fn choose_source(facts: &SourceFacts<'_>, clone: &Path) -> Result<RunSource, String> {
+    if facts.pruned_note.is_none() && facts.clone_present {
+        return Ok(RunSource::Clone(clone.to_path_buf()));
+    }
+    if facts.tracked_at_head {
+        return Ok(RunSource::Tracked);
+    }
+    Err(match (facts.merged_into, facts.pruned_note) {
+        (Some(target), _) => format!(
+            "the run's clone was removed after it landed in {target}; its work is in {target}"
+        ),
+        (None, Some(note)) => format!(
+            "the run's clone was removed ({note}) and {BRANCH_PREFIX}{} is not at its head; \
+             there is nothing to land",
+            facts.run_id
+        ),
+        (None, None) => format!(
+            "the run's clone is gone and {BRANCH_PREFIX}{} is not at its head; there is \
+             nothing to land",
+            facts.run_id
+        ),
+    })
+}
+
+/// [`choose_source`] for `view`, with the facts read from disk and the project.
+fn run_source(project: &Path, view: &OneoffView, head: &str) -> Result<RunSource, String> {
+    let record = &view.record;
+    let clone = view.run_dir.join(WORK_DIR);
+    let clone_present = fs::symlink_metadata(&clone).is_ok_and(|m| m.file_type().is_dir());
+    let merged_into = record
+        .landed
+        .iter()
+        .rev()
+        .find(|l| l.kind == LandingKind::Merged)
+        .map(|l| l.detail.as_str());
+    choose_source(
+        &SourceFacts {
+            run_id: &record.run_id,
+            pruned_note: record.pruned.as_ref().map(|p| p.note.as_str()),
+            clone_present,
+            tracked_at_head: ref_commit(project, &tracked_ref(&record.run_id)).as_deref()
+                == Some(head),
+            merged_into,
+        },
+        &clone,
+    )
+}
+
+/// Land the run's recorded head in the branch the run was dispatched from (or `--into`):
+/// a fast-forward when that branch's tip is an ancestor of it, otherwise a merge commit
+/// made in a private clone (with a sandboxed agent session resolving conflicts). Never a
+/// rebase (D-04). A target that is not checked out is moved by `update-ref` with the
+/// expected old value; the working tree is never touched (quick 261103-o2r, D-C). When
+/// the landing succeeds the run's clone and bulky files are removed (D-A); a cleanup
+/// problem is a line of the output, never a failure.
 pub fn merge(project: &Path, run_id: &str, opts: &LandOptions) -> Result<String, String> {
     let project = fs::canonicalize(project).map_err(|e| format!("project: {e}"))?;
-    let (_, first_view) = view_of(&project, run_id)?;
+    // The land lock is released when `merge_locked` returns; the slim takes it again.
+    let (message, branch) = merge_locked(&project, run_id, opts)?;
+    let slim = super::recycle::slim_run(
+        &project,
+        run_id,
+        &format!("removed after landing in {branch}"),
+    );
+    Ok(format!("{message}\n{}", slim.line()))
+}
+
+/// [`merge`] under the run's land lock. Returns the output and the branch landed into.
+fn merge_locked(
+    project: &Path,
+    run_id: &str,
+    opts: &LandOptions,
+) -> Result<(String, String), String> {
+    let (_, first_view) = view_of(project, run_id)?;
     // I-13: one landing of a run at a time; the view is read again under the lock.
     let _land_lock = take_land_lock(&first_view.run_dir, run_id)?;
     // klf I-09: a stop request left by an earlier landing must not stop this one.
     super::cancel::clear_request(&first_view.run_dir.join(super::LAND_DIR));
-    let (_, view) = view_of(&project, run_id)?;
+    let (_, view) = view_of(project, run_id)?;
     let record = &view.record;
     let head = record.head.clone();
     let mut facts = MergeFacts {
@@ -468,25 +757,42 @@ pub fn merge(project: &Path, run_id: &str, opts: &LandOptions) -> Result<String,
         commits: record.commits.unwrap_or(0),
         planted: 0,
         dirty: false,
+        target_checked_out: true,
         branch: Some(String::new()),
         ancestor: true,
     };
     merge_decision(&facts)?;
     let head = head.unwrap_or_default();
+
+    // D-C: where to land, looked up in the project.
+    let checkout = git_in(project, &["symbolic-ref", "-q", "--short", "HEAD"]);
+    let checkout_branch =
+        (checkout.success && push::plausible_branch(&checkout.stdout)).then_some(checkout.stdout);
+    let choice = choose_target(opts.into.as_deref(), &record.land_target())?;
+    let target = resolve_target(project, choice, checkout_branch.as_deref())?;
+    facts.target_checked_out = target.checked_out;
+    facts.branch = checkout_branch;
+
+    // D-A: the run's clone, or, once it was removed, the tracked branch.
+    let source = run_source(project, &view, &head)?;
     // I-4: the planted gate reads files only, and runs before any git touches the clone.
-    facts.planted = planted_count(&view);
-    let status = git_in(&project, &["status", "--porcelain"]);
-    if !status.success {
-        return Err(format!("git status failed: {}", status.last_error));
+    if matches!(source, RunSource::Clone(_)) {
+        facts.planted = planted_count(&view);
     }
-    facts.dirty = !status.stdout.is_empty();
-    let branch = git_in(&project, &["symbolic-ref", "-q", "--short", "HEAD"]);
-    facts.branch =
-        (branch.success && push::plausible_branch(&branch.stdout)).then_some(branch.stdout);
+    if target.checked_out {
+        let status = git_in(project, &["status", "--porcelain"]);
+        if !status.success {
+            return Err(format!("git status failed: {}", status.last_error));
+        }
+        facts.dirty = !status.stdout.is_empty();
+    }
     merge_decision(&facts)?;
 
-    let work = view.run_dir.join(WORK_DIR);
-    let branch_ref = format!("refs/heads/{BRANCH_PREFIX}{run_id}");
+    let source_path = match &source {
+        RunSource::Clone(path) => path.clone(),
+        RunSource::Tracked => project.to_path_buf(),
+    };
+    let branch_ref = tracked_ref(run_id);
     let fetch = push::git(
         vec![
             "-C".into(),
@@ -495,7 +801,7 @@ pub fn merge(project: &Path, run_id: &str, opts: &LandOptions) -> Result<String,
             "--quiet".into(),
             "--no-tags".into(),
             "--no-recurse-submodules".into(),
-            work.as_os_str().to_owned(),
+            source_path.as_os_str().to_owned(),
             branch_ref.into(),
         ],
         push::GIT_FETCH,
@@ -507,67 +813,76 @@ pub fn merge(project: &Path, run_id: &str, opts: &LandOptions) -> Result<String,
         ));
     }
     let fetched = git_in(
-        &project,
+        project,
         &["rev-parse", "--verify", "--quiet", "FETCH_HEAD^{commit}"],
     );
     if !fetched.success || fetched.stdout != head {
         return Err("the fetched tip is not the recorded head; nothing was merged".to_owned());
     }
-    let ancestor = git_in(&project, &["merge-base", "--is-ancestor", "HEAD", &head]);
+    let tip_ref = if target.checked_out {
+        "HEAD".to_owned()
+    } else {
+        format!("refs/heads/{}", target.branch)
+    };
+    let Some(tip) = ref_commit(project, &tip_ref) else {
+        return Err(format!("could not read {}", target.branch));
+    };
+    let ancestor = git_in(project, &["merge-base", "--is-ancestor", &tip, &head]);
     facts.ancestor = ancestor.success;
     merge_decision(&facts)?;
+    let branch = target.branch.clone();
     if !facts.ancestor {
-        let target = facts.branch.clone().unwrap_or_default();
         // I-24: a head the target already contains would make a `--no-ff` merge that
         // creates nothing.
-        if git_in(&project, &["merge-base", "--is-ancestor", &head, "HEAD"]).success {
+        if git_in(project, &["merge-base", "--is-ancestor", &head, &tip]).success {
             return Err(format!(
-                "the run's head is already in {target}; nothing to merge (discard the run)"
+                "the run's head is already in {branch}; nothing to merge (discard the run)"
             ));
         }
-        return super::resolve::land_by_merge(&project, &view, &target, opts);
+        let message = super::resolve::land_by_merge(project, &view, &target, &source_path, opts)?;
+        return Ok((message, branch));
     }
 
-    // klf I-08: the checkout's HEAD before the fast-forward starts the landed range.
-    let old_head = ref_commit(&project, "HEAD");
-
-    // C-19: the user's own git, hooks included.
-    let args: Vec<OsString> = [
-        "-C",
-        &project.to_string_lossy(),
-        "merge",
-        "--ff-only",
-        "--quiet",
-        &head,
-    ]
-    .iter()
-    .map(OsString::from)
-    .collect();
-    match run_bounded_with_stderr(
-        "git",
-        &args,
-        None,
-        &[("GIT_TERMINAL_PROMPT", "0")],
-        MERGE_BUDGET,
-    ) {
-        Some((out, _)) if out.status.success() => {}
-        Some((_, line)) => {
-            return Err(format!(
-                "git merge --ff-only failed: {}",
-                push::redact_urls(&line)
-            ))
+    // klf I-08: the target's tip before the fast-forward starts the landed range.
+    let old_head = Some(tip.clone());
+    if target.checked_out {
+        // C-19: the user's own git, hooks included.
+        let args: Vec<OsString> = [
+            "-C",
+            &project.to_string_lossy(),
+            "merge",
+            "--ff-only",
+            "--quiet",
+            &head,
+        ]
+        .iter()
+        .map(OsString::from)
+        .collect();
+        match run_bounded_with_stderr(
+            "git",
+            &args,
+            None,
+            &[("GIT_TERMINAL_PROMPT", "0")],
+            MERGE_BUDGET,
+        ) {
+            Some((out, _)) if out.status.success() => {}
+            Some((_, line)) => {
+                return Err(format!(
+                    "git merge --ff-only failed: {}",
+                    push::redact_urls(&line)
+                ))
+            }
+            None => return Err("git merge did not finish".to_owned()),
         }
-        None => return Err("git merge did not finish".to_owned()),
+    } else {
+        // D-C, I-05: not checked out, so nothing but the ref moves.
+        update_target(project, &target.branch, &head, &tip, run_id)?;
     }
-    let branch = facts.branch.unwrap_or_default();
-    // mnr D-04: name what actually landed. The checkout advanced from `old_head` to
+    // mnr D-04: name what actually landed. The target advanced from `old_head` to
     // `head`, which can be more than the agent's own commits (a resumed run carries the
     // host merge commit and the commits it was resumed from).
     let landed = old_head.as_deref().and_then(|old| {
-        let counted = git_in(
-            &project,
-            &["rev-list", "--count", &format!("{old}..{head}")],
-        );
+        let counted = git_in(project, &["rev-list", "--count", &format!("{old}..{head}")]);
         counted
             .success
             .then(|| counted.stdout.trim().parse::<u32>().ok())
@@ -580,6 +895,9 @@ pub fn merge(project: &Path, run_id: &str, opts: &LandOptions) -> Result<String,
         &branch,
         &head[..head.len().min(12)],
     )];
+    if !target.checked_out {
+        lines.push(super::resolve::not_checked_out_line(&branch));
+    }
     // klf I-06: the delete first, then ONE write with the landing and the branch fields.
     let mut updated = view.record.clone();
     updated.landed.push(Landing {
@@ -589,14 +907,14 @@ pub fn merge(project: &Path, run_id: &str, opts: &LandOptions) -> Result<String,
         ..Landing::plain(LandingKind::Merged, rfc3339(Utc::now()), branch.clone())
     });
     updated.land_failure = None;
-    if let Some(line) = clear_tracking_after_landing(&project, run_id, &head, &mut updated) {
+    if let Some(line) = clear_tracking_after_landing(project, run_id, &head, &mut updated) {
         lines.push(line);
     }
     if let Err(e) = write_record(&view.run_dir, &updated) {
         eprintln!("task land: the landing succeeded but could not be recorded: {e}");
     }
     lines.extend(sensitive_warning(&record.changed_files));
-    Ok(lines.join("\n"))
+    Ok((lines.join("\n"), branch))
 }
 
 /// The line a fast-forward landing prints (mnr, D-04): `landed` is what the branch
@@ -849,9 +1167,116 @@ mod tests {
             commits: 2,
             planted: 0,
             dirty: false,
+            target_checked_out: true,
             branch: Some("main".to_owned()),
             ancestor: true,
         }
+    }
+
+    #[test]
+    fn a_target_that_is_not_checked_out_ignores_a_dirty_or_detached_checkout() {
+        let elsewhere = MergeFacts {
+            target_checked_out: false,
+            dirty: true,
+            branch: None,
+            ..ok_facts()
+        };
+        assert!(merge_decision(&elsewhere).is_ok());
+        // The other refusals still apply.
+        let planted = MergeFacts {
+            planted: 1,
+            ..elsewhere.clone()
+        };
+        assert!(merge_decision(&planted).unwrap_err().contains("planted"));
+        let live = MergeFacts {
+            live: true,
+            ..elsewhere
+        };
+        assert!(merge_decision(&live).is_err());
+    }
+
+    #[test]
+    fn the_target_is_into_then_the_recorded_branch_then_the_checkout() {
+        let branch = |name: &str, explicit: bool| TargetChoice::Branch {
+            name: name.to_owned(),
+            explicit,
+        };
+        let recorded = LandTarget::Branch("main".to_owned());
+        assert_eq!(choose_target(None, &recorded), Ok(branch("main", false)));
+        assert_eq!(
+            choose_target(Some("dev"), &recorded),
+            Ok(branch("dev", true))
+        );
+        assert_eq!(
+            choose_target(None, &LandTarget::Legacy),
+            Ok(TargetChoice::Checkout)
+        );
+        assert_eq!(
+            choose_target(Some("dev"), &LandTarget::Legacy),
+            Ok(branch("dev", true))
+        );
+        let detached = LandTarget::Detached {
+            tip: "0123456789abcdef".to_owned(),
+        };
+        let why = choose_target(None, &detached).unwrap_err();
+        assert!(why.contains("--into") && why.contains("@0123456"), "{why}");
+        assert_eq!(
+            choose_target(Some("dev"), &detached),
+            Ok(branch("dev", true))
+        );
+    }
+
+    #[test]
+    fn worktree_listings_parse_with_and_without_nul_separators() {
+        let z = "worktree /p\0HEAD aaa\0branch refs/heads/side\0\0\
+                 worktree /other wt\0HEAD bbb\0branch refs/heads/main\0\0\
+                 worktree /detached\0HEAD ccc\0detached\0\0";
+        let plain = "worktree /p\nHEAD aaa\nbranch refs/heads/side\n\n\
+                     worktree /other wt\nHEAD bbb\nbranch refs/heads/main\n\n\
+                     worktree /detached\nHEAD ccc\ndetached\n";
+        for text in [z, plain] {
+            let found = parse_worktrees(text);
+            assert_eq!(found.len(), 3, "{found:?}");
+            assert_eq!(found[0].path, PathBuf::from("/p"));
+            assert_eq!(found[0].branch.as_deref(), Some("refs/heads/side"));
+            assert_eq!(found[1].path, PathBuf::from("/other wt"));
+            assert_eq!(found[1].branch.as_deref(), Some("refs/heads/main"));
+            assert_eq!(found[2].branch, None);
+        }
+    }
+
+    #[test]
+    fn the_run_source_is_the_clone_the_tracked_branch_or_a_refusal() {
+        let clone = Path::new("/r/work");
+        let facts = |pruned: Option<&'static str>, present, tracked, merged| SourceFacts {
+            run_id: "oneoff-1",
+            pruned_note: pruned,
+            clone_present: present,
+            tracked_at_head: tracked,
+            merged_into: merged,
+        };
+        // An existing clone of a record that was not pruned wins, even with a branch.
+        assert_eq!(
+            choose_source(&facts(None, true, true, None), clone),
+            Ok(RunSource::Clone(clone.to_path_buf()))
+        );
+        // A pruned record never reads a (half-deleted) clone.
+        assert_eq!(
+            choose_source(&facts(Some("after push"), true, true, None), clone),
+            Ok(RunSource::Tracked)
+        );
+        assert_eq!(
+            choose_source(&facts(None, false, true, None), clone),
+            Ok(RunSource::Tracked)
+        );
+        let why = choose_source(&facts(Some("after push"), false, false, None), clone).unwrap_err();
+        assert!(why.contains("gsd-oneoff/oneoff-1"), "{why}");
+        let merged = choose_source(
+            &facts(Some("after landing"), false, false, Some("main")),
+            clone,
+        )
+        .unwrap_err();
+        assert!(merged.contains("its work is in main"), "{merged}");
     }
 
     #[test]

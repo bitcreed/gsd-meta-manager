@@ -2419,3 +2419,237 @@ fn a_failing_resume_merge_ends_the_run_failed_and_never_strands_its_predecessor(
     );
     assert_eq!(again.status.code(), Some(0), "{again:?}");
 }
+
+// ---------------------------------------------------------------- o2r: land target, slim
+
+/// The total size in bytes of everything under `dir`, symlinks counted as links.
+fn dir_size(dir: &Path) -> u64 {
+    let mut total = 0;
+    for entry in fs::read_dir(dir).into_iter().flatten().flatten() {
+        let meta = fs::symlink_metadata(entry.path()).unwrap();
+        total += meta.len();
+        if meta.is_dir() {
+            total += dir_size(&entry.path());
+        }
+    }
+    total
+}
+
+/// The stdout and stderr of `out`, lossily.
+fn texts(out: &Output) -> String {
+    format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    )
+}
+
+#[test]
+fn a_run_lands_into_the_dispatch_branch_and_its_clone_is_slimmed() {
+    let fx = fixture();
+    let (id, status) = quick_run(&fx);
+    let head = status["record"]["head"].as_str().unwrap().to_owned();
+    let base = status["record"]["base"].as_str().unwrap().to_owned();
+    assert_eq!(status["record"]["dispatch_branch"], "main", "{status}");
+    assert_eq!(status["record"]["dispatch_tip"], base.as_str(), "{status}");
+    assert_eq!(status["record"]["dispatch_detached"], false, "{status}");
+
+    // The project moves to another branch, with an untracked file in its tree.
+    git(fx.project(), &["switch", "-q", "-c", "side"]);
+    fs::write(fx.project().join("untracked.txt"), "mine").unwrap();
+    let side_tip = git_text(fx.project(), &["rev-parse", "HEAD"]);
+
+    let merged = run(&fx, &["land", "merge", ALIAS, &id]);
+    assert_eq!(merged.status.code(), Some(0), "{merged:?}");
+    assert_eq!(git_text(fx.project(), &["rev-parse", "main"]), head);
+    assert_eq!(
+        git_text(fx.project(), &["branch", "--show-current"]),
+        "side",
+        "the checked-out branch is untouched"
+    );
+    assert_eq!(git_text(fx.project(), &["rev-parse", "side"]), side_tip);
+    assert_eq!(
+        fs::read_to_string(fx.project().join("untracked.txt")).unwrap(),
+        "mine"
+    );
+    assert!(
+        !fx.project().join("2026-11-03-demo.md").exists()
+            && !fx.project().join(".planning/quick").exists(),
+        "the working tree was not touched"
+    );
+
+    let after = status_of_run(&fx, &id);
+    let record = &after["record"];
+    assert_eq!(record["landed"][0]["detail"], "main", "{record}");
+    assert_eq!(record["landed"][0]["how"], "ff", "{record}");
+    assert!(record["pruned"]["at"].is_string(), "{record}");
+    assert!(
+        record["pruned"]["note"]
+            .as_str()
+            .unwrap()
+            .contains("after landing"),
+        "{record}"
+    );
+    let dir = run_dir(&fx, &id);
+    assert!(!dir.join("work").exists(), "the clone is gone");
+    assert!(dir.join("run.json").is_file());
+    assert!(dir.join("summary.md").is_file(), "the SUMMARY copy is kept");
+    assert!(dir.join("report/report.json").is_file());
+    assert!(dir.join("stream.jsonl").is_file());
+    let size = dir_size(&dir);
+    assert!(size < 1_000_000, "the slimmed run dir is {size} bytes");
+
+    let list = run(&fx, &["list", ALIAS]);
+    assert_eq!(list.status.code(), Some(0), "{list:?}");
+    let list = texts(&list);
+    assert!(list.contains(&id) && list.contains("→ main"), "{list}");
+    let human = run(&fx, &["status", ALIAS, "--run-id", &id]);
+    let human = texts(&human);
+    assert!(human.contains("target:    main"), "{human}");
+    assert!(
+        human.contains("clone:     removed after landing in main"),
+        "{human}"
+    );
+    let out = String::from_utf8_lossy(&merged.stdout);
+    assert!(out.contains("working tree was not touched"), "{out}");
+    assert!(out.contains("removed the run's clone"), "{out}");
+}
+
+#[test]
+fn a_merge_commit_lands_into_a_dispatch_branch_that_is_not_checked_out() {
+    let fx = with_identity(fixture());
+    let (id, status) = quick_run(&fx);
+    let head = status["record"]["head"].as_str().unwrap().to_owned();
+    // `main` moves on without conflict, then another branch is checked out.
+    fs::write(fx.project().join("unrelated.txt"), "x").unwrap();
+    git(fx.project(), &["add", "unrelated.txt"]);
+    git(fx.project(), &["commit", "-qm", "moved on"]);
+    let tip = git_text(fx.project(), &["rev-parse", "HEAD"]);
+    git(fx.project(), &["switch", "-q", "-c", "side"]);
+    let porcelain = git_text(fx.project(), &["status", "--porcelain"]);
+
+    let merged = run(&fx, &["land", "merge", ALIAS, &id]);
+    assert_eq!(merged.status.code(), Some(0), "{merged:?}");
+    let parents: Vec<String> =
+        git_text(fx.project(), &["rev-list", "--parents", "-n", "1", "main"])
+            .split_whitespace()
+            .map(str::to_owned)
+            .collect();
+    assert_eq!(parents[1..], [tip.clone(), head], "{parents:?}");
+    assert_eq!(git_text(fx.project(), &["rev-parse", "side"]), tip);
+    assert_eq!(
+        git_text(fx.project(), &["branch", "--show-current"]),
+        "side"
+    );
+    assert_eq!(
+        git_text(fx.project(), &["status", "--porcelain"]),
+        porcelain
+    );
+    assert!(!fx.project().join(".planning/quick").exists());
+    let after = status_of_run(&fx, &id);
+    assert_eq!(after["record"]["landed"][0]["how"], "merge", "{after}");
+    assert_eq!(after["record"]["landed"][0]["detail"], "main", "{after}");
+}
+
+#[test]
+fn the_dispatch_branch_checked_out_in_another_worktree_is_refused() {
+    let fx = fixture();
+    let (id, _) = quick_run(&fx);
+    git(fx.project(), &["switch", "-q", "-c", "side"]);
+    let other = fx.scratch.path().join("other-wt");
+    git(
+        fx.project(),
+        &[
+            "worktree",
+            "add",
+            "-q",
+            &other.display().to_string(),
+            "main",
+        ],
+    );
+    let main_before = git_text(fx.project(), &["rev-parse", "main"]);
+
+    let out = run(&fx, &["land", "merge", ALIAS, &id]);
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("other-wt"), "{err}");
+    assert_eq!(git_text(fx.project(), &["rev-parse", "main"]), main_before);
+    assert!(run_dir(&fx, &id).join("work").is_dir(), "the clone stays");
+    let after = status_of_run(&fx, &id);
+    assert!(after["record"]["landed"].as_array().unwrap().is_empty());
+    assert!(after["record"]["pruned"].is_null(), "{after}");
+}
+
+#[test]
+fn a_legacy_record_lands_into_the_checked_out_branch() {
+    let fx = fixture();
+    let (id, status) = quick_run(&fx);
+    let head = status["record"]["head"].as_str().unwrap().to_owned();
+    // Strip the fields quick 261103-o2r added: the record is now a legacy one.
+    let path = run_dir(&fx, &id).join("run.json");
+    let mut record: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    let object = record.as_object_mut().unwrap();
+    for key in ["dispatch_branch", "dispatch_tip", "dispatch_detached"] {
+        object.remove(key);
+    }
+    fs::write(&path, record.to_string()).unwrap();
+    git(fx.project(), &["switch", "-q", "-c", "side"]);
+    let main_before = git_text(fx.project(), &["rev-parse", "main"]);
+
+    let list = texts(&run(&fx, &["list", ALIAS]));
+    assert!(list.contains("→ checked-out branch (legacy)"), "{list}");
+    let merged = run(&fx, &["land", "merge", ALIAS, &id]);
+    assert_eq!(merged.status.code(), Some(0), "{merged:?}");
+    assert_eq!(git_text(fx.project(), &["rev-parse", "side"]), head);
+    assert_eq!(git_text(fx.project(), &["rev-parse", "main"]), main_before);
+    let after = status_of_run(&fx, &id);
+    assert_eq!(after["record"]["landed"][0]["detail"], "side", "{after}");
+}
+
+#[test]
+fn a_detached_dispatch_needs_into_and_a_deleted_branch_is_refused() {
+    let fx = fixture();
+    git(fx.project(), &["checkout", "-q", "--detach"]);
+    let (id, status) = quick_run(&fx);
+    let head = status["record"]["head"].as_str().unwrap().to_owned();
+    assert_eq!(status["record"]["dispatch_detached"], true, "{status}");
+    assert!(status["record"]["dispatch_branch"].is_null(), "{status}");
+
+    let refused = run(&fx, &["land", "merge", ALIAS, &id]);
+    assert_eq!(refused.status.code(), Some(1), "{refused:?}");
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("--into"),
+        "{refused:?}"
+    );
+    let list = texts(&run(&fx, &["list", ALIAS]));
+    assert!(list.contains("→ detached @"), "{list}");
+
+    // A name that is not a local branch is refused too.
+    let missing = run(&fx, &["land", "merge", ALIAS, &id, "--into", "nowhere"]);
+    assert_eq!(missing.status.code(), Some(1), "{missing:?}");
+    let option_shaped = run(&fx, &["land", "merge", ALIAS, &id, "--into=-x"]);
+    assert_eq!(option_shaped.status.code(), Some(1), "{option_shaped:?}");
+
+    let landed = run(&fx, &["land", "merge", ALIAS, &id, "--into", "main"]);
+    assert_eq!(landed.status.code(), Some(0), "{landed:?}");
+    assert_eq!(git_text(fx.project(), &["rev-parse", "main"]), head);
+
+    // A branch deleted after dispatch refuses with the hint, and `--into` overrides it.
+    git(fx.project(), &["switch", "-q", "main"]);
+    fx.write_scenario(&merge_scenario(RESOLVES));
+    let started = run(&fx, &["run", ALIAS, "--text", "again"]);
+    assert_eq!(started.status.code(), Some(0), "{started:?}");
+    let second = started_id(&started);
+    wait_run_finished(&fx, &second);
+    git(fx.project(), &["switch", "-q", "-c", "side"]);
+    git(fx.project(), &["branch", "-q", "-D", "main"]);
+    let gone = run(&fx, &["land", "merge", ALIAS, &second]);
+    assert_eq!(gone.status.code(), Some(1), "{gone:?}");
+    let err = String::from_utf8_lossy(&gone.stderr);
+    assert!(
+        err.contains("no longer exists") && err.contains("--into"),
+        "{err}"
+    );
+    let over = run(&fx, &["land", "merge", ALIAS, &second, "--into", "side"]);
+    assert_eq!(over.status.code(), Some(0), "{over:?}");
+}

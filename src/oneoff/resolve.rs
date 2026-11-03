@@ -42,7 +42,8 @@ use crate::state_reader::driver_frontmatter::read_run_file_capped;
 
 use super::cancel::{read_request, StopKind};
 use super::land::{
-    clear_tracking_after_landing, git_relevant_planted, sensitive_warning, tracked_ref, LandOptions,
+    clear_tracking_after_landing, git_relevant_planted, sensitive_warning, tracked_ref,
+    update_target, LandOptions, Target,
 };
 use super::launch::{run_sandboxed_session, SessionEvent, SessionSpec};
 use super::merge::{
@@ -286,17 +287,26 @@ struct Land<'a> {
     run_id: &'a str,
     head: &'a str,
     target_branch: &'a str,
+    /// The target branch is the project checkout's current branch (quick 261103-o2r,
+    /// D-C): the final step is the user's `git merge --ff-only`. Otherwise it is an
+    /// `update-ref` with the expected old value and the working tree is never touched.
+    checked_out: bool,
+    /// Where the run's work is fetched from: the run's clone, or the project itself when
+    /// the clone was removed and `gsd-oneoff/<id>` holds the work (o2r, D-A).
+    source: &'a Path,
     opts: &'a LandOptions,
 }
 
 /// Land the run's `head` into `target_branch` of `project` with a merge commit, a
 /// resolver session resolving conflicts when there are any. `view` is the finished,
 /// landable run; the caller holds the run's land lock and has made every precondition
-/// check (the checkout is clean and on `target_branch`, the planted gate is clean).
-pub fn land_by_merge(
+/// check (the checkout is clean and on `target_branch` when `target.checked_out`, the
+/// planted gate is clean when the work comes from the run's clone).
+pub(crate) fn land_by_merge(
     project: &Path,
     view: &OneoffView,
-    target_branch: &str,
+    target: &Target,
+    source: &Path,
     opts: &LandOptions,
 ) -> Result<String, String> {
     let mut record = view.record.clone();
@@ -309,7 +319,9 @@ pub fn land_by_merge(
         run_dir: &view.run_dir,
         run_id: &view.record.run_id,
         head: &head,
-        target_branch,
+        target_branch: &target.branch,
+        checked_out: target.checked_out,
+        source,
         opts,
     };
     let mut attempts: Vec<String> = Vec::new();
@@ -422,9 +434,17 @@ fn landed(
         how == MergeHow::Resolved,
         &conflicted,
     )];
+    if !land.checked_out {
+        lines.push(not_checked_out_line(land.target_branch));
+    }
     lines.extend(extra_line);
     lines.extend(sensitive_warning(&record.changed_files));
     lines.join("\n")
+}
+
+/// The line a landing into a branch that is not checked out ends with (o2r, D-C).
+pub(crate) fn not_checked_out_line(branch: &str) -> String {
+    format!("{branch} is not checked out: it was advanced by update-ref; the working tree was not touched")
 }
 
 /// One attempt, start to finish (steps 1-4 of the module header).
@@ -442,16 +462,37 @@ fn attempt(
         return Step::Stopped(kind);
     }
 
-    // The target: the checkout's current branch and tip, read again for every attempt.
-    let branch = pgit(project, &["symbolic-ref", "-q", "--short", "HEAD"]);
-    if !branch.success || branch.stdout != land.target_branch {
-        return fail("the checkout switched branches; nothing was merged".to_owned());
-    }
-    let Some(tip) = rev_of(&pgit(
-        project,
-        &["rev-parse", "--verify", "--quiet", "HEAD^{commit}"],
-    )) else {
-        return fail("could not read the checkout's HEAD".to_owned());
+    // The target branch and its tip, read again for every attempt. A checked-out target
+    // is the checkout's current branch; any other is read from its ref (o2r, D-C).
+    let tip = if land.checked_out {
+        let branch = pgit(project, &["symbolic-ref", "-q", "--short", "HEAD"]);
+        if !branch.success || branch.stdout != land.target_branch {
+            return fail("the checkout switched branches; nothing was merged".to_owned());
+        }
+        let Some(tip) = rev_of(&pgit(
+            project,
+            &["rev-parse", "--verify", "--quiet", "HEAD^{commit}"],
+        )) else {
+            return fail("could not read the checkout's HEAD".to_owned());
+        };
+        tip
+    } else {
+        let reference = format!("refs/heads/{}", land.target_branch);
+        let Some(tip) = rev_of(&pgit(
+            project,
+            &[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("{reference}^{{commit}}"),
+            ],
+        )) else {
+            return fail(format!(
+                "the target branch {} no longer exists; nothing was merged",
+                land.target_branch
+            ));
+        };
+        tip
     };
     let (name, email) = match merge_identity(project) {
         Ok(identity) => identity,
@@ -506,7 +547,7 @@ fn attempt(
             "--quiet".into(),
             "--no-tags".into(),
             "--no-recurse-submodules".into(),
-            land.run_dir.join(WORK_DIR).into_os_string(),
+            land.source.as_os_str().to_owned(),
             format!("{reference}:{reference}").into(),
         ],
         push::GIT_FETCH,
@@ -1043,6 +1084,13 @@ fn fast_forward(
         return Err("the fetched merge commit is not the one that was checked".to_owned());
     }
 
+    if !land.checked_out {
+        // o2r D-C, I-05: the branch is moved by `update-ref` with the expected old value.
+        // A tip that changed, or a worktree that took the branch, refuses with nothing
+        // changed; there is no retry.
+        return update_target(project, land.target_branch, merge_sha, tip, land.run_id)
+            .map(|()| Forwarded::Landed);
+    }
     let branch = pgit(project, &["symbolic-ref", "-q", "--short", "HEAD"]);
     if !branch.success || branch.stdout != land.target_branch {
         return Err("the checkout switched branches; nothing was merged".to_owned());

@@ -51,6 +51,8 @@ pub mod land;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod launch;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+pub mod recycle;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod resolve;
 
 /// The environment variable that names the report directory inside the sandbox.
@@ -76,6 +78,9 @@ pub const LOCK_FILE: &str = "oneoff.lock";
 pub const RUN_LOCK_FILE: &str = "run.lock";
 /// The per-run land lock: one landing of a run at a time (quick 261103-hx7, I-13).
 pub const LAND_LOCK_FILE: &str = "land.lock";
+/// The copy of the run's SUMMARY.md a slimmed run keeps in its run dir (quick
+/// 261103-o2r, D-A).
+pub const KEPT_SUMMARY_FILE: &str = "summary.md";
 /// The directory of a run dir that holds the landing attempts (`land/<n>/`).
 pub const LAND_DIR: &str = "land";
 /// The branch prefix of the clone's work branch.

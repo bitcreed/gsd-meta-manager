@@ -366,19 +366,30 @@ fn run_session(ctx: &Ctx<'_>, record: &mut RunRecord) -> Result<(), LauncherErro
     };
     // C-07: the clone, cut at the project's HEAD (a resume: at the old run's head).
     let base = match &old {
-        Some(old) => old
-            .record
-            .head
-            .clone()
-            .ok_or_else(|| LauncherError::InvalidRun {
-                detail: "the run to resume has no recorded head".to_owned(),
-            })?,
-        None => {
-            push::current_branch_and_sha(ctx.project)
+        Some(old) => {
+            // o2r D-C: a resume lands where the run it continues was dispatched from.
+            record.dispatch_branch = old.record.dispatch_branch.clone();
+            record.dispatch_tip = old.record.dispatch_tip.clone();
+            record.dispatch_detached = old.record.dispatch_detached;
+            old.record
+                .head
+                .clone()
                 .ok_or_else(|| LauncherError::InvalidRun {
-                    detail: "the project has no commit to start from".to_owned(),
+                    detail: "the run to resume has no recorded head".to_owned(),
                 })?
-                .1
+        }
+        None => {
+            let (branch, sha) = push::current_branch_and_sha(ctx.project).ok_or_else(|| {
+                LauncherError::InvalidRun {
+                    detail: "the project has no commit to start from".to_owned(),
+                }
+            })?;
+            // o2r D-C: the branch HEAD pointed at and the commit the clone starts from,
+            // taken from the one read that yields `base`.
+            record.dispatch_detached = branch.is_none();
+            record.dispatch_branch = branch;
+            record.dispatch_tip = Some(sha.clone());
+            sha
         }
     };
     record.base = Some(base.clone());
