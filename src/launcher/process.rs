@@ -8,7 +8,7 @@
 //! outside its sandbox. The agent is reached only through `bwrap` (or, in 28-04,
 //! the explicit degraded spawn).
 //!
-//! Six shapes:
+//! Seven shapes (the piped sibling of the first is [`spawn_launch_child_piped`]):
 //!
 //! * [`spawn_launch_child`], the long-lived driver child: a process-group leader
 //!   with stdin `/dev/null` (no TTY, no `tmux`), stdout and stderr into ONE pipe
@@ -31,7 +31,8 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc};
 use std::time::Duration;
 
 use crate::bounded_output::{stdout_within, stdout_within_with_stderr, BoundedOutput};
@@ -40,7 +41,7 @@ use crate::journal::redact::{redact, redact_value};
 /// A stream-json line longer than this is skipped when looking for the result, and is
 /// never copied into the capture file ([`pump_redacted`]). One constant for both
 /// sides, so the pump never writes a line the reader would have to skip.
-pub(super) const MAX_STREAM_LINE: u64 = 4 * 1024 * 1024;
+pub(crate) const MAX_STREAM_LINE: u64 = 4 * 1024 * 1024;
 
 /// What replaces a master output line longer than [`MAX_STREAM_LINE`]: a fixed note,
 /// never a fragment of the line (the 31-08 / WR-05 rule, see [`last_line_of_tail`]).
@@ -99,6 +100,99 @@ pub fn spawn_launch_child(
     cwd: &Path,
     out: File,
 ) -> std::io::Result<(Child, CaptureHandle)> {
+    let (child, capture) = spawn_with(argv, env, cwd, out, Stdio::null())?;
+    Ok((child, capture))
+}
+
+/// [`spawn_launch_child`] with a PIPED stdin (quick 261103-gt1): the one-off agent
+/// reads its messages from it. Everything else is identical.
+///
+/// The pipe reaches the agent because `systemd-run --scope`, `bwrap` and the bridge's
+/// [`spawn_bridged_child`] all inherit stdin, and the bridge never reads it. The write
+/// end is owned by a `launch-input` thread fed through a channel ([`ChildInput`]), so a
+/// full pipe (a prompt larger than the 64 KiB pipe buffer) can never block the caller's
+/// wait loop or its wall clock.
+pub fn spawn_launch_child_piped(
+    argv: &[OsString],
+    env: &BTreeMap<OsString, OsString>,
+    cwd: &Path,
+    out: File,
+) -> std::io::Result<(Child, CaptureHandle, ChildInput)> {
+    let (mut child, capture) = spawn_with(argv, env, cwd, out, Stdio::piped())?;
+    let stdin = child.stdin.take().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::BrokenPipe,
+            "the child has no stdin pipe",
+        )
+    })?;
+    let (tx, rx) = mpsc::channel::<Vec<u8>>();
+    let broken = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&broken);
+    std::thread::Builder::new()
+        .name("launch-input".to_owned())
+        .spawn(move || {
+            let mut stdin = stdin;
+            for line in rx {
+                if flag.load(Ordering::SeqCst) {
+                    // Drain without writing after a write error.
+                    continue;
+                }
+                if stdin.write_all(&line).and_then(|()| stdin.flush()).is_err() {
+                    flag.store(true, Ordering::SeqCst);
+                }
+            }
+            // The sender is gone: dropping `stdin` here is the EOF.
+        })?;
+    Ok((
+        child,
+        capture,
+        ChildInput {
+            tx: Some(tx),
+            broken,
+        },
+    ))
+}
+
+/// The write end of a one-off agent's stdin, owned by a writer thread.
+pub struct ChildInput {
+    tx: Option<mpsc::Sender<Vec<u8>>>,
+    broken: Arc<AtomicBool>,
+}
+
+/// The agent's input is closed or broken.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InputClosed;
+
+impl ChildInput {
+    /// Queue one whole line (the caller includes the newline).
+    pub fn send(&self, line: Vec<u8>) -> Result<(), InputClosed> {
+        if self.broken.load(Ordering::SeqCst) {
+            return Err(InputClosed);
+        }
+        match &self.tx {
+            Some(tx) => tx.send(line).map_err(|_| InputClosed),
+            None => Err(InputClosed),
+        }
+    }
+
+    /// Close the input: the writer thread drops the pipe (EOF) after the queued writes.
+    pub fn close(&mut self) {
+        self.tx = None;
+    }
+
+    /// Still accepting lines.
+    pub fn is_open(&self) -> bool {
+        self.tx.is_some() && !self.broken.load(Ordering::SeqCst)
+    }
+}
+
+fn spawn_with(
+    argv: &[OsString],
+    env: &BTreeMap<OsString, OsString>,
+    cwd: &Path,
+    out: File,
+    stdin: Stdio,
+) -> std::io::Result<(Child, CaptureHandle)> {
     let (program, args) = argv.split_first().ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::InvalidInput, "an empty command line")
     })?;
@@ -109,7 +203,7 @@ pub fn spawn_launch_child(
         .env_clear()
         .envs(env)
         .current_dir(cwd)
-        .stdin(Stdio::null())
+        .stdin(stdin)
         .stdout(writer)
         .stderr(err)
         .process_group(0);

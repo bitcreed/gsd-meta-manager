@@ -174,6 +174,21 @@ for A in "$@"; do if [ "$PREV" = "--" ]; then PROMPT=$A; fi; PREV=$A; done
 printf '%s' "$PROMPT" > "$REC/prompt.txt"
 printf '%s\n' "$@" > "$REC/argv.txt"
 readlink /proc/self/fd/0 > "$REC/stdin.txt"
+# Stream mode (the one-off agent, quick 261103-gt1): the prompt is the FIRST stdin
+# line, a stream-json user message. Record it, strip the fixed message wrapper (the
+# text stays JSON-escaped), and replay the line on stdout with `isReplay` set, as the
+# real agent does with --replay-user-messages. Then run the scenario with stdin still
+# attached.
+for A in "$@"; do
+  if [ "$A" = "--input-format" ]; then
+    if IFS= read -r FIRST; then
+      printf '%s\n' "$FIRST" >> "$REC/stdin.jsonl"
+      printf '%s' "$FIRST" | sed -e 's/^{"type":"user","message":{"role":"user","content":\[{"type":"text","text":"//' -e 's/"}\]},"parent_tool_use_id":null}$//' > "$REC/prompt.txt"
+      printf '%s\n' "$FIRST" | sed 's/^{/{"isReplay":true,/'
+    fi
+    break
+  fi
+done
 if [ -n "$FAKE_CLAUDE_SCENARIO" ]; then exec /bin/sh "$FAKE_CLAUDE_SCENARIO"; fi
 exit 0
 "#;

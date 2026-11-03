@@ -31,11 +31,14 @@ mod unix {
 
     use gsd_meta_manager::cli::{LandAction, TaskAction, TaskRunArgs};
     use gsd_meta_manager::launcher::LauncherError;
+    use gsd_meta_manager::oneoff::inbox::{
+        send_message, wait_outcome, InboxError, InjectionOutcome,
+    };
     use gsd_meta_manager::oneoff::land;
     use gsd_meta_manager::oneoff::launch::{
         run_detached, run_foreground, stop, OneoffOptions, StopOutcome,
     };
-    use gsd_meta_manager::oneoff::store::{read_latest, OneoffView, ReportSource};
+    use gsd_meta_manager::oneoff::store::{read_latest, LiveState, OneoffView, ReportSource};
     use gsd_meta_manager::oneoff::todos::{title_from, valid_todo_file_name, PENDING_REL};
     use gsd_meta_manager::oneoff::TaskSpec;
     use gsd_meta_manager::text::render_for_terminal;
@@ -65,6 +68,11 @@ mod unix {
             TaskAction::Run(args) => run_main(&args, config),
             TaskAction::Status { project, json } => status_main(&project, json, config),
             TaskAction::Stop { project, wait_secs } => stop_main(&project, wait_secs, config),
+            TaskAction::Send {
+                project,
+                text,
+                wait_secs,
+            } => send_main(&project, &text, wait_secs, config),
             TaskAction::Land { action } => land_main(action, config),
         }
     }
@@ -303,6 +311,58 @@ mod unix {
                 0
             }
             Err(e) => report("stop", &e),
+        }
+    }
+
+    /// Wait for the launcher's record of request `id` and report it like `verb` says.
+    fn report_request(verb: &str, run_dir: &Path, id: &str, wait_secs: u64) -> i32 {
+        match wait_outcome(run_dir, id, Duration::from_secs(wait_secs)) {
+            Some(record) if record.outcome == InjectionOutcome::Delivered => {
+                out_line(&format!("task {verb}: delivered ({id})"));
+                0
+            }
+            Some(record) => {
+                err_line(&format!(
+                    "task {verb}: refused: {}",
+                    shown(record.reason.as_deref().unwrap_or("no reason given"))
+                ));
+                1
+            }
+            None => {
+                err_line(&format!("task {verb}: not picked up within {wait_secs}s"));
+                1
+            }
+        }
+    }
+
+    fn send_main(target: &str, text: &str, wait_secs: u64, config: Option<PathBuf>) -> i32 {
+        let (alias, project, _) = match resolve_project(target, config) {
+            Ok(resolved) => resolved,
+            Err(message) => {
+                err_line(&format!("task send: {message}"));
+                return 1;
+            }
+        };
+        let not_live = || {
+            err_line(&format!(
+                "task send: {}'s one-off is not live",
+                shown(&alias)
+            ));
+            1
+        };
+        let Some(view) = read_latest(&project) else {
+            return not_live();
+        };
+        if view.live != LiveState::Running {
+            return not_live();
+        }
+        match send_message(&view.run_dir, text) {
+            Ok(id) => report_request("send", &view.run_dir, &id, wait_secs),
+            Err(InboxError::NotLive) => not_live(),
+            Err(e) => {
+                err_line(&format!("task send: {}", shown(&e.to_string())));
+                1
+            }
         }
     }
 

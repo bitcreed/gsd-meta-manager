@@ -380,3 +380,176 @@ fn an_uncommitted_todo_fails_before_the_agent_starts() {
     );
     assert!(!fx.rec_dir().join("prompt.txt").exists());
 }
+
+// ---- quick 261103-gt1: stdin stream-json, the inbox and the session lifecycle ----
+
+/// A turn that ends at once (the shim already replayed the prompt), then reads stdin
+/// until EOF and records that the launcher closed it.
+const STREAM_TURN_SCENARIO: &str = r#"
+printf '%s\n' '{"type":"result","subtype":"success","total_cost_usd":0.01,"num_turns":1}'
+while IFS= read -r line; do :; done
+touch "$FAKE_CLAUDE_DIR/eof"
+"#;
+
+/// Waits for operator messages: replays each, ends its turn with a result, and records
+/// the stdin EOF. No result is printed for the prompt, so the session stays open.
+const INJECT_SCENARIO: &str = r#"
+touch "$FAKE_CLAUDE_DIR/started"
+while IFS= read -r line; do
+  printf '%s\n' "$line" | sed 's/^{/{"isReplay":true,/'
+  printf '%s\n' '{"type":"result","subtype":"success","total_cost_usd":0.5,"num_turns":1}'
+done
+touch "$FAKE_CLAUDE_DIR/eof"
+"#;
+
+fn lines_of(path: &Path) -> Vec<Value> {
+    fs::read_to_string(path)
+        .unwrap_or_default()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap_or(Value::Null))
+        .collect()
+}
+
+#[test]
+fn the_prompt_arrives_on_a_piped_stdin_and_the_turn_ends_the_session() {
+    let fx = fixture();
+    fx.write_scenario(STREAM_TURN_SCENARIO);
+    let out = run(&fx, &["run", ALIAS, "--todo", TODO, "--foreground"]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let argv = fx.recorded("argv.txt");
+    for flag in [
+        "--input-format",
+        "--replay-user-messages",
+        "--forward-subagent-text",
+    ] {
+        assert!(argv.lines().any(|l| l == flag), "{flag} in {argv}");
+    }
+    assert!(!argv.lines().any(|l| l == "--"), "{argv}");
+    let prompt = fx.recorded("prompt.txt");
+    assert!(prompt.starts_with("/gsd-quick "), "{prompt}");
+    assert!(
+        prompt.contains("details: .planning/todos/pending/"),
+        "{prompt}"
+    );
+    assert!(
+        fx.recorded("stdin.txt").starts_with("pipe:"),
+        "{}",
+        fx.recorded("stdin.txt")
+    );
+    assert!(
+        fx.rec_dir().join("eof").exists(),
+        "the launcher never closed the agent's stdin"
+    );
+    let record = status(&fx);
+    assert_eq!(record["record"]["outcome"]["kind"], "finished", "{record}");
+    let id = record["record"]["run_id"].as_str().unwrap();
+    let stream = fs::read_to_string(run_dir(&fx, id).join("stream.jsonl")).unwrap();
+    assert!(stream.contains("isReplay"), "{stream}");
+}
+
+#[test]
+fn task_send_is_delivered_recorded_replayed_and_refused_once_the_run_is_over() {
+    let fx = fixture();
+    fx.write_scenario(INJECT_SCENARIO);
+    let out = run(&fx, &["run", ALIAS, "--text", "wait for me"]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert!(
+        wait_until(Duration::from_secs(30), || fx.scenario_started()),
+        "the scenario never started"
+    );
+    let live = status(&fx);
+    let id = live["record"]["run_id"].as_str().unwrap().to_owned();
+    let dir = run_dir(&fx, &id);
+
+    let sent = run(&fx, &["send", ALIAS, "hello there"]);
+    assert_eq!(sent.status.code(), Some(0), "{sent:?}");
+    assert!(
+        String::from_utf8_lossy(&sent.stdout).contains("delivered"),
+        "{sent:?}"
+    );
+
+    let injections = lines_of(&dir.join("injections.jsonl"));
+    assert_eq!(injections.len(), 1, "{injections:?}");
+    assert_eq!(injections[0]["kind"], "message");
+    assert_eq!(injections[0]["outcome"], "delivered");
+    assert_eq!(injections[0]["text"], "hello there");
+    assert!(injections[0]["id"].as_str().is_some_and(|i| !i.is_empty()));
+    assert_eq!(
+        fs::metadata(dir.join("injections.jsonl")).unwrap().mode() & 0o777,
+        0o600
+    );
+    assert_eq!(
+        fs::metadata(dir.join("inbox")).unwrap().mode() & 0o777,
+        0o700
+    );
+
+    let done = wait_finished(&fx);
+    assert_eq!(done["record"]["outcome"]["kind"], "finished", "{done}");
+    let stream = fs::read_to_string(dir.join("stream.jsonl")).unwrap();
+    assert!(
+        stream
+            .lines()
+            .any(|l| l.contains("isReplay") && l.contains("hello there")),
+        "{stream}"
+    );
+    assert!(fx.rec_dir().join("eof").exists());
+
+    let late = run(&fx, &["send", ALIAS, "too late"]);
+    assert_ne!(late.status.code(), Some(0), "{late:?}");
+    assert!(
+        String::from_utf8_lossy(&late.stderr).contains("not live"),
+        "{late:?}"
+    );
+    assert_eq!(lines_of(&dir.join("injections.jsonl")).len(), 1);
+}
+
+#[test]
+fn no_sandbox_bind_covers_the_inbox() {
+    let fx = fixture();
+    fx.write_scenario(STREAM_TURN_SCENARIO);
+    let out = run(&fx, &["run", ALIAS, "--text", "x", "--foreground"]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let id = status(&fx)["record"]["run_id"].as_str().unwrap().to_owned();
+    let inbox = run_dir(&fx, &id).join("inbox");
+    let shims = fx.shim_log();
+    let line = shims
+        .lines()
+        .filter(|l| l.starts_with("bwrap "))
+        .find(|l| l.contains("--tmpfs"))
+        .unwrap_or_else(|| panic!("no bwrap line in {shims}"));
+    let words: Vec<&str> = line.split(' ').collect();
+    let mut binds = 0;
+    let mut masked = false;
+    for pair in words.windows(2) {
+        let (flag, arg) = (pair[0], pair[1]);
+        if flag == "--tmpfs" && inbox.starts_with(arg) {
+            masked = true;
+        }
+        if [
+            "--bind",
+            "--ro-bind",
+            "--bind-try",
+            "--ro-bind-try",
+            "--dev-bind",
+        ]
+        .contains(&flag)
+        {
+            binds += 1;
+            if flag == "--ro-bind" && arg == "/" {
+                // The read-only root: the run dir is hidden by the `--tmpfs` checked
+                // below, and a read-only mount cannot take a request anyway.
+                continue;
+            }
+            assert!(
+                !inbox.starts_with(arg),
+                "{arg} covers the inbox {}",
+                inbox.display()
+            );
+        }
+    }
+    assert!(binds > 0, "no bind was parsed from {line}");
+    assert!(
+        masked,
+        "the read-only root must be masked by a tmpfs over the run dir: {line}"
+    );
+}

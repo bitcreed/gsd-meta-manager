@@ -10,6 +10,11 @@
 
 use std::ffi::OsString;
 
+use serde::Serialize;
+use serde_json::Value;
+
+use super::stream::{StreamEvent, UsageTokens};
+
 /// The agent CLI a one-off runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AgentRuntime {
@@ -73,19 +78,314 @@ impl AgentRuntime {
         }
     }
 
-    /// The agent's command line: headless, stream-json, the prompt last after `--`.
-    pub fn argv(self, prompt: &str, model: &str, max_budget_usd: f64) -> Vec<OsString> {
+    /// The agent's command line: headless, stream-json on both ends, replaying the
+    /// user messages it reads. There is NO positional prompt and no `--`: the prompt
+    /// is the first message on stdin ([`user_message_line`](Self::user_message_line)).
+    /// The driver keeps `launcher::sandbox::claude_argv`, untouched (C-03).
+    pub fn argv(self, model: &str, max_budget_usd: f64) -> Vec<OsString> {
         match self {
             AgentRuntime::Claude => {
-                let mut argv = crate::launcher::sandbox::claude_argv(prompt, model, max_budget_usd);
-                if !self.caps().budget_cap {
-                    if let Some(i) = argv.iter().position(|a| a == "--max-budget-usd") {
-                        argv.drain(i..i + 2);
-                    }
+                let mut argv: Vec<OsString> = ["claude", "-p", "--setting-sources", "user"]
+                    .iter()
+                    .map(OsString::from)
+                    .collect();
+                argv.extend(["--model", model].iter().map(OsString::from));
+                argv.extend(
+                    [
+                        "--input-format",
+                        "stream-json",
+                        "--output-format",
+                        "stream-json",
+                        "--verbose",
+                        "--replay-user-messages",
+                        "--forward-subagent-text",
+                        "--permission-mode",
+                        "bypassPermissions",
+                    ]
+                    .iter()
+                    .map(OsString::from),
+                );
+                if self.caps().budget_cap {
+                    argv.push("--max-budget-usd".into());
+                    argv.push(max_budget_usd.to_string().into());
                 }
                 argv
             }
         }
+    }
+
+    /// One user message as the agent reads it on stdin: a single JSON line ending in
+    /// a newline (C-04). Serialized from typed structs so the key order is pinned.
+    pub fn user_message_line(self, text: &str) -> String {
+        #[derive(Serialize)]
+        struct Block<'a> {
+            r#type: &'static str,
+            text: &'a str,
+        }
+        #[derive(Serialize)]
+        struct Message<'a> {
+            role: &'static str,
+            content: [Block<'a>; 1],
+        }
+        #[derive(Serialize)]
+        struct Line<'a> {
+            r#type: &'static str,
+            message: Message<'a>,
+            parent_tool_use_id: Option<&'static str>,
+        }
+        let line = Line {
+            r#type: "user",
+            message: Message {
+                role: "user",
+                content: [Block {
+                    r#type: "text",
+                    text,
+                }],
+            },
+            parent_tool_use_id: None,
+        };
+        let mut rendered = serde_json::to_string(&line).unwrap_or_default();
+        rendered.push('\n');
+        rendered
+    }
+
+    /// The wrap-up message the launcher injects when a soft spend cap is reached.
+    pub fn wrap_up_message(self) -> &'static str {
+        match self {
+            AgentRuntime::Claude => WRAP_UP_MESSAGE,
+        }
+    }
+}
+
+/// The one message the launcher injects at the soft spend cap (C-18).
+const WRAP_UP_MESSAGE: &str = "Budget reached: commit your work now, call `gsd-meta-manager taskctl report` with your status, then stop.";
+
+/// The longest text a classified event keeps (characters).
+const EVENT_TEXT_MAX: usize = 32 * 1024;
+/// The longest one-line string a classified event keeps (characters).
+const EVENT_LINE_MAX: usize = 200;
+/// The longest tool argument summary (characters).
+const TOOL_SUMMARY_MAX: usize = 100;
+
+/// `text` on one line: control characters become spaces, cut to `max` characters.
+fn one_line(text: &str, max: usize) -> String {
+    text.chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .take(max)
+        .collect()
+}
+
+/// `text` cut to `max` characters, newlines and tabs kept, other control characters
+/// replaced.
+fn bounded_text(text: &str, max: usize) -> String {
+    text.chars()
+        .map(|c| {
+            if c.is_control() && c != '\n' && c != '\t' {
+                ' '
+            } else {
+                c
+            }
+        })
+        .take(max)
+        .collect()
+}
+
+/// A short `[a-z_]` word, else `other` (agent-written text is never copied).
+fn lower_word(value: Option<&Value>) -> Option<String> {
+    let word = value?.as_str()?;
+    Some(
+        if !word.is_empty()
+            && word.len() <= 40
+            && word.chars().all(|c| c.is_ascii_lowercase() || c == '_')
+        {
+            word.to_owned()
+        } else {
+            "other".to_owned()
+        },
+    )
+}
+
+/// The tool's argument that says what it is doing, on one line (C-08).
+fn summarize_tool(name: &str, input: &Value) -> String {
+    let key = match name {
+        "Bash" => Some("command"),
+        "Read" | "Edit" | "Write" | "NotebookEdit" => Some("file_path"),
+        "Grep" | "Glob" => Some("pattern"),
+        "Task" | "Agent" => Some("description"),
+        "Skill" => Some("skill"),
+        _ => None,
+    };
+    let chosen = key
+        .and_then(|k| input.get(k))
+        .and_then(Value::as_str)
+        .or_else(|| {
+            input
+                .as_object()?
+                .values()
+                .filter_map(Value::as_str)
+                .find(|s| s.chars().count() <= 200)
+        });
+    chosen.map_or_else(String::new, |s| one_line(s, TOOL_SUMMARY_MAX))
+}
+
+/// The text of a message `content` that is a string or an array of text blocks.
+fn content_text(content: &Value) -> Option<String> {
+    match content {
+        Value::String(s) => Some(s.clone()),
+        Value::Array(blocks) => {
+            let parts: Vec<&str> = blocks
+                .iter()
+                .filter(|b| b.get("type").and_then(Value::as_str) == Some("text"))
+                .filter_map(|b| b.get("text").and_then(Value::as_str))
+                .collect();
+            (!parts.is_empty()).then(|| parts.join("\n"))
+        }
+        _ => None,
+    }
+}
+
+impl AgentRuntime {
+    /// Read one `stream.jsonl` line into runtime-neutral events (C-08, I-1, I-2).
+    /// One line can carry several content blocks plus a `usage`. A line that is not
+    /// JSON, or that this reader does not know, is `[Other]`. Thinking blocks are not
+    /// kept.
+    pub fn classify(self, line: &str) -> Vec<StreamEvent> {
+        match self {
+            AgentRuntime::Claude => classify_claude(line),
+        }
+    }
+}
+
+fn classify_claude(line: &str) -> Vec<StreamEvent> {
+    let Ok(value) = serde_json::from_str::<Value>(line) else {
+        return vec![StreamEvent::Other];
+    };
+    let sub = value
+        .get("parent_tool_use_id")
+        .is_some_and(|p| !p.is_null());
+    let kind = value.get("type").and_then(Value::as_str).unwrap_or("");
+    match kind {
+        "assistant" => {
+            let Some(message) = value.get("message") else {
+                return vec![StreamEvent::Other];
+            };
+            let mut events = Vec::new();
+            if let Some(blocks) = message.get("content").and_then(Value::as_array) {
+                for block in blocks {
+                    match block.get("type").and_then(Value::as_str) {
+                        Some("text") => {
+                            if let Some(text) = block.get("text").and_then(Value::as_str) {
+                                events.push(StreamEvent::AssistantText {
+                                    sub,
+                                    text: bounded_text(text, EVENT_TEXT_MAX),
+                                });
+                            }
+                        }
+                        Some("tool_use") => {
+                            let name = one_line(
+                                block.get("name").and_then(Value::as_str).unwrap_or("tool"),
+                                40,
+                            );
+                            let input = block.get("input").unwrap_or(&Value::Null);
+                            events.push(StreamEvent::ToolCall {
+                                sub,
+                                summary: summarize_tool(&name, input),
+                                name,
+                            });
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            if let (Some(id), Some(usage)) = (
+                message.get("id").and_then(Value::as_str),
+                message.get("usage").filter(|u| u.is_object()),
+            ) {
+                let n = |key: &str| usage.get(key).and_then(Value::as_u64).unwrap_or(0);
+                events.push(StreamEvent::Usage {
+                    sub,
+                    message_id: one_line(id, 80),
+                    model: one_line(
+                        message.get("model").and_then(Value::as_str).unwrap_or(""),
+                        80,
+                    ),
+                    tokens: UsageTokens {
+                        input: n("input_tokens"),
+                        output: n("output_tokens"),
+                        cache_creation: n("cache_creation_input_tokens"),
+                        cache_read: n("cache_read_input_tokens"),
+                    },
+                });
+            }
+            if events.is_empty() {
+                events.push(StreamEvent::Other);
+            }
+            events
+        }
+        "user" => {
+            let Some(content) = value.get("message").and_then(|m| m.get("content")) else {
+                return vec![StreamEvent::Other];
+            };
+            let replay = value.get("isReplay").and_then(Value::as_bool) == Some(true);
+            if replay && !sub {
+                return match content_text(content) {
+                    Some(text) => vec![StreamEvent::UserReplay {
+                        text: bounded_text(&text, EVENT_TEXT_MAX),
+                    }],
+                    None => vec![StreamEvent::Other],
+                };
+            }
+            let mut events = Vec::new();
+            if let Some(blocks) = content.as_array() {
+                for block in blocks {
+                    if block.get("type").and_then(Value::as_str) != Some("tool_result") {
+                        continue;
+                    }
+                    let text = block
+                        .get("content")
+                        .and_then(content_text)
+                        .unwrap_or_default();
+                    events.push(StreamEvent::ToolResult {
+                        sub,
+                        is_error: block.get("is_error").and_then(Value::as_bool) == Some(true),
+                        first_line: one_line(text.lines().next().unwrap_or(""), EVENT_LINE_MAX),
+                        lines: text.lines().count(),
+                    });
+                }
+            }
+            if events.is_empty() {
+                events.push(StreamEvent::Other);
+            }
+            events
+        }
+        "result" => vec![StreamEvent::TurnResult {
+            subtype: lower_word(value.get("subtype")).unwrap_or_else(|| "none".to_owned()),
+            cost_usd: value
+                .get("total_cost_usd")
+                .and_then(Value::as_f64)
+                .filter(|c| c.is_finite() && *c >= 0.0),
+            turns: value
+                .get("num_turns")
+                .and_then(Value::as_u64)
+                .and_then(|n| u32::try_from(n).ok()),
+            is_error: value.get("is_error").and_then(Value::as_bool) == Some(true),
+        }],
+        "rate_limit_event" => {
+            let info = value.get("rate_limit_info").unwrap_or(&Value::Null);
+            vec![StreamEvent::RateLimit {
+                status: lower_word(info.get("status")).unwrap_or_else(|| "other".to_owned()),
+                kind: lower_word(info.get("rateLimitType")),
+                utilization: info
+                    .get("utilization")
+                    .and_then(Value::as_f64)
+                    .filter(|u| u.is_finite() && *u >= 0.0),
+                resets_at: info.get("resetsAt").and_then(Value::as_i64),
+            }]
+        }
+        "system" => vec![StreamEvent::System {
+            subtype: lower_word(value.get("subtype")).unwrap_or_else(|| "none".to_owned()),
+        }],
+        _ => vec![StreamEvent::Other],
     }
 }
 
@@ -389,13 +689,179 @@ mod host_side {
 mod tests {
     use super::*;
 
+    fn argv_strings(argv: &[OsString]) -> Vec<String> {
+        argv.iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect()
+    }
+
     #[test]
-    fn the_argv_is_the_launchers_headless_command() {
+    fn the_argv_reads_stream_json_on_stdin_and_has_no_prompt() {
         let rt = AgentRuntime::default();
         assert_eq!(
-            rt.argv("/gsd-quick x", "opus", 10.0),
-            crate::launcher::sandbox::claude_argv("/gsd-quick x", "opus", 10.0)
+            argv_strings(&rt.argv("opus", 10.0)).join(" "),
+            "claude -p --setting-sources user --model opus --input-format stream-json \
+             --output-format stream-json --verbose --replay-user-messages \
+             --forward-subagent-text --permission-mode bypassPermissions --max-budget-usd 10"
         );
+        // The driver's command is untouched.
+        let driver = argv_strings(&crate::launcher::sandbox::claude_argv("x", "opus", 10.0));
+        assert_eq!(&driver[driver.len() - 2..], ["--", "x"]);
+        assert!(!driver.iter().any(|a| a == "--input-format"));
+    }
+
+    #[test]
+    fn a_user_message_is_one_json_line_with_pinned_key_order() {
+        let line = AgentRuntime::default().user_message_line("a\n\"b\"");
+        assert_eq!(
+            line,
+            "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"a\\n\\\"b\\\"\"}]},\"parent_tool_use_id\":null}\n"
+        );
+        assert_eq!(line.matches('\n').count(), 1);
+    }
+
+    fn classify(line: &str) -> Vec<StreamEvent> {
+        AgentRuntime::default().classify(line)
+    }
+
+    #[test]
+    fn a_replay_is_a_user_replay() {
+        for content in [r#"[{"type":"text","text":"hi"}]"#, r#""hi""#] {
+            let line = format!(
+                r#"{{"type":"user","isReplay":true,"message":{{"role":"user","content":{content}}},"parent_tool_use_id":null}}"#
+            );
+            assert_eq!(
+                classify(&line),
+                [StreamEvent::UserReplay { text: "hi".into() }]
+            );
+        }
+    }
+
+    #[test]
+    fn a_tool_result_carries_its_first_line_and_line_count() {
+        let line = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t","content":"one\ntwo\nthree","is_error":true}]},"parent_tool_use_id":"t1"}"#;
+        assert_eq!(
+            classify(line),
+            [StreamEvent::ToolResult {
+                sub: true,
+                is_error: true,
+                first_line: "one".into(),
+                lines: 3
+            }]
+        );
+    }
+
+    #[test]
+    fn an_assistant_line_yields_text_tool_calls_and_usage_in_order() {
+        let line = r#"{"type":"assistant","message":{"id":"m1","model":"claude-opus-5-5","content":[{"type":"thinking","thinking":"hmm"},{"type":"text","text":"on it"},{"type":"tool_use","id":"u","name":"Bash","input":{"command":"cargo test"}}],"usage":{"input_tokens":3,"output_tokens":4,"cache_creation_input_tokens":5,"cache_read_input_tokens":6}},"parent_tool_use_id":null}"#;
+        assert_eq!(
+            classify(line),
+            [
+                StreamEvent::AssistantText {
+                    sub: false,
+                    text: "on it".into()
+                },
+                StreamEvent::ToolCall {
+                    sub: false,
+                    name: "Bash".into(),
+                    summary: "cargo test".into()
+                },
+                StreamEvent::Usage {
+                    sub: false,
+                    message_id: "m1".into(),
+                    model: "claude-opus-5-5".into(),
+                    tokens: UsageTokens {
+                        input: 3,
+                        output: 4,
+                        cache_creation: 5,
+                        cache_read: 6
+                    }
+                },
+            ]
+        );
+        let sub = line.replace(
+            r#""parent_tool_use_id":null"#,
+            r#""parent_tool_use_id":"t1""#,
+        );
+        assert!(classify(&sub).iter().all(|e| match e {
+            StreamEvent::AssistantText { sub, .. }
+            | StreamEvent::ToolCall { sub, .. }
+            | StreamEvent::Usage { sub, .. } => *sub,
+            _ => false,
+        }));
+    }
+
+    #[test]
+    fn results_rate_limits_and_system_lines_are_sanitised() {
+        assert_eq!(
+            classify(
+                r#"{"type":"result","subtype":"success","total_cost_usd":0.42,"num_turns":3,"is_error":false}"#
+            ),
+            [StreamEvent::TurnResult {
+                subtype: "success".into(),
+                cost_usd: Some(0.42),
+                turns: Some(3),
+                is_error: false
+            }]
+        );
+        assert_eq!(
+            classify(r#"{"type":"result","subtype":"\u001b[31mevil"}"#),
+            [StreamEvent::TurnResult {
+                subtype: "other".into(),
+                cost_usd: None,
+                turns: None,
+                is_error: false
+            }]
+        );
+        assert_eq!(
+            classify(
+                r#"{"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning","rateLimitType":"five_hour","utilization":0.85,"resetsAt":1800003600}}"#
+            ),
+            [StreamEvent::RateLimit {
+                status: "allowed_warning".into(),
+                kind: Some("five_hour".into()),
+                utilization: Some(0.85),
+                resets_at: Some(1_800_003_600)
+            }]
+        );
+        assert_eq!(
+            classify(
+                r#"{"type":"rate_limit_event","rate_limit_info":{"status":"Evil!","rateLimitType":"x y"}}"#
+            ),
+            [StreamEvent::RateLimit {
+                status: "other".into(),
+                kind: Some("other".into()),
+                utilization: None,
+                resets_at: None
+            }]
+        );
+        assert_eq!(
+            classify(r#"{"type":"system","subtype":"init"}"#),
+            [StreamEvent::System {
+                subtype: "init".into()
+            }]
+        );
+        assert_eq!(classify("not json"), [StreamEvent::Other]);
+        assert_eq!(classify(r#"{"type":"mystery"}"#), [StreamEvent::Other]);
+    }
+
+    #[test]
+    fn a_tool_is_summarised_by_the_argument_that_says_what_it_does() {
+        let s =
+            |name: &str, input: &str| summarize_tool(name, &serde_json::from_str(input).unwrap());
+        assert_eq!(s("Bash", r#"{"command":"ls -la","timeout":5}"#), "ls -la");
+        assert_eq!(s("Read", r#"{"file_path":"/a/b"}"#), "/a/b");
+        assert_eq!(
+            s("Edit", r#"{"file_path":"/a/c","old_string":"x"}"#),
+            "/a/c"
+        );
+        assert_eq!(s("Grep", r#"{"pattern":"foo","path":"."}"#), "foo");
+        assert_eq!(s("Task", r#"{"description":"scan","prompt":"p"}"#), "scan");
+        assert_eq!(s("Skill", r#"{"skill":"gsd-fast"}"#), "gsd-fast");
+        assert_eq!(s("Weird", r#"{"n":1,"q":"first string"}"#), "first string");
+        assert_eq!(s("Bash", r#"{"command":"a\nb\u001b[0m"}"#), "a b [0m");
+        let long = format!(r#"{{"command":"{}"}}"#, "x".repeat(500));
+        assert_eq!(s("Bash", &long).chars().count(), 100);
     }
 
     #[test]

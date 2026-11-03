@@ -504,6 +504,17 @@ pub enum TaskAction {
         #[arg(long, default_value_t = 60)]
         wait_secs: u64,
     },
+    /// Send a message to the project's running one-off agent (experimental)
+    Send {
+        /// Alias or path of a registered project
+        project: String,
+        /// The message (at most 4000 characters)
+        #[arg(allow_hyphen_values = true)]
+        text: String,
+        /// How long to wait for the launcher to pick the message up, in seconds
+        #[arg(long, default_value_t = 10)]
+        wait_secs: u64,
+    },
     /// Land a finished run's work: merge, push or discard
     Land {
         #[command(subcommand)]

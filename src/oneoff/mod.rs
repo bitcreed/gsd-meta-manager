@@ -26,13 +26,21 @@
 //! `report.json`: it reads it capped, refuses a symlink and re-validates it with the
 //! CLI's own validator ([`report::read_validated`]). The commit range, the commit
 //! count and the SUMMARY path are derived on the host from git, never from the report.
+//!
+//! The operator writes only `<run-dir>/inbox/` (0700, host-only, never mounted); the
+//! host writes `injections.jsonl`, the record of every message it delivered or refused.
+//! The agent reads its prompt and every injected message as stream-json lines on its
+//! stdin ([`session`], [`inbox`]).
 
 use serde::{Deserialize, Serialize};
 
+pub mod inbox;
 pub mod prompt;
 pub mod report;
 pub mod runtime;
+pub mod session;
 pub mod store;
+pub mod stream;
 pub mod todos;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -58,6 +66,14 @@ pub const REPORT_SUBDIR: &str = "report";
 pub const LOCK_FILE: &str = "oneoff.lock";
 /// The branch prefix of the clone's work branch.
 pub const BRANCH_PREFIX: &str = "gsd-oneoff/";
+/// The host-only directory operator requests are put in (never mounted).
+pub const INBOX_DIR: &str = "inbox";
+/// The host's record of every injection, delivered or refused.
+pub const INJECTIONS_FILE: &str = "injections.jsonl";
+/// The most injections the launcher accepts per run.
+pub const MAX_INJECTIONS: usize = 200;
+/// The longest injected message, in characters.
+pub const MAX_MESSAGE_CHARS: usize = 4000;
 /// The prefix of every one-off run id.
 pub const RUN_ID_PREFIX: &str = "oneoff-";
 

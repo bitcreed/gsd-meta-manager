@@ -37,7 +37,7 @@ use crate::launcher::egress::socket_path_for;
 use crate::launcher::home::HomeSetup;
 use crate::launcher::host::{detect, Posture};
 use crate::launcher::process::{
-    respawn_detached, run_bounded, spawn_launch_child, CAPTURE_FINISH_BUDGET,
+    respawn_detached, run_bounded, spawn_launch_child_piped, CAPTURE_FINISH_BUDGET,
 };
 use crate::launcher::push::{self, planted};
 use crate::launcher::run::{
@@ -50,8 +50,10 @@ use crate::launcher::sandbox::{
 use crate::launcher::stop::signal_target;
 use crate::launcher::LauncherError;
 
+use super::inbox::ensure_inbox;
 use super::report::read_validated;
 use super::runtime::{AgentRuntime, HostEnd};
+use super::session::Supervisor;
 use super::store::{
     lock_path, mint_run_id, oneoff_root, probe, project_dir_for, project_dir_in, rfc3339,
     summary_path_from, synthesize, valid_oneoff_run_id, write_record, LockSeen, RecordStatus,
@@ -389,12 +391,13 @@ fn run_session(ctx: &Ctx<'_>, record: &mut RunRecord) -> Result<(), LauncherErro
     if prompt.len() > MAX_PROMPT_BYTES {
         return Err(LauncherError::InvalidRun {
             detail: format!(
-                "the prompt is {} bytes; at most {MAX_PROMPT_BYTES} fit in one argument",
+                "the prompt is {} bytes; at most {MAX_PROMPT_BYTES} fit in one message",
                 prompt.len()
             ),
         });
     }
-    let agent_argv = ctx.runtime.argv(&prompt, &opts.model, opts.max_budget_usd);
+    let agent_argv = ctx.runtime.argv(&opts.model, opts.max_budget_usd);
+    ensure_inbox(run_dir).map_err(|e| io_error("create the inbox", e))?;
 
     let mut egress_guard = None;
     let mut unit = None;
@@ -454,11 +457,14 @@ fn run_session(ctx: &Ctx<'_>, record: &mut RunRecord) -> Result<(), LauncherErro
         .mode(0o600)
         .open(&stream_path)
         .map_err(|e| io_error(&format!("open {}", stream_path.display()), e))?;
-    let (mut child, capture) =
-        spawn_launch_child(&argv, &env, &work, out).map_err(|e| LauncherError::Spawn {
+    let (mut child, capture, input) =
+        spawn_launch_child_piped(&argv, &env, &work, out).map_err(|e| LauncherError::Spawn {
             detail: format!("the agent session: {e}"),
         })?;
     drop(env);
+    // C-05: the prompt is the first message on the agent's stdin.
+    let mut supervisor = Supervisor::new(run_dir, input);
+    supervisor.send_prompt(&prompt, Instant::now());
     let containment = match &unit {
         Some(unit) => Containment::Scope { unit: unit.clone() },
         None => Containment::Group { pgid: child.id() },
@@ -474,17 +480,21 @@ fn run_session(ctx: &Ctx<'_>, record: &mut RunRecord) -> Result<(), LauncherErro
     let (status, end) = loop {
         if ctx.user_stop.load(Ordering::SeqCst) {
             containment.stop(&mut child);
+            supervisor.close_input();
             break (child.wait(), HostEnd::UserStop);
         }
         if started.elapsed() >= cap {
             containment.stop(&mut child);
+            supervisor.close_input();
             break (child.wait(), HostEnd::WallClock);
         }
+        supervisor.tick(Instant::now());
         match child.try_wait() {
             Ok(Some(status)) => break (Ok(status), HostEnd::Exited),
             Ok(None) => {}
             Err(e) => {
                 containment.stop(&mut child);
+                supervisor.close_input();
                 return Err(io_error("wait for the agent session", e));
             }
         }
@@ -496,6 +506,7 @@ fn run_session(ctx: &Ctx<'_>, record: &mut RunRecord) -> Result<(), LauncherErro
     if let Some(guard) = egress_guard {
         guard.finish();
     }
+    record.warnings.extend(supervisor.finish());
     capture.finish(CAPTURE_FINISH_BUDGET);
     let rc = status
         .ok()
