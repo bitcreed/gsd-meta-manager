@@ -1,21 +1,21 @@
 ---
 gsd_state_version: "1.0"
 milestone: v2.0
-milestone_name: Autonomous Orchestration
+current_phase_name: Sandbox Egress & Agent-Channel Isolation
 status: shipped
-stopped_at: "v2.0.0 released locally (tag v2.0.0, not pushed) — milestone v2.0 Autonomous Orchestration shipped 2026-10-29"
-last_updated: "2026-10-30T02:58:21.564Z"
+stopped_at: v2.0.0 released locally (tag v2.0.0, not pushed) — milestone v2.0 Autonomous Orchestration shipped 2026-10-29
+last_updated: "2026-11-03T16:54:28.229Z"
 last_activity: 2026-10-29
-last_activity_desc: "Milestone v2.0 completed, archived and released as v2.0.0"
-state_head: 1059da8fd385b90e8e452e705475695522ecdb44
+last_activity_desc: Milestone v2.0 completed, archived and released as v2.0.0
+state_head: 785fae96f75eaaac9330c97c814e2b29278540b3
 progress:
   total_phases: 16
   completed_phases: 16
   total_plans: 125
   completed_plans: 125
   percent: 100
+milestone_name: Autonomous Orchestration
 current_phase: "28.1"
-current_phase_name: Sandbox Egress & Agent-Channel Isolation
 ---
 
 # Project State
@@ -33,7 +33,7 @@ Milestone: v2.0 Autonomous Orchestration — SHIPPED 2026-10-29 as v2.0.0
 Phase: — (between milestones; Phases 14-31 archived to `.planning/milestones/v2.0-phases/`)
 Plan: —
 Status: shipped
-Last activity: 2026-10-29 — milestone v2.0 completed, archived, released as v2.0.0 (local tag, not pushed)
+Last activity: 2026-11-03 - Completed quick task 261103-em6: Re-port gsd-core v1.20.0 ROADMAP entry grammar and Progress-table owner
 
 Archive: `.planning/milestones/v2.0-ROADMAP.md`, `v2.0-REQUIREMENTS.md`, `v2.0-MILESTONE-AUDIT.md`.
 Carried forward: five security-adjacent review clusters as todos `2026-10-29-v2-carry-*`;
@@ -509,6 +509,7 @@ Older entries (Phase 19 T-19-* rows, Phase 21 round-13 gaps, Phase 26 risks, 31-
 | 261028-v2z | Fix WR-13: managed_settings nested wrong-shape host values fail closed | 2026-10-28 | 40870ca | [261028-v2z-fix-wr-13-managed-settings-nested-wrong-](./quick/261028-v2z-fix-wr-13-managed-settings-nested-wrong-/) |
 | 261029-1dp | Close v2.0 audit blockers A-F: SAFE-04 stdout redaction, supersede CTRL-02/03 TRANS-01/04/05 STEER-02, CTRL-05 partial, drop AgentRuntime, 28.1 probe closed | 2026-10-29 | 0d18fe9 | [261029-1dp-close-v2-0-audit-blockers-supersede-ctrl](./quick/261029-1dp-close-v2-0-audit-blockers-supersede-ctrl/) |
 | 261029-fst | Re-point the two self-roadmap tests at .planning/milestones/v2.0-ROADMAP.md after the v2.0 close collapsed ROADMAP.md (fast) | 2026-10-29 | 1059da8 | — |
+| 261103-em6 | gsd-core v1.20.0 sync, area 3: re-port ROADMAP phase-entry grammar (#5763, shared line-anchored prefix for R1/R2/R3 + milestone scope), Progress-table owner (#5761, fence-aware, Progress Tracker, no fall-through) and milestone slice (#5165). Corpus: wordoclock now reads its per-phase table; ttbook counts only v3 rows. Inferred decisions in SUMMARY. Ran unisolated (base-check false negative) | 2026-11-03 | 785fae9 | [261103-em6-re-port-gsd-core-v1-20-0-roadmap-entry-g](./quick/261103-em6-re-port-gsd-core-v1-20-0-roadmap-entry-g/) |
 
 ## Deferred Items
 
