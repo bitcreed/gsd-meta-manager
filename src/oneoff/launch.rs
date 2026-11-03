@@ -62,6 +62,7 @@ use super::store::{
     rfc3339, run_lock_path, summary_path_from, synthesize, valid_oneoff_run_id, write_record,
     RecordStatus, ReportSource, RunPick, RunRecord, SandboxRecord, MAX_CHANGED_FILES,
 };
+use super::stream::spend_of_file;
 use super::todos::{valid_todo_file_name, PENDING_REL};
 use super::{
     prompt, Mode, TaskSpec, BRANCH_PREFIX, LAUNCH_LOG, REPORT_DIR_ENV, REPORT_FILE, REPORT_SUBDIR,
@@ -392,69 +393,192 @@ fn run_session(ctx: &Ctx<'_>, record: &mut RunRecord) -> Result<(), LauncherErro
     let report_dir = run_dir.join(REPORT_SUBDIR);
     create_private_dir(&report_dir)?;
 
-    let config_dir = ctx.runtime.config_dir_in(run_dir);
+    let prompt = prompt::build(opts.mode, &opts.task, ctx.run_id)
+        .map_err(|detail| LauncherError::InvalidRun { detail })?;
+    let spec = SessionSpec {
+        runtime: ctx.runtime,
+        session_dir: run_dir,
+        work: &work,
+        report_dir: &report_dir,
+        unit_id: ctx.run_id,
+        prompt: &prompt,
+        model: &opts.model,
+        budget_usd: opts.max_budget_usd,
+        cap_minutes: opts.cap_minutes,
+        egress_allow: &opts.egress_allow,
+        posture: ctx.posture,
+        credential: ctx.credential,
+        overlay: ctx.overlay,
+        home: ctx.home,
+        project: ctx.project,
+        user_stop: ctx.user_stop,
+        inbox: true,
+    };
+    let mut on_event = |event: SessionEvent<'_>| match event {
+        SessionEvent::ScopeUnit(unit) => record.scope_unit = unit.map(str::to_owned),
+        SessionEvent::Running => {
+            record.status = RecordStatus::Running;
+            if let Err(e) = write_record(run_dir, record) {
+                eprintln!("task run: could not record the running state: {e}");
+            }
+        }
+        SessionEvent::SoftCap { usd, hit_at } => {
+            record.soft_cap_usd = usd;
+            record.soft_cap_hit_at = hit_at.map(str::to_owned);
+            if let Err(e) = write_record(run_dir, record) {
+                eprintln!("task run: could not record the soft cap: {e}");
+            }
+        }
+    };
+    let session = run_sandboxed_session(&spec, &mut on_event)?;
+    record.warnings.extend(session.warnings);
+    record.soft_cap_usd = session.soft_cap_usd;
+    record.soft_cap_hit_at = session.soft_cap_hit_at;
+    // I-17: the session's estimate is recorded, so a later resolver knows what is left.
+    record.spend_usd = Some(session.spend_usd);
+
+    finalize(
+        ctx,
+        record,
+        &work,
+        &run_dir.join(STREAM_FILE),
+        &report_dir,
+        session.rc,
+        session.end,
+    );
+    write_record(run_dir, record).map_err(|e| io_error("write run.json", e))
+}
+
+/// The facts one sandboxed agent session runs with: a run's own session and a conflict
+/// resolver's share this one description, so they cannot drift apart (quick 261103-hx7,
+/// D-05, "the same launcher sandbox and the same `AgentRuntime` seam").
+pub(crate) struct SessionSpec<'a> {
+    pub runtime: AgentRuntime,
+    /// Holds `stream.jsonl`, `launch.log`, the per-run config dir, the gitconfig and the
+    /// egress log: the run dir, or a landing attempt's dir.
+    pub session_dir: &'a Path,
+    /// The clone the agent works in; the sandbox's project bind.
+    pub work: &'a Path,
+    /// The directory the agent may write its report in.
+    pub report_dir: &'a Path,
+    /// The scope unit's and the sockets' name (`<run-id>`, or `<run-id>-land<n>`).
+    pub unit_id: &'a str,
+    pub prompt: &'a str,
+    pub model: &'a str,
+    pub budget_usd: f64,
+    pub cap_minutes: f64,
+    pub egress_allow: &'a [String],
+    pub posture: &'a Posture,
+    pub credential: &'a crate::launcher::auth::LaunchToken,
+    pub overlay: bool,
+    pub home: &'a Path,
+    /// The user's project, whose hash names the scope unit.
+    pub project: &'a Path,
+    pub user_stop: &'a AtomicBool,
+    /// Create the operator's inbox (a run has one; a resolver does not).
+    pub inbox: bool,
+}
+
+/// What the session tells its caller while it runs.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum SessionEvent<'a> {
+    /// The scope unit the session runs in, before the spawn.
+    ScopeUnit(Option<&'a str>),
+    /// The agent was spawned.
+    Running,
+    /// The soft cap or its hit time changed.
+    SoftCap {
+        usd: Option<f64>,
+        hit_at: Option<&'a str>,
+    },
+}
+
+/// How a sandboxed session ended.
+#[derive(Debug)]
+pub(crate) struct SessionRun {
+    pub rc: Option<i32>,
+    pub end: HostEnd,
+    pub warnings: Vec<String>,
+    pub soft_cap_usd: Option<f64>,
+    pub soft_cap_hit_at: Option<String>,
+    /// The session's spend in notional dollars, read from the whole stream after the
+    /// capture pump drained (the supervisor's last tick can miss the final lines).
+    pub spend_usd: f64,
+}
+
+/// Run one agent session: config dir, snapshot, `$HOME` allowlist, seed, egress, the
+/// sandbox argv, env, `stream.jsonl`, the spawn, the supervised wait (stop, wall clock,
+/// soft cap), then the egress and capture finish. Errors are the caller's to record.
+pub(crate) fn run_sandboxed_session(
+    spec: &SessionSpec<'_>,
+    on_event: &mut dyn FnMut(SessionEvent<'_>),
+) -> Result<SessionRun, LauncherError> {
+    let session_dir = spec.session_dir;
+    let work = spec.work;
+
+    let config_dir = spec.runtime.config_dir_in(session_dir);
     let binary = resolve_current_exe()
-        .and_then(|exe| snapshot_exe(&exe, ctx.project, &config_dir))
+        .and_then(|exe| snapshot_exe(&exe, spec.project, &config_dir))
         .map_err(|e| io_error("locate or snapshot this binary", e))?;
-    let home_setup = HomeSetup::for_host(ctx.home, &binary, ctx.overlay, run_dir)
+    let home_setup = HomeSetup::for_host(spec.home, &binary, spec.overlay, session_dir)
         .map_err(|e| io_error("derive the sandbox's $HOME allowlist", e))?;
-    let sandboxed = matches!(ctx.posture, Posture::BwrapScope);
-    ctx.runtime
+    let sandboxed = matches!(spec.posture, Posture::BwrapScope);
+    spec.runtime
         .seed_config(
             &config_dir,
-            ctx.home,
+            spec.home,
             &binary,
-            &report_dir,
+            spec.report_dir,
             sandboxed,
             &home_setup.keep_roots,
         )
         .map_err(|e| io_error("seed the per-run config directory", e))?;
 
-    let prompt = prompt::build(opts.mode, &opts.task, ctx.run_id)
-        .map_err(|detail| LauncherError::InvalidRun { detail })?;
-    if prompt.len() > MAX_PROMPT_BYTES {
+    if spec.prompt.len() > MAX_PROMPT_BYTES {
         return Err(LauncherError::InvalidRun {
             detail: format!(
                 "the prompt is {} bytes; at most {MAX_PROMPT_BYTES} fit in one message",
-                prompt.len()
+                spec.prompt.len()
             ),
         });
     }
-    let agent_argv = ctx.runtime.argv(&opts.model, opts.max_budget_usd);
-    ensure_inbox(run_dir).map_err(|e| io_error("create the inbox", e))?;
+    let agent_argv = spec.runtime.argv(spec.model, spec.budget_usd);
+    if spec.inbox {
+        ensure_inbox(session_dir).map_err(|e| io_error("create the inbox", e))?;
+    }
 
     let mut egress_guard = None;
     let mut unit = None;
     let argv = if sandboxed {
-        let sock = socket_path(ctx.run_id, run_dir)?;
-        let egress_sock = socket_path_for(&sock, run_dir);
+        let sock = socket_path(spec.unit_id, session_dir)?;
+        let egress_sock = socket_path_for(&sock, session_dir);
         egress_guard = Some(EgressGuard::start_with(
             &egress_sock,
-            ctx.runtime.egress_token(ctx.credential, ctx.home),
-            opts.egress_allow.clone(),
-            ctx.runtime.upstream(),
-            run_dir.join("egress.log"),
+            spec.runtime.egress_token(spec.credential, spec.home),
+            spec.egress_allow.to_vec(),
+            spec.runtime.upstream(),
+            session_dir.join("egress.log"),
         )?);
-        let spec = SandboxSpec::from_host(
+        let sandbox = SandboxSpec::from_host(
             LaunchPaths {
-                project: work.clone(),
-                run_dir: report_dir.clone(),
+                project: work.to_path_buf(),
+                run_dir: spec.report_dir.to_path_buf(),
                 config_dir: config_dir.clone(),
                 socket: sock,
                 egress_socket: egress_sock.clone(),
             },
-            ctx.home,
+            spec.home,
             &home_setup,
         );
-        let name = scope_unit(ctx.run_id, &hash8(ctx.project));
+        let name = scope_unit(spec.unit_id, &hash8(spec.project));
         let bridged = bridged_command(&binary, BRIDGE_PORT, &egress_sock, &agent_argv);
         let argv = systemd_run_argv(
             &name,
-            Some(runtime_max_sec_for(opts.cap_minutes)),
+            Some(runtime_max_sec_for(spec.cap_minutes)),
             &bwrap_argv_masking(
-                &spec,
+                &sandbox,
                 RunDirMode::ReportWritable,
-                &app_root_masks(ctx.home),
+                &app_root_masks(spec.home),
                 &bridged,
             ),
         );
@@ -463,23 +587,23 @@ fn run_session(ctx: &Ctx<'_>, record: &mut RunRecord) -> Result<(), LauncherErro
     } else {
         agent_argv
     };
-    record.scope_unit.clone_from(&unit);
+    on_event(SessionEvent::ScopeUnit(unit.as_deref()));
 
     let mut path = config_dir.join("bin").into_os_string();
     if let Some(host_path) = std::env::var_os("PATH") {
         path.push(":");
         path.push(host_path);
     }
-    let mut sets = ctx
+    let mut sets = spec
         .runtime
-        .env_sets(&config_dir, ctx.posture, ctx.credential);
+        .env_sets(&config_dir, spec.posture, spec.credential);
     sets.push(("PATH", path));
-    sets.push((REPORT_DIR_ENV, report_dir.clone().into_os_string()));
+    sets.push((REPORT_DIR_ENV, spec.report_dir.as_os_str().to_owned()));
     let env = child_env(std::env::vars_os(), &sets);
     drop(sets);
 
     // C-11: the raw stream, appended through the redacting, line-bounded pump.
-    let stream_path = run_dir.join(STREAM_FILE);
+    let stream_path = session_dir.join(STREAM_FILE);
     let out = fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -487,27 +611,24 @@ fn run_session(ctx: &Ctx<'_>, record: &mut RunRecord) -> Result<(), LauncherErro
         .open(&stream_path)
         .map_err(|e| io_error(&format!("open {}", stream_path.display()), e))?;
     let (mut child, capture, input) =
-        spawn_launch_child_piped(&argv, &env, &work, out).map_err(|e| LauncherError::Spawn {
+        spawn_launch_child_piped(&argv, &env, work, out).map_err(|e| LauncherError::Spawn {
             detail: format!("the agent session: {e}"),
         })?;
     drop(env);
     // C-05: the prompt is the first message on the agent's stdin.
-    let mut supervisor = Supervisor::new(run_dir, input, opts.max_budget_usd, grace_from_env());
-    supervisor.send_prompt(&prompt, Instant::now());
+    let mut supervisor = Supervisor::new(session_dir, input, spec.budget_usd, grace_from_env());
+    supervisor.send_prompt(spec.prompt, Instant::now());
     let containment = match &unit {
         Some(unit) => Containment::Scope { unit: unit.clone() },
         None => Containment::Group { pgid: child.id() },
     };
-    record.status = RecordStatus::Running;
-    if let Err(e) = write_record(run_dir, record) {
-        eprintln!("task run: could not record the running state: {e}");
-    }
+    on_event(SessionEvent::Running);
 
     // I-17: the wall clock starts at the spawn.
     let started = Instant::now();
-    let cap = Duration::from_secs_f64(opts.cap_minutes * 60.0);
+    let cap = Duration::from_secs_f64(spec.cap_minutes * 60.0);
     let (status, end) = loop {
-        if ctx.user_stop.load(Ordering::SeqCst) {
+        if spec.user_stop.load(Ordering::SeqCst) {
             containment.stop(&mut child);
             supervisor.close_input();
             break (child.wait(), HostEnd::UserStop);
@@ -519,11 +640,10 @@ fn run_session(ctx: &Ctx<'_>, record: &mut RunRecord) -> Result<(), LauncherErro
         }
         let tick = supervisor.tick(Instant::now());
         if tick.persist {
-            record.soft_cap_usd = supervisor.soft_cap_usd();
-            record.soft_cap_hit_at = supervisor.soft_cap_hit_at().map(str::to_owned);
-            if let Err(e) = write_record(run_dir, record) {
-                eprintln!("task run: could not record the soft cap: {e}");
-            }
+            on_event(SessionEvent::SoftCap {
+                usd: supervisor.soft_cap_usd(),
+                hit_at: supervisor.soft_cap_hit_at(),
+            });
         }
         if tick.stop_soft_cap {
             containment.stop(&mut child);
@@ -548,16 +668,20 @@ fn run_session(ctx: &Ctx<'_>, record: &mut RunRecord) -> Result<(), LauncherErro
         guard.finish();
     }
     let end_of_session = supervisor.finish();
-    record.warnings.extend(end_of_session.warnings);
-    record.soft_cap_usd = end_of_session.soft_cap_usd;
-    record.soft_cap_hit_at = end_of_session.soft_cap_hit_at;
     capture.finish(CAPTURE_FINISH_BUDGET);
     let rc = status
         .ok()
         .and_then(|s| s.code().or_else(|| s.signal().map(|signal| 128 + signal)));
+    let spend_usd = spend_of_file(&stream_path).max(end_of_session.spend_usd);
 
-    finalize(ctx, record, &work, &stream_path, &report_dir, rc, end);
-    write_record(run_dir, record).map_err(|e| io_error("write run.json", e))
+    Ok(SessionRun {
+        rc,
+        end,
+        warnings: end_of_session.warnings,
+        soft_cap_usd: end_of_session.soft_cap_usd,
+        soft_cap_hit_at: end_of_session.soft_cap_hit_at,
+        spend_usd,
+    })
 }
 
 /// `text` with control characters replaced and cut to `max` characters.

@@ -54,6 +54,29 @@ pub enum LandingKind {
     Pushed,
 }
 
+/// How a merge landing got into the target branch (quick 261103-hx7, C-21).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MergeHow {
+    /// The target was an ancestor of the run's head: the user's own `git merge --ff-only`.
+    Ff,
+    /// A clean `--no-ff` merge commit made by the host.
+    Merge,
+    /// A merge whose conflicts a sandboxed agent session resolved.
+    Resolved,
+}
+
+impl MergeHow {
+    /// The word `task status` and the TUI show.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MergeHow::Ff => "ff",
+            MergeHow::Merge => "merge",
+            MergeHow::Resolved => "resolved",
+        }
+    }
+}
+
 /// One landing of the run's work.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Landing {
@@ -61,6 +84,47 @@ pub struct Landing {
     pub at: String,
     /// The branch merged into, or `<dest> <sha>` for a push.
     pub detail: String,
+    /// How a merge landed; `None` for a push and for a landing recorded before
+    /// quick 261103-hx7 (those were all fast-forwards).
+    #[serde(default)]
+    pub how: Option<MergeHow>,
+    /// The commit the target branch was advanced to by a merge landing.
+    #[serde(default)]
+    pub merge_sha: Option<String>,
+    /// The files that conflicted and were resolved (control-cleaned, capped).
+    #[serde(default)]
+    pub conflicted: Vec<String>,
+    /// The resolver attempt dirs under the run dir (`land/<n>`).
+    #[serde(default)]
+    pub attempts: Vec<String>,
+}
+
+impl Landing {
+    /// A landing with no merge facts (a push, or a fast-forward before they were kept).
+    pub fn plain(kind: LandingKind, at: String, detail: String) -> Self {
+        Landing {
+            kind,
+            at,
+            detail,
+            how: None,
+            merge_sha: None,
+            conflicted: Vec::new(),
+            attempts: Vec::new(),
+        }
+    }
+}
+
+/// Why the latest merge landing of a run did not land (quick 261103-hx7, D-07, I-19).
+/// Only the latest failure is kept; a later success clears it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LandFailure {
+    pub at: String,
+    pub reason: String,
+    #[serde(default)]
+    pub conflicted: Vec<String>,
+    /// Every attempt dir the landing made (`land/<n>`), kept on disk.
+    #[serde(default)]
+    pub attempts: Vec<String>,
 }
 
 /// The sandbox posture the run had.
@@ -129,6 +193,14 @@ pub struct RunRecord {
     /// Why there is no tracked branch, or why it was refused.
     #[serde(default)]
     pub tracking_note: Option<String>,
+    /// The run's spend in notional dollars: the session's estimate at finish plus every
+    /// conflict resolver's (quick 261103-hx7, C-23, I-17). `None` for a record written
+    /// before it was kept; the landing folds it once from `stream.jsonl`.
+    #[serde(default)]
+    pub spend_usd: Option<f64>,
+    /// Why the latest merge landing failed, if it did.
+    #[serde(default)]
+    pub land_failure: Option<LandFailure>,
 }
 
 impl RunRecord {
@@ -178,6 +250,8 @@ impl RunRecord {
             soft_cap_hit_at: None,
             tracked_branch: None,
             tracking_note: None,
+            spend_usd: None,
+            land_failure: None,
         }
     }
 
@@ -927,11 +1001,11 @@ pub(crate) mod tests {
         record.report_source = Some(ReportSource::Synthesized {
             reason: "none".to_owned(),
         });
-        record.landed.push(Landing {
-            kind: LandingKind::Pushed,
-            at: "2026-11-03T10:00:00Z".to_owned(),
-            detail: "refs/heads/gsd-auto/p/x abc123".to_owned(),
-        });
+        record.landed.push(Landing::plain(
+            LandingKind::Pushed,
+            "2026-11-03T10:00:00Z".to_owned(),
+            "refs/heads/gsd-auto/p/x abc123".to_owned(),
+        ));
         let text = serde_json::to_string(&record).unwrap();
         let back: RunRecord = serde_json::from_str(&text).unwrap();
         assert_eq!(back, record);
@@ -970,5 +1044,46 @@ pub(crate) mod tests {
         let back: RunRecord =
             serde_json::from_str(&serde_json::to_string(&capped).unwrap()).unwrap();
         assert_eq!(back, capped);
+    }
+
+    #[test]
+    fn the_landing_and_spend_fields_are_optional_on_read_and_round_trip() {
+        let mut value = serde_json::to_value(record()).unwrap();
+        let object = value.as_object_mut().unwrap();
+        object.remove("spend_usd");
+        object.remove("land_failure");
+        let old: RunRecord = serde_json::from_value(value).unwrap();
+        assert_eq!(old.spend_usd, None);
+        assert_eq!(old.land_failure, None);
+
+        let legacy: Landing = serde_json::from_str(
+            r#"{"kind":"merged","at":"2026-11-03T10:00:00Z","detail":"main"}"#,
+        )
+        .unwrap();
+        assert_eq!(legacy.how, None);
+        assert_eq!(legacy.merge_sha, None);
+        assert!(legacy.conflicted.is_empty() && legacy.attempts.is_empty());
+
+        let mut full = record();
+        full.spend_usd = Some(2.5);
+        full.land_failure = Some(LandFailure {
+            at: "2026-11-03T10:00:00Z".to_owned(),
+            reason: "the resolver's report was failed".to_owned(),
+            conflicted: vec!["shared.txt".to_owned()],
+            attempts: vec!["land/1".to_owned()],
+        });
+        full.landed.push(Landing {
+            kind: LandingKind::Merged,
+            at: "2026-11-03T10:00:00Z".to_owned(),
+            detail: "main".to_owned(),
+            how: Some(MergeHow::Resolved),
+            merge_sha: Some("abc".to_owned()),
+            conflicted: vec!["shared.txt".to_owned()],
+            attempts: vec!["land/1".to_owned()],
+        });
+        let text = serde_json::to_string(&full).unwrap();
+        assert!(text.contains(r#""how":"resolved""#), "{text}");
+        let back: RunRecord = serde_json::from_str(&text).unwrap();
+        assert_eq!(back, full);
     }
 }

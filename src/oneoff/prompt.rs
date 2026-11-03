@@ -6,6 +6,7 @@
 //! it must be one line of at most [`MAX_TASK_TEXT`] characters with no control or
 //! invisible formatting character.
 
+use crate::launcher::sandbox::MAX_PROMPT_BYTES;
 use crate::text::carries_invisible_formatting;
 
 use super::todos::{sanitize_title, valid_todo_file_name, COMPLETED_REL, PENDING_REL};
@@ -75,6 +76,93 @@ pub fn build(mode: Mode, task: &TaskSpec, run_id: &str) -> Result<String, String
     if let Some(file_name) = todo_move {
         prompt.push_str(&format!(
             "- If and only if the status is done, run `git mv {PENDING_REL}/{file_name} {COMPLETED_REL}/{file_name}` and commit it.\n"
+        ));
+    }
+    Ok(prompt)
+}
+
+/// What the conflict resolver is told (quick 261103-hx7, C-13, C-16).
+#[derive(Debug, Clone, Copy)]
+pub struct ResolverPrompt<'a> {
+    pub run_id: &'a str,
+    pub target_branch: &'a str,
+    /// The target branch's tip, the merge's first parent.
+    pub target_tip: &'a str,
+    /// The run's recorded head, the merge's second parent.
+    pub run_head: &'a str,
+    pub headline: &'a str,
+    /// `git diff --name-only --diff-filter=U`, already control-cleaned and capped.
+    pub conflicted: &'a [String],
+    /// `workflow.test_command` of the project's config, when it is usable.
+    pub test_command: Option<&'a str>,
+}
+
+/// The most conflicted files the resolver prompt lists by name.
+const MAX_PROMPT_FILES: usize = 50;
+
+fn short(sha: &str) -> &str {
+    &sha[..sha.len().min(12)]
+}
+
+/// The prompt of the conflict resolver session: a merge is in progress in the clone it
+/// runs in. The resolver commits the merge and reports through the same strict
+/// `taskctl report` call a run uses (D-05, C-14).
+pub fn resolver(p: &ResolverPrompt<'_>) -> Result<String, String> {
+    let clean = |text: &str, max: usize| -> String {
+        text.chars()
+            .map(|c| if c.is_control() { ' ' } else { c })
+            .take(max)
+            .collect()
+    };
+    let mut prompt = String::new();
+    prompt.push_str(&format!(
+        "Resolve the merge conflicts in this repository (fixed instructions from the dispatcher).\n\n\
+         A merge is in progress on branch `{target}`: the one-off run {run_id} (\"{headline}\", head {head}) \
+         is being merged into the branch's tip {tip}.\n",
+        target = clean(p.target_branch, 200),
+        run_id = clean(p.run_id, 64),
+        headline = clean(p.headline, 120),
+        head = short(p.run_head),
+        tip = short(p.target_tip),
+    ));
+    prompt.push_str(&format!("\nConflicted files ({}):\n", p.conflicted.len()));
+    for name in p.conflicted.iter().take(MAX_PROMPT_FILES) {
+        prompt.push_str(&format!("- {}\n", clean(name, 512)));
+    }
+    if p.conflicted.len() > MAX_PROMPT_FILES {
+        prompt.push_str(&format!(
+            "- and {} more (run `git diff --name-only --diff-filter=U`)\n",
+            p.conflicted.len() - MAX_PROMPT_FILES
+        ));
+    }
+    prompt.push_str(
+        "\nHow to work:\n\
+         - The human is unavailable. Decide from the code and the planning artifacts, and mark every inferred decision `[inferred — audit]`.\n\
+         - Keep the intent of BOTH sides. Never drop either side's change to make a conflict go away.\n\
+         - `.planning/STATE.md` and other planning tables: keep the union of rows from both sides, in a sensible order.\n\
+         - Never rebase, never reset, never push, never abort the merge, and never rewrite history.\n",
+    );
+    match p.test_command {
+        Some(command) => prompt.push_str(&format!(
+            "- When the conflicts are resolved, run the project's tests with `{}` and fix what the merge broke.\n",
+            clean(command, 200)
+        )),
+        None => prompt.push_str(
+            "- When the conflicts are resolved, find the project's own test command (the project's agent instructions, the README or the build manifest), \
+             run it and fix what the merge broke. Name the command you ran in `--verified`.\n",
+        ),
+    }
+    prompt.push_str(&format!(
+        "- Stage the resolved files and finish the merge with `git commit --no-edit`. The merge commit must have exactly two parents: the first is {tip}, the second is {head}. Make no other commit.\n\
+         - Then run exactly:\n  {REPORT_USAGE}\n  Use `--status done` only when the conflicts are resolved, the merge is committed and the tests pass, and give `--verified \"<command>: <result>\"` for it. Otherwise use `failed` or `blocked` and say why in the headline.\n\
+         - If that command exits non-zero, read its message, fix the arguments and run it again.\n",
+        tip = short(p.target_tip),
+        head = short(p.run_head),
+    ));
+    if prompt.len() > MAX_PROMPT_BYTES {
+        return Err(format!(
+            "the resolver prompt is {} bytes; at most {MAX_PROMPT_BYTES} fit in one message",
+            prompt.len()
         ));
     }
     Ok(prompt)
@@ -157,5 +245,56 @@ mod tests {
             title: "t".to_owned(),
         };
         assert!(build(Mode::Quick, &task, "oneoff-1").is_err());
+    }
+
+    fn resolver_input<'a>(files: &'a [String], command: Option<&'a str>) -> ResolverPrompt<'a> {
+        ResolverPrompt {
+            run_id: "oneoff-20261103-100000",
+            target_branch: "main",
+            target_tip: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            run_head: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            headline: "Did the thing",
+            conflicted: files,
+            test_command: command,
+        }
+    }
+
+    #[test]
+    fn the_resolver_prompt_names_the_files_the_sides_and_the_rules() {
+        let files = vec!["shared.txt".to_owned(), ".planning/STATE.md".to_owned()];
+        let prompt = resolver(&resolver_input(&files, Some("cargo test"))).unwrap();
+        assert!(prompt.contains("- shared.txt\n") && prompt.contains("- .planning/STATE.md\n"));
+        assert!(prompt.contains("aaaaaaaaaaaa") && prompt.contains("bbbbbbbbbbbb"));
+        assert!(!prompt.contains("aaaaaaaaaaaaa"), "short shas only");
+        assert!(prompt.contains("Did the thing") && prompt.contains("oneoff-20261103-100000"));
+        assert!(prompt.contains("Never rebase"));
+        assert!(prompt.contains("union of rows"));
+        assert!(prompt.contains("`cargo test`"));
+        assert!(prompt.contains("git commit --no-edit"));
+        assert!(prompt.contains("gsd-meta-manager taskctl report --status"));
+        assert!(prompt.contains("--verified"));
+        assert!(prompt.contains("run it again"));
+        assert!(prompt.contains("[inferred — audit]"));
+    }
+
+    #[test]
+    fn without_a_test_command_the_resolver_is_told_to_find_one() {
+        let files = vec!["a".to_owned()];
+        let prompt = resolver(&resolver_input(&files, None)).unwrap();
+        assert!(prompt.contains("find the project's own test command"));
+        assert!(prompt.contains("Name the command you ran in `--verified`"));
+    }
+
+    #[test]
+    fn a_long_conflict_list_is_shown_in_part_and_the_prompt_stays_bounded() {
+        let files: Vec<String> = (0..60).map(|i| format!("f{i}.txt")).collect();
+        let prompt = resolver(&resolver_input(&files, None)).unwrap();
+        assert!(prompt.contains("- f49.txt\n") && !prompt.contains("- f50.txt\n"));
+        assert!(prompt.contains("and 10 more"), "{prompt}");
+        assert!(prompt.contains("(60)"));
+        let huge: Vec<String> = (0..60).map(|_| "x\u{7}".repeat(600)).collect();
+        let prompt = resolver(&resolver_input(&huge, None)).unwrap();
+        assert!(prompt.len() <= MAX_PROMPT_BYTES);
+        assert!(!prompt.chars().any(|c| c.is_control() && c != '\n'));
     }
 }

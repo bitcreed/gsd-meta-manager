@@ -1,10 +1,14 @@
 //! Landing a finished one-off: merge, push or discard (C-18..C-21, I-4, I-10, I-11).
 //!
-//! * **merge** fast-forwards the user's checkout to the recorded head, only when the
-//!   checkout is clean, on a branch and an ancestor of the head, and only after the
-//!   planted-file gate found nothing git-relevant in the clone (the fetch starts
-//!   `upload-pack` inside the agent's repository). The fetch is hardened; the merge
-//!   itself is the user's own `git merge --ff-only`, hooks included (C-19).
+//! * **merge** lands the recorded head in the user's checkout, only when the checkout is
+//!   clean and on a branch, and only after the planted-file gate found nothing
+//!   git-relevant in the clone (the fetch starts `upload-pack` inside the agent's
+//!   repository). The fetch is hardened. When the checkout's HEAD is an ancestor of the
+//!   head it is the user's own `git merge --ff-only`, hooks included (C-19). Otherwise
+//!   the merge is made in a private clone and, when it conflicts, resolved by a sandboxed
+//!   agent session ([`super::resolve`], quick 261103-hx7, D-04, D-05); the checkout
+//!   changes only at the final fast-forward. A per-run land lock admits one landing of a
+//!   run at a time (I-13).
 //! * **push** sends the head only to `refs/heads/gsd-auto/<alias>/<run-id>`, from
 //!   the launcher's mirror whose URL was pinned before any sandbox, after the SAFE-03
 //!   scan, through the store-free core the driver's push uses. No pull request (I-11).
@@ -20,10 +24,14 @@
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
 
+use crate::driver::lock::{acquire_at_with_retry, probe_at, LockProbe, RunLock};
+use crate::error::LockError;
 use crate::launcher::process::run_bounded_with_stderr;
 use crate::launcher::push::{
     self, check_destination, dest_ref, mirror_path, pinned_push_url, planted, push_tip, TipPush,
@@ -32,10 +40,11 @@ use crate::launcher::push::{
 
 use super::runtime::AgentRuntime;
 use super::store::{
-    project_dir_for, read_view, rfc3339, write_record, Landing, LandingKind, OneoffView,
+    project_dir_for, read_view, rfc3339, write_record, Landing, LandingKind, MergeHow, OneoffView,
     RecordStatus,
 };
 use super::BRANCH_PREFIX;
+use super::LAND_LOCK_FILE;
 use super::WORK_DIR;
 
 /// The paths whose change the merge confirmation calls out (I-10), besides the
@@ -45,6 +54,66 @@ const SENSITIVE_FILES: &[&str] = &[".gitattributes", ".gitmodules", ".envrc"];
 
 /// The plain `git merge --ff-only` budget.
 const MERGE_BUDGET: Duration = Duration::from_secs(300);
+
+/// How long a second landing of the same run waits for the land lock before refusing.
+const LAND_LOCK_WAIT: Duration = Duration::from_millis(250);
+
+/// What a landing needs besides the project and the run (quick 261103-hx7, I-12).
+#[derive(Debug, Clone)]
+pub struct LandOptions {
+    /// The project's `driver.egress` CONNECT allowlist, for a conflict resolver session.
+    pub egress_allow: Vec<String>,
+    /// Set by the caller to stop a resolver session (the CLI's signal handlers). The TUI
+    /// passes a flag that is never set: if it exits, the resolver dies with it.
+    pub user_stop: Arc<AtomicBool>,
+}
+
+impl LandOptions {
+    /// Options with a never-set stop flag.
+    pub fn new(egress_allow: Vec<String>) -> Self {
+        LandOptions {
+            egress_allow,
+            user_stop: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    /// Options whose stop flag Ctrl-C and TERM set, as they do for a run (the CLI).
+    pub fn with_signal_handlers(egress_allow: Vec<String>) -> Result<Self, String> {
+        let opts = Self::new(egress_allow);
+        crate::driverctl::serve::install_signal_handlers(&opts.user_stop)
+            .map_err(|e| e.to_string())?;
+        Ok(opts)
+    }
+}
+
+/// The per-run land lock inside `run_dir` (I-13).
+pub(crate) fn land_lock_path(run_dir: &Path) -> PathBuf {
+    run_dir.join(LAND_LOCK_FILE)
+}
+
+/// Whether a landing of the run in `run_dir` is in progress right now.
+pub fn landing_in_progress(run_dir: &Path) -> bool {
+    matches!(
+        probe_at(&land_lock_path(run_dir)),
+        LockProbe::Held | LockProbe::Unknown(_)
+    )
+}
+
+/// Take the land lock of the run, or say why not.
+fn take_land_lock(run_dir: &Path, run_id: &str) -> Result<RunLock, String> {
+    acquire_at_with_retry(
+        &land_lock_path(run_dir),
+        run_id,
+        std::process::id(),
+        LAND_LOCK_WAIT,
+    )
+    .map_err(|e| match e {
+        LockError::HeldBy { .. } | LockError::HeldByUnknownRun => {
+            "a landing of this run is already in progress".to_owned()
+        }
+        LockError::Unavailable { detail } => format!("land lock: {detail}"),
+    })
+}
 
 /// Everything the merge decision looks at.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,7 +129,8 @@ pub struct MergeFacts {
     pub dirty: bool,
     /// The checkout's branch; `None` on a detached HEAD.
     pub branch: Option<String>,
-    /// The checkout's HEAD is an ancestor of the recorded head.
+    /// The checkout's HEAD is an ancestor of the recorded head: the landing is a
+    /// fast-forward. Otherwise it is a merge.
     pub ancestor: bool,
 }
 
@@ -90,12 +160,8 @@ pub fn merge_decision(facts: &MergeFacts) -> Result<(), String> {
     if facts.branch.is_none() {
         return Err("the checkout's HEAD is detached; check out a branch first".to_owned());
     }
-    if !facts.ancestor {
-        return Err(
-            "not a fast-forward: the project moved since the run started; nothing was merged"
-                .to_owned(),
-        );
-    }
+    // `facts.ancestor` is not a refusal any more: it chooses between the fast-forward
+    // and the merge landing (quick 261103-hx7, C-10).
     Ok(())
 }
 
@@ -238,21 +304,24 @@ fn git_in(dir: &Path, args: &[&str]) -> push::GitRun {
 }
 
 /// Record a landing on the run.
-fn record_landing(view: &OneoffView, kind: LandingKind, detail: String) {
+fn record_landing(view: &OneoffView, landing: Landing) {
     let mut record = view.record.clone();
-    record.landed.push(Landing {
-        kind,
-        at: rfc3339(Utc::now()),
-        detail,
-    });
+    record.landed.push(landing);
+    // A later success clears the latest failure (I-19).
+    record.land_failure = None;
     if let Err(e) = write_record(&view.run_dir, &record) {
         eprintln!("task land: the landing succeeded but could not be recorded: {e}");
     }
 }
 
-/// Fast-forward the project's checkout to the run's recorded head.
-pub fn merge(project: &Path, run_id: &str) -> Result<String, String> {
+/// Land the run's recorded head in the project's checkout: a fast-forward when the
+/// checkout's HEAD is an ancestor of it, otherwise a merge commit made in a private clone
+/// (with a sandboxed agent session resolving conflicts). Never a rebase (D-04).
+pub fn merge(project: &Path, run_id: &str, opts: &LandOptions) -> Result<String, String> {
     let project = fs::canonicalize(project).map_err(|e| format!("project: {e}"))?;
+    let (_, first_view) = view_of(&project, run_id)?;
+    // I-13: one landing of a run at a time; the view is read again under the lock.
+    let _land_lock = take_land_lock(&first_view.run_dir, run_id)?;
     let (_, view) = view_of(&project, run_id)?;
     let record = &view.record;
     let head = record.head.clone();
@@ -310,6 +379,17 @@ pub fn merge(project: &Path, run_id: &str) -> Result<String, String> {
     let ancestor = git_in(&project, &["merge-base", "--is-ancestor", "HEAD", &head]);
     facts.ancestor = ancestor.success;
     merge_decision(&facts)?;
+    if !facts.ancestor {
+        let target = facts.branch.clone().unwrap_or_default();
+        // I-24: a head the target already contains would make a `--no-ff` merge that
+        // creates nothing.
+        if git_in(&project, &["merge-base", "--is-ancestor", &head, "HEAD"]).success {
+            return Err(format!(
+                "the run's head is already in {target}; nothing to merge (discard the run)"
+            ));
+        }
+        return super::resolve::land_by_merge(&project, &view, &target, opts);
+    }
 
     // C-19: the user's own git, hooks included.
     let args: Vec<OsString> = [
@@ -340,7 +420,14 @@ pub fn merge(project: &Path, run_id: &str) -> Result<String, String> {
         None => return Err("git merge did not finish".to_owned()),
     }
     let branch = facts.branch.unwrap_or_default();
-    record_landing(&view, LandingKind::Merged, branch.clone());
+    record_landing(
+        &view,
+        Landing {
+            how: Some(MergeHow::Ff),
+            merge_sha: Some(head.clone()),
+            ..Landing::plain(LandingKind::Merged, rfc3339(Utc::now()), branch.clone())
+        },
+    );
     let mut lines = vec![format!(
         "merged {} commit(s) of {run_id} into {branch} (now at {})",
         facts.commits,
@@ -356,7 +443,11 @@ pub fn merge(project: &Path, run_id: &str) -> Result<String, String> {
 /// After a landing the tracked branch is merged and stays reachable from the target, so
 /// a safe `git branch -d` removes it (C-07). Only a branch that points at `head` is
 /// touched; a failure is one line, never an error.
-fn delete_tracked_branch_after_landing(project: &Path, run_id: &str, head: &str) -> Option<String> {
+pub(crate) fn delete_tracked_branch_after_landing(
+    project: &Path,
+    run_id: &str,
+    head: &str,
+) -> Option<String> {
     let reference = tracked_ref(run_id);
     if ref_commit(project, &reference).as_deref() != Some(head) {
         return None;
@@ -430,7 +521,14 @@ pub fn push(
         scan_dir: &scan_dir,
     }) {
         TipPushed::Pushed { sha } => {
-            record_landing(&view, LandingKind::Pushed, format!("{dest} {sha}"));
+            record_landing(
+                &view,
+                Landing::plain(
+                    LandingKind::Pushed,
+                    rfc3339(Utc::now()),
+                    format!("{dest} {sha}"),
+                ),
+            );
             Ok(format!("pushed {} to {dest}", &sha[..sha.len().min(12)]))
         }
         TipPushed::AlreadyPushed => Ok(format!("already pushed: {dest} has this run's head")),
@@ -452,6 +550,9 @@ pub fn discard(project: &Path, run_id: &str) -> Result<String, String> {
     let (project_dir, view) = view_of(project, run_id)?;
     if view.live.may_be_live() {
         return Err("the run is still live; stop it first".to_owned());
+    }
+    if landing_in_progress(&view.run_dir) {
+        return Err("a landing of this run is in progress; wait for it to end".to_owned());
     }
     let run_dir = project_dir.join(run_id);
     let meta = fs::symlink_metadata(&run_dir).map_err(|e| format!("{}: {e}", run_dir.display()))?;
@@ -509,6 +610,22 @@ mod tests {
     }
 
     #[test]
+    fn a_non_ancestor_passes_the_decision_and_takes_the_merge_path() {
+        let facts = MergeFacts {
+            ancestor: false,
+            ..ok_facts()
+        };
+        assert!(merge_decision(&facts).is_ok());
+        // The other refusals still win over it.
+        let dirty = MergeFacts {
+            ancestor: false,
+            dirty: true,
+            ..ok_facts()
+        };
+        assert!(merge_decision(&dirty).is_err());
+    }
+
+    #[test]
     fn each_refusal_has_its_own_reason() {
         let cases: Vec<(MergeFacts, &str)> = vec![
             (
@@ -538,13 +655,6 @@ mod tests {
                     ..ok_facts()
                 },
                 "detached",
-            ),
-            (
-                MergeFacts {
-                    ancestor: false,
-                    ..ok_facts()
-                },
-                "not a fast-forward",
             ),
             (
                 MergeFacts {

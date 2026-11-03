@@ -299,13 +299,68 @@ mod unix {
         for warning in &record.warnings {
             lines.push(format!("warning:   {}", shown(warning)));
         }
-        for landing in &record.landed {
+        if let Some(spent) = record.spend_usd {
             lines.push(format!(
-                "landed:    {:?} {} {}",
+                "spend:     about ${spent:.2} of ${:.2} (including any conflict resolver)",
+                record.max_budget_usd
+            ));
+        }
+        for landing in &record.landed {
+            let how = landing
+                .how
+                .map_or(String::new(), |h| format!(" [{}]", h.as_str()));
+            lines.push(format!(
+                "landed:    {:?}{how} {} {}",
                 landing.kind,
                 shown(&landing.at),
                 shown(&landing.detail)
             ));
+            if let Some(sha) = &landing.merge_sha {
+                lines.push(format!(
+                    "           merge commit {}",
+                    shown(&sha[..sha.len().min(12)])
+                ));
+            }
+            if !landing.conflicted.is_empty() {
+                lines.push(format!(
+                    "           resolved by agent; conflicted: {}",
+                    landing
+                        .conflicted
+                        .iter()
+                        .map(|f| shown(f))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+            }
+            if !landing.attempts.is_empty() {
+                lines.push(format!(
+                    "           resolver attempts: {}",
+                    landing
+                        .attempts
+                        .iter()
+                        .map(|a| shown(a))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+            }
+        }
+        if let Some(failure) = &record.land_failure {
+            lines.push(format!(
+                "land failed: {} ({})",
+                shown(&failure.reason),
+                shown(&failure.at)
+            ));
+            if !failure.attempts.is_empty() {
+                lines.push(format!(
+                    "           attempts kept: {}",
+                    failure
+                        .attempts
+                        .iter()
+                        .map(|a| shown(a))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+            }
         }
         lines
     }
@@ -646,7 +701,7 @@ mod unix {
             LandAction::Push { project, run_id } => ("push", project, run_id),
             LandAction::Discard { project, run_id } => ("discard", project, run_id),
         };
-        let (alias, project, _) = match resolve_project(target, config) {
+        let (alias, project, registry) = match resolve_project(target, config) {
             Ok(resolved) => resolved,
             Err(message) => {
                 err_line(&format!("task land {verb}: {message}"));
@@ -654,7 +709,27 @@ mod unix {
             }
         };
         let result = match action {
-            LandAction::Merge { .. } => land::merge(&project, run_id),
+            LandAction::Merge { .. } => {
+                // I-8: the project's `driver.egress` allowlist, for a conflict resolver
+                // session, resolved as `task run` does.
+                let egress_allow = match registry
+                    .projects
+                    .get(&alias)
+                    .map(gsd_meta_manager::config::RegisteredProject::driver_egress_allowlist)
+                    .transpose()
+                {
+                    Ok(hosts) => hosts.unwrap_or_default(),
+                    Err(e) => {
+                        err_line(&format!("task land merge: projects.{alias}.{e}"));
+                        return 1;
+                    }
+                };
+                // I-12: Ctrl-C / TERM stops a resolver the way a run stop does.
+                match land::LandOptions::with_signal_handlers(egress_allow) {
+                    Ok(opts) => land::merge(&project, run_id, &opts),
+                    Err(e) => Err(e),
+                }
+            }
             LandAction::Push { .. } => {
                 match gsd_meta_manager::launcher::config_dir::driver_root() {
                     Some(root) => land::push(&project, &alias, run_id, &root),

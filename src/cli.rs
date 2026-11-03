@@ -572,7 +572,8 @@ pub enum TaskAction {
 /// The verbs of `task land`.
 #[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
 pub enum LandAction {
-    /// Fast-forward your checkout to the run's head (clean checkout on a branch only)
+    /// Land the run's head: fast-forward, else a merge commit; conflicts are resolved by a
+    /// sandboxed agent session (clean checkout on a branch only)
     Merge {
         /// Alias or path of a registered project
         project: String,

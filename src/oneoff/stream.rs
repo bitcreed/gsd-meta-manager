@@ -529,6 +529,28 @@ impl Follower {
     }
 }
 
+/// The spend estimate of a whole stream file: the same tail, classifier and
+/// [`SpendEstimate`] fold the daemon and the viewer use (quick 261103-hx7, I-17). A
+/// missing or unreadable file is `0.0`. Used for a run recorded before `spend_usd` was
+/// kept, and after a session ends (the capture pump writes the last lines late).
+pub fn spend_of_file(path: &Path) -> f64 {
+    let runtime = AgentRuntime::default();
+    let mut tail = StreamTail::new(path);
+    let mut estimate = SpendEstimate::default();
+    // `poll` reads a bounded batch; keep going until the file is drained.
+    while let Ok(lines) = tail.poll() {
+        if lines.is_empty() {
+            break;
+        }
+        for line in lines {
+            for event in runtime.classify(&line) {
+                estimate.apply(&event);
+            }
+        }
+    }
+    estimate.usd()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -816,5 +838,17 @@ mod tests {
         let second = f.poll().unwrap();
         assert_eq!(second.lines, ["you: more"]);
         assert!(f.poll().unwrap().lines.is_empty());
+    }
+
+    #[test]
+    fn the_spend_of_a_file_is_the_last_reported_cost() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("s.jsonl");
+        assert_eq!(spend_of_file(&path), 0.0, "missing file");
+        append(
+            &path,
+            b"{\"type\":\"result\",\"subtype\":\"success\",\"total_cost_usd\":1.5}\n",
+        );
+        assert!((spend_of_file(&path) - 1.5).abs() < 1e-9);
     }
 }

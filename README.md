@@ -80,9 +80,11 @@ What it never touches:
 - Session transcripts (a subagent's is checked only for its timestamp, never
   opened), the GSD install, or installed capabilities.
 - `ROADMAP.md`, `STATE.md` or phase artifacts, except through your `$EDITOR`
-  (`e`). Git is read with `--no-optional-locks`. The app itself never commits; it
-  pushes, or fast-forwards your checkout, only when you land an experimental
-  driver or one-off run.
+  (`e`). Git is read with `--no-optional-locks`. The app never commits in your
+  checkout; it pushes, or fast-forwards your checkout, only when you land an
+  experimental driver or one-off run. A one-off run that cannot fast-forward is
+  merged in a private clone first (a sandboxed agent session resolves conflicts),
+  and your checkout only fast-forwards to that merge.
 
 ## Features
 

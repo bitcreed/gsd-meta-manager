@@ -1496,11 +1496,45 @@ impl App {
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
             use crate::oneoff::OneoffCommand;
+            // A merge landing may need a conflict-resolver session, which runs with the
+            // project's egress allowlist as a run does (quick 261103-hx7, C-20, I-12).
+            let egress_allow = if command == OneoffCommand::Merge {
+                match self
+                    .ctx
+                    .config
+                    .projects
+                    .get(alias)
+                    .map(crate::config::RegisteredProject::driver_egress_allowlist)
+                    .transpose()
+                {
+                    Ok(hosts) => hosts.unwrap_or_default(),
+                    Err(error) => {
+                        self.ctx.status_message = Some((
+                            format!(
+                                "Not merging: projects.{}.{}",
+                                crate::text::render_for_terminal(alias),
+                                crate::text::render_for_terminal(&error.to_string())
+                            ),
+                            std::time::Instant::now(),
+                        ));
+                        self.needs_redraw = true;
+                        return;
+                    }
+                }
+            } else {
+                Vec::new()
+            };
             let alias_for_task = alias.to_string();
             tokio::task::spawn_blocking(move || {
                 let id = run_id.unwrap_or_default();
                 let result = match command {
-                    OneoffCommand::Merge => crate::oneoff::land::merge(&project, &id),
+                    // The land runs off the render thread with a never-set stop flag: if
+                    // the TUI exits, bwrap's `--die-with-parent` ends the resolver.
+                    OneoffCommand::Merge => crate::oneoff::land::merge(
+                        &project,
+                        &id,
+                        &crate::oneoff::land::LandOptions::new(egress_allow),
+                    ),
                     OneoffCommand::Push => match crate::launcher::config_dir::driver_root() {
                         Some(root) => {
                             crate::oneoff::land::push(&project, &alias_for_task, &id, &root)

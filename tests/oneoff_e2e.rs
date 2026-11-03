@@ -218,7 +218,7 @@ fn status_of(fx: &Fixture) -> Value {
 }
 
 #[test]
-fn a_merge_is_refused_on_a_dirty_checkout_and_when_the_project_moved() {
+fn a_merge_is_refused_on_a_dirty_checkout() {
     let fx = fixture();
     let (id, _) = quick_run(&fx);
     let before = git_text(fx.project(), &["rev-parse", "HEAD"]);
@@ -231,17 +231,8 @@ fn a_merge_is_refused_on_a_dirty_checkout_and_when_the_project_moved() {
         "{dirty:?}"
     );
     assert_eq!(git_text(fx.project(), &["rev-parse", "HEAD"]), before);
-
-    git(fx.project(), &["add", "untracked.txt"]);
-    git(fx.project(), &["commit", "-qm", "moved on"]);
-    let moved_head = git_text(fx.project(), &["rev-parse", "HEAD"]);
-    let moved = run(&fx, &["land", "merge", ALIAS, &id]);
-    assert_ne!(moved.status.code(), Some(0), "{moved:?}");
-    assert!(
-        String::from_utf8_lossy(&moved.stderr).contains("not a fast-forward"),
-        "{moved:?}"
-    );
-    assert_eq!(git_text(fx.project(), &["rev-parse", "HEAD"]), moved_head);
+    // Nothing was merged, so the tracked branch stays.
+    assert!(branch_head(fx.project(), &id).is_some());
 }
 
 #[test]
@@ -971,4 +962,437 @@ fn attach_turns_stdin_lines_into_injected_messages() {
             .any(|i| i["text"] == "hi" && i["outcome"] == "delivered"),
         "{injections:?}"
     );
+}
+
+// ---------------------------------------------------------------- merge landing
+// (quick 261103-hx7, Task 2). The fake agent runs ONE scenario for the run and for a
+// conflict resolver alike; the resolver's cwd is mid-merge (MERGE_HEAD exists), the
+// run's is not.
+
+/// Give the project a repo-local git identity: the host merges with the project's own.
+fn with_identity(fx: Fixture) -> Fixture {
+    git(fx.project(), &["config", "user.name", "t"]);
+    git(fx.project(), &["config", "user.email", "t@example.com"]);
+    fx
+}
+
+/// A project whose base commit has `shared.txt`, for a modify/modify conflict.
+fn conflict_fixture() -> Fixture {
+    let fx = with_identity(fixture());
+    fs::write(fx.project().join("shared.txt"), "base\n").unwrap();
+    git(fx.project(), &["add", "shared.txt"]);
+    git(fx.project(), &["commit", "-qm", "base shared"]);
+    fx
+}
+
+/// The scenario for a run that edits `shared.txt`, and a resolver that is `resolver`.
+fn merge_scenario(resolver: &str) -> String {
+    format!(
+        r#"
+G="git -c user.name=t -c user.email=t@example.com"
+if git rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1; then
+{resolver}
+else
+  echo run-side > shared.txt
+  $G add -A
+  $G commit -qm "run edits shared"
+  gsd-meta-manager taskctl report --status done --headline "Edited shared" --verified "true: ok"
+  printf '%s\n' '{{"type":"result","subtype":"success","total_cost_usd":1.5}}'
+fi
+"#
+    )
+}
+
+/// A resolver that resolves, commits the merge and reports done.
+const RESOLVES: &str = r#"
+  printf 'merged\n' > shared.txt
+  $G add shared.txt
+  $G commit -q --no-edit
+  gsd-meta-manager taskctl report --status done --headline resolved --verified "true: ok"
+  printf '%s\n' '{"type":"result","subtype":"success","total_cost_usd":0.5}'
+"#;
+
+/// Start one run with `scenario` and wait for it; the project then edits `shared.txt`
+/// differently and commits, so the run's head is no fast-forward and conflicts.
+fn conflicting_run(fx: &Fixture, scenario: &str) -> (String, Value, String) {
+    fx.write_scenario(scenario);
+    let out = run(fx, &["run", ALIAS, "--text", "edit shared"]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let id = started_id(&out);
+    let status = wait_run_finished(fx, &id);
+    assert_eq!(status["record"]["commits"], 1, "{status}");
+    fs::write(fx.project().join("shared.txt"), "project-side\n").unwrap();
+    git(fx.project(), &["add", "shared.txt"]);
+    git(fx.project(), &["commit", "-qm", "project edits shared"]);
+    let tip = git_text(fx.project(), &["rev-parse", "HEAD"]);
+    (id, status, tip)
+}
+
+/// `git rev-list --parents -n 1 HEAD` of the project, as fields.
+fn head_parents(project: &Path) -> Vec<String> {
+    git_text(project, &["rev-list", "--parents", "-n", "1", "HEAD"])
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect()
+}
+
+#[test]
+fn a_non_conflicting_merge_lands_as_a_merge_commit() {
+    let fx = with_identity(fixture());
+    let (id, status) = quick_run(&fx);
+    let head = status["record"]["head"].as_str().unwrap().to_owned();
+    // The project moves on with an unrelated file: the run's head is no fast-forward.
+    fs::write(fx.project().join("unrelated.txt"), "x").unwrap();
+    git(fx.project(), &["add", "unrelated.txt"]);
+    git(fx.project(), &["commit", "-qm", "moved on"]);
+    let tip = git_text(fx.project(), &["rev-parse", "HEAD"]);
+
+    let merged = run(&fx, &["land", "merge", ALIAS, &id]);
+    assert_eq!(merged.status.code(), Some(0), "{merged:?}");
+    let parents = head_parents(fx.project());
+    assert_eq!(parents[1..], [tip, head], "{parents:?}");
+    let subject = git_text(fx.project(), &["log", "-1", "--format=%s"]);
+    assert!(
+        subject.starts_with(&format!("Merge one-off {id} (")),
+        "{subject}"
+    );
+    assert!(fx.project().join("unrelated.txt").exists());
+    assert!(fx
+        .project()
+        .join(".planning/todos/completed")
+        .join(TODO)
+        .exists());
+
+    let after = status_of_run(&fx, &id);
+    let landing = after["record"]["landed"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap();
+    assert_eq!(landing["how"], "merge", "{after}");
+    assert_eq!(landing["merge_sha"], parents[0].as_str());
+    assert!(
+        !run_dir(&fx, &id).join("land/1/stream.jsonl").exists(),
+        "a clean merge has no resolver"
+    );
+    assert_eq!(
+        branch_head(fx.project(), &id),
+        None,
+        "the branch is deleted"
+    );
+    let text = String::from_utf8_lossy(&merged.stdout);
+    assert!(text.contains("merge commit"), "{text}");
+}
+
+#[test]
+fn a_conflicting_merge_is_resolved_by_the_agent_and_lands() {
+    let fx = conflict_fixture();
+    let (id, status, tip) = conflicting_run(&fx, &merge_scenario(RESOLVES));
+    let head = status["record"]["head"].as_str().unwrap().to_owned();
+
+    let merged = run(&fx, &["land", "merge", ALIAS, &id]);
+    assert_eq!(merged.status.code(), Some(0), "{merged:?}");
+    let parents = head_parents(fx.project());
+    assert_eq!(parents[1..], [tip, head], "{parents:?}");
+    assert_eq!(
+        fs::read_to_string(fx.project().join("shared.txt")).unwrap(),
+        "merged\n"
+    );
+    assert_eq!(git_text(fx.project(), &["status", "--porcelain"]), "");
+
+    let after = status_of_run(&fx, &id);
+    let landing = after["record"]["landed"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap();
+    assert_eq!(landing["how"], "resolved", "{after}");
+    assert_eq!(landing["conflicted"], serde_json::json!(["shared.txt"]));
+    assert_eq!(landing["attempts"], serde_json::json!(["land/1"]));
+    assert_eq!(landing["merge_sha"], parents[0].as_str());
+    assert!(after["record"]["land_failure"].is_null(), "{after}");
+    let attempt = run_dir(&fx, &id).join("land/1");
+    assert!(attempt.join("stream.jsonl").is_file());
+    assert!(attempt.join("report/report.json").is_file());
+    assert!(attempt.join("launch.log").is_file());
+    // It ran inside the sandbox profile, in a scope of its own.
+    let shims = fx.shim_log();
+    assert!(shims.contains(&format!("{id}-land1")), "{shims}");
+    // The resolver's budget is the run's remaining budget: 10 - 1.5.
+    let argv = fx.recorded("argv.txt");
+    let lines: Vec<&str> = argv.lines().collect();
+    let at = lines.iter().position(|l| *l == "--max-budget-usd").unwrap();
+    assert_eq!(lines[at + 1], "8.5", "{argv}");
+    assert!(fx.recorded("prompt.txt").contains("shared.txt"));
+    // Its spend is added to the run's: 1.5 + 0.5.
+    let spent = after["record"]["spend_usd"].as_f64().unwrap();
+    assert!((spent - 2.0).abs() < 1e-6, "{spent}");
+    assert_eq!(
+        branch_head(fx.project(), &id),
+        None,
+        "the branch is deleted"
+    );
+    let text = String::from_utf8_lossy(&merged.stdout);
+    assert!(text.contains("resolved by agent"), "{text}");
+    // `task status` prints how it landed.
+    let human = run(&fx, &["status", ALIAS, "--run-id", &id]);
+    let human = String::from_utf8_lossy(&human.stdout);
+    assert!(
+        human.contains("resolved by agent; conflicted: shared.txt"),
+        "{human}"
+    );
+    assert!(human.contains("[resolved]"), "{human}");
+}
+
+/// Every landing that fails leaves the checkout and the branch as they were and says why.
+fn assert_nothing_landed(fx: &Fixture, id: &str, tip: &str, out: &Output) -> Value {
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    assert_eq!(git_text(fx.project(), &["rev-parse", "HEAD"]), tip);
+    assert_eq!(
+        fs::read_to_string(fx.project().join("shared.txt")).unwrap(),
+        "project-side\n"
+    );
+    assert_eq!(git_text(fx.project(), &["status", "--porcelain"]), "");
+    assert!(branch_head(fx.project(), id).is_some(), "the branch stays");
+    let after = status_of_run(fx, id);
+    assert!(
+        after["record"]["landed"].as_array().unwrap().is_empty(),
+        "{after}"
+    );
+    after
+}
+
+#[test]
+fn a_failed_resolution_lands_nothing_and_keeps_the_branch() {
+    let fx = conflict_fixture();
+    let resolver = r#"
+  gsd-meta-manager taskctl report --status failed --headline "could not resolve"
+  printf '%s\n' '{"type":"result","subtype":"success","total_cost_usd":0.5}'
+"#;
+    let (id, _, tip) = conflicting_run(&fx, &merge_scenario(resolver));
+    let out = run(&fx, &["land", "merge", ALIAS, &id]);
+    let after = assert_nothing_landed(&fx, &id, &tip, &out);
+    let failure = &after["record"]["land_failure"];
+    let reason = failure["reason"].as_str().unwrap();
+    assert!(
+        reason.contains("report") && reason.contains("failed"),
+        "{reason}"
+    );
+    assert_eq!(failure["conflicted"], serde_json::json!(["shared.txt"]));
+    assert_eq!(failure["attempts"], serde_json::json!(["land/1"]));
+    assert!(
+        run_dir(&fx, &id).join("land/1/stream.jsonl").is_file(),
+        "kept"
+    );
+    // The resolver's spend still counts against the run.
+    assert!((after["record"]["spend_usd"].as_f64().unwrap() - 2.0).abs() < 1e-6);
+    let human = run(&fx, &["status", ALIAS, "--run-id", &id]);
+    assert!(
+        String::from_utf8_lossy(&human.stdout).contains("land failed:"),
+        "{human:?}"
+    );
+}
+
+#[test]
+fn leftover_conflict_markers_land_nothing() {
+    let fx = conflict_fixture();
+    // The resolver commits the file with its markers still in it and reports done.
+    let resolver = r#"
+  $G add shared.txt
+  $G commit -q --no-edit
+  gsd-meta-manager taskctl report --status done --headline resolved --verified "true: ok"
+  printf '%s\n' '{"type":"result","subtype":"success","total_cost_usd":0.5}'
+"#;
+    let (id, _, tip) = conflicting_run(&fx, &merge_scenario(resolver));
+    let out = run(&fx, &["land", "merge", ALIAS, &id]);
+    let after = assert_nothing_landed(&fx, &id, &tip, &out);
+    let reason = after["record"]["land_failure"]["reason"].as_str().unwrap();
+    assert!(reason.contains("conflict markers"), "{reason}");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("conflict markers"),
+        "{out:?}"
+    );
+}
+
+/// A resolver that also moves the project's branch: on its first invocation only when
+/// `once`, every time otherwise.
+fn moving_resolver(project: &Path, once: bool) -> String {
+    let guard = if once {
+        r#"if [ ! -f "$FAKE_CLAUDE_DIR/moved-once" ]; then touch "$FAKE_CLAUDE_DIR/moved-once"; MOVE=1; fi"#
+    } else {
+        "MOVE=1"
+    };
+    format!(
+        r#"
+  MOVE=0
+  {guard}
+  if [ "$MOVE" = 1 ]; then
+    P="{project}"
+    echo moved > "$P/moved-$$.txt"
+    git -C "$P" add "moved-$$.txt"
+    git -C "$P" -c user.name=t -c user.email=t@example.com commit -qm "moved $$"
+  fi
+{RESOLVES}"#,
+        project = project.display()
+    )
+}
+
+#[test]
+fn a_moving_target_is_merged_again_on_the_new_tip() {
+    let fx = conflict_fixture();
+    let scenario = merge_scenario(&moving_resolver(fx.project(), true));
+    let (id, status, _) = conflicting_run(&fx, &scenario);
+    let head = status["record"]["head"].as_str().unwrap().to_owned();
+
+    let out = run(&fx, &["land", "merge", ALIAS, &id]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let parents = head_parents(fx.project());
+    assert_eq!(parents[2], head, "{parents:?}");
+    // The first parent is the commit the first resolver moved the project to.
+    let moved = git_text(fx.project(), &["rev-parse", "HEAD^1"]);
+    assert_eq!(
+        git_text(fx.project(), &["log", "-1", "--format=%s", &moved])
+            .split(' ')
+            .next(),
+        Some("moved")
+    );
+    let after = status_of_run(&fx, &id);
+    let landing = after["record"]["landed"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap();
+    assert_eq!(landing["how"], "resolved", "{after}");
+    assert_eq!(landing["attempts"], serde_json::json!(["land/1", "land/2"]));
+    assert!(run_dir(&fx, &id).join("land/2/stream.jsonl").is_file());
+    // Both resolvers' spend counts: 1.5 + 0.5 + 0.5.
+    assert!((after["record"]["spend_usd"].as_f64().unwrap() - 2.5).abs() < 1e-6);
+}
+
+#[test]
+fn a_target_that_keeps_moving_is_refused_after_three_attempts() {
+    let fx = conflict_fixture();
+    let scenario = merge_scenario(&moving_resolver(fx.project(), false));
+    let (id, _, _) = conflicting_run(&fx, &scenario);
+    let before = git_text(fx.project(), &["rev-parse", "HEAD"]);
+
+    let out = run(&fx, &["land", "merge", ALIAS, &id]);
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("the target kept moving"),
+        "{out:?}"
+    );
+    for n in 1..=3 {
+        assert!(
+            run_dir(&fx, &id).join(format!("land/{n}")).is_dir(),
+            "land/{n}"
+        );
+    }
+    assert!(
+        !run_dir(&fx, &id).join("land/4").exists(),
+        "at most 3 attempts"
+    );
+    assert!(branch_head(fx.project(), &id).is_some(), "the branch stays");
+    // Three resolvers moved the branch; none of their merges landed.
+    assert_ne!(git_text(fx.project(), &["rev-parse", "HEAD"]), before);
+    assert_eq!(
+        git_text(fx.project(), &["log", "--merges", "--format=%H"]),
+        ""
+    );
+    let after = status_of_run(&fx, &id);
+    assert!(after["record"]["landed"].as_array().unwrap().is_empty());
+    assert_eq!(
+        after["record"]["land_failure"]["attempts"],
+        serde_json::json!(["land/1", "land/2", "land/3"])
+    );
+    assert!(after["record"]["land_failure"]["reason"]
+        .as_str()
+        .unwrap()
+        .contains("the target kept moving"));
+}
+
+#[test]
+fn a_landing_with_no_budget_left_refuses_before_any_resolver_starts() {
+    let fx = conflict_fixture();
+    fx.write_scenario(&merge_scenario(RESOLVES));
+    // The run spends 1.5 of a 1.6 budget: 0.1 is left, under the 0.25 floor.
+    let out = run(
+        &fx,
+        &[
+            "run",
+            ALIAS,
+            "--text",
+            "edit shared",
+            "--max-budget-usd",
+            "1.6",
+        ],
+    );
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let id = started_id(&out);
+    wait_run_finished(&fx, &id);
+    fs::write(fx.project().join("shared.txt"), "project-side\n").unwrap();
+    git(fx.project(), &["add", "shared.txt"]);
+    git(fx.project(), &["commit", "-qm", "project edits shared"]);
+    let tip = git_text(fx.project(), &["rev-parse", "HEAD"]);
+
+    let out = run(&fx, &["land", "merge", ALIAS, &id]);
+    let after = assert_nothing_landed(&fx, &id, &tip, &out);
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("no budget left to resolve conflicts"),
+        "{out:?}"
+    );
+    assert!(after["record"]["land_failure"]["reason"]
+        .as_str()
+        .unwrap()
+        .contains("no budget left"));
+    assert!(
+        !run_dir(&fx, &id).join("land/1/stream.jsonl").exists(),
+        "no resolver ran"
+    );
+}
+
+#[test]
+fn a_second_landing_of_the_same_run_is_refused_while_one_is_in_progress() {
+    let fx = conflict_fixture();
+    // The resolver waits for `release`, so the land lock stays held meanwhile.
+    let resolver = format!(
+        r#"
+  touch "$FAKE_CLAUDE_DIR/landing-started"
+  while [ ! -f "$FAKE_CLAUDE_DIR/release" ]; do sleep 0.1; done
+{RESOLVES}"#
+    );
+    let (id, _, _) = conflicting_run(&fx, &merge_scenario(&resolver));
+    let first = task(&fx, &["land", "merge", ALIAS, &id])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    assert!(
+        wait_until(Duration::from_secs(30), || fx
+            .rec_dir()
+            .join("landing-started")
+            .exists()),
+        "the resolver never started"
+    );
+
+    let second = run(&fx, &["land", "merge", ALIAS, &id]);
+    assert_eq!(second.status.code(), Some(1), "{second:?}");
+    assert!(
+        String::from_utf8_lossy(&second.stderr).contains("already in progress"),
+        "{second:?}"
+    );
+    let discard = run(&fx, &["land", "discard", ALIAS, &id]);
+    assert_eq!(discard.status.code(), Some(1), "{discard:?}");
+    assert!(
+        String::from_utf8_lossy(&discard.stderr).contains("in progress"),
+        "{discard:?}"
+    );
+    assert!(run_dir(&fx, &id).exists(), "discard left the run");
+
+    fs::write(fx.rec_dir().join("release"), "").unwrap();
+    let first = first.wait_with_output().unwrap();
+    assert_eq!(first.status.code(), Some(0), "{first:?}");
+    // The lock is free again: the run can now be discarded.
+    let discard = run(&fx, &["land", "discard", ALIAS, &id]);
+    assert_eq!(discard.status.code(), Some(0), "{discard:?}");
 }

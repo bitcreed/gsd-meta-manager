@@ -35,6 +35,7 @@
 use serde::{Deserialize, Serialize};
 
 pub mod inbox;
+pub mod merge;
 pub mod prompt;
 pub mod report;
 pub mod runtime;
@@ -47,6 +48,8 @@ pub mod todos;
 pub mod land;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod launch;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub mod resolve;
 
 /// The environment variable that names the report directory inside the sandbox.
 pub const REPORT_DIR_ENV: &str = "GSDMM_ONEOFF_REPORT_DIR";

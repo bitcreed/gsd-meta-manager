@@ -231,7 +231,7 @@ subagents, so the cap can fire late: the hard ceiling stays the real limit.
 **Where runs live.** `<data dir>/gsd-meta-manager/oneoff/<hash8 of the
 project path>/<run-id>/` (`~/.local/share/...` on Linux): `run.lock` (the run's own
 lock, see "Several at once"), `run.json` (the host's record), `stream.jsonl` (the agent's stream-json output, credential-redacted),
-`launch.log`, `injections.jsonl` and `inbox/` (host-only, see above), `report/report.json`, the per-run config dir and `work/`, a
+`launch.log`, `injections.jsonl` and `inbox/` (host-only, see above), `report/report.json`, `land/<n>/` (the attempts of a merge landing, see "Landing") with `land.lock`, the per-run config dir and `work/`, a
 `git clone --no-hardlinks` of the project on branch `gsd-oneoff/<run-id>`. The
 clone copies the whole object store, so each run costs about the repository's
 size on disk until it is discarded. **Uncommitted changes in the project are not
@@ -262,18 +262,55 @@ last good call wins. The host re-validates the file and never trusts it; the
 commit range, the commit count and the SUMMARY path are read from git on the
 host. A run without a valid report gets one synthesized from its outcome.
 
-**Landing.** `merge` fast-forwards your checkout to the run's head only when the
-checkout is clean, on a branch and behind the head; otherwise it refuses and
-nothing changes. Your own `git merge --ff-only` runs, hooks included, and changed
-paths under `.claude/`, `.github/`, `.husky/` or named `.gitattributes`,
-`.gitmodules`, `.envrc` are listed as a warning. `push` sends the head only to
-`refs/heads/gsd-auto/<alias>/<run-id>` from the launcher's pinned mirror after the
-credential scan; no pull request is opened. A git-relevant planted file in the
-clone refuses both; `discard` is the way out. `discard` deletes the run dir once
-the run is not live, and the run's tracked branch (see below) while it still points
-at the run's recorded head. A landing that succeeds deletes the tracked branch with a
-safe `git branch -d`, because the work is then reachable from the branch you merged
-into. A merge that is not a fast-forward is still refused.
+**Landing.** `merge` lands the run's head in your checkout, and only when the checkout
+is clean and on a branch (a detached HEAD, a dirty tree, a live run, no head, no
+commits or a git-relevant planted file in the clone each refuse and change nothing;
+`discard` is the way out of a planted file). There are three ways it lands, recorded as
+`how` in `run.json` and shown by `task status`:
+
+- `ff`: your branch is behind the head, so your own `git merge --ff-only` runs, hooks
+  included.
+- `merge`: your branch moved on. The launcher makes a fresh `--no-hardlinks` clone of
+  your branch's tip in `<run-dir>/land/<n>/work`, fetches the run's branch into it and
+  runs `git merge --no-ff` there with hooks off and your global git config off, using
+  the project's own `user.name`/`user.email` (no identity is a refusal). A clean merge
+  is committed as `Merge one-off <run-id> (<headline>)`; no agent is involved.
+- `resolved`: the merge conflicts. ONE sandboxed agent session, the same sandbox profile
+  and agent seam a run uses, resolves them in that clone. It is told the conflicted
+  files, both sides, to keep both sides' intent (`.planning/STATE.md` tables: the union
+  of rows), to never rebase, to run the project's tests (`workflow.test_command` of
+  `.planning/config.json` when it is a short clean string, otherwise it finds the
+  command and names it), to commit the merge and to report through the same
+  `taskctl report` call with `--status done` and a `--verified` item. Its budget is the
+  run's remaining budget (`max_budget_usd` minus the recorded spend), and a landing
+  with less than $0.25 left refuses with "no budget left to resolve conflicts"; its
+  wall clock is 15 minutes; its stream, `launch.log` and report live in
+  `<run-dir>/land/<n>/`, and its spend is added to the run's `spend_usd`. A conflicted
+  landing needs the sandbox: the resolver never runs unsandboxed.
+
+The launcher never trusts the resolver's report alone. It lands the merge only when the
+planted-file gate on the land clone is clean, the report is a valid `done` with a
+`--verified` item, the merge commit's parents are exactly your branch's tip and the
+run's head, the tree is clean and no conflict marker (`<<<<<<<` or `>>>>>>>` at the
+start of a line) is left in the conflicted files. Then it fetches the merge commit into
+your project and, while your checkout is still clean, on the same branch and at the
+same tip, runs your own `git merge --ff-only` on it: your tree changes only at that
+last step. If the branch moved in the meantime the whole merge is redone on the new tip
+in a new attempt dir, at most 3 attempts in total, then it refuses with "the target kept
+moving". A dirty checkout at the last step refuses and keeps the resolved merge in its
+attempt dir. On any failure nothing lands, the tracked branch stays, every attempt dir
+is kept, and `run.json` `land_failure` (reason, conflicted files, attempts) says why; a
+later success clears it. A landing is never a rebase. One landing of a run runs at a
+time (`<run-dir>/land.lock`): a second `merge`, and `discard`, refuse while it runs.
+`task land merge` blocks until it ends and Ctrl-C stops a resolver; the TUI runs it off
+the render thread. Changed paths under `.claude/`, `.github/`, `.husky/` or named
+`.gitattributes`, `.gitmodules`, `.envrc` are listed as a warning. `push` sends the head
+only to `refs/heads/gsd-auto/<alias>/<run-id>` from the launcher's pinned mirror after
+the credential scan; no pull request is opened, and a planted file refuses it too.
+`discard` deletes the run dir once the run is not live, and the run's tracked branch
+(see below) while it still points at the run's recorded head. A landing that succeeds
+deletes the tracked branch with a safe `git branch -d`, because the work is then
+reachable from the branch you merged into.
 
 **Several at once.** Any number of one-offs may run on a project at the same time,
 each with its own wall clock and spend ceiling; `task run` and the TUI's `t` no longer

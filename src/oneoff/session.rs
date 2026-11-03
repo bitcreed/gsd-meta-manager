@@ -254,6 +254,9 @@ mod supervisor {
         pub warnings: Vec<String>,
         pub soft_cap_usd: Option<f64>,
         pub soft_cap_hit_at: Option<String>,
+        /// The session's spend estimate as the supervisor last saw it (quick
+        /// 261103-hx7, I-17).
+        pub spend_usd: f64,
     }
 
     /// The daemon's per-tick view of its own session.
@@ -480,6 +483,7 @@ mod supervisor {
                 warnings: self.warnings,
                 soft_cap_usd: self.soft_cap.cap(),
                 soft_cap_hit_at: self.soft_cap_hit_at,
+                spend_usd: self.estimate.usd(),
             }
         }
     }

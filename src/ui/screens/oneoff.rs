@@ -252,8 +252,9 @@ impl OneoffScreen {
             },
             KeyCode::Char('m') => {
                 let mut prompt = vec![format!(
-                    "Merge {id} into your checkout? It fast-forwards your branch to the run's \
-                     head, only when the checkout is clean."
+                    "Merge {id} into your checkout? It fast-forwards when it can; otherwise it \
+                     makes a merge commit in a private clone, and conflicts are resolved by a \
+                     sandboxed agent. Only a clean checkout changes, at the very end."
                 )];
                 prompt.extend(merge_warning(&view));
                 self.mode = ask(OneoffCommand::Merge, prompt);
