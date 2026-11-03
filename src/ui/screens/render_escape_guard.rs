@@ -375,6 +375,7 @@ const SCREEN_IDENTITY_DISPOSITIONS: &[FixtureRow] = &[
     ("LaunchFormScreen", "src/ui/screens/driver_launch.rs"),
     ("LintPopupScreen", "src/ui/screens/driver_launch.rs"),
     ("NormalScreen", "src/ui/screens/normal.rs"),
+    ("OneoffScreen", "src/ui/screens/oneoff.rs"),
     ("PoliteStopScreen", "src/ui/screens/driver_steer.rs"),
     ("PreferencesScreen", "src/ui/screens/preferences.rs"),
     (
@@ -2268,6 +2269,51 @@ fn fixture_for(type_name: &str) -> Option<Fixture> {
         // The new-run slug input (30-05): the hostile identity is the typed buffer (typed
         // through the real key handler, so the state is one the keyboard can produce) and,
         // in a second set of states, the id the App says already exists.
+        // The one-off popup (quick 261103-f5y): the picker with hostile todo titles and
+        // file names, the input with the identity typed, the confirm popup with a hostile
+        // todo, and the result with a hostile agent report.
+        "OneoffScreen" => Some(|identity| {
+            use super::oneoff::OneoffScreen;
+            use crossterm::event::{KeyCode, KeyModifiers};
+            let seed = |identity: &str, ctx: &mut AppContext| {
+                let cache = ctx.view_cache.entry(identity.to_string()).or_default();
+                cache.oneoff_todos = Some(Ok(vec![crate::oneoff::todos::PendingTodo {
+                    file_name: format!("{identity}.md"),
+                    title: identity.to_string(),
+                }]));
+                let mut view = super::oneoff::tests::finished_view(identity);
+                view.record.run_id = identity.to_string();
+                cache.oneoff = Some(Box::new(view));
+            };
+            let mut states = states_over_sub_views(identity, &|identity, ctx| {
+                seed(identity, ctx);
+                Box::new(OneoffScreen::picker(identity.to_string()))
+            });
+            let mut input_ctx = probe_ctx(identity);
+            seed(identity, &mut input_ctx);
+            let mut input = OneoffScreen::picker(identity.to_string());
+            // Down to the `type a task...` row, then `q` opens the input.
+            input.handle_key(KeyCode::Char('j'), KeyModifiers::NONE, &mut input_ctx);
+            input.handle_key(KeyCode::Char('q'), KeyModifiers::NONE, &mut input_ctx);
+            for ch in identity.chars() {
+                input.handle_key(KeyCode::Char(ch), KeyModifiers::NONE, &mut input_ctx);
+            }
+            states.push(one_state("task input", input_ctx, Box::new(input)));
+            let mut confirm_ctx = probe_ctx(identity);
+            seed(identity, &mut confirm_ctx);
+            let mut confirm = OneoffScreen::picker(identity.to_string());
+            confirm.handle_key(KeyCode::Char('q'), KeyModifiers::NONE, &mut confirm_ctx);
+            states.push(one_state("confirm", confirm_ctx, Box::new(confirm)));
+            let mut result_ctx = probe_ctx(identity);
+            seed(identity, &mut result_ctx);
+            states.push(one_state(
+                "result",
+                result_ctx,
+                Box::new(OneoffScreen::result(identity.to_string())),
+            ));
+            states
+        }),
+
         "SlugInputScreen" => Some(|identity| {
             use super::driver_launch::{NewRunStatus, SlugInputScreen};
             use crossterm::event::{KeyCode, KeyModifiers};

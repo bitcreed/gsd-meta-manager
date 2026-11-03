@@ -502,6 +502,28 @@ impl Default for LaunchSeams {
     }
 }
 
+/// The one-off launch the Driver tab's confirm popup reaches (quick 261103-f5y).
+/// A seam for the reason [`LaunchSeams`] is one: the production value re-executes
+/// this binary, which a unit test must not do. A sibling, not a field of
+/// `LaunchSeams`, so the tests that build that struct literally stay unchanged.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[derive(Clone, Copy)]
+pub struct OneoffSeams {
+    pub run: fn(
+        &crate::oneoff::launch::OneoffOptions,
+        Option<&Path>,
+    ) -> Result<crate::oneoff::launch::Started, crate::launcher::LauncherError>,
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+impl Default for OneoffSeams {
+    fn default() -> Self {
+        Self {
+            run: crate::oneoff::launch::run_detached,
+        }
+    }
+}
+
 pub struct App {
     pub should_quit: bool,
     pub needs_redraw: bool,
@@ -524,6 +546,9 @@ pub struct App {
     /// The host check and the launch call the launch form reaches (30-05).
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub launch_seams: LaunchSeams,
+    /// The one-off launch the Driver tab reaches (quick 261103-f5y).
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    pub oneoff_seams: OneoffSeams,
     /// The DESIRED terminal mouse-capture state (quick 260926-dyf, D-06).
     ///
     /// Initialised from `preferences.mouse` and flipped by `M`; the binary's
@@ -828,6 +853,8 @@ impl App {
             new_run_flow: std::collections::HashSet::new(),
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             launch_seams: LaunchSeams::default(),
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            oneoff_seams: OneoffSeams::default(),
             mouse_capture,
             click_tracker: crate::ui::mouse::ClickTracker::default(),
         }
@@ -1110,6 +1137,201 @@ impl App {
             std::time::Instant::now(),
         ));
         self.needs_redraw = true;
+    }
+
+    /// Show a one-off outcome and re-read the project's Driver tab (and so its
+    /// one-off status line).
+    fn finish_oneoff(&mut self, alias: &str, message: &str) {
+        self.ctx.status_message = Some((
+            crate::text::render_for_terminal(message).to_string(),
+            std::time::Instant::now(),
+        ));
+        if let Some(path) = self.ctx.config.projects.get(alias).map(|p| p.path.clone()) {
+            self.ctx.schedule_launcher_refresh(alias, &path);
+        }
+        self.needs_redraw = true;
+    }
+
+    /// The registered project and the event channel a one-off action needs, refusing
+    /// visibly (S4) when the surfaces are off, the platform cannot run one-offs, the
+    /// project is unknown or there is no channel.
+    fn oneoff_target(
+        &mut self,
+        alias: &str,
+    ) -> Option<(PathBuf, tokio::sync::mpsc::UnboundedSender<Action>)> {
+        if !self.ctx.experimental {
+            return None;
+        }
+        if !crate::ui::screens::driver_steer::can_steer() {
+            self.ctx.status_message = Some((
+                crate::ui::screens::driver_steer::STEERING_UNSUPPORTED_PLATFORM.to_string(),
+                std::time::Instant::now(),
+            ));
+            self.needs_redraw = true;
+            return None;
+        }
+        let path = self.project_path_for(alias)?;
+        let Some(tx) = self.ctx.event_tx.clone() else {
+            self.ctx.error_message = Some(format!(
+                "Could not reach the one-off seam for '{alias}': this session has no event channel."
+            ));
+            self.needs_redraw = true;
+            return None;
+        };
+        Some((path, tx))
+    }
+
+    /// `t`: list the project's pending todos off the render thread.
+    fn request_oneoff_todos(&mut self, alias: &str) {
+        let Some((path, tx)) = self.oneoff_target(alias) else {
+            return;
+        };
+        let alias = alias.to_string();
+        tokio::task::spawn_blocking(move || {
+            let todos = crate::oneoff::todos::list_pending(&path).map_err(|e| e.to_string());
+            let _ = tx.send(Action::OneoffTodosListed { alias, todos });
+        });
+    }
+
+    /// The confirm popup's Enter: start a detached one-off through [`OneoffSeams`].
+    /// The registry reads happen here, on this thread; the TUI never offers
+    /// `--unsandboxed` (C-09).
+    #[cfg_attr(
+        not(any(target_os = "linux", target_os = "macos")),
+        allow(unused_variables)
+    )]
+    fn request_oneoff_run(
+        &mut self,
+        alias: &str,
+        mode: crate::oneoff::Mode,
+        task: crate::oneoff::TaskSpec,
+        model: String,
+    ) {
+        let Some((project, tx)) = self.oneoff_target(alias) else {
+            return;
+        };
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            let egress_allow = match self
+                .ctx
+                .config
+                .projects
+                .get(alias)
+                .map(crate::config::RegisteredProject::driver_egress_allowlist)
+                .transpose()
+            {
+                Ok(hosts) => hosts.unwrap_or_default(),
+                Err(error) => {
+                    self.ctx.status_message = Some((
+                        format!(
+                            "Not starting a one-off: projects.{}.{}",
+                            crate::text::render_for_terminal(alias),
+                            crate::text::render_for_terminal(&error.to_string())
+                        ),
+                        std::time::Instant::now(),
+                    ));
+                    self.needs_redraw = true;
+                    return;
+                }
+            };
+            let defaults = crate::cli::task_run_defaults();
+            let options = crate::oneoff::launch::OneoffOptions {
+                project,
+                alias: alias.to_string(),
+                mode,
+                task,
+                model,
+                max_budget_usd: defaults.max_budget_usd,
+                cap_minutes: defaults.cap_minutes,
+                unsandboxed: false,
+                run_id: None,
+                egress_allow,
+            };
+            let config_path = self.ctx.config_path.clone();
+            let run = self.oneoff_seams.run;
+            let alias_for_task = alias.to_string();
+            tokio::task::spawn_blocking(move || {
+                let result = run(&options, Some(&config_path))
+                    .map(|started| started.run_id)
+                    .map_err(|error| error.to_string());
+                let _ = tx.send(Action::OneoffRunStarted {
+                    alias: alias_for_task,
+                    result,
+                });
+            });
+            self.ctx.status_message = Some((
+                format!(
+                    "Starting a one-off on {}",
+                    crate::text::render_for_terminal(alias)
+                ),
+                std::time::Instant::now(),
+            ));
+            self.needs_redraw = true;
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        let _ = (project, tx);
+    }
+
+    /// A confirmed landing or kill from the `T` popup, on `spawn_blocking`.
+    #[cfg_attr(
+        not(any(target_os = "linux", target_os = "macos")),
+        allow(unused_variables)
+    )]
+    fn request_oneoff_command(
+        &mut self,
+        alias: &str,
+        run_id: Option<String>,
+        command: crate::oneoff::OneoffCommand,
+    ) {
+        let Some((project, tx)) = self.oneoff_target(alias) else {
+            return;
+        };
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            use crate::oneoff::OneoffCommand;
+            let alias_for_task = alias.to_string();
+            tokio::task::spawn_blocking(move || {
+                let id = run_id.unwrap_or_default();
+                let result = match command {
+                    OneoffCommand::Merge => crate::oneoff::land::merge(&project, &id),
+                    OneoffCommand::Push => match crate::launcher::config_dir::driver_root() {
+                        Some(root) => {
+                            crate::oneoff::land::push(&project, &alias_for_task, &id, &root)
+                        }
+                        None => Err("no per-user data directory is available".to_owned()),
+                    },
+                    OneoffCommand::Discard => crate::oneoff::land::discard(&project, &id),
+                    OneoffCommand::Stop => {
+                        match crate::oneoff::launch::stop(
+                            &project,
+                            std::time::Duration::from_secs(60),
+                        ) {
+                            Ok(outcome) => Ok(outcome.message()),
+                            Err(error) => Err(error.to_string()),
+                        }
+                    }
+                };
+                let message = match result {
+                    Ok(done) => done.replace('\n', "; "),
+                    Err(why) => format!("{} refused: {}", command.verb(), why.replace('\n', "; ")),
+                };
+                let _ = tx.send(Action::OneoffCommandDone {
+                    alias: alias_for_task,
+                    message,
+                });
+            });
+            self.ctx.status_message = Some((
+                format!(
+                    "One-off {} on {}...",
+                    command.verb(),
+                    crate::text::render_for_terminal(alias)
+                ),
+                std::time::Instant::now(),
+            ));
+            self.needs_redraw = true;
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        let _ = (project, tx);
     }
 
     /// `Enter` on a usable slug (30-05, D-18): create the run directory with the same
@@ -2451,6 +2673,47 @@ impl App {
                 result,
             } => {
                 self.finish_launch(&alias, &run_id, result);
+            }
+            // Quick 261103-f5y: one-off tasks. Every arm is inert with the
+            // experimental surfaces off; the reads, the launch and the landings run on
+            // `spawn_blocking`.
+            Action::OneoffTodosRequested { alias } => self.request_oneoff_todos(&alias),
+            Action::OneoffTodosListed { alias, todos } => {
+                if self.ctx.experimental {
+                    self.ctx.view_cache.entry(alias).or_default().oneoff_todos = Some(todos);
+                    self.needs_redraw = true;
+                }
+            }
+            Action::OneoffStatusRefreshed { alias, view } => {
+                if self.ctx.experimental {
+                    self.ctx.view_cache.entry(alias).or_default().oneoff = view;
+                    self.needs_redraw = true;
+                }
+            }
+            Action::OneoffRunRequested {
+                alias,
+                mode,
+                task,
+                model,
+            } => self.request_oneoff_run(&alias, mode, task, model),
+            Action::OneoffCommandRequested {
+                alias,
+                run_id,
+                command,
+            } => self.request_oneoff_command(&alias, run_id, command),
+            Action::OneoffRunStarted { alias, result } => {
+                if self.ctx.experimental {
+                    let message = match result {
+                        Ok(run_id) => format!("One-off {run_id} started on {alias}"),
+                        Err(why) => format!("One-off not started on {alias}: {why}"),
+                    };
+                    self.finish_oneoff(&alias, &message);
+                }
+            }
+            Action::OneoffCommandDone { alias, message } => {
+                if self.ctx.experimental {
+                    self.finish_oneoff(&alias, &format!("{alias}: {message}"));
+                }
             }
             // 30-05, D-18: `s` minted a slug; create the run, edit it, check it, then
             // offer the launch.
@@ -7911,5 +8174,113 @@ mod tests {
         assert_eq!(top_screen_name(&driver), "detail");
         driver.handle_key(KeyCode::Char('R'), KeyModifiers::SHIFT);
         assert_eq!(top_screen_name(&driver), "driver_launch_form");
+    }
+
+    // ── quick 261103-f5y: the one-off seam ───────────────────────────────
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    static RECORDED_ONEOFFS: std::sync::Mutex<
+        Vec<(crate::oneoff::launch::OneoffOptions, Option<PathBuf>)>,
+    > = std::sync::Mutex::new(Vec::new());
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn fake_oneoff(
+        options: &crate::oneoff::launch::OneoffOptions,
+        config: Option<&Path>,
+    ) -> Result<crate::oneoff::launch::Started, crate::launcher::LauncherError> {
+        RECORDED_ONEOFFS
+            .lock()
+            .expect("the recorder")
+            .push((options.clone(), config.map(Path::to_path_buf)));
+        Ok(crate::oneoff::launch::Started {
+            run_id: "oneoff-20261103-000000".to_owned(),
+            pid: 4242,
+            log: PathBuf::from("/x/launch.log"),
+        })
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
+    async fn a_confirmed_one_off_goes_through_the_seam_with_the_cli_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, mut rx) = app_on_the_driver_tab(dir.path());
+        app.oneoff_seams = OneoffSeams { run: fake_oneoff };
+        app.update(Action::OneoffRunRequested {
+            alias: OBS_ALIAS.to_string(),
+            mode: crate::oneoff::Mode::Fast,
+            task: crate::oneoff::TaskSpec::Text("fix x".to_owned()),
+            model: "sonnet".to_owned(),
+        });
+        let started =
+            next_matching(&mut rx, |a| matches!(a, Action::OneoffRunStarted { .. })).await;
+        let Action::OneoffRunStarted { result, .. } = &started else {
+            unreachable!()
+        };
+        assert_eq!(result.as_deref(), Ok("oneoff-20261103-000000"));
+        let recorded = RECORDED_ONEOFFS
+            .lock()
+            .unwrap()
+            .iter()
+            .rev()
+            .find(|(o, _)| o.task == crate::oneoff::TaskSpec::Text("fix x".to_owned()))
+            .cloned()
+            .expect("the seam was called");
+        let defaults = crate::cli::task_run_defaults();
+        let (options, config) = recorded;
+        assert_eq!(options.alias, OBS_ALIAS);
+        assert_eq!(options.mode, crate::oneoff::Mode::Fast);
+        assert_eq!(options.model, "sonnet");
+        assert_eq!(options.max_budget_usd, defaults.max_budget_usd);
+        assert_eq!(options.cap_minutes, defaults.cap_minutes);
+        assert!(!options.unsandboxed, "the TUI never offers --unsandboxed");
+        assert_eq!(config.as_deref(), Some(app.ctx.config_path.as_path()));
+        app.update(started);
+        let message = app
+            .ctx
+            .status_message
+            .clone()
+            .map(|(t, _)| t)
+            .unwrap_or_default();
+        assert!(message.contains("started"), "{message}");
+    }
+
+    #[test]
+    fn one_off_results_fill_the_view_cache_and_are_inert_with_the_flag_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, _rx) = app_on_the_driver_tab(dir.path());
+        let todos = vec![crate::oneoff::todos::PendingTodo {
+            file_name: "a.md".to_owned(),
+            title: "A".to_owned(),
+        }];
+        app.ctx.experimental = false;
+        app.update(Action::OneoffTodosListed {
+            alias: OBS_ALIAS.to_string(),
+            todos: Ok(todos.clone()),
+        });
+        assert!(app
+            .ctx
+            .view_cache
+            .get(OBS_ALIAS)
+            .is_none_or(|c| c.oneoff_todos.is_none()));
+        app.update(Action::OneoffRunRequested {
+            alias: OBS_ALIAS.to_string(),
+            mode: crate::oneoff::Mode::Quick,
+            task: crate::oneoff::TaskSpec::Text("x".to_owned()),
+            model: "opus".to_owned(),
+        });
+        assert!(app.ctx.status_message.is_none(), "inert with the flag off");
+
+        app.ctx.experimental = true;
+        app.update(Action::OneoffTodosListed {
+            alias: OBS_ALIAS.to_string(),
+            todos: Ok(todos.clone()),
+        });
+        assert_eq!(app.ctx.view_cache[OBS_ALIAS].oneoff_todos, Some(Ok(todos)));
+        let view = crate::ui::screens::oneoff::tests::finished_view("x");
+        app.update(Action::OneoffStatusRefreshed {
+            alias: OBS_ALIAS.to_string(),
+            view: Some(Box::new(view.clone())),
+        });
+        assert_eq!(app.ctx.view_cache[OBS_ALIAS].oneoff.as_deref(), Some(&view));
     }
 }

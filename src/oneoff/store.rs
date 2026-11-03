@@ -332,6 +332,10 @@ pub struct OneoffView {
     pub record: RunRecord,
     pub live: LiveState,
     pub run_dir: PathBuf,
+    /// The SUMMARY.md the TUI may open (T-f5y-13): `<run-dir>/work/<summary_path>`,
+    /// checked off the render thread to be a regular file whose canonical path sits
+    /// under the clone. `None` when there is no such file.
+    pub summary_file: Option<PathBuf>,
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -347,8 +351,10 @@ mod fs_store {
     use crate::driverctl::serve::hash8;
     use crate::state_reader::driver_frontmatter::read_run_file_capped;
 
-    use super::{derive_live, valid_oneoff_run_id, LockSeen, OneoffView, RunRecord};
-    use crate::oneoff::{LOCK_FILE, RUN_FILE};
+    use super::{
+        derive_live, summary_path_from, valid_oneoff_run_id, LockSeen, OneoffView, RunRecord,
+    };
+    use crate::oneoff::{LOCK_FILE, RUN_FILE, WORK_DIR};
 
     /// `dirs::data_local_dir()/gsd-meta-manager/oneoff`, or `None` without a data dir.
     /// Never a `/tmp` fallback.
@@ -429,6 +435,21 @@ mod fs_store {
         Some(project_dir_in(&oneoff_root()?, &canonical))
     }
 
+    /// `<run_dir>/work/<rel>` when `rel` has the SUMMARY shape and names a regular
+    /// file (never a symlink) whose canonical path sits under the canonical clone.
+    pub fn verified_summary(run_dir: &Path, rel: &str) -> Option<PathBuf> {
+        summary_path_from(&[('A', rel.to_owned())])?;
+        let work = run_dir.join(WORK_DIR);
+        let candidate = work.join(rel);
+        let meta = fs::symlink_metadata(&candidate).ok()?;
+        if !meta.file_type().is_file() {
+            return None;
+        }
+        let canonical = fs::canonicalize(&candidate).ok()?;
+        let root = fs::canonicalize(&work).ok()?;
+        canonical.starts_with(&root).then_some(candidate)
+    }
+
     /// The view of one run.
     pub fn read_view(project_dir: &Path, run_id: &str) -> Option<OneoffView> {
         if !valid_oneoff_run_id(run_id) {
@@ -437,10 +458,15 @@ mod fs_store {
         let run_dir = project_dir.join(run_id);
         let record = read_record(&run_dir).ok()?;
         let live = derive_live(&record, &probe(&lock_path(project_dir)));
+        let summary_file = record
+            .summary_path
+            .as_deref()
+            .and_then(|rel| verified_summary(&run_dir, rel));
         Some(OneoffView {
             record,
             live,
             run_dir,
+            summary_file,
         })
     }
 
@@ -472,6 +498,26 @@ mod fs_store {
                 latest_run_id(root.path()).as_deref(),
                 Some("oneoff-20261103-100000-10")
             );
+        }
+
+        #[test]
+        fn only_a_regular_summary_file_inside_the_clone_is_offered() {
+            let root = TempDir::new().unwrap();
+            let rel = ".planning/quick/261103-abc-x/261103-abc-SUMMARY.md";
+            let dir = root.path().join("work/.planning/quick/261103-abc-x");
+            fs::create_dir_all(&dir).unwrap();
+            assert_eq!(verified_summary(root.path(), rel), None, "missing");
+            fs::write(dir.join("261103-abc-SUMMARY.md"), "s").unwrap();
+            assert_eq!(
+                verified_summary(root.path(), rel),
+                Some(root.path().join("work").join(rel))
+            );
+            fs::remove_file(dir.join("261103-abc-SUMMARY.md")).unwrap();
+            let outside = root.path().join("secret.txt");
+            fs::write(&outside, "x").unwrap();
+            std::os::unix::fs::symlink(&outside, dir.join("261103-abc-SUMMARY.md")).unwrap();
+            assert_eq!(verified_summary(root.path(), rel), None, "symlink");
+            assert_eq!(verified_summary(root.path(), "../secret.txt"), None);
         }
 
         #[test]

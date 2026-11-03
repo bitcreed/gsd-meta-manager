@@ -5991,6 +5991,56 @@ impl Screen for DetailScreen {
                     DriverAction::ToggleOptIn,
                 )))
             }
+            // `t` / `T` on the Driver tab (quick 261103-f5y): the one-off picker and the
+            // one-off status popup. Driver-tab guarded, so the experimental flag gates them
+            // for free (the Driver view is unreachable with it off). `t` asks the App for
+            // the todo listing; the popup reads only the view cache.
+            KeyCode::Char('t') if current_view == DetailSubView::Driver => {
+                ctx.needs_redraw = true;
+                if !super::driver_steer::can_steer() {
+                    ctx.status_message = Some((
+                        super::driver_steer::STEERING_UNSUPPORTED_PLATFORM.to_string(),
+                        std::time::Instant::now(),
+                    ));
+                    return ScreenAction::None;
+                }
+                let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
+                if let Some(view) = cache.oneoff.as_deref() {
+                    use crate::oneoff::store::LiveState;
+                    if matches!(view.live, LiveState::Running | LiveState::Preparing) {
+                        let message = format!(
+                            "One-off {} is already running here; press T to see it.",
+                            crate::text::render_for_terminal(&view.record.run_id)
+                        );
+                        ctx.status_message = Some((message, std::time::Instant::now()));
+                        return ScreenAction::None;
+                    }
+                }
+                cache.oneoff_todos = None;
+                super::driver_confirm::dispatch(
+                    ctx,
+                    Action::OneoffTodosRequested {
+                        alias: self.alias.clone(),
+                    },
+                    &self.alias,
+                );
+                ScreenAction::Push(Box::new(super::oneoff::OneoffScreen::picker(
+                    self.alias.clone(),
+                )))
+            }
+            KeyCode::Char('T') if current_view == DetailSubView::Driver => {
+                ctx.needs_redraw = true;
+                if !super::driver_steer::can_steer() {
+                    ctx.status_message = Some((
+                        super::driver_steer::STEERING_UNSUPPORTED_PLATFORM.to_string(),
+                        std::time::Instant::now(),
+                    ));
+                    return ScreenAction::None;
+                }
+                ScreenAction::Push(Box::new(super::oneoff::OneoffScreen::result(
+                    self.alias.clone(),
+                )))
+            }
             // `e` on the Driver tab: edit the SELECTED launcher run's DIRECTION.md body in
             // `$VISUAL`/`$EDITOR` (30-04, D-17). Tab-scoped, so `e` keeps its Docs,
             // Queue, Backlog and Archive meanings. The handler writes nothing: it asks
@@ -6876,6 +6926,26 @@ impl DetailScreen {
     /// [inferred I-11]). One method for both render paths, so neither can
     /// record less than the other.
     fn render_driver(&self, frame: &mut Frame, area: Rect, ctx: &AppContext) {
+        // Quick 261103-f5y: one line for the latest one-off, only when there is one.
+        let area = match ctx
+            .view_cache
+            .get(&self.alias)
+            .and_then(|cache| cache.oneoff.as_deref())
+        {
+            Some(view) if area.height > 1 => {
+                let line = Rect { height: 1, ..area };
+                frame.render_widget(
+                    Paragraph::new(super::oneoff::status_line(view, chrono::Utc::now())),
+                    line,
+                );
+                Rect {
+                    y: area.y + 1,
+                    height: area.height - 1,
+                    ..area
+                }
+            }
+            _ => area,
+        };
         // The launcher-first composition (30-01, D-01): the launcher runs.
         let drawn = super::driver_run::render_launcher_tab(
             frame,
@@ -20627,6 +20697,89 @@ mod tests {
             ScreenAction::Push(pushed) => Some(pushed.name().to_string()),
             _ => None,
         }
+    }
+
+    // ── quick 261103-f5y: the one-off keys ───────────────────────────────
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn t_opens_the_one_off_picker_and_asks_for_the_todos() {
+        let (mut screen, mut ctx, mut rx) = driver_action_fixture();
+        let action = screen.handle_key(KeyCode::Char('t'), KeyModifiers::NONE, &mut ctx);
+        assert_eq!(pushed_screen_name(&action).as_deref(), Some("oneoff"));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(crate::action::Action::OneoffTodosRequested { alias }) if alias == TEST_ALIAS
+        ));
+        let action = screen.handle_key(KeyCode::Char('T'), KeyModifiers::NONE, &mut ctx);
+        assert_eq!(pushed_screen_name(&action).as_deref(), Some("oneoff"));
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn t_with_a_live_one_off_says_so_and_opens_nothing() {
+        let (mut screen, mut ctx, mut rx) = driver_action_fixture();
+        let mut view = crate::ui::screens::oneoff::tests::finished_view("x");
+        view.live = crate::oneoff::store::LiveState::Running;
+        ctx.view_cache
+            .entry(TEST_ALIAS.to_string())
+            .or_default()
+            .oneoff = Some(Box::new(view));
+        let action = screen.handle_key(KeyCode::Char('t'), KeyModifiers::NONE, &mut ctx);
+        assert!(matches!(action, ScreenAction::None));
+        assert!(rx.try_recv().is_err());
+        let message = ctx.status_message.map(|(t, _)| t).unwrap_or_default();
+        assert!(message.contains("already running"), "{message}");
+    }
+
+    #[test]
+    fn the_one_off_keys_do_nothing_with_the_flag_off() {
+        let mut ctx = test_ctx().with_experimental(false);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        ctx.event_tx = Some(tx);
+        ctx.detail_sub_view_per_project
+            .insert(TEST_ALIAS.to_string(), DetailSubView::Driver);
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        for key in ['t', 'T'] {
+            let action = screen.handle_key(KeyCode::Char(key), KeyModifiers::NONE, &mut ctx);
+            assert_ne!(
+                pushed_screen_name(&action).as_deref(),
+                Some("oneoff"),
+                "{key}"
+            );
+        }
+        assert!(!matches!(
+            rx.try_recv(),
+            Ok(crate::action::Action::OneoffTodosRequested { .. })
+        ));
+    }
+
+    #[test]
+    fn the_driver_tab_draws_a_one_off_status_line_only_when_there_is_one() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let (screen, mut ctx) = driver_fixture(10, 10, 0, false);
+        let text = |ctx: &AppContext| {
+            let mut t = Terminal::new(TestBackend::new(120, 30)).unwrap();
+            t.draw(|f| screen.render_driver(f, f.area(), ctx)).unwrap();
+            let buf = t.backend().buffer();
+            (0..30u16)
+                .map(|y| {
+                    (0..120u16)
+                        .map(|x| buf[(x, y)].symbol())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        assert!(!text(&ctx).contains("One-off"));
+        ctx.view_cache
+            .entry(TEST_ALIAS.to_string())
+            .or_default()
+            .oneoff = Some(Box::new(crate::ui::screens::oneoff::tests::finished_view(
+            "x",
+        )));
+        assert!(text(&ctx).contains("One-off oneoff-20261103-142233: finished"));
     }
 
     // ── 30-01: the launcher-first Driver tab ─────────────────────────────

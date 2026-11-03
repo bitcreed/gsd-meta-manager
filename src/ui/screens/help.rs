@@ -327,7 +327,7 @@ pub(super) fn help_lines(experimental: bool) -> Vec<Line<'static>> {
     // mode: the output pane's default is to follow its tail, so scrolling
     // is the exception rather than a second mode the user has to track.
     //
-    // The whole section — heading, blank line, nine rows and its trailing
+    // The whole section — heading, blank line, its rows and its trailing
     // blank — goes together when the experimental surfaces are off; the
     // blank line above is the one that survives, so the Filter Syntax
     // heading below has exactly one blank before it either way.
@@ -368,6 +368,15 @@ pub(super) fn help_lines(experimental: bool) -> Vec<Line<'static>> {
             // The Driver tab's `o` is the only opt-in key (the dashboard's was retired
             // in Phase 31, D-03).
             row("o", "Toggle driver opt-in for this project"),
+            // Quick 261103-f5y: one-off sandboxed tasks, no driver run needed.
+            row(
+                "t",
+                "One-off task: pick a todo or type one; q = /gsd-quick, f = /gsd-fast (asks first)",
+            ),
+            row(
+                "T",
+                "One-off status and result: e SUMMARY, m merge, p push, d discard, x kill",
+            ),
             Line::from(""),
             // ── The run-state legend (30-01, D-04): glyph, word and gloss for every
             // status the run list can show, glyphs from the `driver_run` constants.
@@ -625,6 +634,14 @@ mod tests {
             ),
             ("x", "Kill this run's sandbox now (asks first)"),
             ("o", "Toggle driver opt-in for this project"),
+            (
+                "t",
+                "One-off task: pick a todo or type one; q = /gsd-quick, f = /gsd-fast (asks first)",
+            ),
+            (
+                "T",
+                "One-off status and result: e SUMMARY, m merge, p push, d discard, x kill",
+            ),
         ] {
             let expected = row(key, description).spans[0].content.to_string();
             assert!(
@@ -978,6 +995,14 @@ mod tests {
             ),
             ("x", "Kill this run's sandbox now (asks first)"),
             ("o", "Toggle driver opt-in for this project"),
+            (
+                "t",
+                "One-off task: pick a todo or type one; q = /gsd-quick, f = /gsd-fast (asks first)",
+            ),
+            (
+                "T",
+                "One-off status and result: e SUMMARY, m merge, p push, d discard, x kill",
+            ),
         ]
         .into_iter()
         .map(|(key, description)| row(key, description).spans[0].content.to_string())

@@ -116,7 +116,8 @@ The binary itself does not require any environment variables to start. It does, 
 | `TMUX` | Optional | `src/terminal_switch.rs` | Presence of `$TMUX` indicates the binary is running inside tmux; required for the "switch to existing Claude session" feature. Absent → tab-switching returns a clear error. |
 | `GSD_HOME` | Optional | `src/state_reader/config_json.rs` (`user_defaults_path`) | Root of the GSD-owned store. GSD user defaults are read from, and the Config tab's global scope writes to, `$GSD_HOME/.gsd/defaults.json`. Unset or empty falls back to `$HOME`, matching gsd-core's own `GSD_HOME \|\| homedir()` rule. Any other value is used as given. |
 | `HOME` | Optional | `src/state_reader/config_json.rs` (`user_defaults_path`) | Fallback root for `$GSD_HOME/.gsd/defaults.json` (the GSD user defaults overlay) when `GSD_HOME` is unset or empty. If neither is set, the defaults file is simply not loaded. |
-| `GSDMM_EXPERIMENTAL_FEATURES` | Optional | `src/experimental.rs` (read once at startup by `App::from_config`) | Turns on the experimental surfaces, which today means the **Driver** tab and everything that leads to it. **Default is OFF.** Accepted truthy values are `1`, `true`, `yes` and `on`, ASCII-case-insensitive with surrounding whitespace trimmed; unset, empty, `0`, `false`, `no`, `off` and any unrecognised value are OFF. |
+| `GSDMM_EXPERIMENTAL_FEATURES` | Optional | `src/experimental.rs` (read once at startup by `App::from_config`) | Turns on the experimental surfaces, which today means the **Driver** tab and everything that leads to it, one-off tasks (`t` / `T`) included. **Default is OFF.** Accepted truthy values are `1`, `true`, `yes` and `on`, ASCII-case-insensitive with surrounding whitespace trimmed; unset, empty, `0`, `false`, `no`, `off` and any unrecognised value are OFF. |
+| `GSDMM_ONEOFF_REPORT_DIR` | Never set by users | `src/taskctl_cli.rs` (`taskctl report`) | Set by the one-off launcher inside the sandbox (and pinned by the run's `gsd-meta-manager` shim): the directory `taskctl report` writes `report.json` to. Unset, relative or missing makes `taskctl report` exit 1. |
 
 Editor fallback chain: `$VISUAL` → `$EDITOR` → `vi`.
 
@@ -153,6 +154,70 @@ reconciliation of its run records. Run directories it left under
 `.planning/meta-manager/runs/` are still on disk but are never read.
 
 It is read exactly once, at startup. Changing it requires restarting the TUI.
+
+#### One-off tasks
+
+A one-off runs ONE headless agent session (`claude -p`) on a project: `/gsd-quick
+<task>` or `/gsd-fast <task>`, in the driver launcher's sandbox, with no driver
+run, `DIRECTION.md` or terminal. It reports through a strict CLI and you land its
+work when you choose.
+
+**Keys (Driver tab).** `t` opens a picker of the project's pending todos
+(`.planning/todos/pending/*.md`) plus `type a task...`; `q` picks /gsd-quick, `f`
+picks /gsd-fast, Esc cancels. A confirm popup then shows the model, the spend
+ceiling and the wall clock; `m` switches between opus and sonnet and Enter
+launches (detached, off the render thread). The tab shows a one-line status of the
+latest one-off. `T` shows its status, headline, changed items, verifications,
+follow-ups and the SUMMARY path, labelled agent-reported versus host facts, with
+`e` (open SUMMARY.md from the clone in `$EDITOR`), `m` merge, `p` push, `d`
+discard and `x` kill (a live run); each of those asks first.
+
+**CLI.** `gsd-meta-manager task run <alias|path> (--todo <file> | --text <task>)
+[--mode quick|fast] [--model opus] [--max-budget-usd 10] [--cap-minutes 60]
+[--unsandboxed] [--foreground]`; `task status <project> [--json]`; `task stop
+<project> [--wait-secs 60]`; `task land merge|push|discard <project> <run-id>`.
+The defaults are the ones shown above (the same as `driver launch`). `task` is not
+gated by this variable: the flag is a discovery gate, as it is for `driver`.
+
+**Where runs live.** `<data dir>/gsd-meta-manager/oneoff/<hash8 of the
+project path>/<run-id>/` (`~/.local/share/...` on Linux): `run.json` (the host's
+record), `stream.jsonl` (the agent's stream-json output, credential-redacted),
+`launch.log`, `report/report.json`, the per-run config dir and `work/`, a
+`git clone --no-hardlinks` of the project on branch `gsd-oneoff/<run-id>`. The
+clone copies the whole object store, so each run costs about the repository's
+size on disk until it is discarded. **Uncommitted changes in the project are not
+included**: the clone starts at the project's last commit, and a todo must be
+committed to be picked.
+
+**Sandbox.** The driver launcher's posture is reused: bwrap under a
+`systemd-run --user` scope, the egress proxy holding the token, the managed deny
+list, `--setting-sources user`. Inside, only the clone, `report/` and the per-run
+config dir are writable; there is no driverctl and no gate hook. A host that
+cannot sandbox is refused; `--unsandboxed` (CLI only, never the TUI) runs it
+degraded and records that. The wall clock is enforced from outside the sandbox,
+plus systemd's `RuntimeMaxSec`; the spend ceiling is the agent's `--max-budget-usd`.
+
+**The report contract.** The agent ends with `gsd-meta-manager taskctl report
+--status done|partial|blocked|failed --headline <one line, max 120>
+[--changed <item>]... [--verified "<command>: <result>"]... [--followup <item>]...`
+(each list at most 5 items of at most 200 characters, one line each, no control
+or invisible formatting characters). A bad call exits 2 and writes nothing; the
+last good call wins. The host re-validates the file and never trusts it; the
+commit range, the commit count and the SUMMARY path are read from git on the
+host. A run without a valid report gets one synthesized from its outcome.
+
+**Landing.** `merge` fast-forwards your checkout to the run's head only when the
+checkout is clean, on a branch and behind the head; otherwise it refuses and
+nothing changes. Your own `git merge --ff-only` runs, hooks included, and changed
+paths under `.claude/`, `.github/`, `.husky/` or named `.gitattributes`,
+`.gitmodules`, `.envrc` are listed as a warning. `push` sends the head only to
+`refs/heads/gsd-auto/<alias>/<run-id>` from the launcher's pinned mirror after the
+credential scan; no pull request is opened. A git-relevant planted file in the
+clone refuses both; `discard` is the way out. `discard` deletes the run dir once
+the run is not live.
+
+**One at a time.** One one-off runs per project at a time; a second is refused
+(exit 3 on the CLI) until the first ends or is stopped.
 
 The binary additionally reads `dirs::data_local_dir()` (typically `~/.local/share` on Linux) to choose the log directory `gsd-meta-manager/`. If `dirs::data_local_dir()` returns `None`, logs are written to `/tmp` (see `src/main.rs`). Logs themselves are configured by `tracing-subscriber`, but no environment variable currently feeds the subscriber (the `env-filter` feature is compiled in, so `RUST_LOG`-style filtering may be added later but is not currently wired into `tracing_subscriber::fmt().init()`).
 

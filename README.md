@@ -71,14 +71,18 @@ What it writes:
 - The experimental driver launcher: run directories under
   `.planning/meta-manager/drivers/`, files in its data directory -- plus whatever
   the GSD commands it launches write.
+- Experimental one-off tasks: one run directory per task under its data
+  directory (`gsd-meta-manager/oneoff/`), holding a private clone the agent
+  commits in ([docs/CONFIGURATION.md](docs/CONFIGURATION.md#one-off-tasks)).
 
 What it never touches:
 
 - Session transcripts (a subagent's is checked only for its timestamp, never
   opened), the GSD install, or installed capabilities.
 - `ROADMAP.md`, `STATE.md` or phase artifacts, except through your `$EDITOR`
-  (`e`). Git is read with `--no-optional-locks`; the app never commits or
-  pushes.
+  (`e`). Git is read with `--no-optional-locks`. The app itself never commits; it
+  pushes, or fast-forwards your checkout, only when you land an experimental
+  driver or one-off run.
 
 ## Features
 

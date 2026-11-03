@@ -752,6 +752,22 @@ pub enum StopOutcome {
     NotRunning,
 }
 
+impl StopOutcome {
+    /// The outcome as one line.
+    pub fn message(&self) -> String {
+        match self {
+            StopOutcome::Stopped { run_id, .. } => format!("{run_id} stopped"),
+            StopOutcome::StillRunning { run_id, pid } => {
+                format!("{run_id} (pid {pid}) was signalled but is still running")
+            }
+            StopOutcome::OrphanScopeStopped { unit } => {
+                format!("no live one-off launcher; stopped the leftover scope {unit}")
+            }
+            StopOutcome::NotRunning => "no one-off is running on this project".to_owned(),
+        }
+    }
+}
+
 /// Whether `unit` is a one-off scope this launcher could have created.
 fn plausible_scope(unit: &str) -> bool {
     unit.starts_with(&format!("{SCOPE_PREFIX}-"))

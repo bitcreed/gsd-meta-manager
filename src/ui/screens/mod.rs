@@ -11,6 +11,7 @@ pub mod driver_steer;
 pub mod enqueue;
 pub mod help;
 pub mod normal;
+pub mod oneoff;
 pub mod preferences;
 pub mod queue_delete_confirm;
 
@@ -1222,6 +1223,12 @@ pub struct ProjectViewCache {
     /// that the run it asked for already exists. Cleared when the input opens and on
     /// every edit of the slug.
     pub new_run_status: Option<driver_launch::NewRunStatus>,
+    /// The pending todos the one-off picker lists (quick 261103-f5y): `None` while
+    /// the listing is in flight, filled by `Action::OneoffTodosListed`.
+    pub oneoff_todos: Option<Result<Vec<crate::oneoff::todos::PendingTodo>, String>>,
+    /// The project's latest one-off run, read by the Driver tab's slow-tick refresh
+    /// (`Action::OneoffStatusRefreshed`). `None` when the project has none.
+    pub oneoff: Option<Box<crate::oneoff::store::OneoffView>>,
 }
 
 impl ProjectViewCache {
@@ -1671,6 +1678,12 @@ impl AppContext {
             .get(alias)
             .map(|cache| cache.launcher_log.clone())
             .unwrap_or_default();
+        // Quick 261103-f5y: whether a one-off is cached, so a project with none (the
+        // common case) is sent no `OneoffStatusRefreshed` at all.
+        let had_oneoff = self
+            .view_cache
+            .get(alias)
+            .is_some_and(|cache| cache.oneoff.is_some());
         let alias = alias.to_string();
         tokio::task::spawn_blocking(move || {
             let launcher_runs = crate::state_reader::driver_frontmatter::list_driver_runs(
@@ -1708,11 +1721,19 @@ impl AppContext {
                 ))
             });
             let _ = tx.send(crate::action::Action::LauncherRunsRefreshed {
-                alias,
+                alias: alias.clone(),
                 launcher_runs,
                 detail,
                 log,
             });
+            // Quick 261103-f5y: the latest one-off rides the same slow-tick rescan.
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            let view = crate::oneoff::store::read_latest(&project).map(Box::new);
+            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+            let view: Option<Box<crate::oneoff::store::OneoffView>> = None;
+            if view.is_some() || had_oneoff {
+                let _ = tx.send(crate::action::Action::OneoffStatusRefreshed { alias, view });
+            }
         });
     }
 

@@ -336,6 +336,45 @@ pub enum Action {
         run_id: String,
         result: Result<u32, String>,
     },
+    /// The one-off picker opened (`t`, quick 261103-f5y): list the project's pending
+    /// todos off the render thread, answered by [`Action::OneoffTodosListed`].
+    OneoffTodosRequested {
+        alias: String,
+    },
+    /// The pending todos, or why they could not be listed.
+    OneoffTodosListed {
+        alias: String,
+        todos: Result<Vec<crate::oneoff::todos::PendingTodo>, String>,
+    },
+    /// The confirm popup's Enter: start a detached one-off (never on the render
+    /// thread), answered by [`Action::OneoffRunStarted`].
+    OneoffRunRequested {
+        alias: String,
+        mode: crate::oneoff::Mode,
+        task: crate::oneoff::TaskSpec,
+        model: String,
+    },
+    /// A one-off start finished: `Ok` carries the run id, `Err` the reason.
+    OneoffRunStarted {
+        alias: String,
+        result: Result<String, String>,
+    },
+    /// A confirmed merge, push, discard or stop from the `T` popup.
+    OneoffCommandRequested {
+        alias: String,
+        run_id: Option<String>,
+        command: crate::oneoff::OneoffCommand,
+    },
+    /// A one-off command finished; `message` is its outcome, already worded.
+    OneoffCommandDone {
+        alias: String,
+        message: String,
+    },
+    /// The project's latest one-off, read by the Driver tab's refresh.
+    OneoffStatusRefreshed {
+        alias: String,
+        view: Option<Box<crate::oneoff::store::OneoffView>>,
+    },
 }
 
 #[cfg(test)]
