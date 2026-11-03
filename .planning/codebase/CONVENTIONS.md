@@ -1,101 +1,163 @@
+---
+last_mapped_commit: 5146cf11780714b72ed3b2e6224e849a93e10a08
+last_mapped_at: 2026-11-03
+---
 # Coding Conventions
 
-**Analysis Date:** 2026-08-18
+**Analysis Date:** 2026-11-03
+
+## Language and Toolchain
+
+The crate is Rust, edition 2021, declared `rust-version = "1.89"` in `Cargo.toml` (the MSRV floor).
+`docs/TESTING.md` still says `1.88+`; the `Cargo.toml` value is authoritative.
+
+- Formatting: no `rustfmt.toml` or `.rustfmt.toml` exists. Code follows default `rustfmt` style. No CI job runs `cargo fmt --check`, so run `cargo fmt` before committing.
+- Linting: CI runs `cargo clippy -- -D warnings` (`.github/workflows/release.yml` line 158) and `cargo clippy --locked --all-targets -- -D warnings` in the release build matrix (line 98). Treat clippy warnings as errors.
+- Lint suppression is rare and local. Examples: `#[allow(clippy::type_complexity)]` on `src/launcher/push.rs:347`, `#![allow(dead_code)]` in `tests/common/mod.rs` (justified in its header comment because each integration target compiles the module separately).
+- No crate-level `#![deny(...)]` or `[lints]` table exists in `Cargo.toml`.
 
 ## Naming Patterns
 
-**Files:**
-- Snake_case modules named for the concept they own: `src/config.rs`, `src/registry.rs`, `src/session_detector.rs`, `src/terminal_switch.rs`.
-- Feature areas are directories with a `mod.rs` plus siblings: `src/driver/{mod,dry_run,kill,liveness,lock,reconcile,run,spawn}.rs`, `src/journal/{mod,inbox,reader,redact,writer}.rs`, `src/executor/`, `src/state_reader/`, `src/ui/screens/`.
-- Test files under `tests/` are named for the property they guard, not the module under test: `tests/spawn_seam_guard.rs` (not `executor_tests.rs`), `tests/driver_dry_run.rs`, `tests/registry_test.rs`.
+**Files and modules:**
+- `snake_case.rs` everywhere: `src/oneoff/cancel.rs`, `src/state_reader/queue_md.rs`, `src/ui/screens/driver_confirm.rs`.
+- Parser or file-format modules are named after the file they read, with an `_md` or `_json` suffix: `src/state_reader/roadmap_md.rs`, `src/state_reader/state_md.rs`, `src/state_reader/config_json.rs`, `src/state_reader/queue_md.rs`.
+- Module directories hold a `mod.rs` entry point: `src/oneoff/mod.rs`, `src/launcher/mod.rs`, `src/driverctl/mod.rs`, `src/agents/adapters/mod.rs`. Sibling-file modules are also used (`src/launcher/push.rs` with `src/launcher/push/planted.rs`).
+- CLI wrappers are suffixed `_cli.rs`: `src/driver_cli.rs`, `src/driverctl_cli.rs`, `src/taskctl_cli.rs`, `src/next_cli.rs`.
+- Integration test files under `tests/` are prefixed by the subsystem: `tests/driverctl_*.rs`, `tests/launcher_*.rs`, `tests/agents_*.rs`, `tests/state_reader_test.rs`, `tests/registry_test.rs`.
 
 **Functions:**
-- Free functions, snake_case, verb-first: `add_project`, `record_opt_in`, `clear_opt_in`, `git_last_commit_time`, `project_last_activity` (`src/registry.rs`, `src/state_reader/git_ops.rs`).
-- Private helper functions are un-prefixed and colocated above/below their public callers in the same file rather than pulled into a separate `internal` module — see `git_read_raw` / `git_read` / `config_get` in `src/state_reader/git_ops.rs:189-229`.
-- A dedicated escape-hatch constructor is named to be self-incriminating rather than terse: `for_testing_bypassing_opt_in` in `src/executor/mod.rs`, not `test_new` or `unchecked_new` — the name itself is part of the audit surface (see `tests/spawn_seam_guard.rs:25-27`).
+- `snake_case`. Predicates read as questions or states: `valid_oneoff_run_id`, `runtime_max_sec_for`.
+- Parsers use `parse_` and return `Option` for "not this shape" or `Result` for "invalid with reason":
+  - `Option`: `parse_backlog_dir_name` (`src/state_reader/backlog.rs:35`), `parse_waves_manifest` (`src/state_reader/plan_waves.rs:206`), `parse_git_log_line` (`src/state_reader/git_ops.rs:1050`).
+  - `Result` with a typed error: `parse_driver_frontmatter` (`src/state_reader/driver_frontmatter.rs:480`) returns `Result<DriverFrontmatter, FrontmatterError>`.
+- Private helpers that wrap an error into a variant are named for their context: `io_error(context, e)` in `src/oneoff/launch.rs:139`.
+- Pure state-machine methods take injected time rather than calling the clock. Use `now: DateTime<Utc>` or `Instant` parameters (`src/launcher/outcome.rs:130`, `src/launcher/auth.rs:181`).
 
-**Variables:**
-- Short, scope-local names (`tmp`, `fm`, `cmd`) in tests; descriptive names in production code, especially around security-sensitive values (`digest`, `redacted`, `allowlist`).
+**Variables:** `snake_case`. Short names are normal in tight loops (`req`, `ctx`, `dir`). Use `ctx` for shared per-session context structs (`fn run_session(ctx: &Ctx<'_>, ...)` in `src/oneoff/launch.rs:352`).
 
 **Types:**
-- PascalCase structs/enums, one clear owner per concept: `Config`, `RegisteredProject`, `DriverOptIn`, `Preferences` (`src/config.rs`).
-- Domain records over booleans when the boolean would be ambiguous. `DriverOptIn` is a struct with `opted_in_at` + `claude_md_digest`, not a `bool`, specifically because "may be driven" must not be conflatable with "was registered" (`src/config.rs:66-77`, decision D-14).
-- Newtypes are used to make an invariant a *type-level* property rather than a discipline. `RedactedLine` in `src/journal/redact.rs` has a private field, one crate-private accessor, and implements **no traits at all** (no `From`, `Deref`, `Display`, or test-only constructor) so the only way to produce one is through the redactor (`src/journal/redact.rs:7-12`, decision D-22).
-- Capability types gate dangerous operations: `DrivableProject` (`src/executor/mod.rs`) has private fields and exactly two constructors — one production (`from_registry`), one explicit test escape hatch — enforced by `tests/spawn_seam_guard.rs::drivable_project_has_exactly_two_constructors_and_private_fields`.
+- `PascalCase` structs and enums. Error enums end in `Error` (`LauncherError` in `src/launcher/mod.rs:132`, `LockError` in `src/error.rs`) or are named after their domain (`RecordStatus`, `ReportSource`, `LandingKind`, `MergeHow` in `src/oneoff/store.rs`).
+- Enum variants that carry data use struct-style fields: `LauncherError::Io { detail: String }`, `LockError::HeldBy { run_id, pgid, started_at }`.
+- Wire-format enums are annotated with serde renames: `#[serde(rename_all = "lowercase")]` (`RecordStatus`, `MergeHow`) or `#[serde(tag = "kind", rename_all = "snake_case")]` for tagged unions (`ReportSource`).
+
+**Constants:** `SCREAMING_SNAKE_CASE` with a doc comment. Limits and environment-variable names are exported constants:
+- `MAX_CHANGED_FILES`, `RECORD_SCHEMA` in `src/oneoff/store.rs`
+- `MAX_REQUEST_BYTES`, `STOP_GRACE`, `STOP_GRACE_ENV` in `src/oneoff/cancel.rs`
+- `DEGENERATE` in `src/test_support.rs`
 
 ## Code Style
 
-**Formatting:**
-- Standard `rustfmt` defaults (no `rustfmt.toml` found in repo root — verify before assuming custom width/style rules).
+**Derives:** Data types derive `Debug, Clone` plus `PartialEq, Eq` where comparison is meaningful. Serialized types add `Serialize, Deserialize`. Copyable enums add `Copy`. Example from `src/oneoff/cancel.rs`:
 
-**Linting:**
-- Clippy is treated as a hard gate. `CONTRIBUTING.md` states: "Clippy warnings are treated as errors in this project."
-- **Two different clippy invocations, two different results — know which one you're running:**
-  - `cargo clippy -- -D warnings` (lib target only) is the documented pre-PR gate in `CONTRIBUTING.md` and passes clean.
-  - `cargo clippy --all-targets -- -D warnings` (includes `tests/`, in-source `#[cfg(test)]` modules, benches) currently has **5 known pre-existing lint errors** as of 2026-08-18, all in test code:
-    1. `src/browser.rs:131-133` — `clippy::bool_assert_comparison` (`assert_eq!(x, true)` instead of `assert!(x)`), x3 occurrences.
-    2. `src/project_creator.rs:146` — `clippy::cmp_owned` (`PathBuf::from("~")` allocated just for comparison).
-    3. `src/state_reader/mod.rs:258` — `clippy::items_after_test_module` (items declared after the `mod tests` block, including `count_backlog_items` at line 477).
-  - Do not treat a clean `cargo clippy -- -D warnings` as proof `--all-targets` is also clean — they check different target sets.
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum StopKind {
+    Pause,
+    Hard,
+    Kill,
+}
+```
 
-## Import Organization
+**Display and Error impls are hand-written.** `src/error.rs` states the choice explicitly: one small enum does not justify an error-derive dependency. Do not add `thiserror` for a single enum. Follow the `impl fmt::Display` plus `impl std::error::Error {}` pattern in `src/error.rs`.
 
-**Order:** No enforced blank-line grouping observed; imports are effectively alphabetized within a flat `use` block, `crate::` paths and external crates interleaved alphabetically rather than segregated into std/external/internal groups — see `src/app.rs:1-13` (`crate::action`, `crate::change_tracker`, `crate::config`, ... `crossterm::event`, `ratatui::widgets`, `std::collections`, `std::path`, `tokio::sync::mpsc`, all in one alphabetized list).
+**Long string literals** are split with a trailing backslash continuation inside `write!` (see `LockError`'s `Display` in `src/error.rs`).
 
-**Path Aliases:** None (no `#[path]` remapping or workspace aliasing found). Modules are referenced by their full `crate::module::item` path.
+**Imports:** Group as `std`, then third-party crates, then `crate::` and `super::`, separated by blank lines. This is the dominant pattern but it is not enforced. `src/state_reader/queue_md.rs` mixes `super::` imports between `std` imports, so match the file you are editing.
+
+**Sections inside large files:** Use banner comments to separate logical blocks:
+
+```rust
+// ============================================================================
+// The shared `git` helper for the integration tests ...
+// ============================================================================
+```
+
+Banners appear at roughly 60 places across `src/` and `tests/`, mostly in guard tests and seam modules.
+
+## Documentation and Comments
+
+**Module headers** are `//!` blocks that state what the module owns, what it does not own, and which requirement or decision IDs drove it. Read the header first when working in an unfamiliar module. Examples: `src/oneoff/cancel.rs`, `src/oneoff/store.rs`, `src/error.rs`.
+
+**Decision and requirement IDs are part of the convention.** The codebase tags design choices with IDs in comments, roughly 1,600 occurrences of patterns like `D-19`, `C-06`, `CTRL-05`, `T-28-04`, `I-09`, and quick-task IDs such as `quick 261103-klf`. Keep this convention when you change a guarded behavior: cite the ID that governs it, and do not invent new IDs.
+
+**Doc comments on items** are `///` and usually state the invariant, not the mechanism. Example: `/// The request file inside a run dir ...` in `src/oneoff/cancel.rs`.
+
+**Comments that assert a guarantee should be backed by a test.** `tests/async_blocking_guard.rs` and `tests/spawn_seam_guard.rs` exist because prose comments were not enough. A comment that says "never call X here" should have a guard test or the rule is not enforced.
+
+**Explanatory comments are long on purpose.** When a line looks odd (a `#[ignore]`, an `unsafe`-adjacent syscall, a seam), the comment states the failure it prevents. Keep that style for non-obvious code.
 
 ## Error Handling
 
-**Pattern:** Hand-written error enums with manual `Display` and `std::error::Error` impls — **not** `thiserror` (`thiserror` is not a dependency; verified against `Cargo.toml`). See `src/error.rs`: `SpawnError`, `SendError`, `CapabilityError`, `OptInError`, `LockError`, `DriveError` each get their own `impl std::error::Error`.
+**Two layers:**
 
-**Exhaustive `match`, no wildcard, by design.** `DriveError::source()` in `src/error.rs:530-547` spells out every variant instead of using `_ => None`, with the rationale written directly above the match:
-> "Exhaustive rather than `_ => None`, since plan 17-08. The wildcard meant a variant added later that DID wrap an error would silently lose its source... Spelling every arm out makes the next author decide, which is the only moment the decision is cheap."
-This is a deliberate house pattern: wherever a `match` decides something security- or correctness-relevant, prefer listing every arm (even ones with identical bodies, joined with `|`) over `_ =>`, so an upstream variant addition becomes a **compile error** instead of a silent fallthrough. Applied again in `src/driver/reconcile.rs:284-286` (`RunVerdict` matched exhaustively).
+1. Application code uses `anyhow::Result` with `.with_context(...)` at seams that callers touch (`src/config.rs`, `src/registry.rs`, `src/state_reader/git_ops.rs`). `src/main.rs` returns `anyhow::Result<()>`. `color-eyre` is the top-level report handler.
+2. Domain code that callers must match on uses a typed error enum:
+   - `src/error.rs`: `LockError` (variants `HeldBy`, `HeldByUnknownRun`, `Unavailable`). The header says only the lock refusal is typed.
+   - `src/launcher/mod.rs:132`: `LauncherError` with struct variants (`InvalidRun`, `Locked`, `Auth`, `Spawn`, `Io`, `Store`, `UnsupportedPlatform`) and an `exit_code()` method.
 
-**Error messages are written for the user acting on them, not just the maintainer.** `DriveError::RunIdRequired`'s `Display` impl explains what to do about it ("Pass one, or use `--dry-run`, which creates no run to identify") with the in-code comment: "a refusal a caller cannot act on is a bug report rather than an error message" (`src/error.rs:507-513`).
+**Rule:** If a caller will branch on the failure, make it a typed enum variant. If it only gets reported, use `anyhow` with context.
 
-**Fallible-by-signature validation.** Functions that might not have an answer return `Option`/`Result` rather than a sentinel value, specifically to conscript the compiler into enumerating every call site when the fallible case changes. Example: `src/state_reader/git_ops.rs` — `git_last_commit_time`, `head_sha`, `is_dirty`, `config_get` all return `Option<T>`; `src/registry.rs` — `add_project`, `record_opt_in`, `clear_opt_in`, `remove_project` all return `Result<()>`, and `claude_md_digest` returns `Option<String>` so a project without a `CLAUDE.md` is a normal, compiler-checked case rather than a panic path.
+**Validation returns early with a typed error before any side effect.** `validate(opts)` in `src/oneoff/launch.rs:146` runs before anything is probed or written. Follow that order.
 
-**`anyhow::Context` for propagation, not for domain errors.** `src/config.rs` uses `anyhow::Context` for I/O-adjacent failures (file read/write, JSON parse) while domain-significant failures (drive refusals, lock conflicts, spawn failures) get their own typed enums in `src/error.rs`. Use `anyhow` at the outer I/O boundary; use a typed enum when a caller needs to distinguish cases (e.g., match on `DriveError::RunIdRequired` vs `DriveError::Lock(..)`).
+**Error details are strings.** Enum variants carry `detail: String` built with `format!("{context}: {e}")`. Prefer the helper pattern at `src/oneoff/launch.rs:139`.
 
-## Comments — Rationale-in-Code
+**`unwrap()` and `expect()`:** About 230 calls appear in non-test code, counted by a rough scan that stops at the first `#[cfg(test)]` in each file, so the count is approximate. Do not add new ones on fallible paths that take external input (files, git output, process output, sockets). Use `?` or an explicit error. The existing uses are mostly on infallible or internally constructed values.
 
-**This is the codebase's most distinctive convention: non-obvious decisions carry a comment naming the decision id, the failure it prevents, and the alternative that was declined.** Decision ids (`D-14`, `D-15`, `D-16`, `D-17`, `D-18`, `D-21`..`D-28`, `D-30`, `SAFE-04`, `WR-16`, `CTRL-03`) and pitfall references (`PITFALLS:329`, `PITFALLS:521`, `PITFALLS:63`, `PITFALLS:69`) appear directly above the code they justify, not only in `.planning/` docs. Examples:
+**Security-relevant inputs are validated and bounded.** Examples: `MAX_REQUEST_BYTES` read limit (`src/oneoff/cancel.rs`), `MAX_CHANGED_FILES`, and report headline length limits in `src/oneoff/report.rs`. Untrusted strings from agents are wrapped or checked for invisible and bidi-control characters; see `src/text.rs` and `src/test_support.rs` (`DEGENERATE`).
 
-- `src/config.rs:9-21` — `CONFIG_SCHEMA_VERSION` doc comment explains what bumping to `2` means, why `Config::version` deliberately has **no** `#[serde(default)]` (a config lacking it should still fail to parse — D-15), and why relaxing that now would be "an unrelated behaviour change smuggled in under a migration."
-- `src/config.rs:66-77` — `DriverOptIn` is a record and not a `bool`, with three enumerated reasons, one of which names a *future* need (Phase 21 re-confirmation) as the reason it's a record now rather than later.
-- `src/config.rs:109-117` — `Preferences` explicitly does **not** derive `Default`, because a derived `Default` would yield `driver_max_concurrent: 0`, silently denying all runs. A named two-armed test (`driver_max_concurrent_defaults_to_one_from_default_and_from_empty_json`) exists specifically to fail if someone re-derives it.
-- `src/journal/redact.rs:1-56` — module-level doc explains *where* redaction must happen (capture path, never UI), *why* the newtype has no trait impls, and states an explicit non-goal section titled "What this module will not grow (D-26)": no raw sidecar file, no unredact path, no verbose bypass mode.
-- `src/driver/dry_run.rs:1-40` — cites `PITFALLS:63` and `PITFALLS:69` by exact quoted failure mode ("a dry-run that prints 'would run: /gsd:execute-phase' tells the user nothing about blast radius") as the reason the module exists, then names three required outputs (D-22) each with its own honesty constraint.
+## Logging
 
-**Convention for new code:** when a design choice is not the obvious/simplest option (skipping `#[serde(default)]`, choosing a record over a bool, omitting a trait impl, using `--no-optional-locks` instead of a straightforward git call), write the *why* and the *declined alternative* directly above it, tagged with a decision id if one exists in `.planning/`. A future reader (including an LLM) should not have to open `.planning/` to understand why the code looks the way it does.
+**Framework:** `tracing` with `tracing-subscriber` (env-filter) and `tracing-appender`. Output goes to a log file, never stdout, because ratatui owns the terminal (`src/main.rs` calls `init_tracing` for the TUI path).
 
-**"A comment is not a guard; the test is."** This project treats prose as advisory only — every invariant stated in a doc comment that matters for correctness or safety has a matching integration test that enforces it mechanically. See TESTING.md for the mechanism (`tests/spawn_seam_guard.rs`).
+**Subcommands that run inside the sandbox must not create a log file or write stdout.** `src/main.rs` dispatches `driverctl`, `taskctl`, and `bridge` before `init_tracing` for that reason. Preserve this ordering when adding a sandbox-facing command.
 
-**Pinned string constants + an ordering/contract test.** User-facing text that other code or tests depend on verbatim is defined as a named `const` with a doc comment marking it a "pinned contract," and a test asserts the constants appear, in order, in rendered output. See `src/driver/dry_run.rs:45-66` (`SECTION_COMMANDS`, `SECTION_DIFFSTAT`, `SECTION_REFSPECS`) verified by `tests/driver_dry_run.rs::the_dry_run_output_names_the_command_the_diffstat_and_the_refspecs`. Treat changing pinned-contract text as a breaking, user-visible change — update the paired test in the same commit.
+**Usage:** `tracing::warn!`, `tracing::info!`, `tracing::error!`, `tracing::debug!` with structured fields. About 40 call sites, concentrated in `src/app.rs`, `src/watcher.rs`, `src/bounded_output.rs`, `src/state_reader/config_write.rs`.
 
-**JSDoc/TSDoc equivalent:** Rust doc comments (`///` for items, `//!` for module-level) are used extensively and are expected to carry design rationale, not just a one-line description. Module-level `//!` blocks in `src/journal/redact.rs`, `src/driver/dry_run.rs`, and `src/config.rs` read as short design documents.
+**`println!` / `eprintln!`:** Reserved for CLI subcommand output (`driverctl_cli`, `taskctl_cli`, `task_cli`, `next_cli`). Do not use them in TUI code paths.
+
+## Async and Blocking
+
+- Tokio runtime with `full` features. Blocking filesystem or syscall work inside an `async fn` must go through `tokio::task::spawn_blocking`. `tests/async_blocking_guard.rs` enforces a lexical version of this rule. Keep new blocking calls behind `spawn_blocking` or a hand-off, or the guard test fails.
+- Process spawning is restricted to an allowlist. `tests/spawn_seam_guard.rs` walks `src/` and fails on unlisted spawn sites. Add a new spawn site to that allowlist deliberately, not casually.
+- `std::sync::Mutex` must not be held across `.await` (see `CLAUDE.md` stack notes).
+
+## Comments and Dead Code
+
+- Commented-out code is not used. Remove it.
+- `#[allow(dead_code)]` is used only on shared test helpers (`tests/common/mod.rs`).
+- `TODO` markers are rare. Track follow-up work in `.planning/` todos rather than inline.
 
 ## Function Design
 
-**Size:** No hard line-count rule observed, but files that own a cohesive concern grow large rather than being split prematurely — `src/app.rs` is 187KB, `src/driver/run.rs` is 97.8KB, `src/journal/mod.rs` is 96.6KB. Splitting happens along concern boundaries (`src/driver/{dry_run,kill,liveness,lock,reconcile,run,spawn}.rs`), not by arbitrary size.
-
-**Parameters:** Capability/context types are passed by reference where the function needs authority to act (`project: &DrivableProject`) rather than a bare path — this is itself an audited invariant (`tests/spawn_seam_guard.rs:418-426` asserts the agent spawn seam's signature still takes `&DrivableProject`, never a raw path).
-
-**Return Values:** Prefer `Option<T>` / `Result<T, E>` over sentinel values or panics for anything that can legitimately fail or be absent (see Error Handling above).
+- Functions are often long in `src/app.rs`, `src/launcher/`, and `src/oneoff/`. Prefer extracting a pure helper with injected inputs (time, paths) when a unit test needs it.
+- Parameters: pass `&Path` and `&str` for inputs. Use `impl Into<...>` or `impl Display` for error-context helpers (`io_error(context: &str, e: impl Display)`).
+- Return values: `Option` for "not applicable", `Result` for "failed with reason", plain values otherwise. Do not return sentinel strings or `-1`.
+- Exit codes are returned from CLI runners: `std::process::exit(driverctl_cli::run(action))`. `LauncherError::exit_code()` maps errors to codes.
 
 ## Module Design
 
-**Exports:** Public API surface is deliberately narrow around dangerous operations — `DrivableProject`'s fields are all private, verified by an integration test that scans the struct body for `pub` fields and fails if any exist (`tests/spawn_seam_guard.rs:366-383`).
+- Public surface is explicit. Items shared across modules inside the crate use `pub(crate)` (for example `claim_new_run` in `src/oneoff/launch.rs:199`).
+- Library root is `src/lib.rs`; the binary entry point is `src/main.rs`. Integration tests import the library as `gsd_meta_manager::...`.
+- Barrel-style `pub use` re-exports are used in `mod.rs` files to flatten a subsystem's API. Follow the existing re-export list when adding a new public type.
+- Shared test fixtures that must be reachable from integration tests ship in the library: `src/test_support.rs` is not `#[cfg(test)]` (decision D-17-5). Do not re-add `#[cfg(test)]` to it.
 
-**Serde migration posture:** Config/registry structs that persist to disk and may be read/written across binary versions use two techniques together, applied consistently:
-1. `#[serde(default)]` on any field added after the initial schema, so an older on-disk file still loads. Example: `RegisteredProject::driver_opt_in` (`src/config.rs:46-47`).
-2. `#[serde(flatten)] pub extra: Map<String, Value>` to preserve fields a *newer* binary wrote that *this* binary doesn't model, so an older binary loading and re-saving a newer file doesn't silently delete unknown fields. Example: `RegisteredProject::extra` (`src/config.rs:48-64`) and `Preferences::extra` (`src/config.rs:141-146`), both explicitly cross-referencing each other and `JournalRecord.rest` (`src/journal/reader.rs:196-211`) as "the same technique, same reason, same shared-file hazard."
-3. The inverse attribute, strict unknown-field rejection (`#[serde(deny_unknown_fields)]`), is **forbidden everywhere under `src/`** — mechanically enforced by `tests/spawn_seam_guard.rs::no_executable_line_in_src_opts_into_strict_unknown_field_rejection`, because every parsed record may have come from an untrusted agent's output or a future GSD phase's new record kind, and rejecting unknown fields would turn forward-compatibility into a hard parse failure (D-30).
-4. Old-config-format fixtures in tests are byte literals (raw JSON strings), not constructed via the current struct, so a fixture can't silently drift to match a schema change it's supposed to be testing against. Follow this pattern for any new test asserting cross-version load behavior.
+## Serialization and Persisted Records
 
-**Barrel Files:** `mod.rs` files re-export the public surface of their directory (`src/driver/mod.rs`, `src/journal/mod.rs`, `src/executor/mod.rs`, `src/state_reader/mod.rs`) rather than requiring callers to reach into submodules directly.
+- Persisted records carry a schema version constant: `RECORD_SCHEMA` in `src/oneoff/store.rs`, `SCHEMA` in `src/oneoff/report.rs`. Bump it on incompatible changes.
+- Host-written records must be derived by the host from git, not trusted from agent output. See the header of `src/oneoff/store.rs`.
+- Serde defaults: use `#[serde(rename_all = ...)]` on the type, not per field, unless one field differs.
+
+## Git Commit Conventions
+
+Commits follow Conventional Commits with a scope:
+
+- `feat(quick-261103-klf): ...`
+- `docs(261103-klf): ...`
+- `chore(release): vX.Y.Z — <milestone name>`
+
+Quick-task IDs go in the scope. Release commits itemize the shipped work in the body (see `CLAUDE.md` Release Process).
 
 ---
 
-*Convention analysis: 2026-08-18*
+*Convention analysis: 2026-11-03*

@@ -1,264 +1,384 @@
-<!-- refreshed: 2026-08-18 -->
+---
+last_mapped_commit: 5146cf11780714b72ed3b2e6224e849a93e10a08
+last_mapped_at: 2026-11-03
+---
+<!-- refreshed: 2026-11-03 -->
 # Architecture
 
-**Analysis Date:** 2026-08-18
+**Analysis Date:** 2026-11-03
 
 ## System Overview
 
-The binary has two independent execution modes selected by `src/main.rs` before anything terminal-related runs: **TUI mode** (no subcommand) and **drive mode** (`gsd-meta-manager drive <alias> ...`). They share the read-side (`state_reader`) and the process-spawn/journal machinery, but the driver never touches ratatui and the TUI never runs an agent turn in-process.
-
 ```text
-┌──────────────────────────── gsd-meta-manager (single binary) ───────────────────────────┐
-│                                                                                            │
-│  TUI MODE (src/main.rs None arm)              DRIVE MODE (src/main.rs Drive arm)         │
-│  ┌──────────────────────────────┐             ┌────────────────────────────────────┐    │
-│  │ event::EventBus               │             │ src/driver/mod.rs::drive()          │    │
-│  │  crossterm reader + 250ms tick│             │  gate → DrivableProject::from_reg   │    │
-│  └───────────────┬────────────────┘             │  → dispatch → run::execute_run      │    │
-│                  │ Action (unbounded mpsc)      └───────────────┬────────────────────┘    │
-│                  ▼                                               │ spawns via              │
-│  ┌──────────────────────────────┐                                │ driver/spawn.rs         │
-│  │ main_loop::pump (src/main_loop.rs) │◄── ExecEvent (bounded 8192)│ (this binary, detached)│
-│  │  biased select!: Action > Exec  │                              ▼                        │
-│  │  events(batch<=64) > redraw tick│               ┌────────────────────────────────┐      │
-│  └───────────────┬────────────────┘                │ executor::claude::ClaudeExecutor│      │
-│                  │ app.update(action)               │  spawns `claude` (stream-json)  │      │
-│                  ▼                                  └───────────────┬─────────────────┘      │
-│  ┌──────────────────────────────┐                                   │ events               │
-│  │ App (src/app.rs)              │                                   ▼                       │
-│  │  screen_stack: Vec<Box<Screen>>│              ┌────────────────────────────────┐         │
-│  │  ctx: AppContext (shared state)│              │ journal::writer (src/journal/)  │         │
-│  └───────────────┬────────────────┘              │  append-only NDJSON per run      │         │
-│                  │ render(frame, app)             └───────────────┬─────────────────┘         │
-│                  ▼                                                 │ tailed by                │
-│  ┌──────────────────────────────┐                                  ▼                          │
-│  │ ui::render → active Screen    │              ┌────────────────────────────────┐            │
-│  │  (src/ui/, src/ui/screens/)   │◄─────────────│ TUI reads journal via FileWatcher│            │
-│  └──────────────────────────────┘  FileChanged   │  + journal::reader (byte-offset  │            │
-│                                      Action        │  tail) → Action::DriverJournalAppended│    │
-└────────────────────────────────────────────────────────────────────────────────────────┘
-
-           ┌────────────────────────────────────────────────────────────┐
-           │  READ SIDE (shared by both modes): state_reader/*           │
-           │  Parses N projects' `.planning/` trees (STATE.md, ROADMAP.md,│
-           │  queue.md, backlog, config.json, git log) into ProjectState  │
-           │  Cached, invalidated by notify filesystem events (watcher.rs)│
-           └────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────┐
+│                     `src/main.rs` (single binary)                         │
+│  Subcommand dispatch: driverctl · taskctl · bridge · next (sync, no log)  │
+│                       driver · task (sync, after tracing)                 │
+│                       default → tokio runtime → TUI loop                  │
+└──────────────┬───────────────────────────────────────┬───────────────────┘
+               │ TUI path                              │ CLI / sandbox paths
+               ▼                                       ▼
+┌──────────────────────────────┐        ┌──────────────────────────────────┐
+│ Event sources                │        │ Headless subsystems (std threads)│
+│ `src/event.rs` EventBus      │        │ `src/launcher/` driver sandbox   │
+│ `src/watcher.rs` notify      │        │ `src/oneoff/` one-off tasks      │
+│ `src/session_detector.rs`    │        │ `src/driverctl/` run store/socket│
+│ `src/agents/` (via tick)     │        │ `src/driver*_cli.rs`, `task_cli`│
+└──────────────┬───────────────┘        └──────────────────────────────────┘
+               │ `Action` (mpsc::UnboundedSender/Receiver)
+               ▼
+┌──────────────────────────────────────────────────────────────────────────┐
+│ `src/app.rs` App::update  — sole mutator of AppContext                    │
+│   owns screen_stack: Vec<Box<dyn Screen>>, AppContext (`ui/screens/mod`) │
+└──────────────┬──────────────────────────────────────┬────────────────────┘
+               │ render                               │ spawn_blocking
+               ▼                                      ▼
+┌─────────────────────────────┐        ┌──────────────────────────────────┐
+│ `src/ui/` ratatui widgets   │        │ `src/state_reader/` .planning/   │
+│ `src/ui/screens/*` Screens  │        │ parsers, `src/archive.rs`,       │
+│                             │        │ `src/browser.rs`, git via shell │
+└─────────────────────────────┘        └──────────────────────────────────┘
+               │ persistent writes (narrow)
+               ▼
+┌──────────────────────────────────────────────────────────────────────────┐
+│ `src/config.rs`, `src/registry.rs`, `.planning/meta-manager/QUEUE.md`,    │
+│ run directories under `.planning/meta-manager/drivers/` and the data dir  │
+└──────────────────────────────────────────────────────────────────────────┘
 ```
 
-## Component Responsibilities
-
-| Component | Responsibility | File |
-|-----------|----------------|------|
-| Entry/mode select | Parse CLI, branch TUI vs Drive vs Add/Remove/List, init tracing | `src/main.rs` |
-| Event bus | Crossterm input stream + 250ms tick → unbounded `Action` channel | `src/event.rs` |
-| Event loop core | Testable `select!` body: biased Action > bounded ExecEvent batch > redraw tick | `src/main_loop.rs` |
-| App state/reducer | Owns `screen_stack`, `AppContext`; `App::update` applies every `Action` | `src/app.rs` |
-| Action/message type | The full message vocabulary crossing the TUI's internal bus | `src/action.rs` |
-| Screen trait + registry | `Screen::handle_key` / `Screen::render`; `AppContext` (shared mutable state) | `src/ui/screens/mod.rs` |
-| Individual screens | One file per modal screen/tab (normal view, driver tab, dialogs) | `src/ui/screens/*.rs` |
-| Render dispatch | Frame → active screen on `screen_stack` top | `src/ui/mod.rs` |
-| Filesystem watcher | `notify`-based watch of registered projects' `.planning/`, debounced → `Action::FileChanged` | `src/watcher.rs` |
-| Project state parsing | Read-only parse of one project's `.planning/` tree into `ProjectState` | `src/state_reader/mod.rs` + submodules |
-| Config/registry | User's `~/.config/gsd-meta-manager/config.toml`, add/remove/list projects | `src/config.rs`, `src/registry.rs` |
-| Driver orchestration | Gate, dry-run branch, run-id validation, dispatch to Unix run body | `src/driver/mod.rs` |
-| Spawn seam | The single call site that launches a detached child process (this binary, re-invoked as `drive`) | `src/driver/spawn.rs` |
-| Run body | Acquire lock, construct executor, drive one command, write journal, release lock | `src/driver/run.rs` |
-| Lock / concurrency cap | Per-project run lock + `admit()` global concurrency check | `src/driver/lock.rs` |
-| Liveness / reconciliation | `/proc`-based liveness probe; startup + periodic scan reconciling on-disk run state | `src/driver/liveness.rs`, `src/driver/reconcile.rs` |
-| Kill switch | Two-layer stop: signal driver's process group, driver's own handler cancels agent's group | `src/driver/kill.rs` |
-| Dry-run preview | Build and render a preview report with no process spawned | `src/driver/dry_run.rs` |
-| Agent executor trait | `Executor` trait: start/send/interrupt/cancel/is_running/capabilities | `src/executor/mod.rs` |
-| Claude transport | Concrete `Executor` impl: spawns `claude`, drives `stream-json` duplex protocol | `src/executor/claude.rs` |
-| Capability gate | Validates `system/init` capabilities before releasing the first prompt | `src/executor/gate.rs` |
-| Outcome derivation | Maps process exit + stream events to a typed `RunOutcome` | `src/executor/outcome.rs` |
-| Wire model | Typed `stream-json` message schema | `src/executor/stream_json.rs` |
-| Run journal | Append-only NDJSON writer, tolerant reader (byte-offset tail), capture-path redaction | `src/journal/writer.rs`, `src/journal/reader.rs`, `src/journal/redact.rs` |
-| Steering inbox | Durable queue for user messages injected into a live run, read via filesystem only | `src/journal/inbox.rs` |
-| Session detection | Detects active `claude` CLI sessions to auto-register projects | `src/session_detector.rs` |
-| Errors | Typed error enums shared by driver/executor/journal (`DriveError`, `SpawnError`, `SendError`, `OptInError`) | `src/error.rs` |
+The binary is `gsd-meta-manager` (`Cargo.toml`, single `src/main.rs`; no `src/bin/`). The
+crate root `src/lib.rs` re-exports every non-binary module as `pub mod` so `tests/` drives the
+same code the binary uses.
 
 ## Pattern Overview
 
-**Overall:** Elm/Redux-style unidirectional TUI (crossterm event → `Action` → reducer (`App::update`) → render) layered on top of a **filesystem-mediated actor pair**: the TUI process and a detached driver process communicate through nothing but files on disk (registry config, run journal, inbox, lock files) — never a socket, pipe, or shared memory. This is a deliberate, load-bearing decision (D-03 in `src/action.rs`, `src/journal/mod.rs`) so a driven run survives the TUI restarting or closing.
+**Overall:** Message-driven (Elm/Redux-style) single-owner TUI, plus a set of synchronous,
+process-isolated subsystems (launcher, one-off runner, run store) that share the same crate
+but never touch TUI state.
 
 **Key Characteristics:**
-- Single `Action` enum is the entire internal message vocabulary; `App::update` is the one reducer (`src/app.rs:948`).
-- A **second, separate, bounded** channel (`ExecEvent`, capacity 8192) carries high-volume executor/journal-tail traffic so it can never starve control-key input in the `Action` FIFO (documented at length in `src/main_loop.rs`).
-- `tokio::select!` with `biased;` enforces strict arm priority: Action/input > bounded batch of ExecEvents (≤64 per iteration) > 16ms redraw timer.
-- The driver is **not** an in-process tokio task — it's `self.re-exec`'d as a detached child (`gsd-meta-manager drive ...`) with all stdio nulled and its own process group, so it survives the TUI exiting (`src/driver/spawn.rs`).
-- There is exactly **one production call site** that constructs a `DrivableProject` (the opt-in capability token) and exactly one that calls `spawn_detached` — both are mechanically checked by `tests/spawn_seam_guard.rs`.
-- Read side (`state_reader`) is pure parsing: no mutation, no process spawning, cached and invalidated only by filesystem watch events.
-- Screens form a stack (`Vec<Box<dyn Screen>>`) rather than a single "current screen" field, supporting modal dialogs pushed/popped over the base view.
+- One `Action` enum (`src/action.rs`) is the only way event sources change TUI state.
+- All TUI state is mutated on one task by `App::update` (`src/app.rs`); no `Arc<RwLock<…>>`.
+- Blocking work (file parsing, git, `/proc` scans, agent-worktree scans) runs on
+  `tokio::task::spawn_blocking` and returns results as `Action` values.
+- Agent-executing code (`src/launcher/`, `src/oneoff/`, `src/driverctl/`) is deliberately
+  synchronous (std threads, `flock`, `/proc`), and is never called from an `async fn`.
+  `tests/async_blocking_guard.rs` and `tests/spawn_seam_guard.rs` enforce these shapes.
+- The model is never trusted with host state: the host writes `run.json`, `stream.jsonl`,
+  and `launch.log`; the agent writes only its clone and `report/report.json`
+  (`src/oneoff/mod.rs` trust split).
+- Reading `.planning/` requires no model call: `state_reader` is pure file parsing.
 
 ## Layers
 
-**Event/Input Layer:**
-- Purpose: turn OS-level input and timers into `Action`s
-- Location: `src/event.rs`, `src/main_loop.rs`
-- Contains: crossterm event stream reader, tick spawner, the `pump` select loop
-- Depends on: `crossterm`, `tokio::sync::mpsc`
-- Used by: `src/main.rs`'s `run_tui_loop`
+**Entry / orchestration (binary-level):**
+- Purpose: Parse argv, route to subsystem, own the tokio runtime and TUI loop.
+- Location: `src/main.rs`, `src/cli.rs`, `src/tui.rs`, `src/main_loop.rs`
+- Contains: `Cli` / `Commands` clap types, `run_tui_loop`, tracing setup.
+- Depends on: every subsystem below.
+- Used by: the shell (end users, sandbox-internal invocations).
 
-**State/Reducer Layer:**
-- Purpose: own all mutable TUI state; apply every `Action`/`ExecEvent` to it
-- Location: `src/app.rs`, `src/action.rs`
-- Contains: `App`, `AppContext` (via `ui::screens::mod`), `Action` enum, `apply_exec_event`, `start_driver_run`
-- Depends on: `state_reader`, `driver`, `journal`, `executor` (for types), `config`, `registry`
-- Used by: `main_loop::pump`, `ui::render`
+**Event transport:**
+- Purpose: Produce `Action`s from terminal input, timers, filesystem, and background tasks.
+- Location: `src/event.rs` (EventBus: crossterm reader, 250ms tick), `src/watcher.rs`
+  (notify-debouncer-full, 200ms), `src/session_detector.rs` (`/proc` scan for `claude`).
+- Contains: sender clones and spawned tasks only; no state.
+- Depends on: `src/action.rs`.
+- Used by: `src/main.rs` / `App::update`.
 
-**Presentation Layer:**
-- Purpose: render current state to the terminal; translate keys to `ScreenAction`s
-- Location: `src/ui/mod.rs`, `src/ui/screens/*.rs`, `src/ui/project_list.rs`, `src/ui/roadmap_view.rs`
-- Contains: `Screen` trait implementors (one per view/dialog), shared `AppContext`
-- Depends on: `ratatui`, `App`/`AppContext` state (read-only at render time)
-- Used by: `ui::render`, called once per frame from `run_tui_loop`
+**Application core (state + reducer):**
+- Purpose: Single mutation point for all TUI state; debouncing; dispatch of background loads.
+- Location: `src/app.rs` (`App`, `App::update`, `DetailSubView`, filter logic).
+- Contains: `App { should_quit, needs_redraw, ctx, screen_stack, active_sessions, … }`.
+- Depends on: `ui::screens::AppContext`, `state_reader`, `registry`, `change_tracker`, `agents`.
+- Used by: `run_tui_loop` in `src/main.rs`.
 
-**Read Side (state_reader):**
-- Purpose: parse a registered project's `.planning/` directory tree into `ProjectState`, without ever mutating it
-- Location: `src/state_reader/mod.rs` + `backlog.rs`, `config_json.rs`, `disk_status.rs`, `git_ops.rs`, `queue_md.rs`, `roadmap_md.rs`, `state_md.rs`, `workstreams.rs`
-- Contains: per-file parsers (`STATE.md`, `ROADMAP.md`, `queue.md`, `config.json`, git log), HANDOFF pause detection, disk-status inference
-- Depends on: filesystem only (`std::fs`), `chrono`, `serde_json`
-- Used by: `App::load_project_states`, `driver::dry_run`, `driver::run` (reused verbatim so the dashboard and the driver never drift in how they read a project — D-01 in `src/driver/mod.rs`)
+**Screens and rendering:**
+- Purpose: Turn key input into `ScreenAction`s and draw the current view.
+- Location: `src/ui/mod.rs` (`ui::render`), `src/ui/screens/*.rs`, `src/ui/roadmap_view.rs`,
+  `src/ui/roadmap_graph.rs`, `src/ui/glyphs.rs`, `src/ui/mouse.rs`.
+- Contains: `Screen` trait implementations; widgets built on ratatui.
+- Depends on: `AppContext` (read/write), `state_reader` types, `driver`/`oneoff` read-side
+  helpers, `archive`, `browser`.
+- Used by: `App` (screen stack) only.
 
-**Drive Side (driver / executor / journal):**
-- Purpose: run one GSD command against an opted-in project as a supervised, detached, journaled agent process
-- Location: `src/driver/*`, `src/executor/*`, `src/journal/*`
-- Contains: gate/opt-in checks, spawn seam, lock/concurrency, liveness/reconciliation, kill switch, dry-run, `Executor` trait + Claude transport, append-only journal + redaction + inbox
-- Depends on: `state_reader` (project parsing), `config` (opt-in record), `tokio::process`, `process-wrap` (Unix process groups)
-- Used by: `src/main.rs`'s `Drive` CLI arm (foreground CLI invocation of the driver process itself) and the TUI's `App::start_driver_run` (which spawns the detached driver and then only ever reads its journal back)
+**Domain readers (read-only `.planning/` parsing):**
+- Purpose: Parse GSD artifacts into typed snapshots without running GSD.
+- Location: `src/state_reader/` (`mod.rs` defines `ProjectState` and `parse_project_state`;
+  `state_md.rs`, `roadmap_md.rs`, `queue_md.rs`, `backlog.rs`, `disk_status.rs`,
+  `config_json.rs`, `config_secrets.rs`, `config_write.rs`, `driver_frontmatter.rs`,
+  `plan_waves.rs`, `phase_num.rs`, `workstreams.rs`, `gsd_install.rs`, `git_ops.rs`).
+- Depends on: `serde`, `serde_yml`, `regex`, git CLI via `bounded_output`.
+- Used by: `App` (via `spawn_blocking`), `next_cli`, `driver::router`.
 
-**Config/Registry Layer:**
-- Purpose: user-level project registry, persisted TOML config
-- Location: `src/config.rs`, `src/registry.rs`, `src/cli.rs`
-- Contains: `Config`, `RegisteredProject`, `DriverOptIn`, add/remove/list operations, `clap` CLI definitions
-- Depends on: `toml`, `serde`
-- Used by: both TUI and Drive modes at startup
+**Project registry and config:**
+- Purpose: Persist which projects are registered and user preferences.
+- Location: `src/config.rs` (`Config`, `RegisteredProject`, `Preferences`), `src/registry.rs`
+  (add/remove validation, auto-register from sessions), `src/project_creator.rs`.
+- Depends on: `dirs`, `serde_json`.
+
+**Sandboxed driver launcher (experimental):**
+- Purpose: Run one headless `claude -p` driver inside `bwrap` under `systemd-run --user --scope`.
+- Location: `src/launcher/` (`run.rs` orchestration, `sandbox.rs` pure argv builders, `egress/`
+  proxy, `push.rs`, `auth.rs`, `config_dir.rs`, `bridge.rs`, `gate.rs`, `stop.rs`, `process.rs`
+  the sole spawn entry, `assets/MASTER-PROMPT.md`).
+- Depends on: `driverctl::store`, `driver::*`, `envelope`, `journal`, `executor::stream_json`.
+- Used by: `driver_cli` (`driver launch`, etc.), `ui/screens/driver_*`.
+
+**Driver run store and socket:**
+- Purpose: Host-side source of truth for a driver run (`flock`-guarded files and a Unix socket).
+- Location: `src/driverctl/` (`store.rs`, `serve.rs`, `protocol.rs`, `scan.rs`, `log.rs`,
+  `counters.rs`, `stop_guard.rs`, `mod.rs`), CLI in `src/driverctl_cli.rs`.
+- Depends on: `driver::{direction, lock, liveness, kill}`.
+- Used by: the launcher and the in-sandbox `driverctl` shim.
+
+**Driver pure modules:**
+- Purpose: Frontmatter/`DIRECTION.md` parsing, steering, router, rate-limit classification,
+  liveness, kill, lock. Nothing here runs an agent.
+- Location: `src/driver/` (`direction.rs`, `steer.rs`, `router.rs`, `rate_limit.rs`,
+  `liveness.rs`, `kill.rs`, `lock.rs`), templates in `src/driver_templates/`.
+
+**One-off task runner (experimental):**
+- Purpose: One headless agent session running `/gsd-quick` or `/gsd-fast` on a registered
+  project, in a private clone, reporting through `taskctl report`.
+- Location: `src/oneoff/` (`launch.rs`, `session.rs`, `stream.rs`, `runtime.rs` the single
+  agent-specific seam, `prompt.rs`, `report.rs`, `store.rs`, `inbox.rs`, `merge.rs`,
+  `land.rs`, `resolve.rs`, `resume.rs`, `cancel.rs`, `todos.rs`); CLI in `src/task_cli.rs`
+  and `src/taskctl_cli.rs`.
+- Depends on: `launcher` (sandbox argv, token, egress, process seam, stop, push); does NOT call
+  `launcher::run::launch`.
+- Used by: `task` / `taskctl` subcommands and the One-off screens.
+
+**Agent worktree observation (read-only):**
+- Purpose: Discover running agent worktrees and derive wave/phase status for the dashboard.
+- Location: `src/agents/` (`worktrees.rs`, `worktree_plans.rs`, `worktree_phases.rs`,
+  `waves.rs`, `fixers.rs`, `unmerged.rs`, `processes.rs`, `workstream_scope.rs`,
+  `adapters/claude.rs`).
+- Used by: `App` via tick-driven `spawn_blocking(agents::scan_projects_guarded)`.
+
+**Supporting modules:**
+- `src/executor/` (`stream_json.rs`): Claude stream-json parsing.
+- `src/journal/` (`redact.rs`, `reader.rs`): event journal with redaction.
+- `src/envelope/` (`policy.rs`, `ledger.rs`, `scan.rs`): PR-cap and envelope policy.
+- `src/text.rs`, `src/bounded_output.rs`: text helpers; wall-clock-bounded command output.
+- `src/change_tracker.rs`: in-memory status-transition log (not persisted).
+- `src/archive.rs`, `src/browser.rs`: milestone archive and `.planning/` docs browsing.
+- `src/terminal_switch.rs`: tmux pane switching.
+- `src/launch_target.rs`, `src/experimental.rs`, `src/error.rs` (empty placeholder).
 
 ## Data Flow
 
-### Primary Request Path (TUI keypress → redraw)
+### Primary TUI Request Path (file change → screen)
 
-1. Crossterm event captured by `EventBus::spawn_crossterm_reader` → wrapped as `Action::RawKey` (`src/event.rs`)
-2. Sent on the unbounded `Action` channel to `main_loop::pump` (`src/main_loop.rs:151`)
-3. `pump`'s Arm 1 (biased first) calls `App::update(action)` (`src/app.rs:948`) — screens get `ScreenAction`s via `Screen::handle_key`, which mutate `AppContext` or push follow-up `Action`s
-4. `App` sets `needs_redraw` (directly or via `ctx.needs_redraw`, synced each loop iteration in `run_tui_loop`, `src/main.rs:240`)
-5. `run_tui_loop` calls `terminal.draw(|frame| ui::render(frame, app))` (`src/main.rs:246`) → `ui::render` dispatches to the top of `App.screen_stack` (`src/ui/mod.rs`)
+1. A file under a registered `.planning/` changes; `FileWatcher` (`src/watcher.rs`) debounces
+   for 200ms and emits `Action::FileChanged { project_path }` once per project root.
+2. The receiver loop in `run_tui_loop` (`src/main.rs`) calls `app.update(action)`.
+3. `App::update` applies a per-project 500ms guard via `AppContext.last_refresh`, then
+   `spawn_blocking(state_reader::parse_project_state)`.
+4. The blocking task sends `Action::ProjectStateLoaded`; `App::update` stores it in
+   `AppContext.project_states` and calls `change_tracker::detect_changes`.
+5. If `needs_redraw` is set, `terminal.draw(|f| ui::render(f, app))` delegates to the top
+   of `app.screen_stack`.
 
-### Filesystem-Watch Path (external `.planning/` change → TUI update)
+### Key Input Path
 
-1. `notify` fires on a watched path under a project's `.planning/` (`src/watcher.rs`)
-2. `watcher.rs::extract_project_root` + `batch_actions` build `Action::FileChanged { project_path, changed_path }`
-3. Routed through the same `Action` channel into `App::update`
-4. Handler either re-parses the whole project (`state_reader::parse_project_state`) or, if `changed_path` is a driver journal append, does a cheap byte-offset tail read instead (`journal::reader`) — the two-field design of `FileChanged` exists specifically so this distinction is cheap (D-09, `src/action.rs`)
+1. `EventBus::spawn_crossterm_reader` maps `KeyEvent` → `Action::RawKey`.
+2. `App::update` forwards to the top `Screen::handle_key(code, modifiers, &mut AppContext)`.
+3. The returned `ScreenAction` (`None`, `Push`, `Replace`, `Pop`, `Quit`,
+   `SetStatusMessage`, `SuspendAndEdit`, `DispatchAction`) is applied by `App`, which owns the
+   stack. Screens never hold a reference to the stack.
 
-### Drive-Start Path (user requests a driven run from the TUI)
+### Background Agent Observation
 
-1. Screen sends `Action::DriverStartRequested { alias, command, goal }` (`src/action.rs:195`)
-2. `App::start_driver_run` (`src/app.rs:1810`) is the **spawn seam call site**: builds argv via `driver::spawn::drive_argv`, checks the concurrency cap (`driver::lock::admit`), and calls `driver::spawn::spawn_detached` (`src/driver/spawn.rs:115`) — which re-execs `std::env::current_exe()` as `gsd-meta-manager drive <alias> ...` with stdio nulled and a fresh process group
-3. The detached child re-enters `src/main.rs`'s `Drive` CLI arm → `driver::drive()` → gate checks → `driver::run::execute_run` → constructs `executor::claude::ClaudeExecutor`, spawns `claude` in `stream-json` duplex mode, writes journal records via `journal::writer` as events arrive
-4. The **parent TUI never talks to the child directly** — it only watches the run's `journal.jsonl` file via the same `notify` watcher, tailing new records with `journal::reader` and turning them into `Action::DriverJournalAppended`
-5. Steering messages flow the same way in reverse: `Action::DriverInjectRequested` appends a line to `runs/<run-id>/inbox.jsonl` on `spawn_blocking` (never in-process IPC), and the driver tails that file (`src/journal/inbox.rs`, D-03 in `src/action.rs`)
+1. `Action::Tick` every 20 ticks (about 5s) → `spawn_blocking(agents::scan_projects_guarded)`.
+2. Result → `Action::AgentsScanned` → `agents::waves::derive` → `AppContext.agent_views`.
+3. Dashboard and Sessions › Agents read `agent_views` without computing anything.
 
-**State Management:**
-- All TUI-side mutable state lives in `App` / `AppContext` (`src/app.rs`, `src/ui/screens/mod.rs`); there is no other mutable global.
-- Cross-process state (driver run state) is **the filesystem itself** — `run.json`, `journal.jsonl`, `inbox.jsonl`, lock files under each project's `.planning/meta-manager/` — read fresh on each observation rather than cached in the driver's memory being trusted by the TUI.
-- `observed_runs` and `last_outcomes` on `AppContext` are periodic (every 20 ticks, i.e. ~5s) snapshots of `driver::reconcile::reconcile_all`, refreshed at startup synchronously to close the gap before the first poll (`src/main.rs:189-199`).
+### Headless Driver Run (`driver launch`)
+
+1. `main` dispatches `Commands::Driver` before the tokio runtime exists (`driver_cli::run`).
+2. The launcher takes `<run-dir>/launcher.lock`, seeds the per-run `CLAUDE_CONFIG_DIR`, and
+   starts the `RunStore` socket server on a thread (`src/driverctl/serve.rs`).
+3. The sandbox argv is built by pure functions in `src/launcher/sandbox.rs` and spawned only
+   through `src/launcher/process.rs`.
+4. Inside the sandbox the driver reaches state only through the `driverctl` shim and the
+   socket; `driverctl` is dispatched in `main` before tracing so it creates no log file.
+5. The lock is released last, after the socket is removed and the terminal status recorded.
+
+### One-off Task Run (`task run`)
+
+1. `task_cli::run` → `oneoff::launch` creates a run directory with a private clone `work/`,
+   an `inbox/` (0700, host-only), and a `run.json`.
+2. A single agent session runs with the prompt from `oneoff::prompt`; the agent's stdin
+   receives stream-json lines (`oneoff::session`, `oneoff::inbox`).
+3. The agent calls `taskctl report`, writing `report/report.json`. The host re-reads it capped,
+   refuses symlinks, and re-validates it (`oneoff::report::read_validated`). Commit range and
+   SUMMARY path are derived from git on the host.
+4. Merge and land steps (`oneoff::merge`, `oneoff::land`) are host-side and bounded.
 
 ## Key Abstractions
 
-**`Action` (message enum):**
-- Purpose: the entire vocabulary of things that can happen to the TUI's state
-- Examples: `src/action.rs`
-- Pattern: single flat enum, `Clone`, deliberately free of any file/join handles (D-20) so it can travel safely through channels
+**`Action` (`src/action.rs`):**
+- Purpose: Every event the TUI reacts to. Variants include `Tick`, `RawKey`, `Mouse`, `Resize`,
+  `FileChanged`, `ProjectStateLoaded`, `GitLogLoaded`, `GitCommitDetailLoaded`,
+  `CreateProjectResult`, `ArchiveMilestonesDiscovered`, `ArchiveLoaded`, `SessionsDetected`,
+  `AgentsScanned`.
+- Pattern: Tagged enum; producers hold cloned `UnboundedSender<Action>`.
 
-**`Screen` trait + `AppContext`:**
-- Purpose: one implementor per view/dialog; `handle_key` returns `ScreenAction`s, `render` draws given only `&AppContext`
-- Examples: `src/ui/screens/mod.rs`, `src/ui/screens/normal.rs`, `src/ui/screens/driver.rs`
-- Pattern: stack-based modal navigation (`Vec<Box<dyn Screen>>` on `App`)
+**`EventBus` (`src/event.rs`):**
+- Purpose: Owns the channel and spawns the crossterm reader and tick task.
 
-**`DrivableProject` (capability token):**
-- Purpose: compiler-enforced proof that a project opted into the driver; the *only* thing `Executor::start` and `spawn_detached`'s caller accept
-- Examples: `src/executor/mod.rs:110`, constructed only via `DrivableProject::from_registry`
-- Pattern: type-as-capability — private fields, one production constructor, checked by `tests/spawn_seam_guard.rs`
+**`App` (`src/app.rs`):**
+- Purpose: Top-level state and the only `update` entry point.
+- Pattern: Reducer; `needs_redraw` gates rendering.
 
-**`Executor` trait:**
-- Purpose: object-safe interface (`start`/`send`/`interrupt`/`cancel`/`is_running`/`capabilities`) with `claude::ClaudeExecutor` as sole implementor
-- Examples: `src/executor/mod.rs:71`
-- Pattern: boxed futures instead of `async-trait` (no second implementor exists yet)
+**`AppContext` (`src/ui/screens/mod.rs`):**
+- Purpose: Shared mutable TUI state passed as `&mut` to screens: `config`, `project_states`,
+  selection, filter text, `view_cache`, `change_tracker`, `event_tx`, `watcher`,
+  `active_sessions`, `agent_views`, `last_refresh`, `needs_redraw`.
 
-**`RedactedLine` (capture-path type gate):**
-- Purpose: the journal writer accepts only this type, so redaction cannot be bypassed by construction
-- Examples: `src/journal/redact.rs`
-- Pattern: smart constructor — no compilable path from a bare `String` to a written journal line
+**`Screen` trait (`src/ui/screens/mod.rs`):**
+- Methods: `handle_key`, `render`, `name`, plus a mouse hook with a default no-op.
+- Supertrait `RenderAdjudicated` is a compile-time guard: every screen must declare how it
+  handles render-escape concerns (`src/ui/screens/render_escape_guard.rs`).
+- Implementations: `normal.rs` (project list, default), `detail.rs` (per-project sub-views:
+  RoadmapViz, Pipeline, Backlog, GitHistory, Queue, Sessions/Agents, Defaults, Browse/Archive,
+  Driver), `help.rs`, `add_project.rs`, `create_project.rs`, `delete_confirm.rs`,
+  `enqueue.rs`, `queue_delete_confirm.rs`, `driver*.rs`, `oneoff.rs`, `oneoff_viewer.rs`,
+  `preferences.rs`, `confirm_popup.rs`.
 
-**`ProjectState`:**
-- Purpose: the fully parsed snapshot of one project's `.planning/` tree, shared by both the dashboard and the driver's own gate
-- Examples: `src/state_reader/mod.rs:14`
-- Pattern: plain data struct assembled by `parse_project_state`, boxed inside `Action::ProjectStateLoaded` due to its size (~360 bytes)
+**`ScreenAction` (`src/ui/screens/mod.rs`):**
+- Values: `None`, `Push(Box<dyn Screen>)`, `Replace` (pop-and-push in one step; used where a
+  handed-off screen must not be re-submittable), `Pop`, `Quit`, `SetStatusMessage`,
+  `SuspendAndEdit`, `DispatchAction`.
+
+**`ProjectState` (`src/state_reader/mod.rs`):**
+- Purpose: Parsed snapshot of one `.planning/` tree. `phase_progress()` is the single
+  phase-count definition; `paused` and `stale_handoff` are decided in the parser so no
+  consumer re-judges a HANDOFF.
+
+**`RunStore` (`src/driverctl/store.rs`):**
+- Purpose: Driver run persistence behind `flock`; the launcher embeds it and the socket serves it.
+
+**`OneOff runtime seam` (`src/oneoff/runtime.rs`):**
+- Purpose: The only file in `oneoff/` allowed to name a concrete agent (argv, env, config
+  seeding, credential, egress upstream, stream parsing, capability flags, models).
+  `tests/oneoff_runtime_seam_guard.rs` enforces this.
+
+**`ChangeTracker` (`src/change_tracker.rs`):**
+- Purpose: In-memory status-transition and phase-completion log since launch (not persisted).
 
 ## Entry Points
 
-**`src/main.rs::main`:**
-- Location: `src/main.rs`
-- Triggers: process launch
-- Responsibilities: init tracing/color-eyre, parse CLI (`clap`), branch to `Add`/`Remove`/`List`/`Drive`/TUI
+**`gsd-meta-manager` (no subcommand) — TUI:**
+- Location: `src/main.rs` `async_main` → `run_tui_loop`.
+- Triggers: user runs the binary, optionally with a `<alias|path>` launch target
+  (`src/launch_target.rs`).
+- Responsibilities: tracing, color-eyre, tokio runtime, EventBus, FileWatcher, TUI loop.
 
-**TUI loop (`run_tui_loop`):**
-- Location: `src/main.rs:232`
-- Triggers: no subcommand given
-- Responsibilities: draw, `pump` one iteration, handle pending editor shell-out, check quit
+**`gsd-meta-manager driverctl …`:**
+- Location: `src/driverctl_cli.rs`, dispatched before tracing in `src/main.rs`.
+- Triggers: invoked by the in-sandbox driver shim.
 
-**Drive CLI arm:**
-- Location: `src/main.rs:88-120` → `src/driver/mod.rs::drive`
-- Triggers: `gsd-meta-manager drive <alias> --command <c> [--run-id ...] [--dry-run] [--goal ...]`
-- Responsibilities: gate/opt-in check, dry-run branch, run-id validation, dispatch to `driver::run::execute_run` (Unix) or a typed refusal (non-Unix)
+**`gsd-meta-manager taskctl …`:**
+- Location: `src/taskctl_cli.rs`, dispatched before tracing.
+- Triggers: the one-off agent's `report` command inside the sandbox.
+
+**`gsd-meta-manager bridge …`:**
+- Location: `src/launcher/bridge.rs`, dispatched before tracing; Linux and macOS only.
+- Triggers: in-sandbox bridge process that forwards to the driver command.
+
+**`gsd-meta-manager next …`:**
+- Location: `src/next_cli.rs`, dispatched before tracing; read-only router hint, writes nothing.
+- Triggers: `next --json` contract (`src/driver/router.rs`).
+
+**`gsd-meta-manager driver …` and `gsd-meta-manager task …`:**
+- Location: `src/driver_cli.rs`, `src/task_cli.rs`; synchronous, after tracing, before tokio.
+- Triggers: user command line (experimental, gated by `src/experimental.rs`).
 
 ## Architectural Constraints
 
-- **Threading:** Single tokio async runtime (`#[tokio::main]`) for both TUI and drive modes; the driver's blocking git shell-outs (dry-run preview) are explicitly wrapped in `tokio::task::spawn_blocking` because a blocking syscall inside an `async fn` was observed to defeat `tokio::time::timeout` on a current-thread runtime (documented incident referenced in `src/driver/mod.rs`, D-28/WR-10).
-- **Global state:** None as a bare static; the closest equivalents are the long-lived `exec_tx` sender clone stashed on `AppContext` (keeps the executor channel open for the process lifetime, `src/main.rs:147-148`) and the file watcher instance stored on `AppContext` (`src/main.rs:166`).
-- **Circular imports:** None observed; dependency direction is strictly `ui` → `app`/`action` → `driver`/`executor`/`journal`/`state_reader` → `config`/`error`, with no back-references.
-- **Process boundary:** The TUI and any driven run are **separate OS processes** communicating only through the filesystem (config, journal, inbox, lock files, `run.json`) — never a socket or shared memory. This is D-03 and is treated as load-bearing throughout `src/driver/` and `src/journal/`.
-- **Single spawn seam:** Exactly one call site constructs a `DrivableProject` in production and exactly one calls `spawn_detached`; `tests/spawn_seam_guard.rs` enforces both mechanically rather than by review discipline.
-- **Platform gating:** `driver::kill`, `driver::lock`, `driver::run`, `driver::spawn`, and `executor::claude` are `#[cfg(unix)]`; every non-Unix path returns a typed `DriveError::UnsupportedPlatform` rather than silently degrading (D-05).
+- **Threading:** One multi-thread tokio runtime is built explicitly in `main`. The TUI state
+  lives on the loop task only. Launcher, one-off, and driverctl code is std-thread-only.
+- **Global state:** `AppContext` and `App` are owned values, not globals. Process-wide state
+  is limited to the tracing subscriber and the `GSDMM_EXPERIMENTAL_FEATURES` flag
+  (`src/experimental.rs`).
+- **Synchronous subsystems:** `driver`, `task`, `driverctl`, and `launcher` must not be called
+  from `async fn`; `main` dispatches them before the runtime exists.
+- **Spawn allowlist:** Every process the launcher or one-off runner starts goes through
+  `src/launcher/process.rs` (`tests/spawn_seam_guard.rs`).
+- **Trust boundary:** Agent-written files (`report.json`, `DIRECTION.md`) are re-validated on
+  the host and never trusted for commit ranges or paths.
+- **Tracing side effects:** `driverctl`, `taskctl`, `bridge`, and `next` must create no log
+  file and write nothing to stdout, because they run inside the sandbox. Keep this ordering.
+- **Single-binary crate:** No `src/bin/`; the `[package] exclude` list in `Cargo.toml` keeps
+  `.planning/`, `CLAUDE.md`, and `assets/` out of the published crate.
 
 ## Anti-Patterns
 
-### Routing high-volume data through the `Action` FIFO
+### Calling a launcher, driver, or one-off function from an `async fn`
 
-**What happens:** A hypothetical future change routes per-token stream output (executor deltas) through the same channel as keypresses.
-**Why it's wrong:** The `Action` arm is `biased` first in `main_loop::pump`'s `select!`; anything high-volume on that channel would starve the redraw timer and all subsequent input, exactly the TRANS-03 failure the two-channel split (`Action` vs `ExecEvent`) exists to prevent.
-**Do this instead:** All high-volume executor/journal-tail traffic goes through the separate, bounded `ExecEvent` channel (`EXEC_CHANNEL_CAPACITY = 8192`, drained in batches of `EXEC_BATCH = 64`) — see `src/main_loop.rs`.
+**What happens:** Adding an async wrapper around `launcher::run`, `driverctl::store`, or
+`oneoff::launch`.
+**Why it's wrong:** Those paths take `flock`, do blocking file I/O, and spawn processes with
+std threads; `tests/async_blocking_guard.rs` fails on this shape.
+**Do this instead:** Keep the call synchronous and dispatch it from the synchronous branch of
+`src/main.rs`, or wrap it in `tokio::task::spawn_blocking` from the TUI side only, as
+`App::update` does for `state_reader` and `agents`.
 
-### Bypassing the spawn seam
+### Mutating `AppContext` from a worker thread
 
-**What happens:** Constructing a `DrivableProject` or calling `spawn_detached` from a second call site to "save a hop."
-**Why it's wrong:** Defeats the compiler-enforced single-seam guarantee that only opted-in projects can ever have an agent spawned against them; `tests/spawn_seam_guard.rs` will fail the build.
-**Do this instead:** Route every drive request through `driver::mod::drive` (CLI) or `App::start_driver_run` (TUI), both of which call the one production constructor/spawn function.
+**What happens:** Passing `Arc<Mutex<AppContext>>` or sending a closure into a worker.
+**Why it's wrong:** Breaks the single-owner reducer; the codebase relies on the channel for
+synchronization and has no locks around TUI state.
+**Do this instead:** Have the worker return a result as an `Action` variant (see
+`ProjectStateLoaded`, `AgentsScanned`) and handle it in `App::update` in `src/app.rs`.
 
-### Blocking syscalls inside `async fn`
+### Naming a concrete agent outside the runtime seam
 
-**What happens:** A synchronous `std::process::Command` or `flock` call made directly inside an `async fn` body.
-**Why it's wrong:** `tests/driver_lock.rs` reproduced a real deadlock where a blocking `flock` inside an `async fn` defeated `tokio::time::timeout` outright on a current-thread runtime, because `Timeout::poll` polls its inner future inline and a parked thread polls nothing at all.
-**Do this instead:** Wrap the blocking call in `tokio::task::spawn_blocking` (see `src/driver/mod.rs`'s dry-run branch).
+**What happens:** Hard-coding `claude` argv, env, or stream parsing in `src/oneoff/` files
+other than `runtime.rs`.
+**Why it's wrong:** `tests/oneoff_runtime_seam_guard.rs` fails, and the seam exists so a second
+runtime can be added in one place.
+**Do this instead:** Add the fact to `src/oneoff/runtime.rs` and read it through the seam.
+
+### Spawning processes directly
+
+**What happens:** Calling `std::process::Command::spawn` in launcher or one-off code.
+**Why it's wrong:** Bypasses the spawn allowlist enforced by `tests/spawn_seam_guard.rs`.
+**Do this instead:** Route through `src/launcher/process.rs`.
 
 ## Error Handling
 
-**Strategy:** Typed error enums per subsystem (`DriveError`, `SpawnError`, `SendError`, `OptInError` in `src/error.rs`) rather than a single catch-all; UI-facing binary code (`src/main.rs`) converts these to `eprintln!` + `std::process::exit(1)` rather than bubbling as an `anyhow` chain, so user-facing refusals are printed directly instead of buried in a generic error wrapper.
+**Strategy:** `anyhow::Result` at the binary boundary (`main`, `async_main`) with
+`color-eyre` installed for reports. Subsystem CLIs return an exit code from `run(...)`
+(`driverctl_cli::run`, `driver_cli::run`, `task_cli::run`), which `main` passes to
+`std::process::exit`.
 
 **Patterns:**
-- Refusals are positioned deliberately early (before any disk write) so a refused operation is provably inert — e.g. `drive()`'s ordering of the opt-in gate, dry-run branch, and run-id validation, each covered by a "writes nothing" test.
-- `StopOutcome`/`StopDisposition` model process-signal ambiguity as a value rather than parsing rendered text back into state (`src/action.rs`'s `StopDisposition`).
+- Parsers return `Option` or typed `Result` and degrade to a "not detected" state rather than
+  panicking (`src/state_reader/*`).
+- Background failures surface as `Action` variants with an error payload, then
+  `ScreenAction::SetStatusMessage` for the user.
+- `src/error.rs` is an empty placeholder; no crate-wide error enum is in use.
 
 ## Cross-Cutting Concerns
 
-**Logging:** `tracing` + `tracing-subscriber` writing to a daily-rolling file appender under `dirs::data_local_dir()/gsd-meta-manager/` (never stdout/stderr, since ratatui owns the terminal) — set up first thing in `src/main.rs::main`. The journal subsystem explicitly never logs event content (D-28), only counts and already-redacted paths.
+**Logging:** `tracing` with `tracing-appender` file output, initialized in `init_tracing()`
+(`src/main.rs`) after the sandbox-internal subcommands are dispatched. Journal events
+(`src/journal/`) are separately redacted (`src/journal/redact.rs`).
 
-**Validation:** Capability gating at multiple layers — CLI opt-in record (`DrivableProject::from_registry`), `system/init` capability check before the first prompt is released (`src/executor/gate.rs`), platform liveness support (`driver::mod::platform_refusal`), and run-id shape validation (`journal::is_plain_run_id`, preventing path traversal via `--run-id`).
+**Validation:** Config and state are validated at parse time in `state_reader` and
+`registry.rs`. Agent-produced reports are validated again on the host (`oneoff::report`,
+`driver::direction`).
 
-**Authentication:** None internal to the tool; the `claude` CLI subprocess handles its own auth. `CLAUDE*` environment variables are scrubbed once, at the real agent spawn (`ClaudeExecutor`), deliberately not duplicated at the outer `spawn_detached` layer to avoid two places drifting.
+**Authentication:** Not in the TUI. Launcher resolves an OAuth token (`src/launcher/auth.rs`)
+and keeps it outside the sandbox; egress is mediated by `src/launcher/egress/`.
+
+**Render discipline:** Opt-in redraw via `needs_redraw`; no fixed-rate render loop. The 250ms
+tick only expires status messages and polls sessions and agents
+(`docs/ARCHITECTURE.md` documents the same design).
 
 ---
 
-*Architecture analysis: 2026-08-18*
+*Architecture analysis: 2026-11-03*

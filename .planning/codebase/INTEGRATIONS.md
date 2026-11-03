@@ -1,91 +1,130 @@
+---
+last_mapped_commit: 5146cf11780714b72ed3b2e6224e849a93e10a08
+last_mapped_at: 2026-11-03
+---
 # External Integrations
 
-**Analysis Date:** 2026-08-18
-
-This project has no network-service integrations (no HTTP APIs, no databases, no cloud SDKs). Its "external integrations" are subprocess contracts with local CLI tools and a set of on-disk file formats owned by another project (GSD). Each is described below with the actual protocol/format observed in the code.
+**Analysis Date:** 2026-11-03
 
 ## APIs & External Services
 
-**Agent driving (the primary integration):**
-- `claude` CLI, driven as a long-lived subprocess over a duplex NDJSON stream — `src/executor/claude.rs`, protocol model in `src/executor/stream_json.rs`
-  - Invocation: `claude -p --input-format stream-json --output-format stream-json --verbose --replay-user-messages --session-id <uuid> --setting-sources <value> --permission-mode <mode> --strict-mcp-config [--model ...] [--resume ...] [--max-budget-usd ...] [--name ...]` — argv built by `build_argv()` in `src/executor/claude.rs`
-  - Transport: three independent Tokio tasks (stdout reader, stderr reader, stdin writer) plus a supervisor/coordinator task; stdin/stdout/stderr are `Stdio::piped()`, never merged
-  - Wire protocol: NDJSON, one JSON object per line, framed with `tokio::io::BufReader` plus an explicit `MAX_LINE_BYTES` (4 MiB) bound — no codec crate (`tokio-util`) is used by design
-  - Message shapes modeled in `src/executor/stream_json.rs`: `system` (`init`, plus absorbed catch-all subtypes like `hook_started`, `thinking_tokens`), `assistant`/`user` turn messages, `result` (closes a **turn**, not the run), `control_response` (interrupt acknowledgement), `rate_limit_event` (carried unmodeled)
-  - Outbound messages: `UserMessage` (`{"type":"user","message":{...}}`) written to the child's stdin; `ControlRequest::interrupt` for turn interrupts (request/response correlated by `request_id`)
-  - Teardown: SIGTERM to the whole process group first, then a grace period, then SIGKILL — never plain `kill()` (which would skip Claude's clean-shutdown path)
-  - Environment: every inherited `CLAUDE*` variable is scrubbed before spawn; `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS` is set explicitly afterward
-  - Auth: none handled by this binary — the CLI use its own already-configured auth (OAuth/subscription or API key); `system/init`'s `apiKeySource` field is read only to detect `"none"` (subscription auth) for a regression guard
+**Anthropic Inference API:**
+- Host: `api.anthropic.com` (constant `INFERENCE_HOST` in `src/config.rs` and `src/launcher/egress/mod.rs`); path `/v1/messages`.
+- Used by: the sandboxed headless driver (`claude -p`), which talks to the API only through the launcher's egress proxy.
+- SDK/Client: none in-process. The `claude` CLI is the client; the crate reaches the host with its own TLS stack (`rustls` 0.23, `tokio-rustls` 0.26, `webpki-roots` 1) in `src/launcher/egress/upstream.rs`.
+- Auth: `claude setup-token` token stored in the app config directory (`driver-oauth-token`, 0600), or the host Claude OAuth access token (`claudeAiOauth.accessToken`) with a minimum-lifetime check (`src/launcher/auth.rs`). The refresh token is never copied into a run.
+- Egress policy: the sandbox has no network. The launcher terminates the driver's HTTP requests on a unix socket, allows only `api.anthropic.com`, injects the real token, and re-originates the request (`src/launcher/egress/policy.rs`, `src/launcher/egress/http1.rs`, `src/launcher/egress/log.rs`). Tests run against a plain-TCP stub.
 
-**Detached driver spawn (a separate, adjacent integration):**
-- `gsd-meta-manager drive ...` — this same binary re-invoked as its own subcommand (`std::env::current_exe()`), spawned detached from the TUI process — `src/driver/spawn.rs`
-  - Argv always carries `--config <path>`, `drive <alias> --command <cmd> --run-id <id> [--goal <text>]`
-  - Detached via: new process group (`process_group(0)`), three null stdio handles, `kill_on_drop(false)` (explicit, load-bearing — closing the TUI must not kill the run), plus a reaping Tokio task to avoid zombies
-  - Never spawns via a worktree; always the project root as cwd
+**Claude Code CLI (local process):**
+- Binary: `claude` on `PATH`.
+- Invocations: `claude -p --output-format stream-json` for driver and one-off runs (`src/launcher/sandbox.rs`, `src/oneoff/`); `claude setup-token` for operator token setup (`src/driver_cli.rs`).
+- Session detection: reads Claude session state under `CLAUDE_CONFIG_DIR` or `~/.claude` (`src/agents/adapters/claude.rs`, `src/session_detector.rs`).
+
+**Codex CLI (local, best-effort):**
+- Session detection under `$CODEX_HOME` or `~/.codex` (`src/session_detector.rs`). Codex GSD installs are read from `~/.codex/gsd-core` or `$CODEX_HOME/gsd-core`.
+
+**GSD (Get Shit Done) planning system (local files):**
+- The app reads `.planning/` directories of each registered project: `STATE.md`, `ROADMAP.md`, `config.json`, `QUEUE.md`, `HANDOFF.json`, phase and plan files, driver frontmatter (`src/state_reader/`, `src/registry.rs`).
+- Reads the installed gsd-core per project and per runtime to show version and install status (`src/state_reader/gsd_install.rs`).
+- No network calls; this is a file-based integration.
+
+**Git (local process):**
+- All repository operations go through the `git` binary: status, branch and worktree inspection, merge and diff for one-off runs, and resolver worktrees (`src/state_reader/git_ops.rs`, `src/oneoff/merge.rs`, `src/oneoff/land.rs`, `src/agents/worktrees.rs`). Remote is used only as a string in project metadata, e.g. `https://github.com/...` in tests.
+
+**Gitleaks (optional local scanner):**
+- Binary `gitleaks`, invoked from `src/envelope/scan.rs` (`GITLEAKS_BIN`) to scan external output before it is recorded. Rule id `gitleaks-external`.
+
+**Terminal and multiplexer:**
+- `tmux` for focusing and switching to running project sessions (`src/terminal_switch.rs`, `src/agents/processes.rs`). `TMUX` env var is consulted.
+- `xdg-terminal-exec` (and `TERMINAL`, `VISUAL`, `EDITOR`) for opening external terminals and editors.
 
 ## Data Storage
 
 **Databases:**
-- None. All persistent state is plain files.
+- None. No database server or ORM. All persistent state is JSON, YAML, Markdown, or plain text on disk.
+
+**File-based persistence:**
+- App config: `~/.config/gsd-meta-manager/config.json` (`src/config.rs`); schema-versioned, with read-side migration in memory.
+- App data: `dirs::data_local_dir()/gsd-meta-manager/` - logs, envelope ledger (`src/envelope/mod.rs`), one-off run store (`src/oneoff/store.rs`) keyed by `hash8(canonical project path)`, and driver run directories with `launcher.lock`, `state.json`, and `LOG.md` (`src/launcher/`, `src/driverctl/store.rs`).
+- Project state: each registered project's `.planning/` directory is read-only from the app's view except for the driver and one-off flows, which write run artifacts.
+- Advisory locks: `flock` via `rustix` on run and store lock files (`src/driver/lock.rs`, `src/oneoff/store.rs` `oneoff.lock`).
 
 **File Storage:**
-- Local filesystem only. Two categories:
-  - **GSD project state, read-only**: `.planning/config.json`, `.planning/STATE.md` (YAML frontmatter + Markdown), `.planning/ROADMAP.md`, `.planning/REQUIREMENTS.md`, `QUEUE.md`/backlog files — parsed by `src/state_reader/*` submodules (`config_json.rs`, `state_md.rs`, `roadmap_md.rs`, `queue_md.rs`, `backlog.rs`, `workstreams.rs`, `disk_status.rs`, `git_ops.rs`)
-  - **This tool's own state, read/write**: user config at a platform-resolved path (`dirs::config_dir()` + `gsd-meta-manager/config.json`, e.g. `~/.config/gsd-meta-manager/config.json` on Linux) written atomically via `tempfile::NamedTempFile` + rename (`src/config.rs`); the append-only run journal `journal.jsonl` (NDJSON, one record per line, monotonic `seq`, no per-event fsync) — `src/journal/writer.rs`, `reader.rs`, `redact.rs`, `inbox.rs`
+- Local filesystem only. No cloud object storage.
 
 **Caching:**
-- In-process only: parsed project state is cached and invalidated on filesystem-watch events (per `CLAUDE.md`'s intended `Arc<RwLock<HashMap<...>>>` pattern); no external cache service.
+- None detected. The UI re-reads state on filesystem change events.
+
+**Sockets:**
+- Unix domain socket for the driver control channel (`DRIVERCTL_SOCK`, `src/driverctl/serve.rs`) and the egress server socket (`src/launcher/egress/mod.rs`).
 
 ## Authentication & Identity
 
 **Auth Provider:**
-- None owned by this binary. The `claude` CLI's own authentication (subscription/OAuth or API key) is used as-is; this tool only reads `system/init.apiKeySource` to confirm no `--dangerously-skip-permissions`/bypass path silently activated (D-08 regression guard in `src/executor/claude.rs`).
+- No application-level auth provider and no user accounts.
+- Driver inference auth: Anthropic OAuth token, obtained through `claude setup-token` or the host Claude credential file, as described above (`src/launcher/auth.rs`).
+  - Token is passed only in the child process environment; it is never placed in argv, `state.json`, `LOG.md`, or launch logs (`src/launcher/auth.rs`, `child_env` in `src/launcher/sandbox.rs`).
+  - `auth` posture is recorded as a word (e.g. `setup-token`), never the value.
+
+**Sandbox identity:**
+- Per-run `CLAUDE_CONFIG_DIR` seeded by the launcher (`src/launcher/config_dir.rs`), so the driver does not share the host's Claude config.
 
 ## Monitoring & Observability
 
 **Error Tracking:**
-- None (no Sentry/Bugsnag/etc.)
+- None. No Sentry or similar.
 
 **Logs:**
-- `tracing` + `tracing-subscriber` + `tracing-appender`, routed to a file under the user's local data directory (not stdout, since ratatui owns the terminal)
-- Explicit discipline: raw subprocess stream content and journal event content are never logged — only counts/shapes (documented at `src/executor/claude.rs` and `src/journal/mod.rs`, "D-28"/"D-33")
+- `tracing` with `tracing-subscriber` (`env-filter`) and a daily-rolling `tracing-appender` file named `gsd-meta-manager.log*` under `dirs::data_local_dir()/gsd-meta-manager/` (`src/main.rs`).
+- Per-run logs: `LOG.md` and launch logs under the run directory; driver output captured as `stream-json` in a file (`src/launcher/sandbox.rs`).
+- Egress request log: `src/launcher/egress/log.rs`.
+- Redaction before writing: `src/journal/redact.rs` is the capture-path redaction seam applied before journal and run output is recorded.
 
 ## CI/CD & Deployment
 
 **Hosting:**
-- Distributed as a compiled binary; no hosted service component. `README.md`/`CLAUDE.md` describe cargo-based release builds (`cargo build --release --target ...`) and mention `cargo-dist` as a candidate for release artifacts.
+- Source: GitHub, `https://github.com/bitcreed/gsd-meta-manager` (`Cargo.toml` `repository`).
+- Distribution: crates.io (`cargo publish --locked`).
 
 **CI Pipeline:**
-- GitHub Actions present under `.github/workflows/` (build/test/lint on push/PR — inspect that directory directly for exact jobs)
+- GitHub Actions, `.github/workflows/release.yml`, triggered on tags matching `v[0-9]+.[0-9]+.[0-9]+`.
+  - `msrv`: compiles all targets on Rust 1.89.0.
+  - `cross-target-check`: `cargo check` and `cargo clippy -D warnings` for `aarch64-apple-darwin`, `x86_64-apple-darwin`, `x86_64-pc-windows-gnu`.
+  - `publish`: `cargo test --no-fail-fast`, `cargo clippy -- -D warnings`, `cargo publish --locked`, with Node 24 installed via `actions/setup-node@v7` for the conformance oracle.
+- Runners pinned to `ubuntu-24.04`.
+- Actions used: `actions/checkout@v7`, `dtolnay/rust-toolchain`, `Swatinem/rust-cache@v2`, `actions/setup-node@v7`.
+
+**Secrets used by CI:**
+- `CARGO_REGISTRY_TOKEN` (crates.io publish token), supplied via `secrets.CARGO_REGISTRY_TOKEN` in the publish step only.
 
 ## Environment Configuration
 
-**Required env vars:**
-- None required for basic operation
-- Consulted when relevant: `$VISUAL` / `$EDITOR` (config-edit key, falls back to `vi`), `$TMUX` (gates tab-switching support), inherited `CLAUDE*` vars are actively stripped rather than consulted
+**Required for normal TUI use:**
+- None. The app runs with defaults; `--config <PATH>` is optional.
+
+**Required for driver runs (Linux):**
+- A `claude` CLI on `PATH`, plus either a stored `claude setup-token` token or a logged-in host Claude session.
+- `bwrap` and `systemd-run --user` for the sandbox; otherwise the run needs `--unsandboxed` and is recorded as `sandbox: degraded`.
+
+**Optional:**
+- `gitleaks` on `PATH` for external-output scanning.
+- `tmux` for session focus.
+- `CLAUDE_CONFIG_DIR`, `CODEX_HOME` to point at non-default agent config locations.
 
 **Secrets location:**
-- None stored by this binary. No `.env`, no credentials file, no keychain integration observed.
+- Driver OAuth token: app config directory, file `driver-oauth-token` (mode 0600, owner-checked). Host Claude credentials are read in place and never copied.
+- CI: GitHub repository secret `CARGO_REGISTRY_TOKEN`.
+- No `.env` files are tracked.
 
 ## Webhooks & Callbacks
 
 **Incoming:**
-- None
+- None. The app exposes no HTTP server. The only listeners are local unix sockets (driver control and egress), reachable only from the sandboxed child.
 
 **Outgoing:**
-- None (no network calls of any kind found in `src/`)
-
-## Local CLI Tool Contracts (the real integration surface)
-
-Beyond `claude` itself, several other local commands are shelled out to synchronously or via Tokio's `process` module — these are the project's actual "integrations":
-
-- **`git`** — read-only repository introspection: last-commit timestamp (`src/state_reader/git_ops.rs:12` and others), disk/branch status, and a diff-based snapshot before/after a driven run (`src/executor/outcome.rs:661`, `src/journal/writer.rs:365`); also `git init` when scaffolding a new project (`src/project_creator.rs:47`)
-- **`tmux`** — `list-panes`, `select-window`, `select-pane` to switch terminal focus onto a live Claude session's pane (`src/terminal_switch.rs`); no-ops with a clear error when `$TMUX` is unset (i.e., not running inside tmux); other terminals (Kitty, Ghostty, WezTerm) are explicitly not yet supported
-- **`pgrep`** — detects already-running `claude` processes and their controlling TTY for session discovery (`src/session_detector.rs`)
-- **`sh -c <cmd>`** — executes user-configured `hooks.pre_create` / `hooks.post_create` shell commands during project creation, with `GSD_PROJECT_NAME`/`GSD_PROJECT_PATH`/`GSD_PROJECT_ALIAS` in the environment (`src/project_creator.rs`, `src/config.rs`)
-- **`$EDITOR`/`$VISUAL` or `vi`** — opens files for editing, suspending the TUI (`src/main.rs`, `src/app.rs`)
-- **A queue-defined external launcher** — `queue_md.rs` builds a `Command` for `<launcher> <args...>` from data read out of `QUEUE.md`, i.e., the launcher program itself is configuration-driven, not hardcoded
+- Anthropic inference requests to `api.anthropic.com:443` over TLS, issued only by the launcher egress server for sandboxed driver runs (`src/launcher/egress/upstream.rs`).
+- No other outbound network calls were found in `src/`. Test fixtures reference hosts such as `example.invalid` and `github.com` only as strings.
 
 ---
 
-*Integration audit: 2026-08-18*
+*Integration audit: 2026-11-03*
