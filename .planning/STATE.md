@@ -4,10 +4,10 @@ milestone: v2.1.0
 current_phase_name: Sandbox Egress & Agent-Channel Isolation
 status: shipped
 stopped_at: v2.1.0 released locally (tag v2.1.0, not pushed) — interim gsd-core 1.20.0 Sync release between milestones
-last_updated: "2026-11-03T23:00:00.000Z"
+last_updated: "2026-11-03T18:53:15.865Z"
 last_activity: 2026-11-03
 last_activity_desc: v2.1.0 released — gsd-core 1.20.0 Sync
-state_head: 41eb15eba77f310b7c7cb87733c3a87dac18616b
+state_head: a65de2d9afa1fccff069757c1e296ba1d074639b
 progress:
   total_phases: 16
   completed_phases: 16
@@ -46,7 +46,7 @@ Milestone: v2.0 Autonomous Orchestration — SHIPPED 2026-10-29 as v2.0.0
 Phase: — (between milestones; Phases 14-31 archived to `.planning/milestones/v2.0-phases/`)
 Plan: —
 Status: shipped
-Last activity: 2026-11-03 - Completed quick task 261103-f5y: One-off sandboxed task dispatch from the TUI (experimental)
+Last activity: 2026-11-03 - Completed quick task 261103-gt1: Live viewer with message injection and spend meter for one-off runs
 
 Archive: `.planning/milestones/v2.0-ROADMAP.md`, `v2.0-REQUIREMENTS.md`, `v2.0-MILESTONE-AUDIT.md`.
 Carried forward: five security-adjacent review clusters as todos `2026-10-29-v2-carry-*`;
@@ -525,6 +525,7 @@ Older entries (Phase 19 T-19-* rows, Phase 21 round-13 gaps, Phase 26 risks, 31-
 | 261103-em6 | gsd-core v1.20.0 sync, area 3: re-port ROADMAP phase-entry grammar (#5763, shared line-anchored prefix for R1/R2/R3 + milestone scope), Progress-table owner (#5761, fence-aware, Progress Tracker, no fall-through) and milestone slice (#5165). Corpus: wordoclock now reads its per-phase table; ttbook counts only v3 rows. Inferred decisions in SUMMARY. Ran unisolated (base-check false negative) | 2026-11-03 | 785fae9 | [261103-em6-re-port-gsd-core-v1-20-0-roadmap-entry-g](./quick/261103-em6-re-port-gsd-core-v1-20-0-roadmap-entry-g/) |
 | 261103-f5i | gsd-core v1.20.0 sync: baseline trio -> 1.20.0/v1.20.0/1.20.0 + README note + docs/GSD-CORE-SYNC.md v1.20.0 delta; planner.stall_threshold_minutes / stall_detect_interval_minutes promoted to typed rows (DEFAULTS_OPTION_COUNT 136->138, reverses 260926-gtk I-3); help texts for inline_plan_threshold, phase_naming, phase_id_convention; review.context_window_tokens pass-through; custom/bracket phase ids deferred to Next sync. Inferred decisions in SUMMARY. Ran unisolated (base-check false negative) | 2026-11-03 | ce4d2fd | [261103-f5i-gsd-core-v1-20-0-sync-baseline-config-de](./quick/261103-f5i-gsd-core-v1-20-0-sync-baseline-config-de/) |
 | 261103-f5y | One-off sandboxed task dispatch from the TUI (experimental): taskctl report, task run/status/stop/land, runtime seam, Driver-tab t/T popups | 2026-11-03 | 41eb15e | [261103-f5y-one-off-sandboxed-task-dispatch-from-the](./quick/261103-f5y-one-off-sandboxed-task-dispatch-from-the/) |
+| 261103-gt1 | Live viewer with message injection and spend meter for one-off runs | 2026-11-03 | a65de2d | [261103-gt1-live-viewer-with-message-injection-and-s](./quick/261103-gt1-live-viewer-with-message-injection-and-s/) |
 
 ## Deferred Items
 
