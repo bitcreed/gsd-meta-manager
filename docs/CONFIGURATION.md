@@ -230,20 +230,29 @@ seconds if anything is left: the run ends `stopped`, or `killed` when it needed 
 SIGKILL. **Kill** (`--kill`, `X`) sends SIGKILL at once: `killed`. **Pause** (`--pause`,
 `z`) injects ONE message through the agent's stdin (recorded in `injections.jsonl` as
 `pause`) asking it to commit its work in progress, call `taskctl report --status
-partial` and end. The host, not the agent, decides the outcome `paused`: a pause request
-plus a clean exit. The branch is tracked exactly as for any finished run, so a paused run
+partial` and end. The host, not the agent, decides the outcome `paused`: a DELIVERED
+pause, a clean exit and a `partial` report. A `done` report wins (the run ends
+`finished`), and a missing or `blocked`/`failed` report falls back to the normal
+outcome. The branch is tracked exactly as for any finished run, so a paused run
 is `gsd-oneoff/<run-id>` at its head. A pause the agent ignores is cut hard after 5
 minutes and ends `killed` with `escalated: true`. The launcher daemon, which owns the
 scope, does all of the signalling: the CLI and the TUI only write a request file
 (`<run-dir>/stop.request`, host-only, never mounted, at most 4 KiB, the stronger of two
 requests wins) and, for stop and kill, SIGTERM the daemon so an older daemon and a
 terminal's Ctrl-C still work. `run.json` keeps `stop {kind, requested_at, ended_at,
-escalated, by}`; `by` is `tui`, `cli` or `signal`, and `ended_at` stays empty while the
+escalated, by, refused}`; `by` is `tui`, `cli` or `signal`, and `ended_at` stays empty while the
 run is still stopping (the summary says `Stopping...` or `Pausing...`). Without a live
 daemon (an orphaned scope) `task stop` stops, or with `--kill` kills, the leftover scope
-itself, and a pause is refused. With `--pause`, `--wait-secs` bounds the wait for the run
-to wind down; a run still winding down exits 0 and is cut by its own launcher after the
-grace.
+itself, and a pause is refused. `task stop --pause` waits up to `--wait-secs` for the
+launcher's own record of the pause in `injections.jsonl` and exits 0 only when the pause
+was delivered (a run still winding down is then cut by its own launcher after the
+grace). It exits 1 when the launcher refused the pause, for example because the session
+is already ending after the agent reported (`the pause could not be delivered to <run>
+(<reason>)`, with the hint to use `task stop` without `--pause`), and 1 with `not
+confirmed` wording when no answer appeared in time. A refused pause is withdrawn: no
+grace cut follows it, `run.json` keeps the reason as `stop.refused`, and `task status`
+and the TUI summary say `pause refused` instead of `pausing`. `z` in the TUI waits up to
+10 seconds and shows a refusal as an error (`pause refused: ...`).
 
 The same three apply to a **landing** (the resolver agent of a `resolved` merge):
 `task stop --resolver`, or no flag when the run is not live but its `land.lock` is held
@@ -399,7 +408,10 @@ commits or a git-relevant planted file in the clone each refuse and change nothi
 `how` in `run.json` and shown by `task status`:
 
 - `ff`: your branch is behind the head, so your own `git merge --ff-only` runs, hooks
-  included.
+  included. The message counts the commits your branch advanced by, which exceeds the
+  run's own count for a resumed run (the host's merge commit and the commits it was
+  resumed from), and names the agent's count when they differ: `landed 3 commit(s) of
+  <run> on <branch> (1 by the agent; now at <sha>)`.
 - `merge`: your branch moved on. The launcher makes a fresh `--no-hardlinks` clone of
   your branch's tip in `<run-dir>/land/<n>/work`, fetches the run's branch into it and
   runs `git merge --no-ff` there with hooks off and your global git config off, using

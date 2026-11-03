@@ -2305,6 +2305,7 @@ fn fixture_for(type_name: &str) -> Option<Fixture> {
                     ended_at: Some(identity.to_string()),
                     escalated: true,
                     by: crate::oneoff::cancel::StopBy::Tui,
+                    refused: Some(identity.to_string()),
                 });
                 view.record.resumed_from = Some(identity.to_string());
                 view.record.resumed_by = Some(identity.to_string());

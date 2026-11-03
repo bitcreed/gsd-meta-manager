@@ -120,6 +120,10 @@ pub struct StopRecord {
     #[serde(default)]
     pub escalated: bool,
     pub by: StopBy,
+    /// Why a pause could not be delivered (mnr, D-02): the launcher withdrew it, no grace
+    /// cut follows. `None` for every other stop.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refused: Option<String>,
 }
 
 impl StopRecord {
@@ -131,6 +135,7 @@ impl StopRecord {
             ended_at: None,
             escalated: false,
             by: request.by,
+            refused: None,
         }
     }
 }
@@ -214,6 +219,8 @@ pub struct Cancel {
     escalated: bool,
     /// The pause grace ran out.
     pause_cut: bool,
+    /// The pause was refused and withdrawn: it never starts a grace.
+    pause_withdrawn: bool,
 }
 
 impl Cancel {
@@ -224,13 +231,24 @@ impl Cancel {
             phase: Phase::Idle,
             escalated: false,
             pause_cut: false,
+            pause_withdrawn: false,
         }
+    }
+
+    /// The pause could not be delivered: forget it. The grace stops, and a later pause
+    /// tick waits forever; a hard or kill request still cuts.
+    pub fn withdraw_pause(&mut self) {
+        if matches!(self.phase, Phase::Pausing { .. }) {
+            self.phase = Phase::Idle;
+        }
+        self.pause_withdrawn = true;
     }
 
     /// One tick: `wanted` is the strongest request known (`None` while there is none).
     pub fn tick(&mut self, wanted: Option<StopKind>, now: Instant) -> CancelStep {
         match (self.phase, wanted) {
             (_, None) | (Phase::Killing, _) => CancelStep::Wait,
+            (Phase::Idle, Some(StopKind::Pause)) if self.pause_withdrawn => CancelStep::Wait,
             (Phase::Idle, Some(StopKind::Pause)) => {
                 self.phase = Phase::Pausing {
                     deadline: now + self.pause_grace,
@@ -521,5 +539,52 @@ mod tests {
         assert_eq!(c.tick(Some(StopKind::Hard), at(t, 1)), CancelStep::Term);
         assert_eq!(c.tick(Some(StopKind::Kill), at(t, 2)), CancelStep::Kill);
         assert_eq!(c.end(), Some(CutEnd::Killed { escalated: false }));
+    }
+
+    #[test]
+    fn a_refused_pause_is_withdrawn_and_never_cut() {
+        let t0 = Instant::now();
+        let mut c = Cancel::new(Duration::from_secs(10), Duration::from_secs(300));
+        assert_eq!(
+            c.tick(Some(StopKind::Pause), at(t0, 0)),
+            CancelStep::InjectPause
+        );
+        c.withdraw_pause();
+        for secs in [1, 299, 300, 400, 100_000] {
+            assert_eq!(
+                c.tick(Some(StopKind::Pause), at(t0, secs)),
+                CancelStep::Wait
+            );
+        }
+        assert!(!c.cutting());
+        assert_eq!(c.end(), None);
+        assert!(!c.escalated());
+    }
+
+    #[test]
+    fn a_hard_stop_after_a_withdrawn_pause_still_cuts() {
+        let t0 = Instant::now();
+        let mut c = Cancel::new(Duration::from_secs(10), Duration::from_secs(300));
+        assert_eq!(
+            c.tick(Some(StopKind::Pause), at(t0, 0)),
+            CancelStep::InjectPause
+        );
+        c.withdraw_pause();
+        assert_eq!(c.tick(Some(StopKind::Hard), at(t0, 5)), CancelStep::Term);
+        assert!(c.cutting());
+        assert_eq!(c.tick(Some(StopKind::Kill), at(t0, 6)), CancelStep::Kill);
+    }
+
+    #[test]
+    fn a_stop_record_reads_and_writes_the_refusal_additively() {
+        let old = r#"{"kind":"pause","requested_at":"2026-11-03T10:00:00Z","by":"cli"}"#;
+        let record: StopRecord = serde_json::from_str(old).unwrap();
+        assert_eq!(record.refused, None);
+        assert!(!serde_json::to_string(&record).unwrap().contains("refused"));
+        let mut refused = record;
+        refused.refused = Some("the session is ending".to_owned());
+        let back: StopRecord =
+            serde_json::from_str(&serde_json::to_string(&refused).unwrap()).unwrap();
+        assert_eq!(back.refused.as_deref(), Some("the session is ending"));
     }
 }

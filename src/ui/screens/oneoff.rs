@@ -1123,6 +1123,10 @@ pub fn result_lines(view: &OneoffView) -> Vec<Line<'static>> {
     if let Some(stop) = &record.stop {
         let pending = stop.ended_at.is_none() && view.live.may_be_live();
         let state = match (pending, stop.kind) {
+            _ if stop.refused.is_some() => format!(
+                "Pause refused ({})",
+                shown(stop.refused.as_deref().unwrap_or_default())
+            ),
             (true, StopKind::Pause) => "Pausing...".to_owned(),
             (true, StopKind::Hard) => "Stopping...".to_owned(),
             (true, StopKind::Kill) => "Killing...".to_owned(),
@@ -1758,6 +1762,7 @@ pub(crate) mod tests {
             ended_at: None,
             escalated: false,
             by: StopBy::Tui,
+            refused: None,
         });
         runs[1].record.stop = Some(StopRecord {
             kind: StopKind::Hard,
@@ -1765,6 +1770,15 @@ pub(crate) mod tests {
             ended_at: Some("2026-11-03T10:00:12Z".to_owned()),
             escalated: true,
             by: StopBy::Cli,
+            refused: None,
+        });
+        runs[2].record.stop = Some(StopRecord {
+            kind: StopKind::Pause,
+            requested_at: "2026-11-03T10:00:00Z".to_owned(),
+            ended_at: Some("2026-11-03T10:00:01Z".to_owned()),
+            escalated: false,
+            by: StopBy::Cli,
+            refused: Some("the session is ending".to_owned()),
         });
         let (mut ctx, mut screen) = list_over(runs);
         key(&mut screen, &mut ctx, KeyCode::Enter);
@@ -1776,6 +1790,16 @@ pub(crate) mod tests {
         let text = render_text(&screen, &ctx);
         assert!(text.contains("Stopped (hard) by cli"), "{text}");
         assert!(text.contains("escalated"), "{text}");
+        let mut screen = OneoffScreen::list(ALIAS.to_owned());
+        key(&mut screen, &mut ctx, KeyCode::Char('j'));
+        key(&mut screen, &mut ctx, KeyCode::Char('j'));
+        key(&mut screen, &mut ctx, KeyCode::Enter);
+        let text = render_text(&screen, &ctx);
+        assert!(
+            text.contains("Pause refused (the session is ending) by cli"),
+            "{text}"
+        );
+        assert!(!text.contains("Pausing..."), "{text}");
     }
 
     #[test]

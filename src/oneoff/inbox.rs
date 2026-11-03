@@ -322,6 +322,28 @@ mod fs_inbox {
         }
     }
 
+    /// The first `pause` record of `injections.jsonl` written at or after `since`
+    /// (quick 261103-mnr, D-02): how the launcher answered a pause request. Both sides
+    /// are `rfc3339` seconds-precision UTC strings, so a text comparison orders them.
+    /// `None` for a missing file, or when no such record exists yet.
+    pub fn pause_outcome_since(run_dir: &Path, since: &str) -> Option<InjectionRecord> {
+        let mut tail = StreamTail::new(&run_dir.join(INJECTIONS_FILE));
+        // `poll` reads a bounded batch; keep going until the file is drained.
+        while let Ok(lines) = tail.poll() {
+            if lines.is_empty() {
+                return None;
+            }
+            for line in lines {
+                if let Ok(record) = serde_json::from_str::<InjectionRecord>(&line) {
+                    if record.kind == super::InjectionKind::Pause && record.at.as_str() >= since {
+                        return Some(record);
+                    }
+                }
+            }
+        }
+        None
+    }
+
     #[cfg(test)]
     mod tests {
         use super::*;
@@ -406,6 +428,48 @@ mod fs_inbox {
             let found = wait_outcome(dir.path(), "9-1", Duration::from_millis(200)).unwrap();
             assert_eq!(found, record);
             assert!(wait_outcome(dir.path(), "other", Duration::from_millis(60)).is_none());
+        }
+
+        #[test]
+        fn the_first_pause_record_since_the_request_is_found() {
+            let dir = TempDir::new().unwrap();
+            assert!(pause_outcome_since(dir.path(), "2026-11-03T10:00:00Z").is_none());
+            let record = |at: &str, kind, outcome, reason: Option<&str>| InjectionRecord {
+                at: at.into(),
+                id: format!("{at}-{kind:?}"),
+                kind,
+                text: None,
+                usd: None,
+                outcome,
+                reason: reason.map(str::to_owned),
+            };
+            use super::super::{InjectionKind as K, InjectionOutcome as O};
+            for r in [
+                record("2026-11-03T09:59:59Z", K::Pause, O::Delivered, None),
+                record("2026-11-03T10:00:01Z", K::Message, O::Delivered, None),
+            ] {
+                append_injection(dir.path(), &r).unwrap();
+            }
+            assert!(
+                pause_outcome_since(dir.path(), "2026-11-03T10:00:00Z").is_none(),
+                "older pause records and other kinds are ignored"
+            );
+            let refused = record(
+                "2026-11-03T10:00:02Z",
+                K::Pause,
+                O::Refused,
+                Some("the session is ending"),
+            );
+            append_injection(dir.path(), &refused).unwrap();
+            append_injection(
+                dir.path(),
+                &record("2026-11-03T10:00:03Z", K::Pause, O::Delivered, None),
+            )
+            .unwrap();
+            assert_eq!(
+                pause_outcome_since(dir.path(), "2026-11-03T10:00:00Z"),
+                Some(refused)
+            );
         }
     }
 }

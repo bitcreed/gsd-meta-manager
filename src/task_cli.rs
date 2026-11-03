@@ -391,11 +391,12 @@ mod unix {
         }
         if let Some(stop) = &record.stop {
             let pending = stop.ended_at.is_none() && view.live.may_be_live();
-            let state = match (pending, stop.kind) {
-                (true, StopKind::Pause) => "pausing",
-                (true, StopKind::Hard) => "stopping",
-                (true, StopKind::Kill) => "killing",
-                (false, kind) => kind.word(),
+            let state = match (&stop.refused, pending, stop.kind) {
+                (Some(why), _, _) => format!("pause refused ({})", shown(why)),
+                (None, true, StopKind::Pause) => "pausing".to_owned(),
+                (None, true, StopKind::Hard) => "stopping".to_owned(),
+                (None, true, StopKind::Kill) => "killing".to_owned(),
+                (None, false, kind) => kind.word().to_owned(),
             };
             lines.push(format!(
                 "stop:      {state} ({} by {} at {}{})",
@@ -781,9 +782,20 @@ mod unix {
                 ));
                 1
             }
-            Ok(outcome @ StopOutcome::PauseRequested { .. }) => {
-                out_line(&format!("task stop: {}", outcome.message()));
+            Ok(outcome @ StopOutcome::PauseDelivered { .. }) => {
+                out_line(&format!("task stop: {}", shown(&outcome.message())));
                 0
+            }
+            Ok(outcome @ StopOutcome::PauseRefused { .. }) => {
+                err_line(&format!("task stop: {}", shown(&outcome.message())));
+                1
+            }
+            Ok(outcome @ StopOutcome::PauseUnconfirmed { .. }) => {
+                err_line(&format!(
+                    "task stop: {} (after {wait_secs}s)",
+                    shown(&outcome.message())
+                ));
+                1
             }
             Ok(StopOutcome::OrphanScopeStopped { unit }) => {
                 out_line(&format!(

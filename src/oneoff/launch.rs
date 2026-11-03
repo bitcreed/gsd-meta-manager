@@ -56,10 +56,10 @@ use super::cancel::{
     pause_grace_from_env, read_request, request_now, signal_scope, stop_grace_from_env,
     write_request, Cancel, CancelStep, CutEnd, StopBy, StopKind, StopRecord, StopRequest,
 };
-use super::inbox::{ensure_inbox, InjectionKind};
+use super::inbox::{ensure_inbox, pause_outcome_since, InjectionKind, InjectionOutcome};
 use super::land::{git_relevant_planted, landing_in_progress, track_branch};
 use super::merge::MIN_RESOLVER_BUDGET_USD;
-use super::report::read_validated;
+use super::report::{read_validated, ReportStatus};
 use super::resolve::{merge_master_into_run, ResumeMergeJob};
 use super::resume::{ResumeFrom, ResumeSpec};
 use super::runtime::{AgentRuntime, HostEnd};
@@ -508,6 +508,10 @@ fn run_session(ctx: &Ctx<'_>, record: &mut RunRecord) -> Result<(), LauncherErro
         record.stop = session.stop;
     }
 
+    // mnr D-02: the agent's report decides whether a delivered pause ended `paused`.
+    let report_status = read_validated(&report_dir.join(REPORT_FILE))
+        .ok()
+        .map(|r| r.status);
     finalize(
         ctx,
         record,
@@ -515,9 +519,21 @@ fn run_session(ctx: &Ctx<'_>, record: &mut RunRecord) -> Result<(), LauncherErro
         &run_dir.join(STREAM_FILE),
         &report_dir,
         session.rc,
-        session.end,
+        pause_end_with_report(session.end, report_status),
     );
     write_record(run_dir, record).map_err(|e| io_error("write run.json", e))
+}
+
+/// A delivered pause ends the run `Paused` only when the agent answered it with a
+/// `partial` report; a `done` report means it finished anyway, and a missing, `blocked`
+/// or `failed` one falls back to the ordinary classification. Every other end passes
+/// through unchanged (mnr, D-02).
+fn pause_end_with_report(end: HostEnd, report: Option<ReportStatus>) -> HostEnd {
+    match (end, report) {
+        (HostEnd::Paused, Some(ReportStatus::Partial)) => HostEnd::Paused,
+        (HostEnd::Paused, _) => HostEnd::Exited,
+        (other, _) => other,
+    }
 }
 
 /// The run a resume continues, read from disk.
@@ -889,6 +905,8 @@ pub(crate) fn run_sandboxed_session(
     // klf: the strongest stop the user asked for, and what `run.json` keeps of it.
     let mut stop: Option<StopRequest> = None;
     let mut stop_record: Option<StopRecord> = None;
+    // mnr D-02: a pause only counts once the supervisor DELIVERED the message.
+    let mut pause_delivered = false;
     let (status, end) = loop {
         // klf I-09, I-13: a request file, or a signal with or without one.
         let mut wanted = None;
@@ -917,7 +935,19 @@ pub(crate) fn run_sandboxed_session(
             CancelStep::Wait => {}
             CancelStep::InjectPause => {
                 if let Some(message) = spec.pause_message {
-                    supervisor.inject_host(InjectionKind::Pause, message, Instant::now());
+                    match supervisor.inject_host(InjectionKind::Pause, message, Instant::now()) {
+                        Ok(()) => pause_delivered = true,
+                        Err(reason) => {
+                            // Withdrawn: no grace cut follows a pause that never
+                            // reached the agent, and the record says why.
+                            cancel.withdraw_pause();
+                            if let Some(record) = stop_record.as_mut() {
+                                record.refused = Some(reason);
+                                record.ended_at = Some(rfc3339(Utc::now()));
+                                on_event(SessionEvent::Stop(record));
+                            }
+                        }
+                    }
                 }
             }
             CancelStep::Term => send_signal(&containment, "TERM"),
@@ -962,7 +992,9 @@ pub(crate) fn run_sandboxed_session(
                         }
                     }
                     match (late.map(|l| l.kind), spec.pause_message.is_some()) {
-                        (Some(StopKind::Pause), true) if status.success() => HostEnd::Paused,
+                        (Some(StopKind::Pause), true) if status.success() && pause_delivered => {
+                            HostEnd::Paused
+                        }
                         (Some(StopKind::Hard), _) => HostEnd::UserStop,
                         (Some(StopKind::Kill), _) => HostEnd::Killed { escalated: false },
                         _ => HostEnd::Exited,
@@ -983,7 +1015,7 @@ pub(crate) fn run_sandboxed_session(
         containment.stop_leftovers();
     }
     let stop = stop_record.map(|mut record| {
-        record.ended_at = Some(rfc3339(Utc::now()));
+        record.ended_at.get_or_insert_with(|| rfc3339(Utc::now()));
         record.escalated = cancel.escalated();
         record
     });
@@ -1295,9 +1327,20 @@ pub enum StopOutcome {
     Stopped { run_id: String, pid: u32 },
     /// The daemon was signalled but still holds the lock.
     StillRunning { run_id: String, pid: u32 },
-    /// A pause was asked and the run is still winding down; the launcher cuts it after
-    /// the pause grace (quick 261103-klf, I-14).
-    PauseRequested { run_id: String, pid: u32 },
+    /// A pause was asked, the launcher delivered it to the agent (its
+    /// `injections.jsonl` says so) and the run is still winding down; the launcher cuts
+    /// it after the pause grace (quick 261103-klf, I-14; mnr D-02).
+    PauseDelivered { run_id: String, pid: u32 },
+    /// The launcher refused the pause (for example the session was already ending after
+    /// the agent reported). It is withdrawn: nothing cuts the run for it. `ended` says
+    /// the run's lock was free by the time we looked (mnr, D-02).
+    PauseRefused {
+        run_id: String,
+        reason: String,
+        ended: bool,
+    },
+    /// The pause was requested but the launcher's answer did not appear within the wait.
+    PauseUnconfirmed { run_id: String, pid: u32 },
     /// No daemon; the recorded scope was stopped by name.
     OrphanScopeStopped { unit: String },
     /// Nothing is running.
@@ -1311,6 +1354,15 @@ pub enum StopOutcome {
 }
 
 impl StopOutcome {
+    /// Whether the outcome means a requested pause did NOT happen as asked (refused, or
+    /// not confirmed): a failure for the CLI exit code and the TUI status line.
+    pub fn is_refusal(&self) -> bool {
+        matches!(
+            self,
+            StopOutcome::PauseRefused { .. } | StopOutcome::PauseUnconfirmed { .. }
+        )
+    }
+
     /// The outcome as one line.
     pub fn message(&self) -> String {
         match self {
@@ -1318,9 +1370,29 @@ impl StopOutcome {
             StopOutcome::StillRunning { run_id, pid } => {
                 format!("{run_id} (pid {pid}) was signalled but is still running")
             }
-            StopOutcome::PauseRequested { run_id, .. } => format!(
-                "{run_id} was asked to pause and is still winding down; the launcher cuts it \
-                 after its pause grace"
+            StopOutcome::PauseDelivered { run_id, .. } => format!(
+                "{run_id}: the pause was delivered; the agent is winding down (the launcher cuts \
+                 it after its pause grace)"
+            ),
+            StopOutcome::PauseRefused {
+                run_id,
+                reason,
+                ended: false,
+            } => format!(
+                "the pause could not be delivered to {run_id} ({reason}); it keeps running - use \
+                 'task stop' (without --pause) to stop it"
+            ),
+            StopOutcome::PauseRefused {
+                run_id,
+                reason,
+                ended: true,
+            } => format!(
+                "the pause could not be delivered to {run_id} ({reason}); the run has ended on \
+                 its own"
+            ),
+            StopOutcome::PauseUnconfirmed { run_id, .. } => format!(
+                "the pause of {run_id} was requested but its delivery is not confirmed yet; \
+                 check 'task status' (the launcher may still deliver it)"
             ),
             StopOutcome::OrphanScopeStopped { unit } => {
                 format!("no live one-off launcher; stopped the leftover scope {unit}")
@@ -1425,9 +1497,12 @@ pub fn stop(
             let target = signal_target(holder.pgid)?;
             // Request and signal only while the lock is still held, so the pid is the
             // daemon's.
+            let mut written = None;
             if probe_at(&lock_file) == LockProbe::Held {
-                write_request(&view.run_dir, request_now(kind, by))
-                    .map_err(|e| io_error("could not write the stop request", e))?;
+                written = Some(
+                    write_request(&view.run_dir, request_now(kind, by))
+                        .map_err(|e| io_error("could not write the stop request", e))?,
+                );
                 if kind != StopKind::Pause {
                     match rustix::process::kill_process(target, rustix::process::Signal::TERM) {
                         Ok(()) | Err(rustix::io::Errno::SRCH) => {}
@@ -1441,16 +1516,58 @@ pub fn stop(
                 }
             }
             let deadline = Instant::now() + wait;
+            // mnr D-02: a pause is confirmed by the launcher's own record of it, never
+            // assumed. A merged request stronger than a pause waits like a hard stop.
+            let pause_since = written
+                .as_ref()
+                .filter(|r| r.kind == StopKind::Pause)
+                .map(|r| r.requested_at.clone());
             loop {
-                if probe_at(&lock_file) != LockProbe::Held {
+                let free = probe_at(&lock_file) != LockProbe::Held;
+                if let Some(since) = &pause_since {
+                    // The lock was probed first: a record the daemon wrote before it
+                    // exited is already on disk when `free` is true.
+                    match pause_outcome_since(&view.run_dir, since) {
+                        Some(record) if record.outcome == InjectionOutcome::Delivered => {
+                            return Ok(if free {
+                                StopOutcome::Stopped {
+                                    run_id: holder.run_id,
+                                    pid: holder.pgid,
+                                }
+                            } else {
+                                StopOutcome::PauseDelivered {
+                                    run_id: holder.run_id,
+                                    pid: holder.pgid,
+                                }
+                            });
+                        }
+                        Some(record) => {
+                            return Ok(StopOutcome::PauseRefused {
+                                run_id: holder.run_id,
+                                reason: record
+                                    .reason
+                                    .unwrap_or_else(|| "the session is ending".to_owned()),
+                                ended: free,
+                            });
+                        }
+                        None if free => {
+                            return Ok(StopOutcome::PauseRefused {
+                                run_id: holder.run_id,
+                                reason: "the run ended before the pause reached it".to_owned(),
+                                ended: true,
+                            });
+                        }
+                        None => {}
+                    }
+                } else if free {
                     return Ok(StopOutcome::Stopped {
                         run_id: holder.run_id,
                         pid: holder.pgid,
                     });
                 }
                 if Instant::now() >= deadline {
-                    return Ok(if kind == StopKind::Pause {
-                        StopOutcome::PauseRequested {
+                    return Ok(if pause_since.is_some() {
+                        StopOutcome::PauseUnconfirmed {
                             run_id: holder.run_id,
                             pid: holder.pgid,
                         }
@@ -1660,5 +1777,68 @@ mod tests {
         assert!(argv.windows(2).any(|w| w == ["--resume-start", "master"]));
         assert!(!argv.contains(&"--text".to_owned()));
         assert!(!argv.contains(&"--todo".to_owned()));
+    }
+
+    #[test]
+    fn the_report_decides_whether_a_delivered_pause_is_paused() {
+        use ReportStatus::{Blocked, Done, Failed, Partial};
+        assert_eq!(
+            pause_end_with_report(HostEnd::Paused, Some(Partial)),
+            HostEnd::Paused
+        );
+        for report in [Some(Done), Some(Blocked), Some(Failed), None] {
+            assert_eq!(
+                pause_end_with_report(HostEnd::Paused, report),
+                HostEnd::Exited,
+                "{report:?}"
+            );
+        }
+        for end in [
+            HostEnd::UserStop,
+            HostEnd::Killed { escalated: true },
+            HostEnd::WallClock,
+            HostEnd::SoftCap,
+            HostEnd::Exited,
+        ] {
+            for report in [Some(Done), Some(Partial), None] {
+                assert_eq!(pause_end_with_report(end, report), end);
+            }
+        }
+    }
+
+    #[test]
+    fn pause_refusals_are_failures_with_their_reason() {
+        let refused = StopOutcome::PauseRefused {
+            run_id: "oneoff-x".to_owned(),
+            reason: "the session is ending".to_owned(),
+            ended: false,
+        };
+        assert!(refused.is_refusal());
+        let message = refused.message();
+        assert!(message.contains("oneoff-x"), "{message}");
+        assert!(message.contains("the session is ending"), "{message}");
+        assert!(
+            message.contains("'task stop' (without --pause)"),
+            "{message}"
+        );
+        let ended = StopOutcome::PauseRefused {
+            run_id: "oneoff-x".to_owned(),
+            reason: "the run ended before the pause reached it".to_owned(),
+            ended: true,
+        };
+        assert!(ended.is_refusal());
+        assert!(ended.message().contains("has ended on its own"));
+        let unconfirmed = StopOutcome::PauseUnconfirmed {
+            run_id: "oneoff-x".to_owned(),
+            pid: 7,
+        };
+        assert!(unconfirmed.is_refusal());
+        assert!(unconfirmed.message().contains("not confirmed"));
+        let delivered = StopOutcome::PauseDelivered {
+            run_id: "oneoff-x".to_owned(),
+            pid: 7,
+        };
+        assert!(!delivered.is_refusal());
+        assert!(delivered.message().contains("delivered"));
     }
 }

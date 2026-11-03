@@ -1806,10 +1806,13 @@ impl App {
                             }
                         }
                     }
-                    // A pause and a landing request come back at once; a hard cut or a
-                    // kill of a run waits for it to end.
-                    let wait = if kind == StopKind::Pause || target == StopTarget::Landing {
+                    // A landing request comes back at once; a pause of a run waits up to
+                    // 10 s for the launcher to confirm or refuse it (mnr, D-02); a hard
+                    // cut or a kill of a run waits for it to end.
+                    let wait = if target == StopTarget::Landing {
                         std::time::Duration::ZERO
+                    } else if kind == StopKind::Pause {
+                        std::time::Duration::from_secs(10)
                     } else {
                         std::time::Duration::from_secs(60)
                     };
@@ -1821,6 +1824,9 @@ impl App {
                         target,
                         wait,
                     ) {
+                        // A pause the launcher refused, or has not confirmed, is a
+                        // failure the status line must show as one.
+                        Ok(outcome) if outcome.is_refusal() => Err(outcome.message()),
                         Ok(outcome) => Ok(outcome.message()),
                         Err(error) => Err(error.to_string()),
                     }

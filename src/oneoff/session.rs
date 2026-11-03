@@ -483,15 +483,24 @@ mod supervisor {
         }
 
         /// Deliver a host-made message (the pause message): recorded BEFORE the write,
-        /// not counted against [`MAX_INJECTIONS`], refused and recorded when the
-        /// session is ending or its input is closed (quick 261103-klf, S-01).
-        pub fn inject_host(&mut self, kind: InjectionKind, text: &str, now: Instant) -> bool {
+        /// not counted against [`MAX_INJECTIONS`]. When the session is ending or its
+        /// input is closed the refusal is recorded instead and returned as `Err` with
+        /// the reason, so the caller can withdraw the request (quick 261103-klf S-01,
+        /// 261103-mnr D-02). `Ok` means the message was recorded `delivered`.
+        pub fn inject_host(
+            &mut self,
+            kind: InjectionKind,
+            text: &str,
+            now: Instant,
+        ) -> Result<(), String> {
             let id = format!("pause-{}", Utc::now().timestamp_millis());
             if self.lifecycle.can_write() && self.input.is_open() {
-                self.deliver(&id, kind, text, now)
+                self.deliver(&id, kind, text, now);
+                Ok(())
             } else {
-                self.refused(&id, kind, Some(text.to_owned()), "the session is ending");
-                false
+                const REASON: &str = "the session is ending";
+                self.refused(&id, kind, Some(text.to_owned()), REASON);
+                Err(REASON.to_owned())
             }
         }
 

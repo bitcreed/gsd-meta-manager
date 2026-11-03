@@ -560,10 +560,25 @@ pub fn merge(project: &Path, run_id: &str, opts: &LandOptions) -> Result<String,
         None => return Err("git merge did not finish".to_owned()),
     }
     let branch = facts.branch.unwrap_or_default();
-    let mut lines = vec![format!(
-        "merged {} commit(s) of {run_id} into {branch} (now at {})",
+    // mnr D-04: name what actually landed. The checkout advanced from `old_head` to
+    // `head`, which can be more than the agent's own commits (a resumed run carries the
+    // host merge commit and the commits it was resumed from).
+    let landed = old_head.as_deref().and_then(|old| {
+        let counted = git_in(
+            &project,
+            &["rev-list", "--count", &format!("{old}..{head}")],
+        );
+        counted
+            .success
+            .then(|| counted.stdout.trim().parse::<u32>().ok())
+            .flatten()
+    });
+    let mut lines = vec![landed_message(
+        landed,
         facts.commits,
-        &head[..head.len().min(12)]
+        run_id,
+        &branch,
+        &head[..head.len().min(12)],
     )];
     // klf I-06: the delete first, then ONE write with the landing and the branch fields.
     let mut updated = view.record.clone();
@@ -582,6 +597,30 @@ pub fn merge(project: &Path, run_id: &str, opts: &LandOptions) -> Result<String,
     }
     lines.extend(sensitive_warning(&record.changed_files));
     Ok(lines.join("\n"))
+}
+
+/// The line a fast-forward landing prints (mnr, D-04): `landed` is what the branch
+/// advanced by (`git rev-list --count old..new`), `agent` the run's own commit count.
+/// Without a count the agent's is all that is known, and the line makes no claim beyond
+/// it.
+pub(crate) fn landed_message(
+    landed: Option<u32>,
+    agent: u32,
+    run_id: &str,
+    branch: &str,
+    short: &str,
+) -> String {
+    match landed {
+        Some(n) if n == agent => {
+            format!("landed {n} commit(s) of {run_id} on {branch} (now at {short})")
+        }
+        Some(n) => format!(
+            "landed {n} commit(s) of {run_id} on {branch} ({agent} by the agent; now at {short})"
+        ),
+        None => format!(
+            "landed {agent} commit(s) by the agent of {run_id} on {branch} (now at {short})"
+        ),
+    }
 }
 
 /// What deleting the tracked branch after a landing came to (klf, I-06).
@@ -783,6 +822,24 @@ pub fn discard(project: &Path, run_id: &str) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_landing_message_counts_what_landed() {
+        use super::landed_message;
+        let sha = "0123456789ab";
+        assert_eq!(
+            landed_message(Some(3), 1, "r", "main", sha),
+            "landed 3 commit(s) of r on main (1 by the agent; now at 0123456789ab)"
+        );
+        assert_eq!(
+            landed_message(Some(2), 2, "r", "main", sha),
+            "landed 2 commit(s) of r on main (now at 0123456789ab)"
+        );
+        assert_eq!(
+            landed_message(None, 4, "r", "main", sha),
+            "landed 4 commit(s) by the agent of r on main (now at 0123456789ab)"
+        );
+    }
+
     use super::*;
 
     fn ok_facts() -> MergeFacts {

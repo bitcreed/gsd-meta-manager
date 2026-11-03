@@ -1867,6 +1867,119 @@ fn paused_run(fx: &Fixture) -> (String, Value) {
     (id, done)
 }
 
+/// Reports `done` and ends its turn at once; the launcher then closes its stdin (the
+/// report is present and nothing is outstanding). It records the EOF, then waits for
+/// `release` and exits.
+const REPORTS_THEN_WAITS_SCENARIO: &str = r#"
+gsd-meta-manager taskctl report --status done --headline "Done early"
+printf '%s\n' '{"type":"result","subtype":"success","total_cost_usd":0.01,"num_turns":1}'
+while IFS= read -r line; do :; done
+touch "$FAKE_CLAUDE_DIR/eof"
+touch "$FAKE_CLAUDE_DIR/started"
+while [ ! -f "$FAKE_CLAUDE_DIR/release" ]; do sleep 0.1; done
+"#;
+
+#[test]
+fn a_pause_refused_because_the_session_is_ending_exits_non_zero_and_is_withdrawn() {
+    let fx = fixture();
+    let id = start_with_graces(&fx, REPORTS_THEN_WAITS_SCENARIO, "1", "1");
+    assert!(
+        fx.rec_dir().join("eof").exists(),
+        "the input was not closed"
+    );
+    let paused = run(
+        &fx,
+        &[
+            "stop",
+            ALIAS,
+            "--run-id",
+            &id,
+            "--pause",
+            "--wait-secs",
+            "10",
+        ],
+    );
+    assert_eq!(paused.status.code(), Some(1), "{paused:?}");
+    let stderr = String::from_utf8_lossy(&paused.stderr);
+    assert!(stderr.contains("could not be delivered"), "{stderr}");
+    assert!(stderr.contains("the session is ending"), "{stderr}");
+    assert!(stderr.contains("without --pause"), "{stderr}");
+
+    let dir = run_dir(&fx, &id);
+    let pauses: Vec<Value> = lines_of(&dir.join("injections.jsonl"))
+        .into_iter()
+        .filter(|r| r["kind"] == "pause")
+        .collect();
+    assert_eq!(pauses.len(), 1, "{pauses:?}");
+    assert_eq!(pauses[0]["outcome"], "refused", "{pauses:?}");
+    let live = status(&fx);
+    assert_eq!(
+        live["record"]["stop"]["refused"], "the session is ending",
+        "{live}"
+    );
+    let text = String::from_utf8_lossy(&run(&fx, &["status", ALIAS]).stdout).into_owned();
+    assert!(text.contains("pause refused"), "{text}");
+
+    // Past the 1 s pause grace: a withdrawn pause cuts nothing.
+    std::thread::sleep(Duration::from_secs(3));
+    fx.release();
+    let done = wait_run_finished(&fx, &id);
+    let record = &done["record"];
+    assert_eq!(record["outcome"]["kind"], "finished", "{done}");
+    assert_eq!(record["report"]["status"], "done", "{done}");
+    assert_eq!(record["stop"]["kind"], "pause", "{done}");
+    assert_eq!(record["stop"]["refused"], "the session is ending", "{done}");
+    assert!(
+        !fx.shim_log().contains("--signal=TERM"),
+        "{}",
+        fx.shim_log()
+    );
+}
+
+/// Answers the pause with a `done` report: the work was finished anyway.
+const PAUSE_ANSWERED_DONE_SCENARIO: &str = r#"
+touch "$FAKE_CLAUDE_DIR/started"
+while IFS= read -r line; do
+  printf '%s\n' "$line" | sed 's/^{/{"isReplay":true,/'
+  case "$line" in
+    *"Pause requested"*)
+      gsd-meta-manager taskctl report --status done --headline "Finished anyway"
+      printf '%s\n' '{"type":"result","subtype":"success"}'
+      exit 0;;
+  esac
+done
+"#;
+
+#[test]
+fn a_done_report_after_a_pause_request_ends_finished_not_paused() {
+    let fx = fixture();
+    let id = start_with_graces(&fx, PAUSE_ANSWERED_DONE_SCENARIO, "5", "60");
+    let paused = run(
+        &fx,
+        &[
+            "stop",
+            ALIAS,
+            "--run-id",
+            &id,
+            "--pause",
+            "--wait-secs",
+            "30",
+        ],
+    );
+    assert_eq!(paused.status.code(), Some(0), "{paused:?}");
+    let done = wait_run_finished(&fx, &id);
+    let record = &done["record"];
+    assert_eq!(record["outcome"]["kind"], "finished", "{done}");
+    assert_eq!(record["report"]["status"], "done", "{done}");
+    assert_eq!(record["stop"]["kind"], "pause", "{done}");
+    let pauses: Vec<Value> = lines_of(&run_dir(&fx, &id).join("injections.jsonl"))
+        .into_iter()
+        .filter(|r| r["kind"] == "pause")
+        .collect();
+    assert_eq!(pauses.len(), 1, "{pauses:?}");
+    assert_eq!(pauses[0]["outcome"], "delivered", "{pauses:?}");
+}
+
 #[test]
 fn a_paused_run_commits_its_wip_reports_partial_and_is_tracked() {
     let fx = fixture();
@@ -2179,6 +2292,17 @@ fn resume_from_master_merges_the_checkout_tip_into_the_run_first() {
         String::from_utf8_lossy(&text.stdout).contains("resume:    merged main as"),
         "{text:?}"
     );
+
+    // mnr D-04: the landing names what landed: the old run's wip commit, the host merge
+    // commit and the resumed commit, of which the agent made one.
+    let landed = run(&fx, &["land", "merge", ALIAS, &new]);
+    assert_eq!(landed.status.code(), Some(0), "{landed:?}");
+    let landed = String::from_utf8_lossy(&landed.stdout);
+    assert!(
+        landed.contains(&format!("landed 3 commit(s) of {new}")),
+        "{landed}"
+    );
+    assert!(landed.contains("(1 by the agent"), "{landed}");
 }
 
 /// A pause that commits a conflicting edit of `shared.txt`.
