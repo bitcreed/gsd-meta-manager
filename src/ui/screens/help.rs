@@ -375,7 +375,7 @@ pub(super) fn help_lines(experimental: bool) -> Vec<Line<'static>> {
             ),
             row(
                 "T",
-                "One-off runs: j/k select, Enter details; m merge, p push, D discard, x stop (TERM, then KILL), X kill now, z pause, e SUMMARY, d merge diff (o: full diff in $EDITOR)",
+                "One-off runs: j/k select, Enter details; m merge, p push, D discard, x stop (TERM, then KILL), X kill now, z pause, u resume (b from its branch, M merge master first), e SUMMARY, d merge diff (o: full diff in $EDITOR)",
             ),
             row(
                 "v",
@@ -383,7 +383,7 @@ pub(super) fn help_lines(experimental: bool) -> Vec<Line<'static>> {
             ),
             row(
                 "x",
-                "In T or the live view: x stop (TERM, then KILL after 10 s), X kill now, z pause (commit, report partial, end); each asks first. On a run being landed they act on its conflict resolver",
+                "In T or the live view: x stop (TERM, then KILL after 10 s), X kill now, z pause (commit, report partial, end), u resume a paused, stopped or killed run (or retry a paused landing); each asks first. On a run being landed x/X/z act on its conflict resolver",
             ),
             row("i", "In the live view: send a message to the running agent"),
             row(
@@ -653,7 +653,7 @@ mod tests {
             ),
             (
                 "T",
-                "One-off runs: j/k select, Enter details; m merge, p push, D discard, x stop (TERM, then KILL), X kill now, z pause, e SUMMARY, d merge diff (o: full diff in $EDITOR)",
+                "One-off runs: j/k select, Enter details; m merge, p push, D discard, x stop (TERM, then KILL), X kill now, z pause, u resume (b from its branch, M merge master first), e SUMMARY, d merge diff (o: full diff in $EDITOR)",
             ),
             (
                 "v",
@@ -661,7 +661,7 @@ mod tests {
             ),
             (
                 "x",
-                "In T or the live view: x stop (TERM, then KILL after 10 s), X kill now, z pause (commit, report partial, end); each asks first. On a run being landed they act on its conflict resolver",
+                "In T or the live view: x stop (TERM, then KILL after 10 s), X kill now, z pause (commit, report partial, end), u resume a paused, stopped or killed run (or retry a paused landing); each asks first. On a run being landed x/X/z act on its conflict resolver",
             ),
             ("i", "In the live view: send a message to the running agent"),
             (
@@ -1027,7 +1027,7 @@ mod tests {
             ),
             (
                 "T",
-                "One-off runs: j/k select, Enter details; m merge, p push, D discard, x stop (TERM, then KILL), X kill now, z pause, e SUMMARY, d merge diff (o: full diff in $EDITOR)",
+                "One-off runs: j/k select, Enter details; m merge, p push, D discard, x stop (TERM, then KILL), X kill now, z pause, u resume (b from its branch, M merge master first), e SUMMARY, d merge diff (o: full diff in $EDITOR)",
             ),
             (
                 "v",
@@ -1035,7 +1035,7 @@ mod tests {
             ),
             (
                 "x",
-                "In T or the live view: x stop (TERM, then KILL after 10 s), X kill now, z pause (commit, report partial, end); each asks first. On a run being landed they act on its conflict resolver",
+                "In T or the live view: x stop (TERM, then KILL after 10 s), X kill now, z pause (commit, report partial, end), u resume a paused, stopped or killed run (or retry a paused landing); each asks first. On a run being landed x/X/z act on its conflict resolver",
             ),
             ("i", "In the live view: send a message to the running agent"),
             (

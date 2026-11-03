@@ -1878,11 +1878,296 @@ fn pausing_a_resolver_lands_nothing_even_when_it_resolves() {
         .collect();
     assert_eq!(attempts.len(), 1, "no further attempt starts: {attempts:?}");
 
-    // A stale request does not stop the next landing: it takes the lock and clears it.
-    let again = run(&fx, &["land", "merge", ALIAS, &id]);
+    // `task resume` on a run whose landing was paused retries the landing and refuses
+    // `--from`; a stale request does not stop it: the landing clears it with its lock.
+    let refused = run(&fx, &["resume", ALIAS, "--run-id", &id, "--from", "branch"]);
+    assert_eq!(refused.status.code(), Some(1), "{refused:?}");
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("retries the landing"),
+        "{refused:?}"
+    );
+    let again = run(&fx, &["resume", ALIAS, "--run-id", &id]);
     assert_eq!(again.status.code(), Some(0), "{again:?}");
     assert_eq!(
         fs::read_to_string(fx.project().join("shared.txt")).unwrap(),
         "merged\n"
     );
+}
+
+// ---------------------------------------------------------------- klf: resume
+
+/// The resumed run: records the log it can see, then commits a file and reports done once
+/// released. A conflict resolver (MERGE_HEAD exists) resolves with `resolver`.
+fn resumed_scenario(resolver: &str) -> String {
+    format!(
+        r#"
+G="git -c user.name=t -c user.email=t@example.com"
+if git rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1; then
+{resolver}
+else
+  touch "$FAKE_CLAUDE_DIR/agent-session"
+  git log --format=%s > "$FAKE_CLAUDE_DIR/resumed-log.txt"
+  while [ ! -f "$FAKE_CLAUDE_DIR/release" ]; do sleep 0.1; done
+  echo more > more.txt
+  $G add -A
+  $G commit -qm "resumed work"
+  gsd-meta-manager taskctl report --status done --headline "Finished it" --verified "true: ok"
+  printf '%s\n' '{{"type":"result","subtype":"success"}}'
+fi
+"#
+    )
+}
+
+/// The id after `resumed as ` in a `task resume` line.
+fn resumed_id(out: &Output) -> String {
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let mut words = stdout.split_whitespace();
+    while let Some(word) = words.next() {
+        if word == "as" {
+            if let Some(id) = words.next().filter(|w| w.starts_with("oneoff-")) {
+                return id.to_owned();
+            }
+        }
+    }
+    panic!("no resumed id in {out:?}");
+}
+
+#[test]
+fn a_paused_run_resumes_from_its_branch_as_a_new_run() {
+    let fx = fixture();
+    let (old, paused) = paused_run(&fx);
+    let old_head = paused["record"]["head"].as_str().unwrap().to_owned();
+    fx.write_scenario(&resumed_scenario("  :"));
+    let out = run(
+        &fx,
+        &[
+            "resume", ALIAS, "--run-id", &old, "--from", "branch", "--detach",
+        ],
+    );
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let new = resumed_id(&out);
+    assert_ne!(new, old);
+    assert!(
+        wait_until(Duration::from_secs(30), || fx
+            .rec_dir()
+            .join("agent-session")
+            .exists()),
+        "the resumed session never started"
+    );
+
+    let live = status_of_run(&fx, &new);
+    assert_eq!(live["record"]["resumed_from"], old.as_str(), "{live}");
+    assert_eq!(live["record"]["base"], old_head.as_str(), "{live}");
+    let old_after = status_of_run(&fx, &old);
+    assert_eq!(
+        old_after["record"]["resumed_by"],
+        new.as_str(),
+        "{old_after}"
+    );
+
+    // The session is a fresh one, primed with the old task, report and log.
+    let prompt = fx.recorded("prompt.txt");
+    assert!(prompt.contains(&old), "{prompt}");
+    assert!(prompt.contains("Paused"), "{prompt}");
+    assert!(prompt.contains("finish it"), "{prompt}");
+    assert!(prompt.contains("wip: paused"), "{prompt}");
+    assert!(
+        fx.recorded("resumed-log.txt").contains("wip: paused"),
+        "the new clone starts at the old head"
+    );
+
+    // A second resume of the old run, and a resume of the live new one, are refused.
+    let again = run(
+        &fx,
+        &[
+            "resume", ALIAS, "--run-id", &old, "--from", "branch", "--detach",
+        ],
+    );
+    assert_eq!(again.status.code(), Some(1), "{again:?}");
+    assert!(
+        String::from_utf8_lossy(&again.stderr).contains("already resumed"),
+        "{again:?}"
+    );
+    let live_resume = run(
+        &fx,
+        &[
+            "resume", ALIAS, "--run-id", &new, "--from", "branch", "--detach",
+        ],
+    );
+    assert_eq!(live_resume.status.code(), Some(1), "{live_resume:?}");
+    assert!(
+        String::from_utf8_lossy(&live_resume.stderr).contains("still live"),
+        "{live_resume:?}"
+    );
+    let listed = run(&fx, &["list", ALIAS]);
+    assert!(
+        String::from_utf8_lossy(&listed.stdout).contains(&format!("resumed as {new}")),
+        "{listed:?}"
+    );
+
+    fs::write(fx.rec_dir().join("release"), "").unwrap();
+    let done = wait_run_finished(&fx, &new);
+    assert_eq!(done["record"]["outcome"]["kind"], "finished", "{done}");
+    assert_eq!(done["record"]["commits"], 1, "{done}");
+    // Both runs' commits land together; the old run no longer counts as to land.
+    let merged = run(&fx, &["land", "merge", ALIAS, &new]);
+    assert_eq!(merged.status.code(), Some(0), "{merged:?}");
+    let log = git_text(fx.project(), &["log", "--format=%s"]);
+    assert!(
+        log.contains("wip: paused") && log.contains("resumed work"),
+        "{log}"
+    );
+}
+
+#[test]
+fn resume_from_master_merges_the_checkout_tip_into_the_run_first() {
+    let fx = with_identity(fixture());
+    let (old, paused) = paused_run(&fx);
+    let old_head = paused["record"]["head"].as_str().unwrap().to_owned();
+    fs::write(fx.project().join("other.txt"), "x").unwrap();
+    git(fx.project(), &["add", "other.txt"]);
+    git(fx.project(), &["commit", "-qm", "main moved on"]);
+    let tip = git_text(fx.project(), &["rev-parse", "HEAD"]);
+
+    fx.write_scenario(&resumed_scenario("  :"));
+    fs::write(fx.rec_dir().join("release"), "").unwrap();
+    let out = run(
+        &fx,
+        &[
+            "resume", ALIAS, "--run-id", &old, "--from", "master", "--detach",
+        ],
+    );
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let new = resumed_id(&out);
+    let done = wait_run_finished(&fx, &new);
+    let record = &done["record"];
+    assert_eq!(record["outcome"]["kind"], "finished", "{done}");
+    assert_eq!(record["resume_merge"]["how"], "merge", "{done}");
+    let base = record["base"].as_str().unwrap();
+    assert_eq!(record["resume_merge"]["merge_sha"], base, "{done}");
+    let parents: Vec<String> = git_text(fx.project(), &["rev-list", "--parents", "-n", "1", base])
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(parents[1..], [old_head, tip], "{parents:?}");
+    let text = run(&fx, &["status", ALIAS, "--run-id", &new]);
+    assert!(
+        String::from_utf8_lossy(&text.stdout).contains("resume:    merged main as"),
+        "{text:?}"
+    );
+}
+
+/// A pause that commits a conflicting edit of `shared.txt`.
+const PAUSE_EDITS_SHARED: &str = r#"
+touch "$FAKE_CLAUDE_DIR/started"
+G="git -c user.name=t -c user.email=t@example.com"
+while IFS= read -r line; do
+  printf '%s\n' "$line" | sed 's/^{/{"isReplay":true,/'
+  case "$line" in
+    *"Pause requested"*)
+      echo run-side > shared.txt
+      $G add -A
+      $G commit -qm "wip: shared"
+      gsd-meta-manager taskctl report --status partial --headline "Paused" --followup "finish it"
+      printf '%s\n' '{"type":"result","subtype":"success"}'
+      exit 0;;
+  esac
+done
+"#;
+
+/// A paused run on a conflict fixture, then `main` edits the same file.
+fn paused_conflicting_run(fx: &Fixture) -> String {
+    let id = start_with_graces(fx, PAUSE_EDITS_SHARED, "5", "60");
+    let paused = run(
+        fx,
+        &[
+            "stop",
+            ALIAS,
+            "--run-id",
+            &id,
+            "--pause",
+            "--wait-secs",
+            "30",
+        ],
+    );
+    assert_eq!(paused.status.code(), Some(0), "{paused:?}");
+    wait_run_finished(fx, &id);
+    fs::write(fx.project().join("shared.txt"), "project-side\n").unwrap();
+    git(fx.project(), &["add", "shared.txt"]);
+    git(fx.project(), &["commit", "-qm", "project edits shared"]);
+    // `start_with_graces` waits for the scenario's `started` marker; clear it.
+    let _ = fs::remove_file(fx.rec_dir().join("started"));
+    id
+}
+
+#[test]
+fn a_conflicting_resume_from_master_is_resolved_by_the_agent() {
+    let fx = conflict_fixture();
+    let old = paused_conflicting_run(&fx);
+    fx.write_scenario(&resumed_scenario(RESOLVES));
+    fs::write(fx.rec_dir().join("release"), "").unwrap();
+    let out = run(
+        &fx,
+        &[
+            "resume", ALIAS, "--run-id", &old, "--from", "master", "--detach",
+        ],
+    );
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let new = resumed_id(&out);
+    let done = wait_run_finished(&fx, &new);
+    let record = &done["record"];
+    assert_eq!(record["outcome"]["kind"], "finished", "{done}");
+    assert_eq!(record["resume_merge"]["how"], "resolved", "{done}");
+    assert_eq!(
+        record["resume_merge"]["conflicted"],
+        serde_json::json!(["shared.txt"]),
+        "{done}"
+    );
+    assert_eq!(
+        record["resume_merge"]["attempts"],
+        serde_json::json!(["land/1"]),
+        "{done}"
+    );
+    assert!(
+        fx.rec_dir().join("agent-session").exists(),
+        "the agent session ran after the resume merge"
+    );
+    // The resolver's spend is on the new run.
+    assert!(record["spend_usd"].as_f64().unwrap() >= 0.5, "{done}");
+}
+
+#[test]
+fn a_failing_resume_merge_ends_the_run_failed_and_never_strands_its_predecessor() {
+    let fx = conflict_fixture();
+    let old = paused_conflicting_run(&fx);
+    let failing = r#"
+  gsd-meta-manager taskctl report --status failed --headline "could not resolve"
+  printf '%s\n' '{"type":"result","subtype":"success","total_cost_usd":0.5}'
+"#;
+    fx.write_scenario(&resumed_scenario(failing));
+    let out = run(
+        &fx,
+        &[
+            "resume", ALIAS, "--run-id", &old, "--from", "master", "--detach",
+        ],
+    );
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let new = resumed_id(&out);
+    let done = wait_run_finished(&fx, &new);
+    let record = &done["record"];
+    assert_eq!(record["outcome"]["kind"], "failed", "{done}");
+    assert!(record["resume_merge"]["failure"].is_string(), "{done}");
+    assert!(
+        !fx.rec_dir().join("agent-session").exists(),
+        "no agent session after a failed resume merge"
+    );
+    // The old run can be resumed again.
+    fs::write(fx.rec_dir().join("release"), "").unwrap();
+    let again = run(
+        &fx,
+        &[
+            "resume", ALIAS, "--run-id", &old, "--from", "branch", "--detach",
+        ],
+    );
+    assert_eq!(again.status.code(), Some(0), "{again:?}");
 }

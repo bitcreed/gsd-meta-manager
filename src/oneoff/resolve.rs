@@ -54,7 +54,8 @@ use super::prompt::{resolver, ResolverPrompt};
 use super::report::{read_validated, ReportStatus};
 use super::runtime::{AgentRuntime, HostEnd};
 use super::store::{
-    rfc3339, write_record, LandFailure, Landing, LandingKind, MergeHow, OneoffView, RunRecord,
+    rfc3339, write_record, LandFailure, Landing, LandingKind, MergeHow, OneoffView, ResumeMerge,
+    RunRecord,
 };
 use super::stream::spend_of_file;
 use super::{LAND_DIR, LAUNCH_LOG, REPORT_FILE, REPORT_SUBDIR, STREAM_FILE, WORK_DIR};
@@ -149,7 +150,7 @@ fn log_line(dir: &Path, text: &str) {
 
 /// Claim `<run-dir>/land/<n>` with an atomic, non-recursive `mkdir`: the next free
 /// number, never one a kept attempt already has (I-15).
-fn claim_attempt(run_dir: &Path) -> Result<(u32, PathBuf), String> {
+pub(crate) fn claim_attempt(run_dir: &Path) -> Result<(u32, PathBuf), String> {
     let land = run_dir.join(LAND_DIR);
     match fs::DirBuilder::new().mode(0o700).create(&land) {
         Ok(()) => {}
@@ -168,7 +169,7 @@ fn claim_attempt(run_dir: &Path) -> Result<(u32, PathBuf), String> {
 }
 
 /// The project's merge identity, from its effective git config (I-10).
-fn merge_identity(project: &Path) -> Result<(String, String), String> {
+pub(crate) fn merge_identity(project: &Path) -> Result<(String, String), String> {
     let read = |key: &str| {
         let got = pgit(project, &["config", key]);
         (got.success && !got.stdout.is_empty() && !got.stdout.chars().any(char::is_control))
@@ -246,6 +247,36 @@ enum Forwarded {
     Landed,
     /// The target branch moved before the fast-forward: redo the merge.
     Moved,
+}
+
+/// Which way a conflicted merge runs (klf, C-11).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Direction {
+    /// A landing: the run's head is merged into the target branch's tip (parents
+    /// `[tip, head]`).
+    IntoTarget,
+    /// A resume from master: the checkout's tip is merged into the run's head (parents
+    /// `[head, tip]`).
+    IntoRun,
+}
+
+/// What one resolver session needs, for a landing and for a resume merge alike.
+pub(crate) struct ResolveJob<'a> {
+    pub project: &'a Path,
+    /// The run dir that holds the stream used for spend, and the record that is written.
+    pub run_dir: &'a Path,
+    pub run_id: &'a str,
+    /// The checkout's branch.
+    pub target_branch: &'a str,
+    /// The checkout branch's tip.
+    pub tip: &'a str,
+    /// The run's head.
+    pub head: &'a str,
+    pub direction: Direction,
+    pub egress_allow: &'a [String],
+    pub user_stop: &'a std::sync::atomic::AtomicBool,
+    /// Where a stop request is read from while the resolver runs.
+    pub control: &'a Path,
 }
 
 /// Everything one attempt shares.
@@ -557,7 +588,20 @@ fn attempt(
         }
         *conflicted_out = recorded_names(&found);
         log_line(&dir, &format!("{} file(s) conflict", found.len()));
-        if let Err(why) = resolve_conflicts(land, record, n, &dir, &work, &tip, &found) {
+        let control = land.run_dir.join(LAND_DIR);
+        let job = ResolveJob {
+            project: land.project,
+            run_dir: land.run_dir,
+            run_id: land.run_id,
+            target_branch: land.target_branch,
+            tip: &tip,
+            head: land.head,
+            direction: Direction::IntoTarget,
+            egress_allow: &land.opts.egress_allow,
+            user_stop: &land.opts.user_stop,
+            control: &control,
+        };
+        if let Err(why) = resolve_conflicts(&job, record, n, &dir, &work, &found) {
             // A stop the user asked for explains the failure better than the session's.
             return match stop_wanted(land) {
                 Some(kind) => Step::Stopped(kind),
@@ -613,20 +657,182 @@ fn attempt(
     }
 }
 
+/// What a `--from master` resume needs (quick 261103-klf, C-11, I-20).
+pub(crate) struct ResumeMergeJob<'a> {
+    pub project: &'a Path,
+    /// The NEW run's dir (its `land/<n>` holds the one resolver attempt).
+    pub run_dir: &'a Path,
+    pub run_id: &'a str,
+    pub old_run_id: &'a str,
+    /// The new run's clone, switched to its branch at the old head.
+    pub work: &'a Path,
+    pub old_head: &'a str,
+    /// The checkout's branch and its tip, merged into the old head.
+    pub branch: &'a str,
+    pub tip: &'a str,
+    pub egress_allow: &'a [String],
+    pub user_stop: &'a std::sync::atomic::AtomicBool,
+}
+
+/// Merge the checkout's tip into the old head inside the new run's clone, with parents
+/// `[old head, tip]` (quick 261103-klf, C-11, I-20). `Ok(None)`: the tip is already in
+/// the old head, nothing to merge. `Ok(Some(..))`: a host-made merge commit, or ONE
+/// resolver attempt whose result the host re-checked (planted gate, valid `done` report
+/// with `--verified`, exact parents, clean tree, no markers). `Err(..)`: the failure is
+/// set and the caller ends the run before the agent session.
+#[allow(clippy::result_large_err)]
+pub(crate) fn merge_master_into_run(
+    job: &ResumeMergeJob<'_>,
+    record: &mut RunRecord,
+) -> Result<Option<ResumeMerge>, ResumeMerge> {
+    let failed = |why: String, attempts: Vec<String>, conflicted: Vec<String>| ResumeMerge {
+        how: None,
+        branch: clean_text(job.branch, 200),
+        merge_sha: None,
+        conflicted,
+        attempts,
+        failure: Some(clean_text(&why, 400)),
+    };
+    let work = job.work;
+    let (name, email) =
+        merge_identity(job.project).map_err(|why| failed(why, Vec::new(), Vec::new()))?;
+    if wgit(work, &["merge-base", "--is-ancestor", job.tip, "HEAD"]).success {
+        return Ok(None);
+    }
+    let subject = format!(
+        "Merge {} into one-off {} (resume {})",
+        clean_text(job.branch, 120),
+        job.old_run_id,
+        job.run_id
+    );
+    let merge = wgit(
+        work,
+        &[
+            "-c",
+            &format!("user.name={name}"),
+            "-c",
+            &format!("user.email={email}"),
+            "merge",
+            "--no-ff",
+            "--no-edit",
+            "-m",
+            &subject,
+            job.tip,
+        ],
+    );
+    let mut attempts = Vec::new();
+    let mut conflicted = Vec::new();
+    let how;
+    let mut names = Vec::new();
+    if merge.success {
+        how = MergeHow::Merge;
+    } else {
+        let unmerged = wgit(work, &["ls-files", "-u", "-z"]);
+        let found = if unmerged.success {
+            parse_unmerged(&unmerged.stdout)
+        } else {
+            Vec::new()
+        };
+        if found.is_empty() {
+            return Err(failed(
+                format!("the merge of {} failed: {}", job.branch, merge.last_error),
+                attempts,
+                conflicted,
+            ));
+        }
+        if found.len() > MAX_RESOLVABLE_FILES {
+            return Err(failed(
+                format!(
+                    "{} files conflict; that is too many to resolve in one session",
+                    found.len()
+                ),
+                attempts,
+                conflicted,
+            ));
+        }
+        conflicted = recorded_names(&found);
+        let (n, dir) = match claim_attempt(job.run_dir) {
+            Ok(claimed) => claimed,
+            Err(why) => return Err(failed(why, attempts, conflicted)),
+        };
+        attempts.push(format!("{LAND_DIR}/{n}"));
+        log_line(
+            &dir,
+            &format!("resume merge: {} file(s) conflict", found.len()),
+        );
+        let resolve = ResolveJob {
+            project: job.project,
+            run_dir: job.run_dir,
+            run_id: job.run_id,
+            target_branch: job.branch,
+            tip: job.tip,
+            head: job.old_head,
+            direction: Direction::IntoRun,
+            egress_allow: job.egress_allow,
+            user_stop: job.user_stop,
+            control: job.run_dir,
+        };
+        if let Err(why) = resolve_conflicts(&resolve, record, n, &dir, work, &found) {
+            return Err(failed(why, attempts, conflicted));
+        }
+        how = MergeHow::Resolved;
+        names = found;
+    }
+    let parents = wgit(work, &["rev-list", "--parents", "-n", "1", "HEAD"]);
+    if !parents.success || !merge_parents_ok(&parents.stdout, job.old_head, job.tip) {
+        return Err(failed(
+            "the merge commit does not have exactly the run's head and the checkout's tip as parents"
+                .to_owned(),
+            attempts,
+            conflicted,
+        ));
+    }
+    let Some(merge_sha) = parents
+        .stdout
+        .split_whitespace()
+        .next()
+        .filter(|sha| push::is_hex_sha(sha))
+        .map(str::to_owned)
+    else {
+        return Err(failed(
+            "could not read the merge commit".to_owned(),
+            attempts,
+            conflicted,
+        ));
+    };
+    if how == MergeHow::Resolved {
+        if let Some(why) = first_unresolved(work, &names) {
+            return Err(failed(
+                format!("the resolution is not clean: {why}"),
+                attempts,
+                conflicted,
+            ));
+        }
+    }
+    Ok(Some(ResumeMerge {
+        how: Some(how),
+        branch: clean_text(job.branch, 200),
+        merge_sha: Some(merge_sha),
+        conflicted,
+        attempts,
+        failure: None,
+    }))
+}
+
 /// The resolver session of one attempt and the host's checks on what it left.
 fn resolve_conflicts(
-    land: &Land<'_>,
+    job: &ResolveJob<'_>,
     record: &mut RunRecord,
     n: u32,
     dir: &Path,
     work: &Path,
-    tip: &str,
     names: &[String],
 ) -> Result<(), String> {
+    let tip = job.tip;
     // C-22: the run's remaining budget, folded from a legacy stream when unrecorded.
     let spent = record
         .spend_usd
-        .unwrap_or_else(|| spend_of_file(&land.run_dir.join(STREAM_FILE)));
+        .unwrap_or_else(|| spend_of_file(&job.run_dir.join(STREAM_FILE)));
     let budget = resolver_budget(record.max_budget_usd, spent)?;
 
     // The planted baseline of the land clone, before any sandbox exists.
@@ -658,13 +864,14 @@ fn resolve_conflicts(
         .map(|r| r.headline.clone())
         .unwrap_or_default();
     let prompt = resolver(&ResolverPrompt {
-        run_id: land.run_id,
-        target_branch: land.target_branch,
+        run_id: job.run_id,
+        target_branch: job.target_branch,
         target_tip: tip,
-        run_head: land.head,
+        run_head: job.head,
         headline: &headline,
         conflicted: &recorded,
         test_command: test_command.as_deref(),
+        into_run: job.direction == Direction::IntoRun,
     })?;
 
     let report_dir = dir.join(REPORT_SUBDIR);
@@ -672,7 +879,7 @@ fn resolve_conflicts(
         .mode(0o700)
         .create(&report_dir)
         .map_err(|e| format!("create {}: {e}", report_dir.display()))?;
-    let unit_id = format!("{}-land{n}", land.run_id);
+    let unit_id = format!("{}-land{n}", job.run_id);
     log_line(
         dir,
         &format!(
@@ -689,17 +896,17 @@ fn resolve_conflicts(
         model: &record.model,
         budget_usd: budget,
         cap_minutes: RESOLVER_CAP_MINUTES,
-        egress_allow: &land.opts.egress_allow,
+        egress_allow: job.egress_allow,
         posture: &posture,
         credential: &credential,
         overlay: detect().overlay,
         home: &home,
-        project: land.project,
-        user_stop: &land.opts.user_stop,
+        project: job.project,
+        user_stop: job.user_stop,
         inbox: false,
         // klf C-14: the resolver is not asked to pause; its attempt may finish within
         // the pause grace and is then not landed.
-        control: Some(&land.run_dir.join(LAND_DIR)),
+        control: Some(job.control),
         pause_message: None,
     };
     let session = run_sandboxed_session(&spec, &mut |event| {
@@ -715,7 +922,7 @@ fn resolve_conflicts(
         Err(_) => spend_of_file(&dir.join(STREAM_FILE)),
     };
     record.spend_usd = Some(spent + session_spend);
-    persist(land.run_dir, record);
+    persist(job.run_dir, record);
     let session = session.map_err(|e| format!("the resolver session could not run: {e}"))?;
     log_line(
         dir,
@@ -774,10 +981,12 @@ fn resolve_conflicts(
         return Err("the resolver's report has no --verified item".to_owned());
     }
     let parents = wgit(work, &["rev-list", "--parents", "-n", "1", "HEAD"]);
-    if !parents.success || !merge_parents_ok(&parents.stdout, tip, land.head) {
-        return Err(
-            "the resolver did not commit a merge of the target tip and the run's head".to_owned(),
-        );
+    let (first, second) = match job.direction {
+        Direction::IntoTarget => (tip, job.head),
+        Direction::IntoRun => (job.head, tip),
+    };
+    if !parents.success || !merge_parents_ok(&parents.stdout, first, second) {
+        return Err("the resolver did not commit a merge of the two heads it was given".to_owned());
     }
     let status = wgit(work, &["status", "--porcelain", "--untracked-files=all"]);
     if !status.success || !status.stdout.is_empty() {

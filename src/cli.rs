@@ -532,6 +532,30 @@ pub enum TaskAction {
         #[arg(long)]
         resolver: bool,
     },
+    /// Continue a paused, stopped or killed one-off as a NEW run, from its branch or after
+    /// merging the checkout's branch into it; a run whose landing was paused retries the
+    /// landing instead (omit --from)
+    Resume {
+        /// Alias or path of a registered project
+        project: String,
+        /// A run id (default: the live run, else the newest)
+        #[arg(long)]
+        run_id: Option<String>,
+        /// Where the new run starts: the old run's head (branch), or that head with the
+        /// checkout's current branch merged in first (master; a sandboxed agent resolves
+        /// conflicts)
+        #[arg(long, value_enum)]
+        from: Option<crate::oneoff::resume::ResumeFrom>,
+        /// The new run's spend ceiling in US dollars (default: what the old run had left)
+        #[arg(long, value_parser = positive_finite_usd)]
+        budget: Option<f64>,
+        /// Start the new run as a daemon and return (default: stay in this terminal)
+        #[arg(long)]
+        detach: bool,
+        /// Run WITHOUT bwrap and a systemd scope (degraded); never inherited from the old run
+        #[arg(long)]
+        unsandboxed: bool,
+    },
     /// Send a message to a running one-off agent (experimental)
     Send {
         /// Alias or path of a registered project
@@ -612,7 +636,7 @@ pub enum LandAction {
 
 /// Arguments of `task run <project> (--todo <file> | --text <task>)`.
 #[derive(Args, Debug, Clone)]
-#[command(group(clap::ArgGroup::new("task").required(true).args(["todo", "text"])))]
+#[command(group(clap::ArgGroup::new("task").required(true).args(["todo", "text", "resume_from"])))]
 pub struct TaskRunArgs {
     /// Alias or path of a registered project
     pub project: String,
@@ -646,6 +670,12 @@ pub struct TaskRunArgs {
     /// Internal: the run id the detached parent minted
     #[arg(long, hide = true)]
     pub run_id: Option<String>,
+    /// Internal: this run continues that run (`task resume`); its task is the old run's
+    #[arg(long, hide = true)]
+    pub resume_from: Option<String>,
+    /// Internal: where the resumed run starts
+    #[arg(long, hide = true, value_enum)]
+    pub resume_start: Option<crate::oneoff::resume::ResumeFrom>,
 }
 
 /// `task run`'s own parser, reachable without a command line (the
@@ -1283,6 +1313,49 @@ mod tests {
         assert!(parse(&["--todo", "a.md"]).is_ok());
         assert!(parse(&["--text", "-x", "--mode", "fast"]).is_ok());
         assert!(parse(&["--text", "x", "--cap-minutes", "0"]).is_err());
+    }
+
+    #[test]
+    fn task_resume_and_the_hidden_resume_run_args_parse() {
+        let parse = |args: &[&str]| {
+            Cli::try_parse_checked_from(["gsd-meta-manager", "task"].iter().chain(args.iter()))
+        };
+        assert!(parse(&["resume", "p", "--from", "branch"]).is_ok());
+        assert!(parse(&[
+            "resume", "p", "--run-id", "x", "--from", "master", "--budget", "2.5", "--detach"
+        ])
+        .is_ok());
+        assert!(
+            parse(&["resume", "p"]).is_ok(),
+            "--from is checked at run time"
+        );
+        assert!(parse(&["resume", "p", "--from", "elsewhere"]).is_err());
+        assert!(parse(&["resume", "p", "--budget", "0"]).is_err());
+        // `task run` takes the old run in place of --todo / --text (hidden daemon args).
+        assert!(parse(&[
+            "run",
+            "p",
+            "--resume-from",
+            "oneoff-x",
+            "--resume-start",
+            "master"
+        ])
+        .is_ok());
+        assert!(parse(&["run", "p", "--resume-start", "master"]).is_err());
+    }
+
+    #[test]
+    fn task_stop_takes_kill_pause_and_resolver_but_not_both_kill_and_pause() {
+        let parse = |args: &[&str]| {
+            Cli::try_parse_checked_from(
+                ["gsd-meta-manager", "task", "stop", "p"]
+                    .iter()
+                    .chain(args.iter()),
+            )
+        };
+        assert!(parse(&["--kill"]).is_ok());
+        assert!(parse(&["--pause", "--resolver"]).is_ok());
+        assert!(parse(&["--kill", "--pause"]).is_err());
     }
 
     #[test]

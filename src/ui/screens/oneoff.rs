@@ -20,6 +20,7 @@ use std::cell::Cell;
 use super::{AppContext, Screen, ScreenAction};
 use crate::action::Action;
 use crate::oneoff::cancel::StopKind;
+use crate::oneoff::resume::{self, KeyPlan, ResumeFrom};
 use crate::oneoff::runtime::AgentRuntime;
 use crate::oneoff::store::{
     run_counts, BranchState, Landing, LandingKind, LiveState, MergeHow, OneoffView, ReportSource,
@@ -103,6 +104,9 @@ enum OneoffMode {
         /// Where `n` and Esc return to.
         from: AskFrom,
     },
+    /// `u` on a run that can be resumed: `b` from its branch, `M` merge the checkout's
+    /// branch first, Esc cancels (quick 261103-klf, C-01).
+    ResumeAsk { run_id: String, from: AskFrom },
     /// The landed merge's diff (`d`), scrolled.
     Diff { scroll: usize },
 }
@@ -222,6 +226,17 @@ impl OneoffScreen {
             run_id: None,
             diff_height: Cell::new(20),
         }
+    }
+
+    /// The resume question for one run, pushed by the viewers (klf, I-16).
+    pub fn resume_ask_for(alias: String, run_id: String) -> Self {
+        Self::in_mode(
+            alias,
+            OneoffMode::ResumeAsk {
+                run_id,
+                from: AskFrom::Viewer,
+            },
+        )
     }
 
     /// A confirmation for one run, pushed by the viewers (quick 261103-klf, I-16): `y`
@@ -551,6 +566,26 @@ impl OneoffScreen {
                     run_id,
                 }))
             }
+            // klf C-01: `u` retries a paused landing, or resumes a paused, stopped or
+            // killed run (asks `b` / `M` first).
+            KeyCode::Char('u') => match resume::key_plan(&view) {
+                KeyPlan::Resume => {
+                    self.mode = OneoffMode::ResumeAsk {
+                        run_id: run_id.clone(),
+                        from: if from_list {
+                            AskFrom::List
+                        } else {
+                            AskFrom::Result
+                        },
+                    };
+                    ScreenAction::None
+                }
+                KeyPlan::RetryLanding => self.run_action_key(KeyCode::Char('m'), ctx, from_list),
+                KeyPlan::Refused(why) => message(
+                    ctx,
+                    format!("One-off {id} cannot be resumed: {}", shown(&why)),
+                ),
+            },
             // klf C-01: stop, kill now and pause; a run that is not live but whose
             // landing is running asks about its landing (I-16).
             KeyCode::Char('x' | 'X' | 'z') => {
@@ -566,6 +601,41 @@ impl OneoffScreen {
             }
             _ => ScreenAction::None,
         }
+    }
+
+    /// `b` / `M` / Esc on the resume question.
+    fn resume_ask_key(&mut self, code: KeyCode, ctx: &mut AppContext) -> ScreenAction {
+        let OneoffMode::ResumeAsk { run_id, from } = &self.mode else {
+            return ScreenAction::None;
+        };
+        let start = match code {
+            KeyCode::Char('b') => Some(ResumeFrom::Branch),
+            KeyCode::Char('M') => Some(ResumeFrom::Master),
+            _ => None,
+        };
+        if let Some(start) = start {
+            let action = Action::OneoffResumeRequested {
+                alias: self.alias.clone(),
+                run_id: run_id.clone(),
+                from: start,
+            };
+            super::driver_confirm::dispatch(ctx, action, &self.alias);
+            return ScreenAction::Pop;
+        }
+        if matches!(code, KeyCode::Esc | KeyCode::Char('n')) {
+            return match from {
+                AskFrom::Viewer => ScreenAction::Pop,
+                AskFrom::List => {
+                    self.mode = OneoffMode::List;
+                    ScreenAction::None
+                }
+                AskFrom::Result => {
+                    self.mode = OneoffMode::Result;
+                    ScreenAction::None
+                }
+            };
+        }
+        ScreenAction::None
     }
 
     fn ask_key(&mut self, code: KeyCode, ctx: &mut AppContext) -> ScreenAction {
@@ -804,6 +874,24 @@ impl OneoffScreen {
                 lines.push(hint("y yes   n no"));
                 (format!(" One-off: {alias} "), lines)
             }
+            OneoffMode::ResumeAsk { run_id, .. } => {
+                let id = shown(run_id);
+                (
+                    format!(" One-off: {alias} "),
+                    vec![
+                        Line::from(format!(
+                            "Resume {id} as a new run? It starts a fresh session primed with the \
+                             task, the report and the commits so far."
+                        )),
+                        Line::from(
+                            "b from its branch   M merge the checkout's branch into it first \
+                             (conflicts are resolved by a sandboxed agent)",
+                        ),
+                        Line::from(""),
+                        hint("b branch   M merge master first   Esc cancel"),
+                    ],
+                )
+            }
             OneoffMode::Diff { scroll } => self.diff_body(ctx, *scroll, avail),
         }
     }
@@ -861,7 +949,7 @@ fn landing_label(view: &OneoffView) -> String {
 fn list_lines(runs: &[OneoffView], selected: usize, avail: usize) -> Vec<Line<'static>> {
     let hint = Line::from(Span::styled(
         "j/k select   Enter details   m merge   p push   D discard   x stop   X kill now   \
-         z pause   e SUMMARY   v view   r resolver   d merge diff   Esc close",
+         z pause   u resume   e SUMMARY   v view   r resolver   d merge diff   Esc close",
         Style::default().fg(Color::DarkGray),
     ));
     // The title row, a blank line and the hint (which may wrap onto a second row).
@@ -1049,6 +1137,41 @@ pub fn result_lines(view: &OneoffView) -> Vec<Line<'static>> {
             if stop.escalated { ", escalated" } else { "" }
         )));
     }
+    if let Some(by) = &record.resumed_by {
+        lines.push(Line::from(format!("Resumed as {}", shown(by))));
+    }
+    if let Some(from) = &record.resumed_from {
+        lines.push(Line::from(format!("Resumed from {}", shown(from))));
+    }
+    if let Some(merge) = &record.resume_merge {
+        let text = match (&merge.failure, &merge.merge_sha) {
+            (Some(why), _) => format!(
+                "Resume merge of {} failed: {}",
+                shown(&merge.branch),
+                shown(why)
+            ),
+            (None, Some(sha)) => format!(
+                "Resume merge: {} merged as {}{}",
+                shown(&merge.branch),
+                shown(&sha.chars().take(12).collect::<String>()),
+                if merge.conflicted.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        " (resolved by agent: {})",
+                        merge
+                            .conflicted
+                            .iter()
+                            .map(|f| shown(f))
+                            .collect::<Vec<_>>()
+                            .join("; ")
+                    )
+                }
+            ),
+            (None, None) => format!("Resume merge: {}", shown(&merge.branch)),
+        };
+        lines.push(Line::from(text));
+    }
     lines.push(Line::from(match &record.summary_path {
         Some(path) => format!("SUMMARY:   {}", shown(path)),
         None => "SUMMARY:   none".to_owned(),
@@ -1110,7 +1233,7 @@ pub fn result_lines(view: &OneoffView) -> Vec<Line<'static>> {
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         "e SUMMARY   v live view   r resolver view   d merge diff   m merge   p push   \
-         D discard   x stop   X kill now   z pause   Esc back",
+         D discard   x stop   X kill now   z pause   u resume   Esc back",
         Style::default().fg(Color::DarkGray),
     )));
     lines
@@ -1152,6 +1275,7 @@ impl Screen for OneoffScreen {
             OneoffMode::List => self.list_key(code, ctx),
             OneoffMode::Result => self.result_key(code, ctx),
             OneoffMode::Ask { .. } => self.ask_key(code, ctx),
+            OneoffMode::ResumeAsk { .. } => self.resume_ask_key(code, ctx),
             OneoffMode::Diff { .. } => self.diff_key(code, ctx),
         }
     }
@@ -1652,6 +1776,105 @@ pub(crate) mod tests {
         let text = render_text(&screen, &ctx);
         assert!(text.contains("Stopped (hard) by cli"), "{text}");
         assert!(text.contains("escalated"), "{text}");
+    }
+
+    #[test]
+    fn u_asks_b_or_big_m_for_a_paused_run_and_dispatches_the_resume() {
+        use crate::oneoff::resume::ResumeFrom;
+        use crate::oneoff::AgentOutcome;
+        let mut runs = three_runs();
+        runs[1].record.outcome = Some(AgentOutcome::Paused);
+        runs[1].record.head = Some("a".repeat(40));
+        runs[1].record.commits = Some(2);
+        runs[1].record.tracked_branch = Some(format!("refs/heads/gsd-oneoff/{MIDDLE}"));
+        let dir = tempfile::tempdir().unwrap();
+        let (mut ctx, mut rx) = ctx_with_project(dir.path());
+        set_runs(&mut ctx, runs);
+        for (code, expected) in [('b', ResumeFrom::Branch), ('M', ResumeFrom::Master)] {
+            let mut screen = OneoffScreen::list(ALIAS.to_owned());
+            key(&mut screen, &mut ctx, KeyCode::Char('j'));
+            key(&mut screen, &mut ctx, KeyCode::Char('u'));
+            assert!(matches!(screen.mode, OneoffMode::ResumeAsk { .. }));
+            assert!(render_text(&screen, &ctx).contains("M merge master first"));
+            // Esc returns to the list.
+            key(&mut screen, &mut ctx, KeyCode::Esc);
+            assert_eq!(screen.mode, OneoffMode::List);
+            key(&mut screen, &mut ctx, KeyCode::Char('u'));
+            key(&mut screen, &mut ctx, KeyCode::Char(code));
+            match rx.try_recv() {
+                Ok(Action::OneoffResumeRequested { run_id, from, .. }) => {
+                    assert_eq!(run_id, MIDDLE);
+                    assert_eq!(from, expected);
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn u_on_a_paused_landing_asks_to_merge_and_on_a_finished_run_refuses() {
+        use crate::oneoff::cancel::StopKind;
+        let mut runs = three_runs();
+        runs[1].record.land_failure = Some(crate::oneoff::store::LandFailure {
+            at: "2026-11-03T11:00:00Z".to_owned(),
+            reason: "paused".to_owned(),
+            conflicted: Vec::new(),
+            attempts: vec!["land/1".to_owned()],
+            stop: Some(StopKind::Pause),
+        });
+        let (mut ctx, mut screen) = list_over(runs);
+        key(&mut screen, &mut ctx, KeyCode::Char('j'));
+        key(&mut screen, &mut ctx, KeyCode::Char('u'));
+        assert!(matches!(
+            screen.mode,
+            OneoffMode::Ask {
+                command: OneoffCommand::Merge,
+                ..
+            }
+        ));
+        // OLDEST finished on its own (and was landed): refused with a message.
+        let mut screen = OneoffScreen::list(ALIAS.to_owned());
+        key(&mut screen, &mut ctx, KeyCode::Char('j'));
+        key(&mut screen, &mut ctx, KeyCode::Char('j'));
+        ctx.status_message = None;
+        key(&mut screen, &mut ctx, KeyCode::Char('u'));
+        assert_eq!(screen.mode, OneoffMode::List);
+        assert!(ctx
+            .status_message
+            .as_ref()
+            .is_some_and(|(m, _)| m.contains("cannot be resumed")));
+    }
+
+    #[test]
+    fn the_summary_names_the_resume_links_and_the_resume_merge() {
+        use crate::oneoff::store::ResumeMerge;
+        let mut runs = three_runs();
+        runs[0].record.resumed_from = Some("oneoff-20261103-090000".to_owned());
+        runs[0].record.resume_merge = Some(ResumeMerge {
+            how: Some(MergeHow::Resolved),
+            branch: "main".to_owned(),
+            merge_sha: Some("0123456789abcdef0123456789abcdef01234567".to_owned()),
+            conflicted: vec!["shared.txt".to_owned()],
+            attempts: vec!["land/1".to_owned()],
+            failure: None,
+        });
+        runs[1].record.resumed_by = Some(NEWEST.to_owned());
+        let (mut ctx, mut screen) = list_over(runs);
+        key(&mut screen, &mut ctx, KeyCode::Enter);
+        let text = render_text(&screen, &ctx);
+        assert!(
+            text.contains("Resumed from oneoff-20261103-090000"),
+            "{text}"
+        );
+        assert!(
+            text.contains("Resume merge: main merged as 0123456789ab"),
+            "{text}"
+        );
+        assert!(text.contains("resolved by agent: shared.txt"), "{text}");
+        let mut screen = OneoffScreen::list(ALIAS.to_owned());
+        key(&mut screen, &mut ctx, KeyCode::Char('j'));
+        key(&mut screen, &mut ctx, KeyCode::Enter);
+        assert!(render_text(&screen, &ctx).contains(&format!("Resumed as {NEWEST}")));
     }
 
     #[test]

@@ -162,6 +162,28 @@ pub struct LandFailure {
     pub stop: Option<StopKind>,
 }
 
+/// The merge a `task resume --from master` made in the new run's clone before the agent
+/// session (quick 261103-klf, C-11, I-20).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResumeMerge {
+    /// `merge` (clean) or `resolved`; `None` when the merge could not be made.
+    #[serde(default)]
+    pub how: Option<MergeHow>,
+    /// The branch merged in (the checkout's branch at resume time).
+    pub branch: String,
+    /// The merge commit, which became the new run's `base`.
+    #[serde(default)]
+    pub merge_sha: Option<String>,
+    #[serde(default)]
+    pub conflicted: Vec<String>,
+    /// The resolver attempt dirs under the new run dir (`land/<n>`).
+    #[serde(default)]
+    pub attempts: Vec<String>,
+    /// Why the merge failed; the run then ended `failed` before the agent session.
+    #[serde(default)]
+    pub failure: Option<String>,
+}
+
 /// The sandbox posture the run had.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SandboxRecord {
@@ -239,6 +261,15 @@ pub struct RunRecord {
     /// How the user stopped, killed or paused the run, if they did (klf, C-07).
     #[serde(default)]
     pub stop: Option<StopRecord>,
+    /// The run this one continues (klf, C-09): set on the NEW record of a resume.
+    #[serde(default)]
+    pub resumed_from: Option<String>,
+    /// The run that continues this one: set on the OLD record, under its land lock.
+    #[serde(default)]
+    pub resumed_by: Option<String>,
+    /// The master merge of a `--from master` resume (klf, C-11).
+    #[serde(default)]
+    pub resume_merge: Option<ResumeMerge>,
 }
 
 impl RunRecord {
@@ -291,6 +322,9 @@ impl RunRecord {
             spend_usd: None,
             land_failure: None,
             stop: None,
+            resumed_from: None,
+            resumed_by: None,
+            resume_merge: None,
         }
     }
 
@@ -583,6 +617,8 @@ pub fn run_counts(runs: &[OneoffView]) -> RunCounts {
             counts.landing += 1;
         } else if view.record.head.is_some()
             && view.record.commits.unwrap_or(0) > 0
+            // klf C-09: a run another run continues is landed through its successor.
+            && view.record.resumed_by.is_none()
             && !view
                 .record
                 .landed
@@ -1413,5 +1449,14 @@ pub(crate) mod tests {
                 note: String::new()
             }
         );
+    }
+
+    #[test]
+    fn a_run_another_run_continues_does_not_count_as_to_land() {
+        let mut resumed = view_of(LiveState::Finished, 2, false, false);
+        let plain = view_of(LiveState::Finished, 2, false, false);
+        assert_eq!(run_counts(std::slice::from_ref(&plain)).to_land, 1);
+        resumed.record.resumed_by = Some("oneoff-20261103-120000".to_owned());
+        assert_eq!(run_counts(&[resumed, plain]).to_land, 1);
     }
 }

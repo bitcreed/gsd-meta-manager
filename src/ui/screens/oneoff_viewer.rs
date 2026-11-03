@@ -18,9 +18,11 @@ use super::oneoff::{CutKey, OneoffScreen};
 use super::{AppContext, Screen, ScreenAction};
 use crate::action::Action;
 use crate::oneoff::inbox::{validate_message, InboxRequest};
+use crate::oneoff::resume::{self, KeyPlan};
 use crate::oneoff::session::validate_soft_cap;
 use crate::oneoff::store::LiveState;
 use crate::oneoff::stream::{meter_text, Meter};
+use crate::oneoff::OneoffCommand;
 use crate::oneoff::MAX_MESSAGE_CHARS;
 use crate::text::render_for_terminal;
 use crossterm::event::{KeyCode, KeyModifiers};
@@ -366,6 +368,46 @@ impl Screen for OneoffViewerScreen {
                 }
                 self.notice = Some(key.refusal(&stream.run_id));
             }
+            // klf C-01, I-16: `u` resumes a paused, stopped or killed run, or retries its
+            // paused landing; the same question the run list asks.
+            KeyCode::Char('u') => {
+                let view = ctx
+                    .view_cache
+                    .get(&self.alias)
+                    .and_then(|c| {
+                        c.oneoff_runs
+                            .iter()
+                            .find(|v| v.record.run_id == stream.run_id)
+                    })
+                    .cloned();
+                match view.as_ref().map(resume::key_plan) {
+                    Some(KeyPlan::Resume) => {
+                        return ScreenAction::Push(Box::new(OneoffScreen::resume_ask_for(
+                            self.alias.clone(),
+                            stream.run_id.clone(),
+                        )));
+                    }
+                    Some(KeyPlan::RetryLanding) => {
+                        let (command, prompt) = (
+                            OneoffCommand::Merge,
+                            vec![format!(
+                                "Retry the paused landing of {}? Merge it into your checkout.",
+                                render_for_terminal(&stream.run_id)
+                            )],
+                        );
+                        return ScreenAction::Push(Box::new(OneoffScreen::ask_for(
+                            self.alias.clone(),
+                            stream.run_id.clone(),
+                            command,
+                            prompt,
+                        )));
+                    }
+                    Some(KeyPlan::Refused(why)) => {
+                        self.notice = Some(format!("cannot be resumed: {why}"));
+                    }
+                    None => self.notice = Some("this run is not in the run list".to_owned()),
+                }
+            }
             KeyCode::Char('i' | 'b') if stream.attempt.is_some() => {
                 self.notice = Some(RESOLVER_NOTICE.to_owned());
             }
@@ -489,9 +531,9 @@ impl Screen for OneoffViewerScreen {
             (None, None) => {
                 let follow = if self.follow { "[following] " } else { "" };
                 let keys = if stream.attempt.is_some() {
-                    "PgUp/PgDn j/k scroll · f follow · G end · x stop · X kill · z pause · Esc close"
+                    "PgUp/PgDn j/k scroll · f follow · G end · x stop · X kill · z pause · u resume · Esc close"
                 } else {
-                    "PgUp/PgDn j/k scroll · f follow · G end · i message · b soft cap · x stop · X kill · z pause · Esc close"
+                    "PgUp/PgDn j/k scroll · f follow · G end · i message · b soft cap · x stop · X kill · z pause · u resume · Esc close"
                 };
                 Line::from(Span::styled(format!("{follow}{keys}"), dim))
             }
@@ -950,5 +992,48 @@ pub(crate) mod tests {
                 other => panic!("{other:?}"),
             }
         }
+    }
+
+    #[test]
+    fn u_in_the_viewer_pushes_the_resume_question_for_a_resumable_run_only() {
+        use crate::oneoff::AgentOutcome;
+        // The run is in the list, paused with a tracked branch: u pushes the question.
+        let dir = tempfile::tempdir().unwrap();
+        let (mut ctx, _rx) = ctx_with_project(dir.path());
+        let mut screen = seed(
+            &mut ctx,
+            ALIAS,
+            "oneoff-20261103-100000",
+            numbered(3),
+            LiveState::Finished,
+        );
+        let mut view = crate::ui::screens::oneoff::tests::finished_view("x");
+        view.record.run_id = "oneoff-20261103-100000".to_owned();
+        view.record.outcome = Some(AgentOutcome::Paused);
+        view.record.head = Some("a".repeat(40));
+        view.record.commits = Some(1);
+        view.record.tracked_branch =
+            Some("refs/heads/gsd-oneoff/oneoff-20261103-100000".to_owned());
+        view.record.landed.clear();
+        view.live = LiveState::Finished;
+        ctx.view_cache
+            .entry(ALIAS.to_owned())
+            .or_default()
+            .oneoff_runs = vec![view];
+        assert!(matches!(
+            key(&mut screen, &mut ctx, KeyCode::Char('u')),
+            ScreenAction::Push(_)
+        ));
+        // A run that finished on its own is refused with a notice.
+        let (mut ctx, mut screen) = viewer_over("oneoff-x", numbered(3), LiveState::Finished);
+        assert!(matches!(
+            key(&mut screen, &mut ctx, KeyCode::Char('u')),
+            ScreenAction::None
+        ));
+        let drawn = text(&screen, &ctx, 120, 20);
+        assert!(
+            drawn.contains("not in the run list") || drawn.contains("cannot be resumed"),
+            "{drawn}"
+        );
     }
 }

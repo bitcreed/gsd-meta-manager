@@ -58,7 +58,10 @@ use super::cancel::{
 };
 use super::inbox::{ensure_inbox, InjectionKind};
 use super::land::{git_relevant_planted, landing_in_progress, track_branch};
+use super::merge::MIN_RESOLVER_BUDGET_USD;
 use super::report::read_validated;
+use super::resolve::{merge_master_into_run, ResumeMergeJob};
+use super::resume::{ResumeFrom, ResumeSpec};
 use super::runtime::{AgentRuntime, HostEnd};
 use super::session::{grace_from_env, Supervisor};
 use super::store::{
@@ -108,6 +111,10 @@ pub struct OneoffOptions {
     pub run_id: Option<String>,
     /// The project's `driver.egress` CONNECT allowlist (I-8).
     pub egress_allow: Vec<String>,
+    /// Set when this run continues a paused, stopped or killed one (quick 261103-klf,
+    /// C-09). Its task, mode, model and wall clock are the old run's; the budget is the
+    /// caller's.
+    pub resume: Option<ResumeSpec>,
 }
 
 /// A detached run that holds its lock.
@@ -185,6 +192,14 @@ fn create_private_dir(dir: &Path) -> Result<(), LauncherError> {
         .mode(0o700)
         .create(dir)
         .map_err(|e| io_error(&format!("create {}", dir.display()), e))
+}
+
+/// Claim a fresh run id and dir for `project` (a resume claims it under the old run's
+/// land lock, quick 261103-klf, I-18); the run then starts with `run_id: Some(id)`.
+pub(crate) fn claim_new_run(project: &Path) -> Result<(String, PathBuf), LauncherError> {
+    let (project, project_dir) = project_dirs(project)?;
+    let _ = project;
+    claim_run_dir(&project_dir)
 }
 
 /// Claim a fresh run directory under `project_dir` with an atomic, non-recursive
@@ -344,12 +359,30 @@ fn run_session(ctx: &Ctx<'_>, record: &mut RunRecord) -> Result<(), LauncherErro
         }
     };
 
-    // C-07: the clone, cut at the project's HEAD.
-    let (_, base) =
-        push::current_branch_and_sha(ctx.project).ok_or_else(|| LauncherError::InvalidRun {
-            detail: "the project has no commit to start from".to_owned(),
-        })?;
+    // klf C-09: a resume continues from the old run's recorded head.
+    let old = match &opts.resume {
+        Some(spec) => Some(read_old_run(ctx.project, spec)?),
+        None => None,
+    };
+    // C-07: the clone, cut at the project's HEAD (a resume: at the old run's head).
+    let base = match &old {
+        Some(old) => old
+            .record
+            .head
+            .clone()
+            .ok_or_else(|| LauncherError::InvalidRun {
+                detail: "the run to resume has no recorded head".to_owned(),
+            })?,
+        None => {
+            push::current_branch_and_sha(ctx.project)
+                .ok_or_else(|| LauncherError::InvalidRun {
+                    detail: "the project has no commit to start from".to_owned(),
+                })?
+                .1
+        }
+    };
     record.base = Some(base.clone());
+    record.resumed_from = old.as_ref().map(|o| o.record.run_id.clone());
     let work = run_dir.join(WORK_DIR);
     let clone = push::git(
         vec![
@@ -370,8 +403,9 @@ fn run_session(ctx: &Ctx<'_>, record: &mut RunRecord) -> Result<(), LauncherErro
         return Err(step("create the work branch")(switch.last_error));
     }
 
-    // I-3: a todo must be committed, so the clone has it.
-    if let TaskSpec::Todo { file_name, .. } = &opts.task {
+    // I-3: a todo must be committed, so the clone has it. A resume skips the check: the
+    // old run passed it and may have moved the todo (klf, I-19).
+    if let (None, TaskSpec::Todo { file_name, .. }) = (&old, &opts.task) {
         let todo = work.join(PENDING_REL).join(file_name);
         if !fs::symlink_metadata(&todo).is_ok_and(|m| m.file_type().is_file()) {
             return Err(LauncherError::InvalidRun {
@@ -379,6 +413,20 @@ fn run_session(ctx: &Ctx<'_>, record: &mut RunRecord) -> Result<(), LauncherErro
                     "{PENDING_REL}/{file_name} is not in the project's last commit; commit the todo first"
                 ),
             });
+        }
+    }
+
+    let report_dir = run_dir.join(REPORT_SUBDIR);
+    create_private_dir(&report_dir)?;
+
+    // klf C-11, I-20: `--from master` merges the checkout's tip into the old head here,
+    // in the new run's own clone, before the agent session.
+    if let (Some(old), Some(spec)) = (&old, &opts.resume) {
+        if spec.start == ResumeFrom::Master {
+            let ended = resume_master(ctx, record, old, &work, &report_dir)?;
+            if ended {
+                return write_record(run_dir, record).map_err(|e| io_error("write run.json", e));
+            }
         }
     }
 
@@ -394,11 +442,18 @@ fn run_session(ctx: &Ctx<'_>, record: &mut RunRecord) -> Result<(), LauncherErro
             record.warnings.push(format!("no push mirror: {e}"));
         }
     }
-    let report_dir = run_dir.join(REPORT_SUBDIR);
-    create_private_dir(&report_dir)?;
-
-    let prompt = prompt::build(opts.mode, &opts.task, ctx.run_id)
-        .map_err(|detail| LauncherError::InvalidRun { detail })?;
+    // klf I-20: what the resume merge cost comes off the budget the agent session gets.
+    let budget_usd = opts.max_budget_usd - record.spend_usd.unwrap_or(0.0);
+    if budget_usd < MIN_RESOLVER_BUDGET_USD {
+        return Err(LauncherError::InvalidRun {
+            detail: "no budget left after the resume merge".to_owned(),
+        });
+    }
+    let prompt = match &old {
+        Some(old) => resume_prompt(ctx, record, old, &work),
+        None => prompt::build(opts.mode, &opts.task, ctx.run_id),
+    }
+    .map_err(|detail| LauncherError::InvalidRun { detail })?;
     let spec = SessionSpec {
         runtime: ctx.runtime,
         session_dir: run_dir,
@@ -407,7 +462,7 @@ fn run_session(ctx: &Ctx<'_>, record: &mut RunRecord) -> Result<(), LauncherErro
         unit_id: ctx.run_id,
         prompt: &prompt,
         model: &opts.model,
-        budget_usd: opts.max_budget_usd,
+        budget_usd,
         cap_minutes: opts.cap_minutes,
         egress_allow: &opts.egress_allow,
         posture: ctx.posture,
@@ -447,7 +502,8 @@ fn run_session(ctx: &Ctx<'_>, record: &mut RunRecord) -> Result<(), LauncherErro
     record.soft_cap_usd = session.soft_cap_usd;
     record.soft_cap_hit_at = session.soft_cap_hit_at;
     // I-17: the session's estimate is recorded, so a later resolver knows what is left.
-    record.spend_usd = Some(session.spend_usd);
+    // klf I-24: a resume merge's resolver spend is already on the record; add to it.
+    record.spend_usd = Some(record.spend_usd.unwrap_or(0.0) + session.spend_usd);
     if session.stop.is_some() {
         record.stop = session.stop;
     }
@@ -462,6 +518,174 @@ fn run_session(ctx: &Ctx<'_>, record: &mut RunRecord) -> Result<(), LauncherErro
         session.end,
     );
     write_record(run_dir, record).map_err(|e| io_error("write run.json", e))
+}
+
+/// The run a resume continues, read from disk.
+fn read_old_run(
+    project: &Path,
+    spec: &ResumeSpec,
+) -> Result<super::store::OneoffView, LauncherError> {
+    let dir = project_dir_for(project).ok_or_else(|| LauncherError::Io {
+        detail: "no one-off directory for this project".to_owned(),
+    })?;
+    super::store::read_view(&dir, &spec.from_run).ok_or_else(|| LauncherError::InvalidRun {
+        detail: format!("no one-off run {} to resume", spec.from_run),
+    })
+}
+
+/// The stop the user asked of the run before its agent session exists (klf, I-20): the
+/// run's request file, or a signal.
+fn pending_stop(ctx: &Ctx<'_>) -> Option<StopRequest> {
+    let from_file = read_request(ctx.run_dir).ok().flatten();
+    if ctx.user_stop.load(Ordering::SeqCst) {
+        return Some(match from_file {
+            Some(file) if file.kind != StopKind::Pause => file,
+            Some(file) => StopRequest {
+                kind: StopKind::Hard,
+                ..file
+            },
+            None => request_now(StopKind::Hard, StopBy::Signal),
+        });
+    }
+    from_file
+}
+
+/// The `--from master` merge of a resume, in the new run's clone. Returns `true` when
+/// the user stopped the run during it and the run is already finalized (no agent
+/// session follows); `Err` when the merge failed (the run then ends `failed`).
+fn resume_master(
+    ctx: &Ctx<'_>,
+    record: &mut RunRecord,
+    old: &super::store::OneoffView,
+    work: &Path,
+    report_dir: &Path,
+) -> Result<bool, LauncherError> {
+    let invalid = |detail: String| LauncherError::InvalidRun { detail };
+    let old_head = old.record.head.clone().unwrap_or_default();
+    let (branch, tip) = match push::current_branch_and_sha(ctx.project) {
+        Some((Some(branch), tip)) => (branch, tip),
+        _ => {
+            return Err(invalid(
+                "the checkout's HEAD is detached; check out a branch to merge first".to_owned(),
+            ))
+        }
+    };
+    let job = ResumeMergeJob {
+        project: ctx.project,
+        run_dir: ctx.run_dir,
+        run_id: ctx.run_id,
+        old_run_id: &old.record.run_id,
+        work,
+        old_head: &old_head,
+        branch: &branch,
+        tip: &tip,
+        egress_allow: &ctx.opts.egress_allow,
+        user_stop: ctx.user_stop,
+    };
+    let merged = merge_master_into_run(&job, record);
+    // A stop asked during the merge ends the run with that request's outcome.
+    if let Some(request) = pending_stop(ctx) {
+        let mut stop = StopRecord::begun(&request);
+        stop.ended_at = Some(rfc3339(Utc::now()));
+        record.stop = Some(stop);
+        match &merged {
+            Ok(Some(m)) | Err(m) => record.resume_merge = Some(m.clone()),
+            Ok(None) => {}
+        }
+        let end = match request.kind {
+            StopKind::Hard => HostEnd::UserStop,
+            StopKind::Kill => HostEnd::Killed { escalated: false },
+            StopKind::Pause => HostEnd::Paused,
+        };
+        finalize(
+            ctx,
+            record,
+            work,
+            &ctx.run_dir.join(STREAM_FILE),
+            report_dir,
+            None,
+            end,
+        );
+        return Ok(true);
+    }
+    match merged {
+        Ok(None) => {
+            record.warnings.push(format!(
+                "the checkout's tip on {} is already in the run's head; nothing was merged",
+                clean(&branch, 100)
+            ));
+            Ok(false)
+        }
+        Ok(Some(merge)) => {
+            if let Some(sha) = &merge.merge_sha {
+                record.base = Some(sha.clone());
+            }
+            record.resume_merge = Some(merge);
+            if let Err(e) = write_record(ctx.run_dir, record) {
+                eprintln!("task run: could not record the resume merge: {e}");
+            }
+            Ok(false)
+        }
+        Err(failure) => {
+            let why = failure.failure.clone().unwrap_or_default();
+            record.resume_merge = Some(failure);
+            Err(invalid(format!(
+                "the merge of {} into the run's branch failed before the session: {why}",
+                clean(&branch, 100)
+            )))
+        }
+    }
+}
+
+/// The prompt of a resumed run (klf, C-10, I-21).
+fn resume_prompt(
+    ctx: &Ctx<'_>,
+    record: &RunRecord,
+    old: &super::store::OneoffView,
+    work: &Path,
+) -> Result<String, String> {
+    let old_record = &old.record;
+    let commit_lines: Vec<String> = match (&old_record.base, &old_record.head) {
+        (Some(base), Some(head)) => {
+            let log = git_read(work, &["log", "--format=%h %s", &format!("{base}..{head}")]);
+            if log.success {
+                log.stdout.lines().take(50).map(str::to_owned).collect()
+            } else {
+                Vec::new()
+            }
+        }
+        _ => Vec::new(),
+    };
+    let followups = old_record
+        .report
+        .as_ref()
+        .map(|r| r.followups.clone())
+        .unwrap_or_default();
+    let master_note = record.resume_merge.as_ref().and_then(|m| {
+        let sha = m.merge_sha.as_deref()?;
+        let how = match m.how {
+            Some(super::store::MergeHow::Resolved) => {
+                format!("conflicts in {} were resolved", m.conflicted.join(", "))
+            }
+            _ => "it merged cleanly".to_owned(),
+        };
+        Some(format!(
+            "The checkout's branch {} was merged into your branch first ({how}; merge commit {}).",
+            m.branch,
+            &sha[..sha.len().min(12)]
+        ))
+    });
+    prompt::build_resume(&prompt::ResumePrompt {
+        mode: ctx.opts.mode,
+        task: &ctx.opts.task,
+        run_id: ctx.run_id,
+        old_run_id: &old_record.run_id,
+        outcome_word: old_record.outcome.as_ref().map_or("ended", |o| o.word()),
+        headline: old_record.report.as_ref().map(|r| r.headline.as_str()),
+        followups: &followups,
+        commit_lines: &commit_lines,
+        master_note: master_note.as_deref(),
+    })
 }
 
 /// The facts one sandboxed agent session runs with: a run's own session and a conflict
@@ -930,12 +1154,20 @@ pub fn daemon_argv(opts: &OneoffOptions, run_id: &str, config: Option<&Path>) ->
     argv.extend(["task", "run"].map(OsString::from));
     argv.push(opts.project.as_os_str().to_owned());
     argv.extend(["--run-id", run_id, "--mode", opts.mode.as_str()].map(OsString::from));
-    match &opts.task {
-        TaskSpec::Todo { file_name, .. } => {
+    match (&opts.resume, &opts.task) {
+        // klf I-24: a resume carries the old run's id instead of its task; the daemon
+        // reads the task from the old record.
+        (Some(resume), _) => {
+            argv.push("--resume-from".into());
+            argv.push(resume.from_run.clone().into());
+            argv.push("--resume-start".into());
+            argv.push(resume.start.word().into());
+        }
+        (None, TaskSpec::Todo { file_name, .. }) => {
             argv.push("--todo".into());
             argv.push(file_name.into());
         }
-        TaskSpec::Text(text) => {
+        (None, TaskSpec::Text(text)) => {
             argv.push("--text".into());
             argv.push(text.into());
         }
@@ -1311,6 +1543,7 @@ mod tests {
             unsandboxed: false,
             run_id: None,
             egress_allow: Vec::new(),
+            resume: None,
         }
     }
 
@@ -1402,5 +1635,21 @@ mod tests {
         assert!(validate(&bad).is_err());
         assert!(validate(&opts(TaskSpec::Text(String::new()))).is_err());
         assert!(validate(&opts(TaskSpec::Text("ok".to_owned()))).is_ok());
+    }
+
+    #[test]
+    fn a_resume_hands_the_daemon_the_old_run_instead_of_its_task() {
+        let mut resumed = opts(TaskSpec::Text("fix x".to_owned()));
+        resumed.resume = Some(ResumeSpec {
+            from_run: "oneoff-20261103-100000".to_owned(),
+            start: ResumeFrom::Master,
+        });
+        let argv = strings(&daemon_argv(&resumed, "oneoff-new", None));
+        assert!(argv
+            .windows(2)
+            .any(|w| w == ["--resume-from", "oneoff-20261103-100000"]));
+        assert!(argv.windows(2).any(|w| w == ["--resume-start", "master"]));
+        assert!(!argv.contains(&"--text".to_owned()));
+        assert!(!argv.contains(&"--todo".to_owned()));
     }
 }

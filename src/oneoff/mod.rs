@@ -39,6 +39,7 @@ pub mod inbox;
 pub mod merge;
 pub mod prompt;
 pub mod report;
+pub mod resume;
 pub mod runtime;
 pub mod session;
 pub mod store;

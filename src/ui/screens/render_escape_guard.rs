@@ -2306,6 +2306,16 @@ fn fixture_for(type_name: &str) -> Option<Fixture> {
                     escalated: true,
                     by: crate::oneoff::cancel::StopBy::Tui,
                 });
+                view.record.resumed_from = Some(identity.to_string());
+                view.record.resumed_by = Some(identity.to_string());
+                view.record.resume_merge = Some(crate::oneoff::store::ResumeMerge {
+                    how: Some(crate::oneoff::store::MergeHow::Resolved),
+                    branch: identity.to_string(),
+                    merge_sha: Some("0123456789abcdef0123456789abcdef01234567".to_string()),
+                    conflicted: vec![identity.to_string()],
+                    attempts: vec![identity.to_string()],
+                    failure: Some(identity.to_string()),
+                });
                 view.record.land_failure = Some(crate::oneoff::store::LandFailure {
                     at: "2026-11-03T11:00:00Z".to_string(),
                     reason: identity.to_string(),
@@ -2351,6 +2361,28 @@ fn fixture_for(type_name: &str) -> Option<Fixture> {
                 list_ctx,
                 Box::new(OneoffScreen::list(identity.to_string())),
             ));
+            // klf: the resume question for a resumable run with the hostile identity.
+            let mut resume_ctx = probe_ctx(identity);
+            seed(identity, &mut resume_ctx);
+            {
+                let cache = resume_ctx
+                    .view_cache
+                    .entry(identity.to_string())
+                    .or_default();
+                if let Some(view) = cache.oneoff_runs.get_mut(1) {
+                    view.record.outcome = Some(crate::oneoff::AgentOutcome::Paused);
+                    view.record.head = Some("a".repeat(40));
+                    view.record.commits = Some(1);
+                    view.record.tracked_branch = Some(format!("refs/heads/gsd-oneoff/{identity}"));
+                    view.record.landed.clear();
+                    view.record.resumed_by = None;
+                    view.land_attempts.clear();
+                }
+            }
+            let mut resume = OneoffScreen::list(identity.to_string());
+            resume.handle_key(KeyCode::Char('j'), KeyModifiers::NONE, &mut resume_ctx);
+            resume.handle_key(KeyCode::Char('u'), KeyModifiers::NONE, &mut resume_ctx);
+            states.push(one_state("resume ask", resume_ctx, Box::new(resume)));
             // klf: the stop / kill / pause confirmations name the hostile run id.
             for (key, name) in [('x', "ask stop"), ('X', "ask kill"), ('z', "ask pause")] {
                 let mut ask_ctx = probe_ctx(identity);

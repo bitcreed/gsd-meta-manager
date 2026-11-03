@@ -797,7 +797,12 @@ fn resolver_live(
     n: u32,
 ) -> crate::oneoff::store::LiveState {
     use crate::oneoff::store::LiveState;
-    if view.landing && view.land_attempts.last() == Some(&n) {
+    // klf I-20: the resolver attempt of a `--from master` resume belongs to a run that is
+    // still preparing: it is live while the run is, and it is the newest attempt.
+    let resume_merge_runs = view.live == LiveState::Preparing
+        && view.record.resumed_from.is_some()
+        && view.land_attempts.last() == Some(&n);
+    if (view.landing && view.land_attempts.last() == Some(&n)) || resume_merge_runs {
         LiveState::Running
     } else {
         LiveState::Finished
@@ -1612,6 +1617,7 @@ impl App {
             };
             let defaults = crate::cli::task_run_defaults();
             let options = crate::oneoff::launch::OneoffOptions {
+                resume: None,
                 project,
                 alias: alias.to_string(),
                 mode,
@@ -1646,6 +1652,87 @@ impl App {
         }
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         let _ = (project, tx);
+    }
+
+    /// `b` / `M` after `u` (quick 261103-klf, C-01, I-17): resume the named run as a new,
+    /// detached run, on `spawn_blocking`; the answer is a [`Action::OneoffCommandDone`].
+    #[cfg_attr(
+        not(any(target_os = "linux", target_os = "macos")),
+        allow(unused_variables)
+    )]
+    fn request_oneoff_resume(
+        &mut self,
+        alias: &str,
+        run_id: String,
+        from: crate::oneoff::resume::ResumeFrom,
+    ) {
+        let Some((project, tx)) = self.oneoff_target(alias) else {
+            return;
+        };
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            let egress_allow = match self
+                .ctx
+                .config
+                .projects
+                .get(alias)
+                .map(crate::config::RegisteredProject::driver_egress_allowlist)
+                .transpose()
+            {
+                Ok(hosts) => hosts.unwrap_or_default(),
+                Err(error) => {
+                    self.ctx.status_message = Some((
+                        format!(
+                            "Not resuming: projects.{}.{}",
+                            crate::text::render_for_terminal(alias),
+                            crate::text::render_for_terminal(&error.to_string())
+                        ),
+                        std::time::Instant::now(),
+                    ));
+                    self.needs_redraw = true;
+                    return;
+                }
+            };
+            let config_path = self.ctx.config_path.clone();
+            let alias_for_task = alias.to_string();
+            tokio::task::spawn_blocking(move || {
+                // The TUI always detaches; a paused landing is retried by `u` through the
+                // merge question, never from here.
+                let result = crate::oneoff::resume::start(
+                    &project,
+                    &alias_for_task,
+                    Some(&run_id),
+                    Some(from),
+                    None,
+                    false,
+                    egress_allow.clone(),
+                    true,
+                    Some(&config_path),
+                    &|| Ok(crate::oneoff::land::LandOptions::new(egress_allow.clone())),
+                );
+                let message = match result {
+                    Ok(crate::oneoff::resume::ResumeStarted::Run { old, new, from, .. }) => {
+                        format!("{old} resumed as {new} (from {})", from.word())
+                    }
+                    Ok(crate::oneoff::resume::ResumeStarted::Landing { message, .. }) => message,
+                    Err(why) => format!("resume refused: {}", why.replace('\n', "; ")),
+                };
+                let _ = tx.send(Action::OneoffCommandDone {
+                    alias: alias_for_task,
+                    message,
+                });
+            });
+            self.ctx.status_message = Some((
+                format!(
+                    "Resuming a one-off on {}...",
+                    crate::text::render_for_terminal(alias)
+                ),
+                std::time::Instant::now(),
+            ));
+            self.needs_redraw = true;
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        let _ = (project, tx, run_id, from);
     }
 
     /// A confirmed landing or kill from the `T` popup, on `spawn_blocking`.
@@ -3213,6 +3300,11 @@ impl App {
                 run_id,
                 command,
             } => self.request_oneoff_command(&alias, run_id, command),
+            Action::OneoffResumeRequested {
+                alias,
+                run_id,
+                from,
+            } => self.request_oneoff_resume(&alias, run_id, from),
             Action::OneoffRunStarted { alias, result } => {
                 if self.ctx.experimental {
                     let message = match result {

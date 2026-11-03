@@ -190,7 +190,10 @@ each of those asks first, and a merge is refused while a landing of the same run
 already in progress. The same three keys work in the run's summary and in both live
 views (the run's and its resolver's); on a run that is not live but whose landing is
 running they act on the landing's conflict resolver instead, and the confirmation says
-so. While the live view's message or soft-cap input is open they are typed text. A run an agent resolved a merge for is marked
+so. `u` resumes a paused, stopped or killed run (it asks `b` to start from its branch
+or `M` to merge the checkout's branch in first; Esc cancels), or, on a run whose landing
+was paused, asks the merge question again to retry it. While the live view's message or
+soft-cap input is open these keys are typed text. A run an agent resolved a merge for is marked
 `resolved by agent` with its conflicted files and attempt dirs; a landing that
 failed shows `land failed: <reason>` with the files and the attempt dirs kept.
 `d` opens the landed merge's diff (`git diff <merge>^1 <merge>`, hardened git, no
@@ -207,7 +210,8 @@ has none.
 [--mode quick|fast] [--model opus] [--max-budget-usd 10] [--cap-minutes 60]
 [--unsandboxed] [--foreground]`; `task status <project> [--run-id <id>] [--json]`;
 `task list <project> [--json]`; `task stop <project> [--run-id <id>] [--wait-secs
-60] [--kill | --pause] [--resolver]`; `task send <project> <text> [--run-id <id>] [--wait-secs 10]`;
+60] [--kill | --pause] [--resolver]`; `task resume <project> [--run-id <id>] [--from
+branch|master] [--budget <usd>] [--detach] [--unsandboxed]`; `task send <project> <text> [--run-id <id>] [--wait-secs 10]`;
 `task budget <project> (--soft <usd> | --clear) [--run-id <id>] [--wait-secs 10]`;
 `task attach <project> [--run-id <id>] [--no-input]` (prints the same rendered lines as the live
 view, follows until the run is finished and drained, and turns each line you type
@@ -252,6 +256,36 @@ or `pause`. `task land merge` (or `u` in the TUI) tries again; a stale request i
 cleared when a landing takes its lock. The two graces are read by the daemon at start
 and can be shortened for tests with `GSDMM_ONEOFF_STOP_GRACE_SECS` and
 `GSDMM_ONEOFF_PAUSE_GRACE_SECS` (integers 1-600).
+
+**Resume.** `task resume <project> --from branch|master` (TUI `u`) continues a run whose
+outcome is `paused`, `stopped` or `killed` and which has a head, as a NEW run: a new id,
+run dir, lock, stream and budget. The old record gets `resumed_by` and the new one
+`resumed_from`; the old run stops counting as "to land" and its tracked branch stays (it
+is an ancestor of the new one) until its own `discard`. Nothing is reopened: the new run
+is a fresh sandboxed session, primed with the old task, the old report's headline and
+follow-ups, the `git log` of the commits already on the branch and a note that it is a
+continuation (the agent's own session is not resumed, because its transcript lives inside
+the old sandbox and cannot be relied on). `--from branch` makes the new clone's work
+branch start at the old head, which becomes the new run's `base`. `--from master` first
+merges the checkout's current branch (it refuses a detached HEAD) into the old head in
+the new run's own clone, with parents `[old head, checkout tip]`: a clean merge becomes a
+host-made commit `Merge <branch> into one-off <old-id> (resume <new-id>)`; conflicts go
+to ONE sandboxed resolver attempt under the new run's `land/1/`, whose result the host
+re-checks exactly as for a landing. The merge commit is the new `base`, and
+`resume_merge {how, merge_sha, conflicted, attempts, failure}` records it. The resolver's
+spend counts against the new run's budget, the agent session gets the remainder, and
+below $0.25 the run ends `failed`. A failed merge ends the new run `failed` before the
+agent starts and never strands the old one: a run whose successor failed its resume merge
+(or whose dir is gone) can be resumed again. The new budget is `--budget`, else what the
+old run had left (refused below $0.25 with "no budget left to resume; pass --budget");
+mode, model, task and wall clock are the old run's, and `--unsandboxed` is never
+inherited. `task resume` stays in the terminal unless `--detach`; the TUI always detaches.
+It refuses a live run, a landed run, a run that finished on its own (land it instead), a
+run with commits whose branch is not tracked in the project (its work is not there), and
+a second resume of the same run (checked and recorded under the old run's `land.lock`, so
+two resumes cannot interleave). For a run whose landing was paused, `task resume` takes no
+`--from`: it retries `task land merge`. `task status` shows `resumed:` and `resume:`
+lines, and `task list` ends the row with `resumed as <id>`.
 
 **Live view and messages.** `v` in the `T` run list opens a full-screen view of the
 selected run (live or finished): it replays `stream.jsonl` from the start and then follows

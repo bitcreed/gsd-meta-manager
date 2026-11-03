@@ -81,6 +81,80 @@ pub fn build(mode: Mode, task: &TaskSpec, run_id: &str) -> Result<String, String
     Ok(prompt)
 }
 
+/// What a resumed run is told besides its original task (quick 261103-klf, C-10, I-21).
+#[derive(Debug, Clone, Copy)]
+pub struct ResumePrompt<'a> {
+    pub mode: Mode,
+    pub task: &'a TaskSpec,
+    pub run_id: &'a str,
+    pub old_run_id: &'a str,
+    /// The old run's outcome word (`paused`, `stopped`, `killed`).
+    pub outcome_word: &'a str,
+    /// The old report's headline.
+    pub headline: Option<&'a str>,
+    /// The old report's follow-ups.
+    pub followups: &'a [String],
+    /// `git log --format='%h %s' <old base>..<old head>`, one line each.
+    pub commit_lines: &'a [String],
+    /// A sentence about the master merge, when one was made.
+    pub master_note: Option<&'a str>,
+}
+
+/// The most follow-ups and commit lines a resume prompt lists.
+const MAX_RESUME_FOLLOWUPS: usize = 20;
+const MAX_RESUME_COMMITS: usize = 50;
+/// The longest listed follow-up or commit line, in characters.
+const MAX_RESUME_ITEM: usize = 200;
+
+/// The prompt of a resumed run: the old task's normal prompt plus a continuation block
+/// (quick 261103-klf, C-10): a FRESH session primed with the old task, the old report's
+/// headline and follow-ups, the commit log of the work already on the branch and, for
+/// `--from master`, a note about the merge. Everything agent-written is control-cleaned
+/// and capped; the whole prompt stays within `MAX_PROMPT_BYTES`.
+pub fn build_resume(p: &ResumePrompt<'_>) -> Result<String, String> {
+    let clean = |text: &str, max: usize| -> String {
+        text.chars()
+            .map(|c| if c.is_control() { ' ' } else { c })
+            .take(max)
+            .collect()
+    };
+    let mut prompt = build(p.mode, p.task, p.run_id)?;
+    prompt.push_str(&format!(
+        "\nThis continues one-off {old} (it ended {word}). Its work so far is already committed on your branch; \
+         continue from there and do not redo finished work.\n",
+        old = clean(p.old_run_id, 64),
+        word = clean(p.outcome_word, 20),
+    ));
+    if let Some(headline) = p.headline {
+        prompt.push_str(&format!(
+            "The previous session's report: \"{}\"\n",
+            clean(headline, 120)
+        ));
+    }
+    if !p.followups.is_empty() {
+        prompt.push_str("Still to do, as the previous session listed it:\n");
+        for item in p.followups.iter().take(MAX_RESUME_FOLLOWUPS) {
+            prompt.push_str(&format!("- {}\n", clean(item, MAX_RESUME_ITEM)));
+        }
+    }
+    if !p.commit_lines.is_empty() {
+        prompt.push_str("Commits already on your branch, newest first:\n");
+        for line in p.commit_lines.iter().take(MAX_RESUME_COMMITS) {
+            prompt.push_str(&format!("- {}\n", clean(line, MAX_RESUME_ITEM)));
+        }
+    }
+    if let Some(note) = p.master_note {
+        prompt.push_str(&format!("{}\n", clean(note, 400)));
+    }
+    if prompt.len() > MAX_PROMPT_BYTES {
+        return Err(format!(
+            "the resume prompt is {} bytes; at most {MAX_PROMPT_BYTES} fit in one message",
+            prompt.len()
+        ));
+    }
+    Ok(prompt)
+}
+
 /// What the conflict resolver is told (quick 261103-hx7, C-13, C-16).
 #[derive(Debug, Clone, Copy)]
 pub struct ResolverPrompt<'a> {
@@ -95,6 +169,9 @@ pub struct ResolverPrompt<'a> {
     pub conflicted: &'a [String],
     /// `workflow.test_command` of the project's config, when it is usable.
     pub test_command: Option<&'a str>,
+    /// A resume from master (klf, C-11): the target branch is merged INTO the run's
+    /// branch, so the first parent is the run's head.
+    pub into_run: bool,
 }
 
 /// The most conflicted files the resolver prompt lists by name.
@@ -115,16 +192,30 @@ pub fn resolver(p: &ResolverPrompt<'_>) -> Result<String, String> {
             .collect()
     };
     let mut prompt = String::new();
-    prompt.push_str(&format!(
-        "Resolve the merge conflicts in this repository (fixed instructions from the dispatcher).\n\n\
-         A merge is in progress on branch `{target}`: the one-off run {run_id} (\"{headline}\", head {head}) \
-         is being merged into the branch's tip {tip}.\n",
-        target = clean(p.target_branch, 200),
-        run_id = clean(p.run_id, 64),
-        headline = clean(p.headline, 120),
-        head = short(p.run_head),
-        tip = short(p.target_tip),
-    ));
+    if p.into_run {
+        prompt.push_str(&format!(
+            "Resolve the merge conflicts in this repository (fixed instructions from the dispatcher).\n\n\
+             A merge is in progress on the one-off run {run_id}'s branch (\"{headline}\", head {head}): \
+             the branch `{target}` (tip {tip}) is being merged INTO it, so the first parent of the merge \
+             commit is the run's head.\n",
+            target = clean(p.target_branch, 200),
+            run_id = clean(p.run_id, 64),
+            headline = clean(p.headline, 120),
+            head = short(p.run_head),
+            tip = short(p.target_tip),
+        ));
+    } else {
+        prompt.push_str(&format!(
+            "Resolve the merge conflicts in this repository (fixed instructions from the dispatcher).\n\n\
+             A merge is in progress on branch `{target}`: the one-off run {run_id} (\"{headline}\", head {head}) \
+             is being merged into the branch's tip {tip}.\n",
+            target = clean(p.target_branch, 200),
+            run_id = clean(p.run_id, 64),
+            headline = clean(p.headline, 120),
+            head = short(p.run_head),
+            tip = short(p.target_tip),
+        ));
+    }
     prompt.push_str(&format!("\nConflicted files ({}):\n", p.conflicted.len()));
     for name in p.conflicted.iter().take(MAX_PROMPT_FILES) {
         prompt.push_str(&format!("- {}\n", clean(name, 512)));
@@ -152,12 +243,15 @@ pub fn resolver(p: &ResolverPrompt<'_>) -> Result<String, String> {
              run it and fix what the merge broke. Name the command you ran in `--verified`.\n",
         ),
     }
+    let (first, second) = if p.into_run {
+        (short(p.run_head), short(p.target_tip))
+    } else {
+        (short(p.target_tip), short(p.run_head))
+    };
     prompt.push_str(&format!(
-        "- Stage the resolved files and finish the merge with `git commit --no-edit`. The merge commit must have exactly two parents: the first is {tip}, the second is {head}. Make no other commit.\n\
+        "- Stage the resolved files and finish the merge with `git commit --no-edit`. The merge commit must have exactly two parents: the first is {first}, the second is {second}. Make no other commit.\n\
          - Then run exactly:\n  {REPORT_USAGE}\n  Use `--status done` only when the conflicts are resolved, the merge is committed and the tests pass, and give `--verified \"<command>: <result>\"` for it. Otherwise use `failed` or `blocked` and say why in the headline.\n\
          - If that command exits non-zero, read its message, fix the arguments and run it again.\n",
-        tip = short(p.target_tip),
-        head = short(p.run_head),
     ));
     if prompt.len() > MAX_PROMPT_BYTES {
         return Err(format!(
@@ -256,6 +350,7 @@ mod tests {
             headline: "Did the thing",
             conflicted: files,
             test_command: command,
+            into_run: false,
         }
     }
 
@@ -296,5 +391,53 @@ mod tests {
         let prompt = resolver(&resolver_input(&huge, None)).unwrap();
         assert!(prompt.len() <= MAX_PROMPT_BYTES);
         assert!(!prompt.chars().any(|c| c.is_control() && c != '\n'));
+    }
+
+    #[test]
+    fn a_resume_prompt_continues_the_old_task_with_a_capped_clean_block() {
+        let followups: Vec<String> = (0..30).map(|i| format!("left {i}\u{1b}[2J")).collect();
+        let commits: Vec<String> = (0..80).map(|i| format!("abc{i} subject\n{i}")).collect();
+        let task = TaskSpec::Text("fix the parser".to_owned());
+        let prompt = build_resume(&ResumePrompt {
+            mode: Mode::Quick,
+            task: &task,
+            run_id: "oneoff-20261103-120000",
+            old_run_id: "oneoff-20261103-100000",
+            outcome_word: "paused",
+            headline: Some("Paused\u{7}halfway"),
+            followups: &followups,
+            commit_lines: &commits,
+            master_note: Some("Master (main) was merged into the branch first."),
+        })
+        .unwrap();
+        assert!(
+            prompt.starts_with("/gsd-quick fix the parser\n"),
+            "{prompt}"
+        );
+        assert!(prompt.contains("oneoff-20261103-100000 (it ended paused)"));
+        assert!(prompt.contains("\"Paused halfway\""));
+        assert!(prompt.contains("- left 19"), "{prompt}");
+        assert!(!prompt.contains("left 20"), "followups are capped at 20");
+        assert!(prompt.contains("- abc49 subject 49"), "{prompt}");
+        assert!(!prompt.contains("abc50"), "commits are capped at 50");
+        assert!(
+            !prompt.chars().any(|c| c.is_control() && c != '\n'),
+            "{prompt:?}"
+        );
+        assert!(prompt.contains("merged into the branch first"));
+        assert!(prompt.len() <= MAX_PROMPT_BYTES);
+    }
+
+    #[test]
+    fn a_resolver_prompt_into_the_run_names_the_run_head_as_the_first_parent() {
+        let files = vec!["a".to_owned()];
+        let mut input = resolver_input(&files, None);
+        input.into_run = true;
+        let prompt = resolver(&input).unwrap();
+        assert!(prompt.contains("merged INTO it"), "{prompt}");
+        assert!(
+            prompt.contains("the first is bbbbbbbbbbbb, the second is aaaaaaaaaaaa"),
+            "{prompt}"
+        );
     }
 }

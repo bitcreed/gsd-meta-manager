@@ -41,6 +41,7 @@ mod unix {
     use gsd_meta_manager::oneoff::launch::{
         run_detached, run_foreground, stop, OneoffOptions, StopOutcome, StopTarget,
     };
+    use gsd_meta_manager::oneoff::resume::{self, ResumeFrom, ResumeSpec, ResumeStarted};
     use gsd_meta_manager::oneoff::session::validate_soft_cap;
     use gsd_meta_manager::oneoff::store::{
         project_dir_for, read_runs_in, resolve_run, BranchState, LiveState, MergeHow, OneoffView,
@@ -122,6 +123,22 @@ mod unix {
                 };
                 stop_main(&project, run_id.as_deref(), wait_secs, kind, target, config)
             }
+            TaskAction::Resume {
+                project,
+                run_id,
+                from,
+                budget,
+                detach,
+                unsandboxed,
+            } => resume_main(
+                &project,
+                run_id.as_deref(),
+                from,
+                budget,
+                detach,
+                unsandboxed,
+                config,
+            ),
             TaskAction::Send {
                 project,
                 text,
@@ -202,7 +219,38 @@ mod unix {
                 return 1;
             }
         };
+        // klf I-24: a resume takes its task from the old run's record.
+        let resume = match &args.resume_from {
+            Some(old_id) => {
+                if !gsd_meta_manager::oneoff::store::valid_oneoff_run_id(old_id) {
+                    err_line("task run: --resume-from is not a one-off run id");
+                    return 1;
+                }
+                Some(ResumeSpec {
+                    from_run: old_id.clone(),
+                    start: args.resume_start.unwrap_or(ResumeFrom::Branch),
+                })
+            }
+            None => None,
+        };
+        let resumed_task = match (&resume, project_dir_for(&project)) {
+            (Some(spec), Some(dir)) => {
+                match gsd_meta_manager::oneoff::store::read_view(&dir, &spec.from_run) {
+                    Some(old) => Some(old.record.task),
+                    None => {
+                        err_line("task run: the run to resume was not found");
+                        return 1;
+                    }
+                }
+            }
+            (Some(_), None) => {
+                err_line("task run: no one-off directory for this project");
+                return 1;
+            }
+            (None, _) => None,
+        };
         let task = match (&args.todo, &args.text) {
+            _ if resumed_task.is_some() => resumed_task.unwrap_or(TaskSpec::Text(String::new())),
             (Some(file), None) => match todo_spec(&project, file) {
                 Ok(spec) => spec,
                 Err(message) => {
@@ -227,6 +275,7 @@ mod unix {
             unsandboxed: args.unsandboxed,
             run_id: args.run_id.clone(),
             egress_allow,
+            resume,
         };
         if !args.foreground {
             return match run_detached(&options, config.as_deref()) {
@@ -304,6 +353,40 @@ mod unix {
                 "absent"
             }
         ));
+        if let Some(from) = &record.resumed_from {
+            lines.push(format!("resumed:   from {}", shown(from)));
+        }
+        if let Some(by) = &record.resumed_by {
+            lines.push(format!("resumed:   as {}", shown(by)));
+        }
+        if let Some(merge) = &record.resume_merge {
+            lines.push(match (&merge.failure, &merge.merge_sha) {
+                (Some(why), _) => format!(
+                    "resume:    merging {} failed: {}",
+                    shown(&merge.branch),
+                    shown(why)
+                ),
+                (None, Some(sha)) => format!(
+                    "resume:    merged {} as {}{}",
+                    shown(&merge.branch),
+                    shown(&sha[..sha.len().min(12)]),
+                    if merge.conflicted.is_empty() {
+                        String::new()
+                    } else {
+                        format!(
+                            " [resolved: {}]",
+                            merge
+                                .conflicted
+                                .iter()
+                                .map(|f| shown(f))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        )
+                    }
+                ),
+                (None, None) => format!("resume:    {}", shown(&merge.branch)),
+            });
+        }
         if let Some(stop) = &record.stop {
             let pending = stop.ended_at.is_none() && view.live.may_be_live();
             let state = match (pending, stop.kind) {
@@ -466,8 +549,13 @@ mod unix {
             || "-".to_owned(),
             |l| format!("{:?}", l.kind).to_lowercase(),
         );
+        let resumed = match (&record.resumed_by, &record.resumed_from) {
+            (Some(by), _) => format!("  resumed as {}", shown(by)),
+            (None, Some(from)) => format!("  resumed from {}", shown(from)),
+            (None, None) => String::new(),
+        };
         format!(
-            "{}  {:<9}  {}  {:<8}  {} commit(s)  branch {}  landed {}",
+            "{}  {:<9}  {}  {:<8}  {} commit(s)  branch {}  landed {}{resumed}",
             shown(&record.run_id),
             view.live.as_str(),
             record.mode.as_str(),
@@ -506,6 +594,82 @@ mod unix {
             }
         }
         0
+    }
+
+    /// `task resume` (quick 261103-klf, C-02, I-17).
+    fn resume_main(
+        target: &str,
+        run_id: Option<&str>,
+        from: Option<ResumeFrom>,
+        budget: Option<f64>,
+        detach: bool,
+        unsandboxed: bool,
+        config: Option<PathBuf>,
+    ) -> i32 {
+        let (alias, project, registry) = match resolve_project(target, config.clone()) {
+            Ok(resolved) => resolved,
+            Err(message) => {
+                err_line(&format!("task resume: {message}"));
+                return 1;
+            }
+        };
+        let egress_allow = match registry
+            .projects
+            .get(&alias)
+            .map(gsd_meta_manager::config::RegisteredProject::driver_egress_allowlist)
+            .transpose()
+        {
+            Ok(hosts) => hosts.unwrap_or_default(),
+            Err(e) => {
+                err_line(&format!("task resume: projects.{alias}.{e}"));
+                return 1;
+            }
+        };
+        // Ctrl-C / TERM stops a retried landing's resolver as `task land merge` does; the
+        // handlers are installed only when a landing is actually retried.
+        let land_allow = egress_allow.clone();
+        let land_opts = move || land::LandOptions::with_signal_handlers(land_allow.clone());
+        match resume::start(
+            &project,
+            &alias,
+            run_id,
+            from,
+            budget,
+            unsandboxed,
+            egress_allow,
+            detach,
+            config.as_deref(),
+            &land_opts,
+        ) {
+            Ok(ResumeStarted::Run {
+                old,
+                new,
+                from,
+                detached,
+                outcome,
+            }) => {
+                out_line(&format!(
+                    "task resume: {old} resumed as {new} (from {}){}",
+                    from.word(),
+                    match (detached, outcome) {
+                        (true, _) => " in the background".to_owned(),
+                        (false, Some(outcome)) => format!(": finished {outcome}"),
+                        (false, None) => String::new(),
+                    }
+                ));
+                0
+            }
+            Ok(ResumeStarted::Landing { message, .. }) => {
+                for line in message.lines() {
+                    out_line(&format!("task resume: {}", shown(line)));
+                }
+                0
+            }
+            Err(message) => {
+                err_line(&format!("task resume: {}", shown(&message)));
+                1
+            }
+        }
     }
 
     fn stop_main(

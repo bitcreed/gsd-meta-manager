@@ -365,6 +365,13 @@ pub enum Action {
         run_id: Option<String>,
         command: crate::oneoff::OneoffCommand,
     },
+    /// `u` then `b` or `M` (quick 261103-klf, C-01): continue a paused, stopped or killed
+    /// run as a NEW run, from its branch or after merging the checkout's branch in.
+    OneoffResumeRequested {
+        alias: String,
+        run_id: String,
+        from: crate::oneoff::resume::ResumeFrom,
+    },
     /// A one-off command finished; `message` is its outcome, already worded.
     OneoffCommandDone {
         alias: String,

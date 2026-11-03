@@ -101,7 +101,7 @@ pub fn landing_in_progress(run_dir: &Path) -> bool {
 }
 
 /// Take the land lock of the run, or say why not.
-fn take_land_lock(run_dir: &Path, run_id: &str) -> Result<RunLock, String> {
+pub(crate) fn take_land_lock(run_dir: &Path, run_id: &str) -> Result<RunLock, String> {
     acquire_at_with_retry(
         &land_lock_path(run_dir),
         run_id,
