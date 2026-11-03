@@ -6,7 +6,7 @@
 //! fold. One classifier drives both the daemon (session lifecycle, soft cap) and the
 //! viewer, so they cannot disagree about what a line means.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -20,6 +20,8 @@ pub struct UsageTokens {
     pub input: u64,
     pub output: u64,
     pub cache_creation: u64,
+    /// The 1-hour part of `cache_creation` (0 when the stream does not split it).
+    pub cache_creation_1h: u64,
     pub cache_read: u64,
 }
 
@@ -69,6 +71,9 @@ pub enum StreamEvent {
         message_id: String,
         model: String,
         tokens: UsageTokens,
+        /// The characters of this line's text blocks plus the compact-JSON length of
+        /// its tool inputs: the visible part of the message's output.
+        content_chars: u64,
     },
     System {
         subtype: String,
@@ -192,28 +197,57 @@ impl StreamTail {
     }
 }
 
-/// The most per-message usage entries the estimate keeps; past it they fold into the
-/// baseline.
+/// The most per-message usage entries the estimate keeps (and the most message ids it
+/// remembers as already folded); past it they fold into the baseline.
 const MAX_TRACKED_MESSAGES: usize = 10_000;
 
-/// A running estimate of a session's spend, in notional dollars (C-15, I-9).
+/// One assistant message as the estimate holds it until a result folds it in.
+#[derive(Debug, Clone)]
+struct PendingMessage {
+    model: String,
+    tokens: UsageTokens,
+    /// Visible characters seen over all the lines of this message.
+    chars: u64,
+    cost: f64,
+}
+
+/// A running estimate of a session's spend, in notional dollars (C-15, I-9, mnr D-06).
 ///
-/// The last `total_cost_usd` the agent reported, plus the notional cost of the assistant
-/// `usage` seen since, deduplicated by message id (a message repeats its usage once per
-/// content block; a later copy with more output tokens replaces the earlier one). It is
-/// "about", not an invoice: subscription tokens are not billed per token, and subagent
-/// usage is only partly visible, so it can undercount. One pure fold, shared by the
-/// daemon (soft cap) and the viewer (meter). [`usd`](Self::usd) never decreases.
+/// The last `total_cost_usd` the agent reported (cumulative for the whole session and
+/// including subagents), plus the notional cost of the assistant `usage` seen since,
+/// deduplicated by message id (a message repeats its usage once per content block).
+/// Subagent messages are forwarded in the stream and folded like any other.
+///
+/// Streamed `output_tokens` are a message-START snapshot, and thinking text is not
+/// visible, so the live figure undercounts: each message's output is estimated as the
+/// larger of the reported count and the visible characters / 4. It is therefore a LOWER
+/// BOUND until a `result` snaps it to the reported cumulative total
+/// ([`is_exact`](Self::is_exact)). A message id already folded into a result's baseline
+/// is ignored if it repeats. One pure fold, shared by the daemon (soft cap) and the
+/// viewer (meter). [`usd`](Self::usd) never decreases.
 #[derive(Debug, Clone, Default)]
 pub struct SpendEstimate {
     baseline: f64,
-    per_message: BTreeMap<String, f64>,
+    per_message: BTreeMap<String, PendingMessage>,
+    /// Ids already folded into `baseline`.
+    folded: BTreeSet<String>,
     high: f64,
+    /// Whether the latest spend-changing event was a result with a reported cost.
+    reported: bool,
 }
 
 impl SpendEstimate {
     fn pending(&self) -> f64 {
-        self.per_message.values().sum()
+        self.per_message.values().map(|m| m.cost).sum()
+    }
+
+    /// Move every pending message into the folded set.
+    fn fold_pending_ids(&mut self) {
+        let ids: Vec<String> = std::mem::take(&mut self.per_message).into_keys().collect();
+        self.folded.extend(ids);
+        if self.folded.len() > MAX_TRACKED_MESSAGES {
+            self.folded.clear();
+        }
     }
 
     /// Fold one classified event in.
@@ -223,13 +257,31 @@ impl SpendEstimate {
                 message_id,
                 model,
                 tokens,
+                content_chars,
                 ..
             } => {
-                let cost = AgentRuntime::default().notional_usd(model, tokens);
-                self.per_message.insert(message_id.clone(), cost);
+                if self.folded.contains(message_id) {
+                    return;
+                }
+                self.reported = false;
+                let entry = self
+                    .per_message
+                    .entry(message_id.clone())
+                    .or_insert_with(|| PendingMessage {
+                        model: String::new(),
+                        tokens: UsageTokens::default(),
+                        chars: 0,
+                        cost: 0.0,
+                    });
+                entry.chars = entry.chars.saturating_add(*content_chars);
+                entry.model.clone_from(model);
+                entry.tokens = *tokens;
+                let mut priced = *tokens;
+                priced.output = priced.output.max(entry.chars.div_ceil(4));
+                entry.cost = AgentRuntime::default().notional_usd(&entry.model, &priced);
                 if self.per_message.len() > MAX_TRACKED_MESSAGES {
                     self.baseline += self.pending();
-                    self.per_message.clear();
+                    self.fold_pending_ids();
                 }
             }
             StreamEvent::TurnResult { cost_usd, .. } => {
@@ -237,7 +289,8 @@ impl SpendEstimate {
                     Some(cost) => self.baseline = *cost,
                     None => self.baseline += self.pending(),
                 }
-                self.per_message.clear();
+                self.reported = cost_usd.is_some();
+                self.fold_pending_ids();
             }
             _ => {}
         }
@@ -247,6 +300,13 @@ impl SpendEstimate {
     /// The estimate, in notional dollars.
     pub fn usd(&self) -> f64 {
         self.high
+    }
+
+    /// Whether the figure is a result's reported cumulative total, not an estimate: the
+    /// latest spend-changing event was a result with a reported cost and the high-water
+    /// mark equals it.
+    pub fn is_exact(&self) -> bool {
+        self.reported && (self.high - self.baseline).abs() < 1e-9
     }
 }
 
@@ -263,6 +323,8 @@ pub struct RateLimitSeen {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Meter {
     pub estimate: f64,
+    /// Whether `estimate` is a result's reported total, not a live lower bound.
+    pub exact: bool,
     pub rate: Option<RateLimitSeen>,
 }
 
@@ -299,28 +361,36 @@ fn local_hhmm(rfc3339: &str) -> Option<String> {
         .map(|t| t.with_timezone(&chrono::Local).format("%H:%M").to_string())
 }
 
-/// The meter line: `spend ≈ $1.23 / soft $5.00 (hit 14:05) / hard $10.00 (notional) |
-/// rate: ...`. `soft` is `off` without a cap.
+/// A soft cap as text: `$5.00` or `$5.00 (hit 14:05)`.
+pub fn soft_cap_text(usd: f64, hit_at: Option<&str>) -> String {
+    let mut text = format!("${usd:.2}");
+    if let Some(at) = hit_at.and_then(local_hhmm) {
+        text.push_str(&format!(" (hit {at})"));
+    }
+    text
+}
+
+/// The meter line: `spend ≥ $1.23 (lower bound) / soft $5.00 (hit 14:05) / hard $10.00
+/// (notional) | rate: ...`. `soft` is `off` without a cap. `lower_bound` says the figure
+/// is a live estimate that undercounts (`spend ≥ $X (lower bound)`); false renders the
+/// exact `spend $X`.
 pub fn meter_text(
     meter: &Meter,
     hard_usd: f64,
     soft_usd: Option<f64>,
     soft_hit_at: Option<&str>,
+    lower_bound: bool,
 ) -> String {
     let soft = match soft_usd {
-        Some(usd) => {
-            let mut text = format!("soft ${usd:.2}");
-            if let Some(at) = soft_hit_at.and_then(local_hhmm) {
-                text.push_str(&format!(" (hit {at})"));
-            }
-            text
-        }
+        Some(usd) => format!("soft {}", soft_cap_text(usd, soft_hit_at)),
         None => "soft off".to_owned(),
     };
-    let mut text = format!(
-        "spend ≈ ${:.2} / {soft} / hard ${hard_usd:.2} (notional)",
-        meter.estimate
-    );
+    let spend = if lower_bound {
+        format!("spend ≥ ${:.2} (lower bound)", meter.estimate)
+    } else {
+        format!("spend ${:.2}", meter.estimate)
+    };
+    let mut text = format!("{spend} / {soft} / hard ${hard_usd:.2} (notional)");
     if let Some(rate) = &meter.rate {
         text.push_str(" | rate: ");
         text.push_str(&rate_text(rate));
@@ -544,6 +614,7 @@ impl Follower {
             lines,
             meter: Meter {
                 estimate: self.estimate.usd(),
+                exact: self.estimate.is_exact(),
                 rate: self.rate.clone(),
             },
         })
@@ -555,9 +626,17 @@ impl Follower {
 /// missing or unreadable file is `0.0`. Used for a run recorded before `spend_usd` was
 /// kept, and after a session ends (the capture pump writes the last lines late).
 pub fn spend_of_file(path: &Path) -> f64 {
+    meter_of_file(path).estimate
+}
+
+/// The whole-file fold of [`spend_of_file`], plus whether the figure is exact and the
+/// latest rate-limit event (quick 261103-mnr, D-05). A missing or unreadable file is the
+/// default meter.
+pub fn meter_of_file(path: &Path) -> Meter {
     let runtime = AgentRuntime::default();
     let mut tail = StreamTail::new(path);
     let mut estimate = SpendEstimate::default();
+    let mut rate = None;
     // `poll` reads a bounded batch; keep going until the file is drained.
     while let Ok(lines) = tail.poll() {
         if lines.is_empty() {
@@ -566,10 +645,28 @@ pub fn spend_of_file(path: &Path) -> f64 {
         for line in lines {
             for event in runtime.classify(&line) {
                 estimate.apply(&event);
+                if let StreamEvent::RateLimit {
+                    status,
+                    kind,
+                    utilization,
+                    resets_at,
+                } = &event
+                {
+                    rate = Some(RateLimitSeen {
+                        status: status.clone(),
+                        kind: kind.clone(),
+                        utilization: *utilization,
+                        resets_at: *resets_at,
+                    });
+                }
             }
         }
     }
-    estimate.usd()
+    Meter {
+        estimate: estimate.usd(),
+        exact: estimate.is_exact(),
+        rate,
+    }
 }
 
 #[cfg(test)]
@@ -637,6 +734,20 @@ mod tests {
                 output,
                 ..UsageTokens::default()
             },
+            content_chars: 0,
+        }
+    }
+
+    fn usage_with_chars(id: &str, model: &str, output: u64, chars: u64) -> StreamEvent {
+        StreamEvent::Usage {
+            sub: false,
+            message_id: id.into(),
+            model: model.into(),
+            tokens: UsageTokens {
+                output,
+                ..UsageTokens::default()
+            },
+            content_chars: chars,
         }
     }
 
@@ -677,10 +788,13 @@ mod tests {
         // A result without a cost folds the pending usage into the baseline.
         e.apply(&result(None));
         assert!((e.usd() - 9.0).abs() < 1e-9);
+        // m2 is folded now: a repeat is ignored; m3 is a new message.
         e.apply(&usage("m2", &opus(), 1_000_000, 0));
+        assert!((e.usd() - 9.0).abs() < 1e-9, "a folded id is ignored");
+        e.apply(&usage("m3", &opus(), 1_000_000, 0));
         assert!(
             (e.usd() - 13.0).abs() < 1e-9,
-            "m2 is a new message after a result"
+            "m3 is a new message after a result"
         );
     }
 
@@ -705,6 +819,7 @@ mod tests {
         let reset = 1_800_003_600;
         let meter = Meter {
             estimate: 1.234,
+            exact: false,
             rate: Some(RateLimitSeen {
                 status: "allowed_warning".into(),
                 kind: Some("five_hour".into()),
@@ -712,19 +827,25 @@ mod tests {
                 resets_at: Some(reset),
             }),
         };
-        let text = meter_text(&meter, 10.0, None, None);
+        let text = meter_text(&meter, 10.0, None, None, true);
         assert!(
-            text.contains("spend ≈ $1.23 / soft off / hard $10.00 (notional)"),
+            text.contains("spend ≥ $1.23 (lower bound) / soft off / hard $10.00 (notional)"),
             "{text}"
         );
+        let exact = meter_text(&meter, 10.0, None, None, false);
+        assert!(
+            exact.contains("spend $1.23 / soft off / hard $10.00 (notional)"),
+            "{exact}"
+        );
+        assert!(!exact.contains("lower bound"), "{exact}");
         for part in ["allowed_warning", "five_hour", "85%"] {
             assert!(text.contains(part), "{part} in {text}");
         }
         assert!(text.contains(&local_time(reset).unwrap()), "{text}");
-        assert!(!meter_text(&Meter::default(), 10.0, None, None).contains("rate:"));
-        let capped = meter_text(&meter, 10.0, Some(5.0), Some("2026-11-03T10:00:00Z"));
+        assert!(!meter_text(&Meter::default(), 10.0, None, None, true).contains("rate:"));
+        let capped = meter_text(&meter, 10.0, Some(5.0), Some("2026-11-03T10:00:00Z"), true);
         assert!(capped.contains("soft $5.00 (hit "), "{capped}");
-        assert!(!meter_text(&meter, 10.0, Some(5.0), None).contains("(hit"));
+        assert!(!meter_text(&meter, 10.0, Some(5.0), None, true).contains("(hit"));
     }
 
     fn rendered(events: &[StreamEvent]) -> Vec<String> {
@@ -873,5 +994,85 @@ mod tests {
             b"{\"type\":\"result\",\"subtype\":\"success\",\"total_cost_usd\":1.5}\n",
         );
         assert!((spend_of_file(&path) - 1.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn visible_characters_floor_the_output_estimate_and_accumulate_per_message() {
+        let mut e = SpendEstimate::default();
+        // 1 reported output token, 4000 visible characters: 1000 output tokens.
+        e.apply(&usage_with_chars("m1", &opus(), 1, 4000));
+        assert!((e.usd() - 1000.0 * 20.0 / 1e6).abs() < 1e-9, "{}", e.usd());
+        // Another line of the same message adds its characters.
+        e.apply(&usage_with_chars("m1", &opus(), 1, 4000));
+        assert!((e.usd() - 2000.0 * 20.0 / 1e6).abs() < 1e-9, "{}", e.usd());
+        // A larger reported count wins over the characters.
+        e.apply(&usage_with_chars("m2", &opus(), 5000, 4));
+        assert!(
+            (e.usd() - (2000.0 + 5000.0) * 20.0 / 1e6).abs() < 1e-9,
+            "{}",
+            e.usd()
+        );
+    }
+
+    #[test]
+    fn a_message_already_folded_into_a_result_is_ignored() {
+        let mut e = SpendEstimate::default();
+        e.apply(&usage("m1", &opus(), 1_000_000, 0));
+        e.apply(&result(Some(2.0)));
+        assert!((e.usd() - 4.0).abs() < 1e-9, "the estimate led the report");
+        let mut e = SpendEstimate::default();
+        e.apply(&usage("m1", &opus(), 100, 0));
+        e.apply(&result(Some(2.0)));
+        assert!((e.usd() - 2.0).abs() < 1e-9);
+        // The same message again, after the result: not counted a second time.
+        e.apply(&usage("m1", &opus(), 1_000_000, 0));
+        assert!((e.usd() - 2.0).abs() < 1e-9, "{}", e.usd());
+        assert!(e.is_exact());
+        // A new message does count.
+        e.apply(&usage("m2", &opus(), 1_000_000, 0));
+        assert!((e.usd() - 6.0).abs() < 1e-9, "{}", e.usd());
+    }
+
+    #[test]
+    fn the_estimate_is_exact_only_right_after_a_reported_result() {
+        let mut e = SpendEstimate::default();
+        assert!(!e.is_exact(), "nothing seen");
+        e.apply(&usage("m1", &opus(), 10, 0));
+        assert!(!e.is_exact());
+        e.apply(&result(Some(1.0)));
+        assert!(e.is_exact());
+        e.apply(&usage("m2", &opus(), 10, 0));
+        assert!(!e.is_exact(), "later usage");
+        e.apply(&result(None));
+        assert!(!e.is_exact(), "a result without a cost");
+        // An estimate that overshot the report is not exact either.
+        let mut e = SpendEstimate::default();
+        e.apply(&usage("m1", &opus(), 1_000_000, 0));
+        e.apply(&result(Some(1.0)));
+        assert!(!e.is_exact());
+    }
+
+    #[test]
+    fn the_recorded_background_run_meters_to_its_reported_total() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/oneoff/real-bg-subagents.stream.jsonl");
+        let meter = meter_of_file(&path);
+        assert!(
+            (meter.estimate - 0.86173693).abs() < 1e-6,
+            "{}",
+            meter.estimate
+        );
+        assert!(meter.exact);
+        let rate = meter.rate.expect("a rate-limit event");
+        assert_eq!(rate.status, "allowed");
+        assert_eq!(rate.kind.as_deref(), Some("seven_day"));
+        assert_eq!(rate.utilization, Some(0.21));
+        assert_eq!(rate.resets_at, Some(1_794_326_400));
+        assert!(rate_text(&rate).starts_with("allowed seven_day 21%"));
+        assert_eq!(spend_of_file(&path), meter.estimate);
+        assert_eq!(
+            meter_of_file(&path.with_extension("missing")),
+            Meter::default()
+        );
     }
 }

@@ -320,13 +320,29 @@ never mounted into the sandbox: only you can inject, never the agent).
 `<run-dir>/injections.jsonl` (0600) records every message, delivered or refused,
 BEFORE it is written to the agent.
 
-**Spend meter.** The view's header shows `spend ≈ $X.XX / hard $Z (notional)`: the
-last turn's reported cost plus the token usage seen since, priced from a built-in
-table of first-party list prices (dated 2026-10-06). It is an estimate, not an
-invoice: subscription tokens are not billed per token, and subagent usage is only
-partly visible, so it can undercount. `--max-budget-usd` stays the real hard
-ceiling, fixed at launch. The latest rate-limit event of the stream is shown next
-to it (status, window, utilization and the reset time in local time).
+**Spend meter.** While the run may be live the view's header shows `spend ≥ $X.XX
+(lower bound) / soft ... / hard $Z (notional)`, and `spend $X.XX / ...` once the figure
+is exact, that is right after a turn's `result` reported the session's cumulative cost.
+The figure is that reported cost plus the token usage seen since, priced from a built-in
+table of first-party list prices (dated 2026-10-06), with 1-hour cache writes at 2 x the
+input price (5-minute and unsplit writes at 1.25 x). Subagent usage IS included: their
+messages are forwarded in the stream and folded, and the reported cumulative cost covers
+them. The live part undercounts, because the streamed output-token counts are the
+message-start snapshot and the agent's thinking is not visible: each message's output is
+estimated as the larger of the reported count and the visible text plus tool input
+divided by four, and a message already folded into a reported total is not counted
+again. It is a lower bound that each result snaps to the exact figure. It is an estimate,
+not an invoice: subscription tokens are not billed per token. `--max-budget-usd` stays
+the real hard ceiling, fixed at launch. The latest rate-limit event of the stream is
+shown next to it (status, window, the window's utilization and the reset time in local
+time).
+
+`task status` of a live run folds the same stream: `spend:     ≥ $X so far of $Y (live
+estimate, lower bound; exact at the end)`, a `soft cap:` line when one is set and a
+`rate:` line when a rate-limit event was seen. `task status --json` adds
+`live_spend_usd`, `live_spend_is_lower_bound: true` and `rate_limit` (`status`, `kind`,
+`utilization`, `resets_at`) for a live run only. A finished run keeps its recorded,
+exact `spend:` line.
 
 **Soft cap.** Off by default. `b` in the live view (while the run is live) or `task
 budget <project> --soft <usd>` sets or changes it, `--clear` (or an empty `b` input)
@@ -337,8 +353,10 @@ in `injections.jsonl` as `wrap_up`, and starts a 5-minute grace. If the session 
 still alive when the grace ends it is stopped and recorded as `over_budget`. Raising
 or clearing the cap during the grace cancels the stop (the wrap-up stays sent), and a
 second crossing restarts the grace without a second message. `run.json` records
-`soft_cap_usd` and `soft_cap_hit_at`. The estimate is notional and can undercount
-subagents, so the cap can fire late: the hard ceiling stays the real limit.
+`soft_cap_usd` and `soft_cap_hit_at`. The cap is judged against the lower-bound estimate above, so it can
+fire late, by roughly the unseen output and thinking of the current turn; each result
+snaps the estimate to the exact cumulative figure. `--max-budget-usd` is enforced by the
+agent itself and is exact: it stays the real limit.
 
 **Where runs live.** `<data dir>/gsd-meta-manager/oneoff/<hash8 of the
 project path>/<run-id>/` (`~/.local/share/...` on Linux): `run.lock` (the run's own

@@ -47,9 +47,11 @@ mod unix {
         project_dir_for, read_runs_in, resolve_run, BranchState, LiveState, MergeHow, OneoffView,
         ReportSource, RunPick,
     };
-    use gsd_meta_manager::oneoff::stream::{meter_text, Follower};
+    use gsd_meta_manager::oneoff::stream::{
+        meter_of_file, meter_text, rate_text, soft_cap_text, Follower, Meter,
+    };
     use gsd_meta_manager::oneoff::todos::{title_from, valid_todo_file_name, PENDING_REL};
-    use gsd_meta_manager::oneoff::TaskSpec;
+    use gsd_meta_manager::oneoff::{TaskSpec, STREAM_FILE};
     use gsd_meta_manager::text::render_for_terminal;
 
     use super::err_line;
@@ -309,7 +311,7 @@ mod unix {
     }
 
     /// The ~8-line summary (I-18): the agent's report and the host's facts, labelled.
-    fn summary_lines(view: &OneoffView) -> Vec<String> {
+    fn summary_lines(view: &OneoffView, live: Option<&Meter>) -> Vec<String> {
         let record = &view.record;
         let mut lines = vec![format!(
             "run:       {} ({}, {} {})",
@@ -425,7 +427,22 @@ mod unix {
         for warning in &record.warnings {
             lines.push(format!("warning:   {}", shown(warning)));
         }
-        if let Some(spent) = record.spend_usd {
+        if let Some(meter) = live {
+            lines.push(format!(
+                "spend:     ≥ ${:.2} so far of ${:.2} (live estimate, lower bound; exact at the end)",
+                live_spend_usd(record.spend_usd, meter),
+                record.max_budget_usd
+            ));
+            if let Some(soft) = record.soft_cap_usd {
+                lines.push(format!(
+                    "soft cap:  {}",
+                    shown(&soft_cap_text(soft, record.soft_cap_hit_at.as_deref()))
+                ));
+            }
+            if let Some(rate) = &meter.rate {
+                lines.push(format!("rate:      {}", shown(&rate_text(rate))));
+            }
+        } else if let Some(spent) = record.spend_usd {
             lines.push(format!(
                 "spend:     about ${spent:.2} of ${:.2} (including any conflict resolver)",
                 record.max_budget_usd
@@ -518,14 +535,48 @@ mod unix {
             Ok(view) => view,
             Err(code) => return code,
         };
+        let live = live_meter(&view);
         if json {
-            out_line(&view_json(&view).to_string());
+            let mut value = view_json(&view);
+            if let (Some(meter), Some(object)) = (&live, value.as_object_mut()) {
+                object.insert(
+                    "live_spend_usd".to_owned(),
+                    serde_json::json!(live_spend_usd(view.record.spend_usd, meter)),
+                );
+                object.insert("live_spend_is_lower_bound".to_owned(), true.into());
+                object.insert(
+                    "rate_limit".to_owned(),
+                    meter.rate.as_ref().map_or(serde_json::Value::Null, |r| {
+                        serde_json::json!({
+                            "status": r.status,
+                            "kind": r.kind,
+                            "utilization": r.utilization,
+                            "resets_at": r.resets_at,
+                        })
+                    }),
+                );
+            }
+            out_line(&value.to_string());
         } else {
-            for line in summary_lines(&view) {
+            for line in summary_lines(&view, live.as_ref()) {
                 out_line(&line);
             }
         }
         0
+    }
+
+    /// The live run's stream folded once (D-05), or `None` for a run that is not live.
+    /// Bounded: the fold goes through `StreamTail`'s per-line and per-poll limits.
+    fn live_meter(view: &OneoffView) -> Option<Meter> {
+        view.live
+            .may_be_live()
+            .then(|| meter_of_file(&view.run_dir.join(STREAM_FILE)))
+    }
+
+    /// The run's spend so far: what the record already holds (a resume merge's resolver
+    /// spend) plus the live estimate of the stream.
+    fn live_spend_usd(recorded: Option<f64>, meter: &Meter) -> f64 {
+        recorded.unwrap_or(0.0) + meter.estimate
     }
 
     /// One run as the JSON `status --json` and `list --json` print.
@@ -943,7 +994,8 @@ mod unix {
                 &meter,
                 view.record.max_budget_usd,
                 view.record.soft_cap_usd,
-                view.record.soft_cap_hit_at.as_deref()
+                view.record.soft_cap_hit_at.as_deref(),
+                view.live.may_be_live() || !meter.exact,
             )
         )));
         0

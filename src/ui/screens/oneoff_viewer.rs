@@ -473,6 +473,7 @@ impl Screen for OneoffViewerScreen {
                 stream.info.hard_usd,
                 stream.info.soft_cap_usd,
                 stream.info.soft_cap_hit_at.as_deref(),
+                stream.info.live.may_be_live() || !stream.meter.exact,
             )))),
         ];
         let footer_rows = 1_u16;
@@ -646,7 +647,7 @@ pub(crate) mod tests {
         assert!(drawn.contains("live"), "{drawn}");
         assert!(drawn.contains("elapsed"), "{drawn}");
         assert!(
-            drawn.contains("spend ≈ $1.50 / soft off / hard $10.00 (notional)"),
+            drawn.contains("spend ≥ $1.50 (lower bound) / soft off / hard $10.00 (notional)"),
             "{drawn}"
         );
         assert!(drawn.contains("line 99"), "{drawn}");

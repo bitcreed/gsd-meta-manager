@@ -1012,6 +1012,63 @@ fn a_soft_cap_wraps_up_once_then_stops_the_run_as_over_budget() {
     );
 }
 
+/// The real rate-limit shape, one assistant line that prices at $4, then a wait for
+/// `release` and a result that reports $4.50.
+const LIVE_SPEND_SCENARIO: &str = r#"
+printf '%s\n' '{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","rateLimitType":"seven_day","resetsAt":1794326400,"unifiedWindows":{"seven_day":{"status":"allowed","resetsAt":1794326400,"utilization":0.21}}}}'
+printf '%s\n' '{"type":"assistant","message":{"id":"m1","model":"claude-opus-5-5","content":[{"type":"text","text":"working"}],"usage":{"input_tokens":1000000,"output_tokens":0}},"parent_tool_use_id":null}'
+touch "$FAKE_CLAUDE_DIR/started"
+while [ ! -f "$FAKE_CLAUDE_DIR/release" ]; do sleep 0.1; done
+printf '%s\n' '{"type":"result","subtype":"success","total_cost_usd":4.5,"num_turns":1}'
+"#;
+
+#[test]
+fn task_status_shows_live_spend_and_the_rate_limit_of_a_running_run() {
+    let fx = fixture();
+    fx.write_scenario(LIVE_SPEND_SCENARIO);
+    let out = run(&fx, &["run", ALIAS, "--text", "spend"]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert!(
+        wait_until(Duration::from_secs(30), || fx.scenario_started()),
+        "the scenario never started"
+    );
+    // The capture pump may lag the scenario: wait until the stream shows the spend.
+    let mut json = Value::Null;
+    assert!(
+        wait_until(Duration::from_secs(30), || {
+            json = status(&fx);
+            json["live_spend_usd"].as_f64().is_some_and(|v| v >= 4.0)
+        }),
+        "no live spend in {json}"
+    );
+    assert_eq!(json["live_spend_is_lower_bound"], true, "{json}");
+    assert_eq!(json["rate_limit"]["kind"], "seven_day", "{json}");
+    assert_eq!(json["rate_limit"]["status"], "allowed", "{json}");
+    assert_eq!(json["rate_limit"]["utilization"], 0.21, "{json}");
+    assert_eq!(json["rate_limit"]["resets_at"], 1_794_326_400_i64, "{json}");
+
+    let text = run(&fx, &["status", ALIAS]);
+    assert_eq!(text.status.code(), Some(0), "{text:?}");
+    let text = String::from_utf8_lossy(&text.stdout).into_owned();
+    assert!(text.contains("≥ $4.00 so far"), "{text}");
+    assert!(text.contains("lower bound"), "{text}");
+    assert!(text.contains("rate:      allowed seven_day 21%"), "{text}");
+
+    fx.release();
+    let done = wait_finished(&fx);
+    assert_eq!(done["record"]["outcome"]["kind"], "finished", "{done}");
+    assert!(done.get("live_spend_usd").is_none(), "{done}");
+    assert!(done.get("rate_limit").is_none(), "{done}");
+    let text = run(&fx, &["status", ALIAS]);
+    let text = String::from_utf8_lossy(&text.stdout).into_owned();
+    let spend = text
+        .lines()
+        .find(|l| l.starts_with("spend:"))
+        .unwrap_or_else(|| panic!("no spend line in {text}"));
+    assert!(spend.contains("$4.50"), "{spend}");
+    assert!(!spend.contains('≥'), "{spend}");
+}
+
 #[test]
 fn attach_prints_a_finished_run() {
     let fx = fixture();

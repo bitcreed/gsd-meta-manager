@@ -189,10 +189,16 @@ const fn prices(input: f64, output: f64, cache_write: f64, cache_read: f64) -> P
     }
 }
 
+/// What a 1-hour cache write costs, as a multiple of the input price. The table's
+/// `cache_write` column is the 5-minute rate (1.25 x input); a write the stream reports
+/// as 1-hour is 2.0 x input (verified against a recorded run's reported cost).
+const CACHE_WRITE_1H_FACTOR: f64 = 2.0;
+
 /// Notional first-party list prices in USD per MTok, from the claude-api skill's model
-/// table (cached 2026-10-06). Cache write is 1.25 x input. Subscription tokens are not
-/// billed per token, so every figure derived from this table is notional. The longest
-/// model-id prefix wins.
+/// table (cached 2026-10-06). Cache write is 1.25 x input for the 5-minute (and the
+/// unsplit) rate and 2.0 x input for 1-hour writes ([`CACHE_WRITE_1H_FACTOR`]).
+/// Subscription tokens are not billed per token, so every figure derived from this
+/// table is notional. The longest model-id prefix wins.
 const PRICES: &[(&str, Prices)] = &[
     ("claude-fable-5-1", prices(10.0, 50.0, 12.5, 0.25)),
     ("claude-fable-5", prices(10.0, 50.0, 12.5, 1.0)),
@@ -244,9 +250,12 @@ impl AgentRuntime {
         match self {
             AgentRuntime::Claude => {
                 let p = prices_for(model);
+                let one_hour = tokens.cache_creation_1h.min(tokens.cache_creation);
+                let rest = tokens.cache_creation - one_hour;
                 (tokens.input as f64 * p.input
                     + tokens.output as f64 * p.output
-                    + tokens.cache_creation as f64 * p.cache_write
+                    + one_hour as f64 * p.input * CACHE_WRITE_1H_FACTOR
+                    + rest as f64 * p.cache_write
                     + tokens.cache_read as f64 * p.cache_read)
                     / 1_000_000.0
             }
@@ -356,6 +365,31 @@ impl AgentRuntime {
     }
 }
 
+/// The rate-limit window the event is about: the `unifiedWindows` entry named by
+/// `rateLimitType`, else the one with the highest utilization (its sanitized name is
+/// returned so it can stand in for a missing `rateLimitType`).
+fn rate_window<'a>(info: &'a Value, kind: Option<&str>) -> (Option<String>, Option<&'a Value>) {
+    let Some(windows) = info.get("unifiedWindows").and_then(Value::as_object) else {
+        return (None, None);
+    };
+    if let Some(window) = kind.and_then(|k| windows.get(k)) {
+        return (None, Some(window));
+    }
+    let utilization = |w: &Value| {
+        w.get("utilization")
+            .and_then(Value::as_f64)
+            .filter(|u| u.is_finite() && *u >= 0.0)
+    };
+    let best = windows
+        .iter()
+        .filter_map(|(name, w)| utilization(w).map(|u| (name, w, u)))
+        .max_by(|a, b| a.2.total_cmp(&b.2));
+    match best {
+        Some((name, w, _)) => (lower_word(Some(&Value::String(name.clone()))), Some(w)),
+        None => (None, None),
+    }
+}
+
 /// A `u64` count as a `u32`, saturating.
 fn saturate_u32(n: u64) -> u32 {
     u32::try_from(n).unwrap_or(u32::MAX)
@@ -439,11 +473,14 @@ fn classify_claude(line: &str) -> Vec<StreamEvent> {
                 return vec![StreamEvent::Other];
             };
             let mut events = Vec::new();
+            let mut content_chars: u64 = 0;
             if let Some(blocks) = message.get("content").and_then(Value::as_array) {
                 for block in blocks {
                     match block.get("type").and_then(Value::as_str) {
                         Some("text") => {
                             if let Some(text) = block.get("text").and_then(Value::as_str) {
+                                content_chars =
+                                    content_chars.saturating_add(text.chars().count() as u64);
                                 events.push(StreamEvent::AssistantText {
                                     sub,
                                     text: bounded_text(text, EVENT_TEXT_MAX),
@@ -456,6 +493,10 @@ fn classify_claude(line: &str) -> Vec<StreamEvent> {
                                 40,
                             );
                             let input = block.get("input").unwrap_or(&Value::Null);
+                            content_chars = content_chars.saturating_add(
+                                serde_json::to_string(input).map_or(0, |j| j.chars().count())
+                                    as u64,
+                            );
                             events.push(StreamEvent::ToolCall {
                                 sub,
                                 summary: summarize_tool(&name, input),
@@ -482,8 +523,14 @@ fn classify_claude(line: &str) -> Vec<StreamEvent> {
                         input: n("input_tokens"),
                         output: n("output_tokens"),
                         cache_creation: n("cache_creation_input_tokens"),
+                        cache_creation_1h: usage
+                            .get("cache_creation")
+                            .and_then(|c| c.get("ephemeral_1h_input_tokens"))
+                            .and_then(Value::as_u64)
+                            .unwrap_or(0),
                         cache_read: n("cache_read_input_tokens"),
                     },
+                    content_chars,
                 });
             }
             if events.is_empty() {
@@ -546,14 +593,20 @@ fn classify_claude(line: &str) -> Vec<StreamEvent> {
         }],
         "rate_limit_event" => {
             let info = value.get("rate_limit_info").unwrap_or(&Value::Null);
+            let kind = lower_word(info.get("rateLimitType"));
+            let (window_kind, window) = rate_window(info, kind.as_deref());
             vec![StreamEvent::RateLimit {
                 status: lower_word(info.get("status")).unwrap_or_else(|| "other".to_owned()),
-                kind: lower_word(info.get("rateLimitType")),
-                utilization: info
-                    .get("utilization")
+                kind: kind.or(window_kind),
+                utilization: window
+                    .and_then(|w| w.get("utilization"))
+                    .or_else(|| info.get("utilization"))
                     .and_then(Value::as_f64)
                     .filter(|u| u.is_finite() && *u >= 0.0),
-                resets_at: info.get("resetsAt").and_then(Value::as_i64),
+                resets_at: window
+                    .and_then(|w| w.get("resetsAt"))
+                    .and_then(Value::as_i64)
+                    .or_else(|| info.get("resetsAt").and_then(Value::as_i64)),
             }]
         }
         "system" => vec![classify_claude_system(&value)],
@@ -982,8 +1035,10 @@ mod tests {
                         input: 3,
                         output: 4,
                         cache_creation: 5,
+                        cache_creation_1h: 0,
                         cache_read: 6
-                    }
+                    },
+                    content_chars: 5 + 24,
                 },
             ]
         );
@@ -1090,6 +1145,85 @@ mod tests {
             panic!("not a result");
         };
         assert_eq!((queued_turns, subagents_outstanding), (0, 0));
+    }
+
+    #[test]
+    fn one_hour_cache_writes_reproduce_the_reported_cost() {
+        let rt = AgentRuntime::default();
+        // Final token sums of a recorded run, against the cost the run reported.
+        let opus = UsageTokens {
+            input: 44,
+            output: 8140,
+            cache_creation: 54_218,
+            cache_creation_1h: 54_218,
+            cache_read: 885_513,
+        };
+        let haiku = UsageTokens {
+            input: 84,
+            output: 60_295,
+            cache_creation: 203_769,
+            cache_creation_1h: 203_769,
+            cache_read: 1_700_463,
+        };
+        let opus_usd = rt.notional_usd("claude-opus-5-5", &opus);
+        let haiku_usd = rt.notional_usd("claude-haiku-5-5", &haiku);
+        assert!((opus_usd - 0.7738226).abs() < 0.001, "{opus_usd}");
+        assert!((haiku_usd - 0.0879143).abs() < 0.001, "{haiku_usd}");
+        // Unsplit writes stay at 1.25 x input.
+        let unsplit = UsageTokens {
+            cache_creation: 1_000_000,
+            ..UsageTokens::default()
+        };
+        assert!((rt.notional_usd("claude-opus-5-5", &unsplit) - 5.0).abs() < 1e-9);
+        // The 1-hour part is clamped to the writes and priced at 2 x input.
+        let hour = UsageTokens {
+            cache_creation: 1_000_000,
+            cache_creation_1h: 9_000_000,
+            ..UsageTokens::default()
+        };
+        assert!((rt.notional_usd("claude-opus-5-5", &hour) - 8.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn the_real_rate_limit_shape_reads_the_window_utilization() {
+        // Recorded shape (session id and uuid removed).
+        let real = r#"{"type":"rate_limit_event","rate_limit_info":{"isUsingOverage":false,"overageDisabledReason":"out_of_credits","overageStatus":"rejected","rateLimitType":"seven_day","resetsAt":1794326400,"status":"allowed","unifiedWindows":{"seven_day":{"resetsAt":1794326400,"status":"allowed","utilization":0.21}}}}"#;
+        assert_eq!(
+            classify(real),
+            [StreamEvent::RateLimit {
+                status: "allowed".into(),
+                kind: Some("seven_day".into()),
+                utilization: Some(0.21),
+                resets_at: Some(1_794_326_400)
+            }]
+        );
+        // No rateLimitType: the highest window names the kind and gives the reset.
+        assert_eq!(
+            classify(
+                r#"{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","unifiedWindows":{"five_hour":{"utilization":0.4,"resetsAt":100},"seven_day":{"utilization":0.7,"resetsAt":200}}}}"#
+            ),
+            [StreamEvent::RateLimit {
+                status: "allowed".into(),
+                kind: Some("seven_day".into()),
+                utilization: Some(0.7),
+                resets_at: Some(200)
+            }]
+        );
+        // A window name that is not `[a-z_]` is never copied.
+        let [StreamEvent::RateLimit { ref kind, .. }] = classify(
+            r#"{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","unifiedWindows":{"\u001b[31mevil":{"utilization":0.7}}}}"#,
+        )[..] else {
+            panic!("not a rate limit");
+        };
+        assert_eq!(kind.as_deref(), Some("other"));
+        // A rateLimitType without its window falls back to the highest one.
+        let [StreamEvent::RateLimit { utilization, .. }] = classify(
+            r#"{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","rateLimitType":"five_hour","utilization":0.1,"unifiedWindows":{"seven_day":{"utilization":0.7}}}}"#,
+        )[..] else {
+            panic!("not a rate limit");
+        };
+        assert_eq!(utilization, Some(0.7));
+        // The old top-level shape still works (see the sanitised test below).
     }
 
     #[test]
