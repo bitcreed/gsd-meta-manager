@@ -179,10 +179,40 @@ discard and `x` kill (a live run); each of those asks first.
 The defaults are the ones shown above (the same as `driver launch`). `task` is not
 gated by this variable: the flag is a discovery gate, as it is for `driver`.
 
+**Live view and messages.** `v` in the `T` popup opens a full-screen view of the
+run (live or finished): it replays `stream.jsonl` from the start and then follows
+it, off the render thread, keeping at most the last 10,000 rendered lines. Each
+event is one or a few lines: assistant text, `* Tool: <short argument>`, a
+truncated tool result (`= <first line> (N lines)`), `[sub]` for subagent events,
+`prompt:` for the first message and `you:` for yours; a refused message shows as
+`! refused ...`. PgUp/PgDn and `j`/`k` scroll, `f` toggles following, `G` jumps to
+the end and follows, `i` sends a message to the running agent (Enter sends, Esc
+cancels) and Esc or `q` closes the view and stops its tail. A finished run is
+read-only. Every string from the stream is drawn escaped.
+
+The agent reads stream-json on its stdin: the prompt is its first message and each
+message you send is the next one. The session ends by itself when the agent's turn
+ends with no message of yours still pending (the launcher then closes the agent's
+stdin); a message you send mid-turn is read when that turn ends and starts another.
+`gsd-meta-manager task send <project> <text> [--wait-secs 10]` does the same from
+the CLI and exits non-zero when the run is not live. A message is 1 to 4000
+characters, at most 200 per run, and is put in `<run-dir>/inbox/` (0700, host-only,
+never mounted into the sandbox: only you can inject, never the agent).
+`<run-dir>/injections.jsonl` (0600) records every message, delivered or refused,
+BEFORE it is written to the agent.
+
+**Spend meter.** The view's header shows `spend ≈ $X.XX / hard $Z (notional)`: the
+last turn's reported cost plus the token usage seen since, priced from a built-in
+table of first-party list prices (dated 2026-10-06). It is an estimate, not an
+invoice: subscription tokens are not billed per token, and subagent usage is only
+partly visible, so it can undercount. `--max-budget-usd` stays the real hard
+ceiling, fixed at launch. The latest rate-limit event of the stream is shown next
+to it (status, window, utilization and the reset time in local time).
+
 **Where runs live.** `<data dir>/gsd-meta-manager/oneoff/<hash8 of the
 project path>/<run-id>/` (`~/.local/share/...` on Linux): `run.json` (the host's
 record), `stream.jsonl` (the agent's stream-json output, credential-redacted),
-`launch.log`, `report/report.json`, the per-run config dir and `work/`, a
+`launch.log`, `injections.jsonl` and `inbox/` (host-only, see above), `report/report.json`, the per-run config dir and `work/`, a
 `git clone --no-hardlinks` of the project on branch `gsd-oneoff/<run-id>`. The
 clone copies the whole object store, so each run costs about the repository's
 size on disk until it is discarded. **Uncommitted changes in the project are not

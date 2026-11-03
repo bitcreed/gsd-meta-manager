@@ -279,6 +279,11 @@ impl OneoffScreen {
                 );
                 ScreenAction::None
             }
+            KeyCode::Char('v') => {
+                ScreenAction::DispatchAction(Box::new(Action::OneoffViewerOpen {
+                    alias: self.alias.clone(),
+                }))
+            }
             KeyCode::Char('x') => {
                 if matches!(view.live, LiveState::Running | LiveState::Preparing) {
                     self.mode = ask(
@@ -523,7 +528,7 @@ pub fn result_lines(view: &OneoffView) -> Vec<Line<'static>> {
     }
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        "e SUMMARY   m merge   p push   d discard   x kill   Esc close",
+        "e SUMMARY   v live view   m merge   p push   d discard   x kill   Esc close",
         Style::default().fg(Color::DarkGray),
     )));
     lines
@@ -680,6 +685,27 @@ pub(crate) mod tests {
 
     fn key(screen: &mut OneoffScreen, ctx: &mut AppContext, code: KeyCode) -> ScreenAction {
         screen.handle_key(code, KeyModifiers::NONE, ctx)
+    }
+
+    #[test]
+    fn v_opens_the_live_viewer_only_when_there_is_a_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut ctx, _rx) = ctx_with_project(dir.path());
+        let mut screen = OneoffScreen::result(ALIAS.to_owned());
+        assert!(matches!(
+            key(&mut screen, &mut ctx, KeyCode::Char('v')),
+            ScreenAction::None
+        ));
+        ctx.view_cache.entry(ALIAS.to_owned()).or_default().oneoff =
+            Some(Box::new(finished_view("x")));
+        match key(&mut screen, &mut ctx, KeyCode::Char('v')) {
+            ScreenAction::DispatchAction(action) => match *action {
+                Action::OneoffViewerOpen { alias } => assert_eq!(alias, ALIAS),
+                other => panic!("{other:?}"),
+            },
+            _ => panic!("expected a dispatch"),
+        }
+        assert!(render_text(&screen, &ctx).contains("v live view"));
     }
 
     #[test]

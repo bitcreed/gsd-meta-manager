@@ -376,6 +376,7 @@ const SCREEN_IDENTITY_DISPOSITIONS: &[FixtureRow] = &[
     ("LintPopupScreen", "src/ui/screens/driver_launch.rs"),
     ("NormalScreen", "src/ui/screens/normal.rs"),
     ("OneoffScreen", "src/ui/screens/oneoff.rs"),
+    ("OneoffViewerScreen", "src/ui/screens/oneoff_viewer.rs"),
     ("PoliteStopScreen", "src/ui/screens/driver_steer.rs"),
     ("PreferencesScreen", "src/ui/screens/preferences.rs"),
     (
@@ -2312,6 +2313,27 @@ fn fixture_for(type_name: &str) -> Option<Fixture> {
                 Box::new(OneoffScreen::result(identity.to_string())),
             ));
             states
+        }),
+
+        // The one-off live viewer (quick 261103-gt1): the identity is the run id, a ring
+        // line and, in a second state, the typed message in the composer.
+        "OneoffViewerScreen" => Some(|identity| {
+            use super::oneoff_viewer::tests::seed;
+            use crossterm::event::{KeyCode, KeyModifiers};
+            let live = crate::oneoff::store::LiveState::Running;
+            let lines = vec![identity.to_string(), format!("you: {identity}")];
+            let mut viewer_ctx = probe_ctx(identity);
+            let viewer = seed(&mut viewer_ctx, identity, identity, lines.clone(), live);
+            let mut composer_ctx = probe_ctx(identity);
+            let mut composing = seed(&mut composer_ctx, identity, identity, lines, live);
+            composing.handle_key(KeyCode::Char('i'), KeyModifiers::NONE, &mut composer_ctx);
+            for ch in identity.chars() {
+                composing.handle_key(KeyCode::Char(ch), KeyModifiers::NONE, &mut composer_ctx);
+            }
+            vec![
+                one_state("viewer", viewer_ctx, Box::new(viewer)),
+                one_state("composer", composer_ctx, Box::new(composing)),
+            ]
         }),
 
         "SlugInputScreen" => Some(|identity| {

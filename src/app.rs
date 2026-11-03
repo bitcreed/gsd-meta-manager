@@ -689,6 +689,80 @@ fn first_word(editor: &str) -> &str {
     editor.split_whitespace().next().unwrap_or(editor)
 }
 
+/// How often the viewer's tail looks at the run's files when nothing is new.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+const ONEOFF_TAIL_POLL: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// The viewer's background tail (blocking file I/O, so always on `spawn_blocking`):
+/// replay the run's stream from the start, then follow it. It stops when `cancel` is
+/// set (the viewer dropped), when the channel is gone, or once the run is finished and
+/// the stream is drained.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn oneoff_tail_loop(
+    alias: &str,
+    run_id: &str,
+    epoch: u64,
+    run_dir: &Path,
+    mut info: crate::ui::screens::oneoff_viewer::RunInfo,
+    cancel: &std::sync::atomic::AtomicBool,
+    tx: &UnboundedSender<Action>,
+) {
+    use crate::oneoff::store::{read_view, LiveState};
+    use crate::oneoff::stream::{FollowBatch, Follower, Meter};
+    use std::sync::atomic::Ordering;
+
+    let mut follower = Follower::new(run_dir);
+    let project_dir = run_dir.parent().map(Path::to_path_buf);
+    let mut last: Option<(Meter, crate::ui::screens::oneoff_viewer::RunInfo)> = None;
+    let mut meter = Meter::default();
+    let mut tick: u64 = 0;
+    loop {
+        if cancel.load(Ordering::SeqCst) {
+            return;
+        }
+        let finished_before = matches!(info.live, LiveState::Finished | LiveState::Crashed);
+        let batch = follower.poll().unwrap_or_else(|_| FollowBatch {
+            lines: Vec::new(),
+            meter: meter.clone(),
+        });
+        meter = batch.meter.clone();
+        if tick & 3 == 0 {
+            if let Some(view) = project_dir
+                .as_deref()
+                .and_then(|dir| read_view(dir, run_id))
+            {
+                info.live = view.live;
+                info.ended_at = view.record.ended_at.clone();
+            }
+        }
+        tick += 1;
+        let drained = batch.lines.is_empty();
+        let done = finished_before && drained;
+        let current = (meter.clone(), info.clone());
+        if !drained || done || last.as_ref() != Some(&current) {
+            let sent = tx.send(Action::OneoffStreamBatch {
+                alias: alias.to_owned(),
+                run_id: run_id.to_owned(),
+                epoch,
+                lines: batch.lines,
+                meter: meter.clone(),
+                info: info.clone(),
+                done,
+            });
+            if sent.is_err() {
+                return;
+            }
+            last = Some(current);
+        }
+        if done {
+            return;
+        }
+        if drained {
+            std::thread::sleep(ONEOFF_TAIL_POLL);
+        }
+    }
+}
+
 impl App {
     /// Called when `$EDITOR` returns: re-read any cached browser or archive file that
     /// was just edited so the viewer does not show pre-edit text.
@@ -1150,6 +1224,135 @@ impl App {
             self.ctx.schedule_launcher_refresh(alias, &path);
         }
         self.needs_redraw = true;
+    }
+
+    /// `v` in the `T` popup: open the live viewer on the cached latest run and start
+    /// ONE background tail (never on the render thread). The tail stops when the viewer
+    /// drops (its cancel flag) or, by itself, once the run is finished and drained.
+    #[cfg_attr(
+        not(any(target_os = "linux", target_os = "macos")),
+        allow(unused_variables)
+    )]
+    fn open_oneoff_viewer(&mut self, alias: &str) {
+        use crate::ui::screens::oneoff_viewer::{OneoffStream, OneoffViewerScreen, RunInfo};
+        use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+        use std::sync::Arc;
+
+        static EPOCH: AtomicU64 = AtomicU64::new(0);
+        let Some((_, tx)) = self.oneoff_target(alias) else {
+            return;
+        };
+        let Some(view) = self
+            .ctx
+            .view_cache
+            .get(alias)
+            .and_then(|cache| cache.oneoff.as_deref())
+            .cloned()
+        else {
+            self.ctx.status_message = Some((
+                "No one-off run to view; press t to start one".to_owned(),
+                std::time::Instant::now(),
+            ));
+            self.needs_redraw = true;
+            return;
+        };
+        let info = RunInfo {
+            live: view.live,
+            hard_usd: view.record.max_budget_usd,
+            started_at: view.record.started_at.clone(),
+            ended_at: view.record.ended_at.clone(),
+        };
+        let epoch = EPOCH.fetch_add(1, Ordering::SeqCst) + 1;
+        let run_id = view.record.run_id.clone();
+        self.ctx
+            .view_cache
+            .entry(alias.to_owned())
+            .or_default()
+            .oneoff_stream = Some(OneoffStream::new(
+            run_id.clone(),
+            epoch,
+            view.run_dir.clone(),
+            info.clone(),
+        ));
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.screen_stack.push(Box::new(OneoffViewerScreen::new(
+            alias.to_owned(),
+            epoch,
+            Arc::clone(&cancel),
+        )));
+        self.needs_redraw = true;
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            let alias = alias.to_owned();
+            let run_dir = view.run_dir;
+            tokio::task::spawn_blocking(move || {
+                oneoff_tail_loop(&alias, &run_id, epoch, &run_dir, info, &cancel, &tx);
+            });
+        }
+    }
+
+    /// New lines from the viewer's tail: kept only for the viewer that asked.
+    #[allow(clippy::too_many_arguments)]
+    fn oneoff_stream_batch(
+        &mut self,
+        alias: &str,
+        run_id: &str,
+        epoch: u64,
+        lines: Vec<String>,
+        meter: crate::oneoff::stream::Meter,
+        info: crate::ui::screens::oneoff_viewer::RunInfo,
+        done: bool,
+    ) {
+        if !self.ctx.experimental {
+            return;
+        }
+        if let Some(stream) = self
+            .ctx
+            .view_cache
+            .get_mut(alias)
+            .and_then(|cache| cache.oneoff_stream.as_mut())
+            .filter(|s| s.epoch == epoch && s.run_id == run_id)
+        {
+            stream.push(lines);
+            stream.meter = meter;
+            stream.info = info;
+            stream.done = done;
+            self.needs_redraw = true;
+        }
+    }
+
+    /// The viewer's composer: put a request in the run's inbox, off the render thread.
+    #[cfg_attr(
+        not(any(target_os = "linux", target_os = "macos")),
+        allow(unused_variables)
+    )]
+    fn request_oneoff_inject(
+        &mut self,
+        alias: &str,
+        run_dir: PathBuf,
+        request: crate::oneoff::inbox::InboxRequest,
+    ) {
+        let Some((_, tx)) = self.oneoff_target(alias) else {
+            return;
+        };
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            use crate::oneoff::inbox::{send_message, set_soft_cap, InboxRequest};
+            let alias = alias.to_owned();
+            tokio::task::spawn_blocking(move || {
+                let run_id = run_dir
+                    .file_name()
+                    .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+                let result = match request {
+                    InboxRequest::Message { text } => send_message(&run_dir, &text)
+                        .map(|_| format!("Message queued for {run_id}")),
+                    InboxRequest::SoftCap { usd } => set_soft_cap(&run_dir, usd)
+                        .map(|_| format!("Soft cap request queued for {run_id}")),
+                }
+                .map_err(|e| e.to_string());
+                let _ = tx.send(Action::OneoffInjectDone { alias, result });
+            });
+        }
     }
 
     /// The registered project and the event channel a one-off action needs, refusing
@@ -2687,6 +2890,34 @@ impl App {
             Action::OneoffStatusRefreshed { alias, view } => {
                 if self.ctx.experimental {
                     self.ctx.view_cache.entry(alias).or_default().oneoff = view;
+                    self.needs_redraw = true;
+                }
+            }
+            Action::OneoffViewerOpen { alias } => self.open_oneoff_viewer(&alias),
+            Action::OneoffStreamBatch {
+                alias,
+                run_id,
+                epoch,
+                lines,
+                meter,
+                info,
+                done,
+            } => self.oneoff_stream_batch(&alias, &run_id, epoch, lines, meter, info, done),
+            Action::OneoffInjectRequested {
+                alias,
+                run_dir,
+                request,
+            } => self.request_oneoff_inject(&alias, run_dir, request),
+            Action::OneoffInjectDone { alias, result } => {
+                if self.ctx.experimental {
+                    let message = match result {
+                        Ok(done) => done,
+                        Err(why) => format!("Not sent to {alias}: {why}"),
+                    };
+                    self.ctx.status_message = Some((
+                        crate::text::render_for_terminal(&message).to_string(),
+                        std::time::Instant::now(),
+                    ));
                     self.needs_redraw = true;
                 }
             }

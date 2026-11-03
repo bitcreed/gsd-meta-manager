@@ -20,6 +20,7 @@ const NEUTRAL_FILES: &[&str] = &[
     "src/oneoff/session.rs",
     "src/oneoff/inbox.rs",
     "src/ui/screens/oneoff.rs",
+    "src/ui/screens/oneoff_viewer.rs",
 ];
 
 /// The seam itself.

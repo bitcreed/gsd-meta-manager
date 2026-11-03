@@ -370,6 +370,33 @@ pub enum Action {
         alias: String,
         message: String,
     },
+    /// `v` in the `T` popup (quick 261103-gt1): open the live viewer of the project's
+    /// latest one-off and start its background tail.
+    OneoffViewerOpen {
+        alias: String,
+    },
+    /// The viewer's tail found new lines (never read on the render thread).
+    OneoffStreamBatch {
+        alias: String,
+        run_id: String,
+        epoch: u64,
+        lines: Vec<String>,
+        meter: crate::oneoff::stream::Meter,
+        info: crate::ui::screens::oneoff_viewer::RunInfo,
+        done: bool,
+    },
+    /// The viewer's composer sent a request: put it in the run's inbox off the render
+    /// thread, answered by [`Action::OneoffInjectDone`].
+    OneoffInjectRequested {
+        alias: String,
+        run_dir: std::path::PathBuf,
+        request: crate::oneoff::inbox::InboxRequest,
+    },
+    /// An injection reached the inbox (`Ok`: the request id) or was refused.
+    OneoffInjectDone {
+        alias: String,
+        result: Result<String, String>,
+    },
     /// The project's latest one-off, read by the Driver tab's refresh.
     OneoffStatusRefreshed {
         alias: String,

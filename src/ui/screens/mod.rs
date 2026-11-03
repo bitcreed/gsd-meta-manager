@@ -12,6 +12,7 @@ pub mod enqueue;
 pub mod help;
 pub mod normal;
 pub mod oneoff;
+pub mod oneoff_viewer;
 pub mod preferences;
 pub mod queue_delete_confirm;
 
@@ -1229,6 +1230,9 @@ pub struct ProjectViewCache {
     /// The project's latest one-off run, read by the Driver tab's slow-tick refresh
     /// (`Action::OneoffStatusRefreshed`). `None` when the project has none.
     pub oneoff: Option<Box<crate::oneoff::store::OneoffView>>,
+    /// The live viewer's bounded line buffer (quick 261103-gt1), filled by
+    /// `Action::OneoffStreamBatch` from the background tail.
+    pub oneoff_stream: Option<oneoff_viewer::OneoffStream>,
 }
 
 impl ProjectViewCache {

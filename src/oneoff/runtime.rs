@@ -157,6 +157,89 @@ impl AgentRuntime {
     }
 }
 
+/// Notional USD per million tokens for one model family.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Prices {
+    input: f64,
+    output: f64,
+    cache_write: f64,
+    cache_read: f64,
+}
+
+const fn prices(input: f64, output: f64, cache_write: f64, cache_read: f64) -> Prices {
+    Prices {
+        input,
+        output,
+        cache_write,
+        cache_read,
+    }
+}
+
+/// Notional first-party list prices in USD per MTok, from the claude-api skill's model
+/// table (cached 2026-10-06). Cache write is 1.25 x input. Subscription tokens are not
+/// billed per token, so every figure derived from this table is notional. The longest
+/// model-id prefix wins.
+const PRICES: &[(&str, Prices)] = &[
+    ("claude-fable-5-1", prices(10.0, 50.0, 12.5, 0.25)),
+    ("claude-fable-5", prices(10.0, 50.0, 12.5, 1.0)),
+    ("claude-opus-5-5", prices(4.0, 20.0, 5.0, 0.20)),
+    ("claude-opus-5", prices(5.0, 25.0, 6.25, 0.50)),
+    ("claude-opus-4-8", prices(5.0, 25.0, 6.25, 0.50)),
+    ("claude-opus-4-7", prices(5.0, 25.0, 6.25, 0.50)),
+    ("claude-opus-4-6", prices(5.0, 25.0, 6.25, 0.50)),
+    ("claude-sonnet-5-5", prices(2.0, 10.0, 2.5, 0.20)),
+    ("claude-sonnet-5", prices(2.0, 10.0, 2.5, 0.20)),
+    ("claude-sonnet-4-6", prices(3.0, 15.0, 3.75, 0.30)),
+    ("claude-haiku-5-5", prices(0.10, 0.50, 0.125, 0.01)),
+    ("claude-haiku-4-5", prices(1.0, 5.0, 1.25, 0.10)),
+];
+
+/// Family fallbacks for an id no prefix matches.
+const FAMILY_FALLBACK: &[(&str, &str)] = &[
+    ("fable", "claude-fable-5-1"),
+    ("opus", "claude-opus-5-5"),
+    ("sonnet", "claude-sonnet-5-5"),
+    ("haiku", "claude-haiku-5-5"),
+];
+
+/// The price of the unknown.
+const DEFAULT_PRICES: Prices = prices(5.0, 25.0, 6.25, 0.50);
+
+fn prices_for(model: &str) -> Prices {
+    let by_prefix = PRICES
+        .iter()
+        .filter(|(prefix, _)| model.starts_with(prefix))
+        .max_by_key(|(prefix, _)| prefix.len());
+    if let Some((_, found)) = by_prefix {
+        return *found;
+    }
+    for (family, row) in FAMILY_FALLBACK {
+        if model.contains(family) {
+            if let Some((_, found)) = PRICES.iter().find(|(prefix, _)| prefix == row) {
+                return *found;
+            }
+        }
+    }
+    DEFAULT_PRICES
+}
+
+impl AgentRuntime {
+    /// The notional dollar cost of `tokens` on `model` (C-15, I-8).
+    #[allow(clippy::cast_precision_loss)]
+    pub fn notional_usd(self, model: &str, tokens: &UsageTokens) -> f64 {
+        match self {
+            AgentRuntime::Claude => {
+                let p = prices_for(model);
+                (tokens.input as f64 * p.input
+                    + tokens.output as f64 * p.output
+                    + tokens.cache_creation as f64 * p.cache_write
+                    + tokens.cache_read as f64 * p.cache_read)
+                    / 1_000_000.0
+            }
+        }
+    }
+}
+
 /// The one message the launcher injects at the soft spend cap (C-18).
 const WRAP_UP_MESSAGE: &str = "Budget reached: commit your work now, call `gsd-meta-manager taskctl report` with your status, then stop.";
 
@@ -862,6 +945,38 @@ mod tests {
         assert_eq!(s("Bash", r#"{"command":"a\nb\u001b[0m"}"#), "a b [0m");
         let long = format!(r#"{{"command":"{}"}}"#, "x".repeat(500));
         assert_eq!(s("Bash", &long).chars().count(), 100);
+    }
+
+    #[test]
+    fn the_price_table_is_notional_and_the_longest_prefix_wins() {
+        let rt = AgentRuntime::default();
+        let one = |model: &str, field: &str| {
+            let mut t = UsageTokens::default();
+            match field {
+                "in" => t.input = 1_000_000,
+                "out" => t.output = 1_000_000,
+                "cr" => t.cache_read = 1_000_000,
+                _ => t.cache_creation = 1_000_000,
+            }
+            rt.notional_usd(model, &t)
+        };
+        let close = |a: f64, b: f64| (a - b).abs() < 1e-9;
+        assert!(close(one("claude-opus-5-5", "in"), 4.0));
+        assert!(close(one("claude-opus-5-5", "out"), 20.0));
+        assert!(close(one("claude-opus-5-5", "cr"), 0.20));
+        assert!(close(one("claude-opus-5-5", "cw"), 5.0));
+        assert!(close(one("claude-opus-5-5-20270101", "in"), 4.0));
+        assert!(close(one("claude-opus-5", "in"), 5.0));
+        assert!(close(one("claude-opus-5", "out"), 25.0));
+        assert!(close(one("claude-sonnet-5-5", "in"), 2.0));
+        assert!(close(one("claude-sonnet-5-5", "out"), 10.0));
+        assert!(close(one("claude-sonnet-4-6", "in"), 3.0));
+        assert!(close(one("claude-sonnet-4-6", "out"), 15.0));
+        assert!(close(one("claude-haiku-4-5", "in"), 1.0));
+        assert!(close(one("claude-haiku-4-5", "out"), 5.0));
+        assert!(close(one("some-opus-thing", "in"), 4.0), "family fallback");
+        assert!(close(one("mystery", "in"), 5.0));
+        assert!(close(one("mystery", "out"), 25.0));
     }
 
     #[test]

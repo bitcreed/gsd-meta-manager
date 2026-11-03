@@ -377,6 +377,11 @@ pub(super) fn help_lines(experimental: bool) -> Vec<Line<'static>> {
                 "T",
                 "One-off status and result: e SUMMARY, m merge, p push, d discard, x kill",
             ),
+            row(
+                "v",
+                "In T: live view of the one-off's stream (PgUp/PgDn, j/k, f, G; Esc closes)",
+            ),
+            row("i", "In the live view: send a message to the running agent"),
             Line::from(""),
             // ── The run-state legend (30-01, D-04): glyph, word and gloss for every
             // status the run list can show, glyphs from the `driver_run` constants.
@@ -642,6 +647,11 @@ mod tests {
                 "T",
                 "One-off status and result: e SUMMARY, m merge, p push, d discard, x kill",
             ),
+            (
+                "v",
+                "In T: live view of the one-off's stream (PgUp/PgDn, j/k, f, G; Esc closes)",
+            ),
+            ("i", "In the live view: send a message to the running agent"),
         ] {
             let expected = row(key, description).spans[0].content.to_string();
             assert!(
@@ -1003,6 +1013,11 @@ mod tests {
                 "T",
                 "One-off status and result: e SUMMARY, m merge, p push, d discard, x kill",
             ),
+            (
+                "v",
+                "In T: live view of the one-off's stream (PgUp/PgDn, j/k, f, G; Esc closes)",
+            ),
+            ("i", "In the live view: send a message to the running agent"),
         ]
         .into_iter()
         .map(|(key, description)| row(key, description).spans[0].content.to_string())
