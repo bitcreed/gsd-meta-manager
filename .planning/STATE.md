@@ -4,10 +4,10 @@ milestone: v2.1.0
 current_phase_name: Sandbox Egress & Agent-Channel Isolation
 status: shipped
 stopped_at: v2.1.0 released locally (tag v2.1.0, not pushed) — interim gsd-core 1.20.0 Sync release between milestones
-last_updated: "2026-11-03T22:05:57.134Z"
+last_updated: "2026-11-03T23:03:56.336Z"
 last_activity: 2026-11-03
 last_activity_desc: v2.1.0 released — gsd-core 1.20.0 Sync
-state_head: ccf48c0ed59cd5970fdb159805682167120c4a1a
+state_head: e6c67c423f69ede1b59b8c4d1705f2016170eb1e
 progress:
   total_phases: 16
   completed_phases: 16
@@ -46,7 +46,7 @@ Milestone: v2.0 Autonomous Orchestration — SHIPPED 2026-10-29 as v2.0.0
 Phase: — (between milestones; Phases 14-31 archived to `.planning/milestones/v2.0-phases/`)
 Plan: —
 Status: shipped
-Last activity: 2026-11-03 - Completed quick task 261103-klf: Cancel/pause one-off runs and resolvers, accurate run.json git refs, bounded merge diff
+Last activity: 2026-11-03 - Completed quick task 261103-mnr: Fix one-off session lifecycle, pause delivery, rate-limit and meter bugs from first real paid run
 
 Archive: `.planning/milestones/v2.0-ROADMAP.md`, `v2.0-REQUIREMENTS.md`, `v2.0-MILESTONE-AUDIT.md`.
 Carried forward: five security-adjacent review clusters as todos `2026-10-29-v2-carry-*`;
@@ -528,6 +528,7 @@ Older entries (Phase 19 T-19-* rows, Phase 21 round-13 gaps, Phase 26 risks, 31-
 | 261103-gt1 | Live viewer with message injection and spend meter for one-off runs | 2026-11-03 | a65de2d | [261103-gt1-live-viewer-with-message-injection-and-s](./quick/261103-gt1-live-viewer-with-message-injection-and-s/) |
 | 261103-hx7 | Parallel one-offs per project, tracked branches, LLM-resolved merges | 2026-11-03 | 01846de | [261103-hx7-parallel-one-offs-per-project-tracked-br](./quick/261103-hx7-parallel-one-offs-per-project-tracked-br/) |
 | 261103-klf | Cancel/pause one-off runs and resolvers, accurate run.json git refs, bounded merge diff | 2026-11-03 | ccf48c0 | [261103-klf-cancel-pause-one-off-runs-and-resolvers-](./quick/261103-klf-cancel-pause-one-off-runs-and-resolvers-/) |
+| 261103-mnr | Fix one-off session lifecycle (stdin open during background work), pause delivery/outcome, rate-limit utilization, landing count, live spend in task status, honest meter | 2026-11-03 | e6c67c4 | [261103-mnr-fix-one-off-session-lifecycle-pause-deli](./quick/261103-mnr-fix-one-off-session-lifecycle-pause-deli/) |
 
 ## Deferred Items
 
