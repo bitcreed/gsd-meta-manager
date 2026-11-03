@@ -41,7 +41,8 @@ use crate::launcher::push::{
 use super::runtime::AgentRuntime;
 use super::store::{
     project_dir_for, read_view, rfc3339, write_record, Landing, LandingKind, MergeHow, OneoffView,
-    RecordStatus,
+    RecordStatus, RunRecord, NOTE_ALREADY_GONE, NOTE_DELETED_AFTER_LANDING,
+    NOTE_DELETED_BY_DISCARD,
 };
 use super::BRANCH_PREFIX;
 use super::LAND_LOCK_FILE;
@@ -306,39 +307,135 @@ fn git_in(dir: &Path, args: &[&str]) -> push::GitRun {
 /// The longest `git diff` of a landed merge may run.
 const DIFF_BUDGET: Duration = Duration::from_secs(60);
 
-/// The diff of a landed merge commit against its first parent, capped, for the TUI's
-/// `d` (quick 261103-hx7, D-06, I-22). Hardened git in the project (no hooks, pager,
-/// external diff driver or textconv), headed by the conflicted files. Blocking: the
-/// caller runs it on `spawn_blocking`.
+/// The longest the full diff export may run.
+const EXPORT_BUDGET: Duration = Duration::from_secs(120);
+
+/// The `git diff` arguments every read of a merge's diff shares, so the shortstat, the
+/// numstat, the hunks and the export agree (klf, I-03): no external driver, no
+/// textconv, no colour, no rename detection, first parent against the merge.
+fn merge_diff_args(project: &Path, flags: &[&str], merge_sha: &str) -> Vec<OsString> {
+    let mut args: Vec<OsString> = vec!["-C".into(), project.as_os_str().to_owned(), "diff".into()];
+    args.extend(
+        [
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-color",
+            "--no-renames",
+        ]
+        .iter()
+        .map(OsString::from),
+    );
+    args.extend(flags.iter().map(OsString::from));
+    args.push(format!("{merge_sha}^1").into());
+    args.push(merge_sha.into());
+    args
+}
+
+/// The diff of a landed merge commit against its first parent, for the TUI's `d`
+/// (quick 261103-klf, L-6, C-19, C-20, I-03). Three bounded reads through hardened git
+/// in the project, none of which holds more than its cap in memory: the totals
+/// (`--shortstat`), the per-file summary (`--numstat -z`, 2000 files / 1 MiB) and the
+/// hunks (5000 lines / 512 KiB, after which git is killed). The view is headed by the
+/// conflicted files and, when the hunks were cut, closed by a `truncated — ` marker.
+/// Blocking: the caller runs it on `spawn_blocking`.
 pub fn merge_diff(
     project: &Path,
     merge_sha: &str,
     conflicted: &[String],
 ) -> Result<Vec<String>, String> {
+    use super::merge::{
+        diff_view, parse_numstat_z, parse_shortstat, DIFF_MAX_BYTES, DIFF_MAX_FILES,
+        DIFF_MAX_LINES, NUMSTAT_MAX_BYTES,
+    };
     if !push::is_hex_sha(merge_sha) {
         return Err("the recorded merge commit is not a commit id".to_owned());
     }
-    let first_parent = format!("{merge_sha}^1");
-    let run = push::git_in(
-        project,
-        &[
-            "diff",
-            "--no-ext-diff",
-            "--no-textconv",
-            "--no-color",
-            &first_parent,
-            merge_sha,
-        ],
+    let fail =
+        |what: &str, why: &str| format!("git could not diff {} ({what}): {why}", &merge_sha[..12]);
+    let stat = push::git_capped(
+        merge_diff_args(project, &["--shortstat"], merge_sha),
+        4096,
+        16,
         DIFF_BUDGET,
     );
-    if !run.success {
-        return Err(format!(
-            "git could not diff {}: {}",
-            &merge_sha[..12],
-            run.last_error
-        ));
+    if !stat.success {
+        return Err(fail("totals", &stat.last_error));
     }
-    Ok(super::merge::diff_lines(conflicted, &run.stdout))
+    let numstat = push::git_capped(
+        merge_diff_args(project, &["--numstat", "-z"], merge_sha),
+        NUMSTAT_MAX_BYTES,
+        usize::MAX,
+        DIFF_BUDGET,
+    );
+    if !numstat.success {
+        return Err(fail("files", &numstat.last_error));
+    }
+    let hunks = push::git_capped(
+        merge_diff_args(project, &[], merge_sha),
+        DIFF_MAX_BYTES,
+        DIFF_MAX_LINES,
+        DIFF_BUDGET,
+    );
+    if !hunks.success {
+        return Err(fail("hunks", &hunks.last_error));
+    }
+    let rows = parse_numstat_z(&numstat.stdout);
+    let rows_truncated = numstat.truncated || rows.len() > DIFF_MAX_FILES;
+    Ok(diff_view(
+        conflicted,
+        &parse_shortstat(&stat.stdout),
+        &rows,
+        rows_truncated,
+        &hunks.stdout,
+        hunks.truncated,
+    ))
+}
+
+/// Write the full diff of a landed merge commit to
+/// `<run-dir>/land/merge-<sha12>.diff` and return the path (klf, C-21, I-04, T-klf-02).
+///
+/// git's stdout goes straight into the file, never through memory. `land/` is created
+/// `0700` if missing; the file is opened `O_NOFOLLOW | O_CREAT | O_TRUNC` with mode
+/// `0600`, so a symlink planted at that path fails the export instead of being followed.
+/// Blocking: the caller runs it on `spawn_blocking`.
+pub fn export_merge_diff(
+    project: &Path,
+    run_dir: &Path,
+    merge_sha: &str,
+) -> Result<PathBuf, String> {
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+    if !push::is_hex_sha(merge_sha) {
+        return Err("the recorded merge commit is not a commit id".to_owned());
+    }
+    let land = run_dir.join(super::LAND_DIR);
+    match fs::DirBuilder::new().mode(0o700).create(&land) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(e) => return Err(format!("create {}: {e}", land.display())),
+    }
+    let path = land.join(format!("merge-{}.diff", &merge_sha[..12]));
+    let file = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .custom_flags(i32::try_from(rustix::fs::OFlags::NOFOLLOW.bits()).unwrap_or(0))
+        .open(&path)
+        .map_err(|e| format!("open {}: {e}", path.display()))?;
+    let run = push::git_to_file(
+        merge_diff_args(project, &[], merge_sha),
+        file,
+        EXPORT_BUDGET,
+    );
+    if run.success {
+        Ok(path)
+    } else {
+        Err(format!(
+            "git could not write the diff to {}: {}",
+            path.display(),
+            run.last_error
+        ))
+    }
 }
 
 /// Record a landing on the run.
@@ -429,6 +526,9 @@ pub fn merge(project: &Path, run_id: &str, opts: &LandOptions) -> Result<String,
         return super::resolve::land_by_merge(&project, &view, &target, opts);
     }
 
+    // klf I-08: the checkout's HEAD before the fast-forward starts the landed range.
+    let old_head = ref_commit(&project, "HEAD");
+
     // C-19: the user's own git, hooks included.
     let args: Vec<OsString> = [
         "-C",
@@ -458,24 +558,39 @@ pub fn merge(project: &Path, run_id: &str, opts: &LandOptions) -> Result<String,
         None => return Err("git merge did not finish".to_owned()),
     }
     let branch = facts.branch.unwrap_or_default();
-    record_landing(
-        &view,
-        Landing {
-            how: Some(MergeHow::Ff),
-            merge_sha: Some(head.clone()),
-            ..Landing::plain(LandingKind::Merged, rfc3339(Utc::now()), branch.clone())
-        },
-    );
     let mut lines = vec![format!(
         "merged {} commit(s) of {run_id} into {branch} (now at {})",
         facts.commits,
         &head[..head.len().min(12)]
     )];
-    if let Some(line) = delete_tracked_branch_after_landing(&project, run_id, &head) {
+    // klf I-06: the delete first, then ONE write with the landing and the branch fields.
+    let mut updated = view.record.clone();
+    updated.landed.push(Landing {
+        how: Some(MergeHow::Ff),
+        merge_sha: Some(head.clone()),
+        range: old_head.map(|old| format!("{old}..{head}")),
+        ..Landing::plain(LandingKind::Merged, rfc3339(Utc::now()), branch.clone())
+    });
+    updated.land_failure = None;
+    if let Some(line) = clear_tracking_after_landing(&project, run_id, &head, &mut updated) {
         lines.push(line);
+    }
+    if let Err(e) = write_record(&view.run_dir, &updated) {
+        eprintln!("task land: the landing succeeded but could not be recorded: {e}");
     }
     lines.extend(sensitive_warning(&record.changed_files));
     Ok(lines.join("\n"))
+}
+
+/// What deleting the tracked branch after a landing came to (klf, I-06).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TrackedDelete {
+    /// `git branch -d` removed it.
+    Deleted,
+    /// There was no such branch, or it points elsewhere (nothing of ours to delete).
+    Absent,
+    /// The delete failed or was refused; the ref stays, and this line says why.
+    Left(String),
 }
 
 /// After a landing the tracked branch is merged and stays reachable from the target, so
@@ -485,19 +600,47 @@ pub(crate) fn delete_tracked_branch_after_landing(
     project: &Path,
     run_id: &str,
     head: &str,
-) -> Option<String> {
+) -> TrackedDelete {
     let reference = tracked_ref(run_id);
     if ref_commit(project, &reference).as_deref() != Some(head) {
-        return None;
+        return TrackedDelete::Absent;
     }
     let name = format!("{BRANCH_PREFIX}{run_id}");
     let deleted = git_in(project, &["branch", "--delete", "--quiet", &name]);
-    (!deleted.success).then(|| {
-        format!(
+    if deleted.success {
+        TrackedDelete::Deleted
+    } else {
+        TrackedDelete::Left(format!(
             "the tracked branch was not deleted: {}",
             push::redact_urls(&deleted.last_error)
-        )
-    })
+        ))
+    }
+}
+
+/// Delete the tracked branch after a landing and bring `record`'s branch fields in line
+/// with what happened (klf, C-15, I-06). The caller writes the record once afterwards.
+/// Returns the one line to print when the branch was left in place.
+pub(crate) fn clear_tracking_after_landing(
+    project: &Path,
+    run_id: &str,
+    head: &str,
+    record: &mut RunRecord,
+) -> Option<String> {
+    match delete_tracked_branch_after_landing(project, run_id, head) {
+        TrackedDelete::Deleted => {
+            record.tracked_branch = None;
+            record.tracking_note = Some(NOTE_DELETED_AFTER_LANDING.to_owned());
+            None
+        }
+        TrackedDelete::Absent => {
+            if record.tracked_branch.is_some() {
+                record.tracked_branch = None;
+                record.tracking_note = Some(NOTE_ALREADY_GONE.to_owned());
+            }
+            None
+        }
+        TrackedDelete::Left(line) => Some(line),
+    }
 }
 
 /// Push the run's recorded head to `refs/heads/gsd-auto/<alias>/<run-id>`.
@@ -612,13 +755,23 @@ pub fn discard(project: &Path, run_id: &str) -> Result<String, String> {
         let reference = tracked_ref(run_id);
         if ref_commit(project, &reference).is_some() {
             let deleted = git_in(project, &["update-ref", "-d", &reference, head]);
-            lines.push(if deleted.success {
-                format!("deleted branch {BRANCH_PREFIX}{run_id}")
+            // klf I-07: record the branch's fate BEFORE the directory goes, so a removal
+            // that fails half-way leaves no stale ref in run.json.
+            let mut updated = view.record.clone();
+            if deleted.success {
+                updated.tracked_branch = None;
+                updated.tracking_note = Some(NOTE_DELETED_BY_DISCARD.to_owned());
+                lines.push(format!("deleted branch {BRANCH_PREFIX}{run_id}"));
             } else {
-                format!(
+                updated.tracking_note =
+                    Some("left by discard: it no longer points at the run's head".to_owned());
+                lines.push(format!(
                     "left branch {BRANCH_PREFIX}{run_id}: it no longer points at the run's head"
-                )
-            });
+                ));
+            }
+            if let Err(e) = write_record(&view.run_dir, &updated) {
+                eprintln!("task land: could not record the branch's fate: {e}");
+            }
         }
     }
     fs::remove_dir_all(&canonical).map_err(|e| format!("remove {}: {e}", canonical.display()))?;

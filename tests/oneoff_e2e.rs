@@ -208,6 +208,28 @@ fn a_detached_quick_run_on_a_todo_reports_records_and_merges() {
         .exists());
     let after = status_of(&fx);
     assert_eq!(after["record"]["landed"][0]["kind"], "merged");
+    // klf C-15: the landing records its range and clears the deleted branch.
+    let landing = &after["record"]["landed"][0];
+    assert_eq!(landing["how"], "ff", "{landing}");
+    assert_eq!(landing["merge_sha"], record["head"], "{landing}");
+    assert_eq!(
+        landing["range"],
+        format!(
+            "{}..{}",
+            record["base"].as_str().unwrap(),
+            record["head"].as_str().unwrap()
+        ),
+        "the checkout was at the run's base: {landing}"
+    );
+    assert!(after["record"]["tracked_branch"].is_null(), "{after}");
+    assert_eq!(after["record"]["tracking_note"], "deleted after landing");
+    let text = run(&fx, &["status", ALIAS, "--run-id", &id]);
+    let text = String::from_utf8_lossy(&text.stdout);
+    assert!(
+        text.contains("branch:    none (deleted after landing)"),
+        "{text}"
+    );
+    assert!(text.contains("range "), "{text}");
     let discarded = run(&fx, &["land", "discard", ALIAS, &id]);
     assert_eq!(discarded.status.code(), Some(0), "{discarded:?}");
     assert!(!dir.exists());
@@ -443,6 +465,22 @@ fn two_concurrent_runs_on_one_project_run_and_are_tracked() {
     assert_eq!(merged.status.code(), Some(0), "{merged:?}");
     assert_eq!(branch_head(fx.project(), &a), None, "{merged:?}");
     assert!(branch_head(fx.project(), &b).is_some());
+    let a_after = status_of_run(&fx, &a);
+    assert!(a_after["record"]["tracked_branch"].is_null(), "{a_after}");
+    assert_eq!(a_after["record"]["tracking_note"], "deleted after landing");
+    let landing = &a_after["record"]["landed"][0];
+    assert_eq!(landing["how"], "ff");
+    assert_eq!(landing["merge_sha"], a_after["record"]["head"]);
+    assert!(landing["range"]
+        .as_str()
+        .unwrap()
+        .ends_with(a_after["record"]["head"].as_str().unwrap()));
+    let b_after = status_of_run(&fx, &b);
+    assert_eq!(
+        b_after["record"]["tracked_branch"],
+        format!("refs/heads/gsd-oneoff/{b}"),
+        "an unlanded run keeps its branch"
+    );
     // The finished runs no longer need an id: the newest is the default.
     assert_eq!(run(&fx, &["status", ALIAS]).status.code(), Some(0));
 }
@@ -463,7 +501,7 @@ fn a_finished_run_is_tracked_as_a_branch_and_discard_deletes_it() {
     let shown = run(&fx, &["status", ALIAS]);
     assert!(
         String::from_utf8_lossy(&shown.stdout)
-            .contains(&format!("branch:    refs/heads/gsd-oneoff/{id}")),
+            .contains(&format!("branch:    gsd-oneoff/{id} @ {}", &head[..12])),
         "{shown:?}"
     );
     let discarded = run(&fx, &["land", "discard", ALIAS, &id]);
@@ -1071,6 +1109,20 @@ fn a_non_conflicting_merge_lands_as_a_merge_commit() {
         .unwrap();
     assert_eq!(landing["how"], "merge", "{after}");
     assert_eq!(landing["merge_sha"], parents[0].as_str());
+    assert_eq!(
+        landing["range"],
+        format!("{}..{}", parents[1], parents[0]),
+        "range = target tip..merge commit: {landing}"
+    );
+    assert!(after["record"]["tracked_branch"].is_null(), "{after}");
+    assert_eq!(after["record"]["tracking_note"], "deleted after landing");
+    let text_status = run(&fx, &["status", ALIAS, "--run-id", &id]);
+    let text_status = String::from_utf8_lossy(&text_status.stdout);
+    let sha_full = parents[0].as_str();
+    assert!(
+        text_status.contains(&format!("diff {sha_full}^1 {sha_full}")),
+        "{text_status}"
+    );
     assert!(
         !run_dir(&fx, &id).join("land/1/stream.jsonl").exists(),
         "a clean merge has no resolver"
@@ -1092,6 +1144,20 @@ fn a_non_conflicting_merge_lands_as_a_merge_commit() {
         diff.len() > 3,
         "the run's changes follow the header: {diff:?}"
     );
+    // klf: header, then the per-file summary, a blank line, then the hunks.
+    let blank = diff
+        .iter()
+        .position(String::is_empty)
+        .expect("a blank line");
+    assert!(blank >= 2, "a summary follows the header: {diff:?}");
+    assert!(diff[1].starts_with("+1 -0  "), "{diff:?}");
+    assert!(
+        diff[blank + 1..]
+            .iter()
+            .any(|l| l.starts_with("diff --git ")),
+        "{diff:?}"
+    );
+    assert!(!diff.last().unwrap().starts_with("truncated"), "{diff:?}");
     assert!(
         !diff.join("\n").contains("unrelated.txt"),
         "the target's own commit is not in the diff against the first parent"
@@ -1427,4 +1493,130 @@ fn a_second_landing_of_the_same_run_is_refused_while_one_is_in_progress() {
     // The lock is free again: the run can now be discarded.
     let discard = run(&fx, &["land", "discard", ALIAS, &id]);
     assert_eq!(discard.status.code(), Some(0), "{discard:?}");
+}
+
+// ---------------------------------------------------------------- klf: the bounded diff
+
+/// A run that commits a huge file and a small one, reporting done.
+const BIG_SCENARIO: &str = r#"
+set -e
+G="git -c user.name=t -c user.email=t@example.com"
+i=0
+: > a-big.txt
+while [ $i -lt 20000 ]; do echo "line $i" >> a-big.txt; i=$((i+1)); done
+echo small > z-small.txt
+$G add -A
+$G commit -qm "big and small"
+gsd-meta-manager taskctl report --status done --headline "Big" --verified "true: ok"
+printf '%s\n' '{"type":"result","subtype":"success"}'
+"#;
+
+#[test]
+fn a_huge_merge_diff_is_capped_summarized_and_exported_in_full() {
+    let fx = with_identity(fixture());
+    fx.write_scenario(BIG_SCENARIO);
+    let out = run(&fx, &["run", ALIAS, "--text", "big"]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let id = started_id(&out);
+    wait_run_finished(&fx, &id);
+    fs::write(fx.project().join("unrelated.txt"), "x").unwrap();
+    git(fx.project(), &["add", "unrelated.txt"]);
+    git(fx.project(), &["commit", "-qm", "moved on"]);
+    let merged = run(&fx, &["land", "merge", ALIAS, &id]);
+    assert_eq!(merged.status.code(), Some(0), "{merged:?}");
+    let after = status_of_run(&fx, &id);
+    let landing = after["record"]["landed"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap();
+    let sha = landing["merge_sha"].as_str().unwrap().to_owned();
+
+    let diff = gsd_meta_manager::oneoff::land::merge_diff(fx.project(), &sha, &[])
+        .expect("the merge diff reads");
+    // header + 2 summary lines + blank + at most 5000 hunk lines + the marker.
+    assert!(diff.len() <= 2 + 2 + 5000 + 1, "{}", diff.len());
+    let joined = diff.join("\n");
+    assert!(
+        joined.contains("+20000 -0  a-big.txt"),
+        "{}",
+        &joined[..400.min(joined.len())]
+    );
+    assert!(joined.contains("+1 -0  z-small.txt"));
+    let marker = diff.last().unwrap();
+    assert!(marker.starts_with("truncated — "), "{marker}");
+    assert!(marker.contains("1 more file,"), "{marker}");
+    let more: u64 = marker
+        .split("~")
+        .nth(1)
+        .and_then(|rest| rest.split_whitespace().next())
+        .and_then(|n| n.parse().ok())
+        .expect("a line count in the marker");
+    assert!(
+        (14900..=15100).contains(&more),
+        "about 15000 lines were cut: {marker}"
+    );
+
+    let dir = run_dir(&fx, &id);
+    let path = gsd_meta_manager::oneoff::land::export_merge_diff(fx.project(), &dir, &sha)
+        .expect("the export writes");
+    assert_eq!(path, dir.join(format!("land/merge-{}.diff", &sha[..12])));
+    assert_eq!(fs::metadata(&path).unwrap().mode() & 0o777, 0o600);
+    let expected = Command::new("git")
+        .current_dir(fx.project())
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .args([
+            "diff",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-color",
+            "--no-renames",
+            &format!("{sha}^1"),
+            &sha,
+        ])
+        .output()
+        .unwrap()
+        .stdout;
+    assert_eq!(
+        fs::read(&path).unwrap(),
+        expected,
+        "byte-equal to git's own diff"
+    );
+
+    // A symlink planted at the export path is not followed.
+    let victim = fx.scratch.path().join("victim.txt");
+    fs::write(&victim, "keep").unwrap();
+    fs::remove_file(&path).unwrap();
+    std::os::unix::fs::symlink(&victim, &path).unwrap();
+    let refused = gsd_meta_manager::oneoff::land::export_merge_diff(fx.project(), &dir, &sha);
+    assert!(refused.is_err(), "{refused:?}");
+    assert_eq!(fs::read_to_string(&victim).unwrap(), "keep");
+}
+
+#[test]
+fn a_failed_discard_leaves_no_stale_branch_ref() {
+    let fx = fixture();
+    let (id, _) = quick_run(&fx);
+    let dir = run_dir(&fx, &id);
+    // An unremovable subdirectory with an entry makes `remove_dir_all` fail half-way.
+    let stuck = dir.join("report/stuck");
+    fs::create_dir_all(&stuck).unwrap();
+    fs::write(stuck.join("f"), "x").unwrap();
+    fs::set_permissions(&stuck, std::os::unix::fs::PermissionsExt::from_mode(0o500)).unwrap();
+    // A superuser would remove it anyway; the test is about the unprivileged case.
+    let discarded = run(&fx, &["land", "discard", ALIAS, &id]);
+    fs::set_permissions(&stuck, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+    if discarded.status.success() {
+        return;
+    }
+    assert_eq!(discarded.status.code(), Some(1), "{discarded:?}");
+    assert_eq!(branch_head(fx.project(), &id), None, "the branch is gone");
+    // `remove_dir_all` may have unlinked run.json before it met the stuck directory
+    // (the order is the filesystem's); when it survives it must not name the branch.
+    if let Ok(text) = fs::read_to_string(dir.join("run.json")) {
+        let record: Value = serde_json::from_str(&text).unwrap();
+        assert!(record["tracked_branch"].is_null(), "{record}");
+        assert_eq!(record["tracking_note"], "deleted by discard", "{record}");
+    }
 }

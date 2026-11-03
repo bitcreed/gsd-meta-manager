@@ -42,7 +42,8 @@ mod unix {
     };
     use gsd_meta_manager::oneoff::session::validate_soft_cap;
     use gsd_meta_manager::oneoff::store::{
-        project_dir_for, read_runs_in, resolve_run, LiveState, OneoffView, ReportSource, RunPick,
+        project_dir_for, read_runs_in, resolve_run, BranchState, LiveState, MergeHow, OneoffView,
+        ReportSource, RunPick,
     };
     use gsd_meta_manager::oneoff::stream::{meter_text, Follower};
     use gsd_meta_manager::oneoff::todos::{title_from, valid_todo_file_name, PENDING_REL};
@@ -285,10 +286,18 @@ mod unix {
                 "absent"
             }
         ));
-        lines.push(match (&record.tracked_branch, &record.tracking_note) {
-            (Some(reference), _) => format!("branch:    {}", shown(reference)),
-            (None, Some(note)) => format!("branch:    none ({})", shown(note)),
-            (None, None) => "branch:    none".to_owned(),
+        lines.push(match record.branch_state() {
+            BranchState::Tracked { name, head } => match head {
+                Some(head) => format!(
+                    "branch:    {} @ {}",
+                    shown(&name),
+                    shown(&head[..head.len().min(12)])
+                ),
+                None => format!("branch:    {}", shown(&name)),
+            },
+            BranchState::Gone { why } => format!("branch:    none ({})", shown(&why)),
+            BranchState::Untracked { note } if note.is_empty() => "branch:    none".to_owned(),
+            BranchState::Untracked { note } => format!("branch:    none ({})", shown(&note)),
         });
         if let Some(path) = &record.summary_path {
             lines.push(format!(
@@ -315,11 +324,26 @@ mod unix {
                 shown(&landing.at),
                 shown(&landing.detail)
             ));
+            if let Some(range) = &landing.range {
+                lines.push(format!("           range {}", shown(range)));
+            }
             if let Some(sha) = &landing.merge_sha {
                 lines.push(format!(
                     "           merge commit {}",
                     shown(&sha[..sha.len().min(12)])
                 ));
+                let project = shown(&record.project.display().to_string());
+                match (landing.how, &landing.range) {
+                    (Some(MergeHow::Merge | MergeHow::Resolved), _) => lines.push(format!(
+                        "diff:      git -C {project} diff {}^1 {}",
+                        shown(sha),
+                        shown(sha)
+                    )),
+                    (Some(MergeHow::Ff), Some(range)) => {
+                        lines.push(format!("diff:      git -C {project} diff {}", shown(range)));
+                    }
+                    _ => {}
+                }
             }
             if !landing.conflicted.is_empty() {
                 lines.push(format!(
@@ -415,10 +439,10 @@ mod unix {
             record.mode.as_str(),
             result,
             record.commits.unwrap_or(0),
-            if record.tracked_branch.is_some() {
-                "yes"
-            } else {
-                "no"
+            match record.branch_state() {
+                BranchState::Tracked { .. } => "yes",
+                BranchState::Gone { .. } => "gone",
+                BranchState::Untracked { .. } => "no",
             },
             landed
         )

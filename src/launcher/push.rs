@@ -42,7 +42,7 @@ use regex::Regex;
 use serde_json::Value;
 
 use super::config_dir::run_state_dir_in;
-use super::process::run_bounded_with_stderr;
+use super::process::{run_bounded_with_stderr, run_capped, run_to_file};
 use super::LauncherError;
 use crate::config::DriverOptIn;
 use crate::driver::lock::ACQUIRE_RETRY_BUDGET;
@@ -326,16 +326,80 @@ pub(crate) fn git_mirror_only(args: Vec<OsString>, budget: Duration) -> GitRun {
 }
 
 fn git_with_env(args: Vec<OsString>, budget: Duration, more_env: &[(&str, &str)]) -> GitRun {
-    let args = hardened_git_args(args);
+    let (args, env) = git_call(args, more_env);
+    match run_bounded_with_stderr("git", &args, None, &env, budget) {
+        Some((out, line)) => GitRun {
+            success: out.status.success(),
+            stdout: String::from_utf8_lossy(&out.stdout).trim().to_owned(),
+            last_error: redact_captured(&line),
+        },
+        None => GitRun {
+            success: false,
+            stdout: String::new(),
+            last_error: format!("git did not start or did not finish within {budget:?}"),
+        },
+    }
+}
+
+/// The argument vector and environment every launcher `git` carries (the hardening
+/// prefix, `GIT_TERMINAL_PROMPT=0`, the protocol allowlist, plus `more_env`): one
+/// builder, so [`git_with_env`], [`git_capped`] and [`git_to_file`] cannot drift apart.
+#[allow(clippy::type_complexity)]
+fn git_call<'a>(
+    args: Vec<OsString>,
+    more_env: &[(&'a str, &'a str)],
+) -> (Vec<OsString>, Vec<(&'a str, &'a str)>) {
     let mut env: Vec<(&str, &str)> = vec![
         ("GIT_TERMINAL_PROMPT", "0"),
         ("GIT_ALLOW_PROTOCOL", ALLOWED_PROTOCOLS),
     ];
     env.extend_from_slice(more_env);
-    match run_bounded_with_stderr("git", &args, None, &env, budget) {
-        Some((out, line)) => GitRun {
-            success: out.status.success(),
-            stdout: String::from_utf8_lossy(&out.stdout).trim().to_owned(),
+    (hardened_git_args(args), env)
+}
+
+/// What [`git_capped`] came to.
+pub(crate) struct CappedGitRun {
+    pub(crate) success: bool,
+    /// Lossy UTF-8 of at most the byte cap; NOT trimmed.
+    pub(crate) stdout: String,
+    /// More output existed than the caps allowed; git was killed.
+    pub(crate) truncated: bool,
+    pub(crate) last_error: String,
+}
+
+/// [`git`] whose stdout is read only up to `max_bytes` / `max_lines` (L-6): a cap hit
+/// kills and reaps git. The host's git configuration is on, as for [`git`].
+pub(crate) fn git_capped(
+    args: Vec<OsString>,
+    max_bytes: usize,
+    max_lines: usize,
+    budget: Duration,
+) -> CappedGitRun {
+    let (args, env) = git_call(args, &[]);
+    match run_capped("git", &args, None, &env, max_bytes, max_lines, budget) {
+        Some(out) => CappedGitRun {
+            success: out.truncated || out.status.is_some_and(|s| s.success()),
+            stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+            truncated: out.truncated,
+            last_error: redact_captured(&out.stderr_line),
+        },
+        None => CappedGitRun {
+            success: false,
+            stdout: String::new(),
+            truncated: false,
+            last_error: format!("git did not start or did not finish within {budget:?}"),
+        },
+    }
+}
+
+/// [`git`] whose stdout goes straight into `out` (C-21); `stdout` of the result is
+/// empty.
+pub(crate) fn git_to_file(args: Vec<OsString>, out: std::fs::File, budget: Duration) -> GitRun {
+    let (args, env) = git_call(args, &[]);
+    match run_to_file("git", &args, None, &env, out, budget) {
+        Some((status, line)) => GitRun {
+            success: status.success(),
+            stdout: String::new(),
             last_error: redact_captured(&line),
         },
         None => GitRun {

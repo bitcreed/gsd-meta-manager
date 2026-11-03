@@ -2297,6 +2297,7 @@ fn fixture_for(type_name: &str) -> Option<Fixture> {
                     merge_sha: Some("0123456789abcdef0123456789abcdef01234567".to_string()),
                     conflicted: vec![identity.to_string()],
                     attempts: vec![identity.to_string()],
+                    range: Some(identity.to_string()),
                 });
                 view.record.land_failure = Some(crate::oneoff::store::LandFailure {
                     at: "2026-11-03T11:00:00Z".to_string(),
@@ -2355,11 +2356,15 @@ fn fixture_for(type_name: &str) -> Option<Fixture> {
                 identity.to_string(),
                 Ok(vec![
                     format!("conflicted: {identity}"),
+                    format!("+1 -1  {identity}"),
+                    format!("bin  {identity}"),
+                    format!("... 3 more files {identity}"),
                     String::new(),
                     format!("diff --git a/{identity} b/{identity}"),
                     format!("@@ -1 +1 @@ {identity}"),
                     format!("+{identity}"),
                     format!("-{identity}"),
+                    format!("truncated — 1 more file, ~2 more lines {identity}"),
                 ]),
             ));
             states.push(one_state("merge diff", diff_ctx, Box::new(diff)));

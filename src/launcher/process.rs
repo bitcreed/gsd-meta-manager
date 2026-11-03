@@ -8,7 +8,7 @@
 //! outside its sandbox. The agent is reached only through `bwrap` (or, in 28-04,
 //! the explicit degraded spawn).
 //!
-//! Seven shapes (the piped sibling of the first is [`spawn_launch_child_piped`]):
+//! Nine shapes (the piped sibling of the first is [`spawn_launch_child_piped`]):
 //!
 //! * [`spawn_launch_child`], the long-lived driver child: a process-group leader
 //!   with stdin `/dev/null` (no TTY, no `tmux`), stdout and stderr into ONE pipe
@@ -23,6 +23,10 @@
 //!   the command's stderr (the push step's `git` and `gh`, 28-08).
 //! * [`spawn_bridged_child`], the driver as the in-sandbox bridge's child
 //!   (28.1-05): environment and stdio inherited, so it is bwrap's own.
+//! * [`run_capped`], a host command whose stdout is read only up to a byte and a
+//!   line cap, after which the child is killed and reaped (klf: the merge diff).
+//! * [`run_to_file`], a host command whose stdout goes straight into a file the
+//!   caller opened, never through this process's memory (klf: the full diff).
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -471,6 +475,226 @@ pub fn run_bounded_with_stderr(
     Some((output, line))
 }
 
+/// What [`run_capped`] returns: the stdout read up to the caps, and whether the
+/// command had more to say.
+#[derive(Debug)]
+pub struct CappedOutput {
+    /// `None` when the command was killed because a cap was reached.
+    pub status: Option<ExitStatus>,
+    pub stdout: Vec<u8>,
+    /// A cap was reached and the command had more output (it was killed).
+    pub truncated: bool,
+    /// The last non-empty stderr line (see [`run_bounded_with_stderr`]).
+    pub stderr_line: String,
+}
+
+/// A host command builder shared by the shapes that start `git` or `sh`-like tools:
+/// `git` loses the repository-selecting `GIT_*` variables, then `extra_env` is set.
+fn host_command(
+    program: &str,
+    args: &[OsString],
+    cwd: Option<&Path>,
+    extra_env: &[(&str, &str)],
+) -> Command {
+    let mut cmd = Command::new(program);
+    cmd.args(args);
+    if let Some(cwd) = cwd {
+        cmd.current_dir(cwd);
+    }
+    if program == "git" {
+        for key in GIT_REPO_ENV {
+            cmd.env_remove(key);
+        }
+    }
+    for (key, value) in extra_env {
+        cmd.env(key, value);
+    }
+    cmd
+}
+
+/// The last stderr line of a temporary file the child wrote to.
+fn stderr_line_of(sink: &mut File) -> String {
+    use std::io::{Seek, SeekFrom};
+    let Ok(len) = sink.seek(SeekFrom::End(0)) else {
+        return String::new();
+    };
+    if sink
+        .seek(SeekFrom::Start(len.saturating_sub(STDERR_TAIL_BYTES)))
+        .is_err()
+    {
+        return String::new();
+    }
+    let mut tail = Vec::new();
+    if sink.take(STDERR_TAIL_BYTES).read_to_end(&mut tail).is_err() {
+        return String::new();
+    }
+    last_line_of_tail(&tail, len > STDERR_TAIL_BYTES)
+}
+
+/// Read `pipe` into memory until `max_bytes` or `max_lines` is reached or the stream
+/// ends. Returns the bytes kept and whether the stream had more after the cap.
+///
+/// At the byte cap the excess of the chunk is dropped; at the line cap the read stops
+/// right after the `max_lines`-th newline. One more `read` then says whether anything
+/// was left, so an output that is exactly at the cap is not called truncated.
+fn read_capped(mut pipe: impl Read, max_bytes: usize, max_lines: usize) -> (Vec<u8>, bool) {
+    let mut kept: Vec<u8> = Vec::new();
+    let mut lines = 0usize;
+    let mut chunk = [0u8; 8192];
+    loop {
+        let n = match pipe.read(&mut chunk) {
+            Ok(0) | Err(_) => return (kept, false),
+            Ok(n) => n,
+        };
+        let mut take = n.min(max_bytes - kept.len());
+        let mut capped = take < n;
+        for (at, byte) in chunk[..take].iter().enumerate() {
+            if *byte == b'\n' {
+                lines += 1;
+                if lines >= max_lines {
+                    capped = capped || at + 1 < n;
+                    take = at + 1;
+                    kept.extend_from_slice(&chunk[..take]);
+                    return finish_capped(pipe, kept, capped);
+                }
+            }
+        }
+        kept.extend_from_slice(&chunk[..take]);
+        if capped {
+            return (kept, true);
+        }
+        if kept.len() >= max_bytes {
+            return finish_capped(pipe, kept, false);
+        }
+    }
+}
+
+/// The cap was met exactly: more output means truncated.
+fn finish_capped(mut pipe: impl Read, kept: Vec<u8>, already: bool) -> (Vec<u8>, bool) {
+    if already {
+        return (kept, true);
+    }
+    let mut probe = [0u8; 1];
+    let more = matches!(pipe.read(&mut probe), Ok(n) if n > 0);
+    (kept, more)
+}
+
+/// Run a host command and read its stdout only up to `max_bytes` / `max_lines`,
+/// within `budget` (klf, L-6, T-klf-01).
+///
+/// A reader thread stops at either cap and drops the pipe. When the cap was hit with
+/// more output pending, the child is killed and reaped here (a diff of a million
+/// lines costs the host the cap, not the diff). `None` when the command could not be
+/// started or did not finish in `budget` (it is killed and reaped then too).
+/// stderr goes to a temporary file, like [`run_bounded_with_stderr`].
+pub fn run_capped(
+    program: &str,
+    args: &[OsString],
+    cwd: Option<&Path>,
+    extra_env: &[(&str, &str)],
+    max_bytes: usize,
+    max_lines: usize,
+    budget: Duration,
+) -> Option<CappedOutput> {
+    let mut sink = tempfile::tempfile().ok()?;
+    let mut cmd = host_command(program, args, cwd, extra_env);
+    let deadline = std::time::Instant::now() + budget;
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::from(sink.try_clone().ok()?))
+        .spawn()
+        .ok()?;
+    let (sender, receiver) = mpsc::channel();
+    match child.stdout.take() {
+        Some(pipe) => {
+            std::thread::spawn(move || {
+                let _ = sender.send(read_capped(pipe, max_bytes, max_lines));
+            });
+        }
+        None => {
+            let _ = sender.send((Vec::new(), false));
+        }
+    }
+    let Ok((stdout, truncated)) = receiver.recv_timeout(budget) else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return None;
+    };
+    if truncated {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Some(CappedOutput {
+            status: None,
+            stdout,
+            truncated: true,
+            stderr_line: stderr_line_of(&mut sink),
+        });
+    }
+    // The stream ended (or the caps were met exactly): the child is about to exit.
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if std::time::Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(2)),
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    };
+    Some(CappedOutput {
+        status,
+        stdout,
+        truncated: false,
+        stderr_line: stderr_line_of(&mut sink),
+    })
+}
+
+/// Run a host command with its stdout going straight into `out` (klf, C-21): the
+/// bytes never pass through this process. Returns the status and the last stderr
+/// line, or `None` when the command could not be started or did not finish in
+/// `budget` (it is killed and reaped).
+pub fn run_to_file(
+    program: &str,
+    args: &[OsString],
+    cwd: Option<&Path>,
+    extra_env: &[(&str, &str)],
+    out: File,
+    budget: Duration,
+) -> Option<(ExitStatus, String)> {
+    let mut sink = tempfile::tempfile().ok()?;
+    let mut cmd = host_command(program, args, cwd, extra_env);
+    let deadline = std::time::Instant::now() + budget;
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(out))
+        .stderr(Stdio::from(sink.try_clone().ok()?))
+        .spawn()
+        .ok()?;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Some((status, stderr_line_of(&mut sink))),
+            Ok(None) if std::time::Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(5)),
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -695,5 +919,114 @@ mod tests {
         assert!(text.contains("plain err\n"), "{text}");
         assert!(text.contains("[REDACTED:anthropic-key]"), "{text}");
         assert!(text.contains("[REDACTED:github-token]"), "{text}");
+    }
+
+    // ---- klf: the capped and file-bound reads ----
+
+    fn sh(script: &str) -> Vec<OsString> {
+        vec![OsString::from("-c"), OsString::from(script)]
+    }
+
+    #[test]
+    fn an_endless_writer_is_cut_at_the_byte_cap_and_reaped() {
+        let started = std::time::Instant::now();
+        let out = run_capped(
+            "sh",
+            &sh("while :; do echo xxxxxxxx; done"),
+            None,
+            &[],
+            4096,
+            usize::MAX,
+            Duration::from_secs(20),
+        )
+        .expect("sh runs");
+        assert!(out.truncated);
+        assert!(out.stdout.len() <= 4096, "{}", out.stdout.len());
+        assert!(out.status.is_none(), "it was killed by the cap");
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn the_line_cap_stops_at_that_many_lines() {
+        let out = run_capped(
+            "sh",
+            &sh("while :; do echo line; done"),
+            None,
+            &[],
+            usize::MAX,
+            10,
+            Duration::from_secs(20),
+        )
+        .expect("sh runs");
+        assert!(out.truncated);
+        assert_eq!(out.stdout.iter().filter(|b| **b == b'\n').count(), 10);
+    }
+
+    #[test]
+    fn a_short_command_returns_everything_and_is_not_truncated() {
+        let out = run_capped(
+            "sh",
+            &sh("printf 'a\\nb\\n'; echo oops >&2"),
+            None,
+            &[],
+            4096,
+            10,
+            Duration::from_secs(20),
+        )
+        .expect("sh runs");
+        assert!(!out.truncated);
+        assert_eq!(out.stdout, b"a\nb\n");
+        assert!(out.status.expect("exited").success());
+        assert_eq!(out.stderr_line, "oops");
+    }
+
+    #[test]
+    fn an_output_exactly_at_the_cap_is_not_truncated() {
+        let out = run_capped(
+            "sh",
+            &sh("printf 'a\\nb\\n'"),
+            None,
+            &[],
+            4096,
+            2,
+            Duration::from_secs(20),
+        )
+        .expect("sh runs");
+        assert!(!out.truncated, "{:?}", out);
+        assert_eq!(out.stdout, b"a\nb\n");
+    }
+
+    #[test]
+    fn a_capped_command_that_outlives_its_budget_is_none() {
+        assert!(run_capped(
+            "sh",
+            &sh("sleep 30"),
+            None,
+            &[],
+            4096,
+            10,
+            Duration::from_millis(200),
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn run_to_file_writes_megabytes_byte_exactly() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("out.bin");
+        let file = File::create(&path).expect("create");
+        let (status, _) = run_to_file(
+            "sh",
+            &sh("i=0; while [ $i -lt 40000 ]; do echo 0123456789012345678901234567890123456789012345; i=$((i+1)); done"),
+            None,
+            &[],
+            file,
+            Duration::from_secs(60),
+        )
+        .expect("sh runs");
+        assert!(status.success());
+        let bytes = std::fs::read(&path).expect("read");
+        assert_eq!(bytes.len(), 40000 * 47);
+        assert!(bytes.chunks(47).all(|l| l.ends_with(b"\n")));
     }
 }

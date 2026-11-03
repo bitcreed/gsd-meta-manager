@@ -41,8 +41,7 @@ use crate::launcher::push::{self, planted};
 use crate::state_reader::driver_frontmatter::read_run_file_capped;
 
 use super::land::{
-    delete_tracked_branch_after_landing, git_relevant_planted, sensitive_warning, tracked_ref,
-    LandOptions,
+    clear_tracking_after_landing, git_relevant_planted, sensitive_warning, tracked_ref, LandOptions,
 };
 use super::launch::{run_sandboxed_session, SessionEvent, SessionSpec};
 use super::merge::{
@@ -78,6 +77,8 @@ enum Step {
         merge_sha: String,
         how: MergeHow,
         conflicted: Vec<String>,
+        /// The target tip the attempt merged onto: the landed range starts here.
+        tip: String,
     },
     /// The target moved while the merge was made: redo it on the new tip.
     Moved,
@@ -258,6 +259,7 @@ pub fn land_by_merge(
                     merge_sha,
                     how,
                     conflicted,
+                    tip,
                 } => {
                     return Ok(landed(
                         &land,
@@ -266,6 +268,7 @@ pub fn land_by_merge(
                         &merge_sha,
                         how,
                         conflicted,
+                        &tip,
                     ))
                 }
                 Step::Moved => {}
@@ -299,7 +302,11 @@ fn landed(
     merge_sha: &str,
     how: MergeHow,
     conflicted: Vec<String>,
+    tip: &str,
 ) -> String {
+    let mut extra_line = None;
+    // klf I-06: the delete runs BEFORE the one write, so the record never says the
+    // branch is still there once it is not.
     record.landed.push(Landing {
         kind: LandingKind::Merged,
         at: rfc3339(Utc::now()),
@@ -312,9 +319,14 @@ fn landed(
         } else {
             Vec::new()
         },
+        range: Some(format!("{tip}..{merge_sha}")),
     });
     // A later success clears the latest failure (I-19).
     record.land_failure = None;
+    // C-07: the merge made the run's head reachable from the target.
+    if let Some(line) = clear_tracking_after_landing(land.project, land.run_id, land.head, record) {
+        extra_line = Some(line);
+    }
     persist(land.run_dir, record);
     let mut lines = vec![landed_line(
         land.run_id,
@@ -323,10 +335,7 @@ fn landed(
         how == MergeHow::Resolved,
         &conflicted,
     )];
-    // C-07: the merge made the run's head reachable from the target.
-    if let Some(line) = delete_tracked_branch_after_landing(land.project, land.run_id, land.head) {
-        lines.push(line);
-    }
+    lines.extend(extra_line);
     lines.extend(sensitive_warning(&record.changed_files));
     lines.join("\n")
 }
@@ -524,6 +533,7 @@ fn attempt(
             merge_sha,
             how,
             conflicted: recorded_names(&names),
+            tip,
         },
         Ok(Forwarded::Moved) => {
             log_line(&dir, "the target moved; starting a new attempt");

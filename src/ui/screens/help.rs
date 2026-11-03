@@ -375,7 +375,7 @@ pub(super) fn help_lines(experimental: bool) -> Vec<Line<'static>> {
             ),
             row(
                 "T",
-                "One-off runs: j/k select, Enter details; m merge, p push, D discard, x kill, e SUMMARY, d merge diff",
+                "One-off runs: j/k select, Enter details; m merge, p push, D discard, x kill, e SUMMARY, d merge diff (o: full diff in $EDITOR)",
             ),
             row(
                 "v",
@@ -649,7 +649,7 @@ mod tests {
             ),
             (
                 "T",
-                "One-off runs: j/k select, Enter details; m merge, p push, D discard, x kill, e SUMMARY, d merge diff",
+                "One-off runs: j/k select, Enter details; m merge, p push, D discard, x kill, e SUMMARY, d merge diff (o: full diff in $EDITOR)",
             ),
             (
                 "v",
@@ -1019,7 +1019,7 @@ mod tests {
             ),
             (
                 "T",
-                "One-off runs: j/k select, Enter details; m merge, p push, D discard, x kill, e SUMMARY, d merge diff",
+                "One-off runs: j/k select, Enter details; m merge, p push, D discard, x kill, e SUMMARY, d merge diff (o: full diff in $EDITOR)",
             ),
             (
                 "v",

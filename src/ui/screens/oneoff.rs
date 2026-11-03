@@ -21,7 +21,7 @@ use super::{AppContext, Screen, ScreenAction};
 use crate::action::Action;
 use crate::oneoff::runtime::AgentRuntime;
 use crate::oneoff::store::{
-    run_counts, Landing, LandingKind, LiveState, MergeHow, OneoffView, ReportSource,
+    run_counts, BranchState, Landing, LandingKind, LiveState, MergeHow, OneoffView, ReportSource,
 };
 use crate::oneoff::{prompt, Mode, OneoffCommand, TaskSpec};
 use crate::text::render_for_terminal;
@@ -515,6 +515,22 @@ impl OneoffScreen {
             KeyCode::PageUp => scroll.saturating_sub(page),
             KeyCode::Home | KeyCode::Char('g') => 0,
             KeyCode::End | KeyCode::Char('G') => bottom,
+            // klf C-21: the full diff, written to a file and opened in $EDITOR. Only
+            // while a merge diff is shown (there is a merge commit to export).
+            KeyCode::Char('o') => {
+                if let (Some(Ok(_)), Some(run_id)) = (
+                    self.diff_lines(ctx),
+                    self.selected(ctx).map(|v| v.record.run_id.clone()),
+                ) {
+                    return ScreenAction::DispatchAction(Box::new(
+                        Action::OneoffDiffExportRequested {
+                            alias: self.alias.clone(),
+                            run_id,
+                        },
+                    ));
+                }
+                scroll
+            }
             _ => scroll,
         };
         self.mode = OneoffMode::Diff {
@@ -550,7 +566,7 @@ impl OneoffScreen {
                 let top = scroll.min(bottom);
                 let end = (top + rows).min(lines.len());
                 let title = format!(
-                    " Merge diff: {id} - lines {}-{} of {} - j/k PgUp/PgDn g/G, Esc back ",
+                    " Merge diff: {id} - lines {}-{} of {} - j/k PgUp/PgDn g/G, o full diff, Esc back ",
                     if lines.is_empty() { 0 } else { top + 1 },
                     end,
                     lines.len()
@@ -799,6 +815,11 @@ fn landing_lines(landing: &Landing) -> Vec<Line<'static>> {
         });
     }
     let mut lines = vec![Line::from(line)];
+    if landing.kind == LandingKind::Merged {
+        if let Some(range) = &landing.range {
+            lines.push(Line::from(format!("Landed:    range {}", shown(range))));
+        }
+    }
     if landing.how == Some(MergeHow::Resolved) {
         lines.push(Line::from(Span::styled(
             "           resolved by agent - review it with d (merge diff) or r (its session)",
@@ -900,16 +921,26 @@ pub fn result_lines(view: &OneoffView) -> Vec<Line<'static>> {
             record.max_budget_usd
         )));
     }
-    // A merge landing deletes the tracked branch, but the record keeps its name, so the
-    // branch is only claimed while nothing has merged.
-    let merged = record.landed.iter().any(|l| l.kind == LandingKind::Merged);
-    match (&record.tracked_branch, &record.tracking_note) {
-        (Some(branch), _) if !merged => lines.push(Line::from(format!(
-            "Branch:    {} (git branch --no-merged lists it)",
-            shown(branch)
-        ))),
-        (None, Some(note)) => lines.push(Line::from(format!("Branch:    none ({})", shown(note)))),
-        _ => {}
+    // klf C-17, C-18: only what the record normalises to; an old record whose merge
+    // landing deleted the branch reads as gone.
+    match record.branch_state() {
+        BranchState::Tracked { name, head } => {
+            let at = head
+                .as_deref()
+                .map(|h| format!(" @ {}", shown(&h.chars().take(12).collect::<String>())))
+                .unwrap_or_default();
+            lines.push(Line::from(format!(
+                "Branch:    {}{at} (git branch --no-merged lists it)",
+                shown(&name)
+            )));
+        }
+        BranchState::Gone { why } => {
+            lines.push(Line::from(format!("Branch:    none ({})", shown(&why))));
+        }
+        BranchState::Untracked { note } if !note.is_empty() => {
+            lines.push(Line::from(format!("Branch:    none ({})", shown(&note))));
+        }
+        BranchState::Untracked { .. } => {}
     }
     for landing in &record.landed {
         lines.extend(landing_lines(landing));
@@ -1104,6 +1135,7 @@ pub(crate) mod tests {
             } else {
                 Vec::new()
             },
+            range: None,
         }
     }
 
@@ -1489,6 +1521,50 @@ pub(crate) mod tests {
         key(&mut screen, &mut ctx, KeyCode::Esc);
         assert_eq!(screen.mode, OneoffMode::Result);
         assert!(render_text(&screen, &ctx).contains("resolved by agent"));
+    }
+
+    #[test]
+    fn o_in_the_diff_exports_the_full_diff_only_while_a_diff_is_shown() {
+        let (mut ctx, mut screen) = list_over(three_runs());
+        key(&mut screen, &mut ctx, KeyCode::Char('j'));
+        key(&mut screen, &mut ctx, KeyCode::Char('j'));
+        key(&mut screen, &mut ctx, KeyCode::Char('d'));
+        // Still reading: nothing to export yet.
+        assert!(matches!(
+            key(&mut screen, &mut ctx, KeyCode::Char('o')),
+            ScreenAction::None
+        ));
+        // A failed read has no diff to export either.
+        ctx.view_cache.get_mut(ALIAS).unwrap().oneoff_diff =
+            Some((OLDEST.to_owned(), Err("no".to_owned())));
+        assert!(matches!(
+            key(&mut screen, &mut ctx, KeyCode::Char('o')),
+            ScreenAction::None
+        ));
+        ctx.view_cache.get_mut(ALIAS).unwrap().oneoff_diff = Some((
+            OLDEST.to_owned(),
+            Ok(vec![
+                "conflicted: none".to_owned(),
+                "+1 -0  a\u{1b}[2J.txt".to_owned(),
+                String::new(),
+                "truncated — 2 more files, ~9 more lines".to_owned(),
+            ]),
+        ));
+        let text = render_text(&screen, &ctx);
+        assert!(text.contains("truncated — 2 more files"), "{text}");
+        assert!(text.contains("o full diff"), "{text}");
+        assert!(!text.contains('\u{1b}'), "{text:?}");
+        match dispatched(key(&mut screen, &mut ctx, KeyCode::Char('o'))) {
+            Action::OneoffDiffExportRequested { alias, run_id } => {
+                assert_eq!(alias, ALIAS);
+                assert_eq!(run_id, OLDEST);
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(
+            matches!(screen.mode, OneoffMode::Diff { .. }),
+            "stays in the diff"
+        );
     }
 
     #[test]

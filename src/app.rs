@@ -1409,6 +1409,52 @@ impl App {
         let _ = (project, sha, conflicted);
     }
 
+    /// `o` in the merge diff (quick 261103-klf, C-21, I-04): export the named run's full
+    /// merge diff on `spawn_blocking`, answered by [`Action::OneoffDiffExported`].
+    #[cfg_attr(
+        not(any(target_os = "linux", target_os = "macos")),
+        allow(unused_variables)
+    )]
+    fn request_oneoff_diff_export(&mut self, alias: &str, run_id: &str) {
+        let Some((project, tx)) = self.oneoff_target(alias) else {
+            return;
+        };
+        let found = self
+            .ctx
+            .view_cache
+            .get(alias)
+            .and_then(|cache| cache.oneoff_runs.iter().find(|v| v.record.run_id == run_id))
+            .and_then(|view| {
+                view.record
+                    .last_merge_landing()
+                    .and_then(|l| l.merge_sha.clone())
+                    .map(|sha| (sha, view.run_dir.clone()))
+            });
+        let Some((sha, run_dir)) = found else {
+            let _ = tx.send(Action::OneoffDiffExported {
+                alias: alias.to_owned(),
+                run_id: run_id.to_owned(),
+                result: Err("this run has no merge commit to export".to_owned()),
+            });
+            return;
+        };
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            let alias = alias.to_owned();
+            let run_id = run_id.to_owned();
+            tokio::task::spawn_blocking(move || {
+                let result = crate::oneoff::land::export_merge_diff(&project, &run_dir, &sha);
+                let _ = tx.send(Action::OneoffDiffExported {
+                    alias,
+                    run_id,
+                    result,
+                });
+            });
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        let _ = (project, sha, run_dir);
+    }
+
     /// New lines from the viewer's tail: kept only for the viewer that asked.
     #[allow(clippy::too_many_arguments)]
     fn oneoff_stream_batch(
@@ -3064,6 +3110,21 @@ impl App {
                         Some((run_id, result));
                     self.needs_redraw = true;
                 }
+            }
+            Action::OneoffDiffExportRequested { alias, run_id } => {
+                self.request_oneoff_diff_export(&alias, &run_id)
+            }
+            Action::OneoffDiffExported { result, .. } => {
+                match result {
+                    Ok(path) => self.pending_editor = Some((path, None)),
+                    Err(why) => {
+                        self.ctx.status_message = Some((
+                            format!("merge diff export failed: {why}"),
+                            std::time::Instant::now(),
+                        ));
+                    }
+                }
+                self.needs_redraw = true;
             }
             Action::OneoffStreamBatch {
                 alias,
@@ -8700,6 +8761,7 @@ mod tests {
             merge_sha: Some("0123456789abcdef0123456789abcdef01234567".to_owned()),
             conflicted: vec!["shared.txt".to_owned()],
             attempts: vec!["land/1".to_owned()],
+            range: None,
         });
         let id = view.record.run_id.clone();
         app.ctx
@@ -8749,6 +8811,32 @@ mod tests {
         let (stored, result) = app.ctx.view_cache[OBS_ALIAS].oneoff_diff.clone().unwrap();
         assert_eq!(stored, id);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn an_exported_diff_opens_in_the_editor_and_a_failed_export_only_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, _rx) = app_on_the_driver_tab(dir.path());
+        app.update(Action::OneoffDiffExported {
+            alias: OBS_ALIAS.to_string(),
+            run_id: "oneoff-20261103-142233".to_owned(),
+            result: Err("disk full".to_owned()),
+        });
+        assert!(app.pending_editor.is_none(), "no editor opens on a failure");
+        let message = app
+            .ctx
+            .status_message
+            .as_ref()
+            .map(|(m, _)| m.clone())
+            .unwrap_or_default();
+        assert!(message.contains("disk full"), "{message}");
+        let path = dir.path().join("merge-0123456789ab.diff");
+        app.update(Action::OneoffDiffExported {
+            alias: OBS_ALIAS.to_string(),
+            run_id: "oneoff-20261103-142233".to_owned(),
+            result: Ok(path.clone()),
+        });
+        assert_eq!(app.pending_editor, Some((path, None)));
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]

@@ -335,6 +335,28 @@ the credential scan; no pull request is opened, and a planted file refuses it to
 deletes the tracked branch with a safe `git branch -d`, because the work is then
 reachable from the branch you merged into.
 
+Every landing records the git range it advanced your branch over, as `range` in
+`run.json`: `<your HEAD before>..<head>` for `ff` (with `merge_sha` equal to the head)
+and `<your branch's tip>..<merge commit>` for `merge` and `resolved`. Once the landing
+has deleted `gsd-oneoff/<run-id>`, `tracked_branch` is cleared and `tracking_note` reads
+`deleted after landing`; a `discard` that deletes the branch does the same before it
+removes the run dir (`deleted by discard`), so a removal that fails half-way never
+leaves `run.json` naming a branch that is gone. A `run.json` written before this (a
+merged landing with `tracked_branch` still set, no `range`) is still read: every
+display shows it as landed with no live branch. `task status` prints the landed range
+and, for a merge or resolved landing, the exact command to see what the merge brought,
+`git -C <project> diff <merge>^1 <merge>`.
+
+**The merge diff.** `d` on a run with a merge landing shows its diff against the
+merge's first parent without ever holding all of git's output: the TUI reads the totals
+(`git diff --shortstat`), a per-file summary (`--numstat`, at most 2000 files, then
+`... N more files`) and the hunks (at most 5000 lines and 512 KiB, after which git is
+killed). The view is the `conflicted:` header, the summary, the hunks and, when the
+hunks were cut, a last line `truncated — N more file(s), ~M more line(s)` counted from
+the totals. `o` streams the complete diff straight from git into
+`<run-dir>/land/merge-<sha12>.diff` (mode 0600, a symlink at that path is refused) and
+opens it in `$EDITOR`.
+
 **Several at once.** Any number of one-offs may run on a project at the same time,
 each with its own wall clock and spend ceiling; `task run` and the TUI's `t` no longer
 refuse (and `task run` no longer exits 3) while another run is live. Liveness comes from a lock file inside
@@ -361,7 +383,8 @@ checks that it equals the recorded head, and records it as `tracked_branch` in
 that name that points elsewhere is never overwritten: nothing is fetched and
 `tracking_note` says so. A run with no commits, a planted finding or no head gets no
 branch and a `tracking_note` saying why. A tracking failure never fails the run.
-`task status` prints a `branch:` line.
+`task status` prints `branch: gsd-oneoff/<run-id> @ <sha12>` while the branch is
+tracked, and `branch: none (<why>)` once a landing or a discard removed it.
 
 The binary additionally reads `dirs::data_local_dir()` (typically `~/.local/share` on Linux) to choose the log directory `gsd-meta-manager/`. If `dirs::data_local_dir()` returns `None`, logs are written to `/tmp` (see `src/main.rs`). Logs themselves are configured by `tracing-subscriber`, but no environment variable currently feeds the subscriber (the `env-filter` feature is compiled in, so `RUST_LOG`-style filtering may be added later but is not currently wired into `tracing_subscriber::fmt().init()`).
 

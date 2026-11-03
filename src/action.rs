@@ -390,6 +390,19 @@ pub enum Action {
         run_id: String,
         result: Result<Vec<String>, String>,
     },
+    /// `o` in the merge diff (quick 261103-klf, C-21): write the named run's full merge
+    /// diff to a file, git's stdout straight into it, answered by
+    /// [`Action::OneoffDiffExported`].
+    OneoffDiffExportRequested {
+        alias: String,
+        run_id: String,
+    },
+    /// The full merge diff is at this path (the app opens it in `$EDITOR`), or why not.
+    OneoffDiffExported {
+        alias: String,
+        run_id: String,
+        result: Result<std::path::PathBuf, String>,
+    },
     /// The viewer's tail found new lines (never read on the render thread).
     OneoffStreamBatch {
         alias: String,

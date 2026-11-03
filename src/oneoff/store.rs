@@ -77,6 +77,28 @@ impl MergeHow {
     }
 }
 
+/// The `tracking_note` words that say the branch existed and was removed (klf, I-06,
+/// I-07).
+pub const NOTE_DELETED_AFTER_LANDING: &str = "deleted after landing";
+pub const NOTE_ALREADY_GONE: &str = "already gone at landing";
+pub const NOTE_DELETED_BY_DISCARD: &str = "deleted by discard";
+const BRANCH_GONE_NOTES: &[&str] = &[
+    NOTE_DELETED_AFTER_LANDING,
+    NOTE_ALREADY_GONE,
+    NOTE_DELETED_BY_DISCARD,
+];
+
+/// A run's tracked branch as it is displayed (quick 261103-klf, C-17, I-05).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BranchState {
+    /// `gsd-oneoff/<id>` (no `refs/heads/`) at the run's head.
+    Tracked { name: String, head: Option<String> },
+    /// The branch existed and a landing or a discard removed it.
+    Gone { why: String },
+    /// Never tracked; `note` is the host's reason, if it kept one.
+    Untracked { note: String },
+}
+
 /// One landing of the run's work.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Landing {
@@ -97,6 +119,12 @@ pub struct Landing {
     /// The resolver attempt dirs under the run dir (`land/<n>`).
     #[serde(default)]
     pub attempts: Vec<String>,
+    /// The git range the landing advanced the target over, `<old>..<new>`: for a
+    /// fast-forward `<checkout HEAD before>..<head>`, for a merge or resolved landing
+    /// `<target tip>..<merge_sha>` (quick 261103-klf, C-15). `None` for a push and for
+    /// a landing recorded before klf.
+    #[serde(default)]
+    pub range: Option<String>,
 }
 
 impl Landing {
@@ -110,6 +138,7 @@ impl Landing {
             merge_sha: None,
             conflicted: Vec::new(),
             attempts: Vec::new(),
+            range: None,
         }
     }
 }
@@ -264,6 +293,40 @@ impl RunRecord {
                 && matches!(l.how, Some(MergeHow::Merge | MergeHow::Resolved))
                 && l.merge_sha.is_some()
         })
+    }
+
+    /// What the record says about the run's tracked branch, normalised for display
+    /// (quick 261103-klf, C-17, I-05). An old record whose merge landing deleted the
+    /// branch still carries the ref; that reads as gone here, so no migration rewrite
+    /// is needed. Every display uses this, never the raw field.
+    pub fn branch_state(&self) -> BranchState {
+        let landed = self.landed.iter().any(|l| l.kind == LandingKind::Merged);
+        match &self.tracked_branch {
+            Some(_) if landed => BranchState::Gone {
+                why: "deleted after landing".to_owned(),
+            },
+            Some(reference) => BranchState::Tracked {
+                name: reference
+                    .strip_prefix("refs/heads/")
+                    .unwrap_or(reference)
+                    .to_owned(),
+                head: self.head.clone(),
+            },
+            None => match self.tracking_note.as_deref() {
+                Some(note) if BRANCH_GONE_NOTES.contains(&note) => BranchState::Gone {
+                    why: note.to_owned(),
+                },
+                Some(note) => BranchState::Untracked {
+                    note: note.to_owned(),
+                },
+                None if landed => BranchState::Gone {
+                    why: "deleted after landing".to_owned(),
+                },
+                None => BranchState::Untracked {
+                    note: String::new(),
+                },
+            },
+        }
     }
 
     /// The sha of the latest push landing, if any.
@@ -1190,6 +1253,7 @@ pub(crate) mod tests {
             merge_sha: Some("abc".to_owned()),
             conflicted: vec!["shared.txt".to_owned()],
             attempts: vec!["land/1".to_owned()],
+            range: Some("aaa..abc".to_owned()),
         });
         let text = serde_json::to_string(&full).unwrap();
         assert!(text.contains(r#""how":"resolved""#), "{text}");
@@ -1260,5 +1324,61 @@ pub(crate) mod tests {
             view_of(LiveState::Crashed, 0, false, false),
         ];
         assert_eq!(run_counts(&done).text(), "one-offs: 3 finished (T)");
+    }
+
+    /// A literal `run.json` as hx7 wrote it: a Merged `merge` landing with its sha and
+    /// no `range`, `tracked_branch` still set, none of the klf fields.
+    const PRE_KLF_RECORD: &str = r#"{
+        "schema": 1, "run_id": "oneoff-20261103-142233", "alias": "p",
+        "project": "/p", "mode": "quick",
+        "task": {"kind": "text", "spec": "do it"},
+        "runtime": "agent", "model": "m", "max_budget_usd": 5.0, "cap_minutes": 30.0,
+        "branch": "gsd-oneoff/oneoff-20261103-142233",
+        "started_at": "2026-11-03T10:00:00Z", "status": "finished",
+        "head": "0123456789abcdef0123456789abcdef01234567", "commits": 2,
+        "landed": [{"kind": "merged", "at": "2026-11-03T11:00:00Z", "detail": "main",
+                    "how": "merge",
+                    "merge_sha": "abcdef0123456789abcdef0123456789abcdef01"}],
+        "tracked_branch": "refs/heads/gsd-oneoff/oneoff-20261103-142233"
+    }"#;
+
+    #[test]
+    fn a_pre_klf_record_reads_as_landed_with_no_live_branch() {
+        let record: RunRecord = serde_json::from_str(PRE_KLF_RECORD).expect("pre-klf parses");
+        assert!(record.landed[0].range.is_none());
+        assert_eq!(
+            record.branch_state(),
+            BranchState::Gone {
+                why: NOTE_DELETED_AFTER_LANDING.to_owned()
+            }
+        );
+    }
+
+    #[test]
+    fn the_branch_state_names_a_tracked_branch_and_a_gone_one() {
+        let mut r = record();
+        r.head = Some("a".repeat(40));
+        r.tracked_branch = Some(format!("refs/heads/gsd-oneoff/{}", r.run_id));
+        assert_eq!(
+            r.branch_state(),
+            BranchState::Tracked {
+                name: format!("gsd-oneoff/{}", r.run_id),
+                head: Some("a".repeat(40)),
+            }
+        );
+        r.tracked_branch = None;
+        r.tracking_note = Some(NOTE_DELETED_AFTER_LANDING.to_owned());
+        assert!(matches!(r.branch_state(), BranchState::Gone { .. }));
+        r.tracking_note = Some(NOTE_DELETED_BY_DISCARD.to_owned());
+        assert!(matches!(r.branch_state(), BranchState::Gone { .. }));
+        r.tracking_note = Some("the run made no commits; no branch tracked".to_owned());
+        assert!(matches!(r.branch_state(), BranchState::Untracked { .. }));
+        r.tracking_note = None;
+        assert_eq!(
+            r.branch_state(),
+            BranchState::Untracked {
+                note: String::new()
+            }
+        );
     }
 }
