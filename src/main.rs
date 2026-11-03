@@ -2,6 +2,7 @@ mod driver_cli;
 mod driverctl_cli;
 mod event;
 mod next_cli;
+mod task_cli;
 mod taskctl_cli;
 mod tui;
 
@@ -102,6 +103,11 @@ fn main() -> anyhow::Result<()> {
     match cli.command.take() {
         Some(Commands::Driver { action }) => {
             std::process::exit(driver_cli::run(action, cli.config.clone()))
+        }
+        // `task` (quick 261103-f5y) is the one-off launcher's command line:
+        // synchronous for the reason `driver` is.
+        Some(Commands::Task { action }) => {
+            std::process::exit(task_cli::run(action, cli.config.clone()))
         }
         other => cli.command = other,
     }
@@ -362,6 +368,12 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
         Some(Commands::Driver { .. }) => {
             return Err(anyhow::anyhow!(
                 "driver is dispatched in `main` before the async runtime exists"
+            ));
+        }
+        // Never reached: `main` runs `task` synchronously, like `driver`.
+        Some(Commands::Task { .. }) => {
+            return Err(anyhow::anyhow!(
+                "task is dispatched in `main` before the async runtime exists"
             ));
         }
         // And `next`, which runs even earlier (before tracing) so it can write nothing.

@@ -247,7 +247,7 @@ fn auth_status_main() -> i32 {
 
 /// The alias, project root and loaded registry a `driver` target names.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn resolve_project(
+pub(crate) fn resolve_project(
     target: &str,
     config: Option<PathBuf>,
 ) -> Result<(String, PathBuf, Config), String> {

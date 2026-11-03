@@ -127,10 +127,10 @@ const CHILD_EXIT_WAIT: Duration = Duration::from_secs(5);
 const CHILD_POLL: Duration = Duration::from_millis(100);
 
 /// How long [`launch_detached`] waits for the daemon to hold the run lock.
-const DETACH_BUDGET: Duration = Duration::from_secs(10);
+pub(crate) const DETACH_BUDGET: Duration = Duration::from_secs(10);
 
 /// How often [`launch_detached`] looks at the daemon while it waits.
-const DETACH_POLL: Duration = Duration::from_millis(100);
+pub(crate) const DETACH_POLL: Duration = Duration::from_millis(100);
 
 /// How many lines of `launcher.log` a failed detach reports.
 const DETACH_LOG_LINES: usize = 20;
@@ -479,7 +479,7 @@ struct LaunchContext {
 ///
 /// Two arms: the systemd scope of the sandboxed mode and the process group of the
 /// explicit `--unsandboxed` mode (D-29).
-enum Containment {
+pub(crate) enum Containment {
     Scope {
         /// The full unit name, `.scope` suffix included.
         unit: String,
@@ -502,7 +502,7 @@ impl Containment {
     /// If the child is still there a grace period after `systemctl` returned (the
     /// scope did not exist yet, or systemd is gone) it is killed directly:
     /// `bwrap` is its pid-namespace init, so that takes the sandbox with it.
-    fn stop(&self, child: &mut Child) {
+    pub(crate) fn stop(&self, child: &mut Child) {
         let stopper = match self {
             Containment::Group { pgid } => {
                 stop_group(*pgid, child);
@@ -554,7 +554,7 @@ impl Containment {
 impl Containment {
     /// The belt to `--die-with-parent`'s braces after the driver exited by itself:
     /// stop whatever is left of the containment. Best effort.
-    fn stop_leftovers(&self) {
+    pub(crate) fn stop_leftovers(&self) {
         match self {
             // The leader is already reaped; this is best effort for the rest of
             // the group (a background job the driver left behind).
@@ -1196,7 +1196,7 @@ fn exhausted(remaining: Option<f64>) -> bool {
 
 /// `RuntimeMaxSec` for a scope with `remaining` seconds of wall clock left: the
 /// seconds rounded UP, plus [`RUNTIME_MAX_GRACE_S`] (D-13).
-fn runtime_max_sec(remaining: f64) -> u64 {
+pub(crate) fn runtime_max_sec(remaining: f64) -> u64 {
     // `as` saturates, and a NaN is 0.
     (remaining.ceil() as u64).saturating_add(RUNTIME_MAX_GRACE_S)
 }
@@ -1417,7 +1417,7 @@ pub fn detached_log_path(project: &Path, run_id: &str) -> Result<PathBuf, Launch
 }
 
 /// The last [`DETACH_LOG_LINES`] lines `launcher.log` gained past `offset`.
-fn log_tail(path: &Path, offset: u64) -> String {
+pub(crate) fn log_tail(path: &Path, offset: u64) -> String {
     let Ok(bytes) = fs::read(path) else {
         return String::new();
     };
@@ -1705,7 +1705,7 @@ fn supervise(
 /// One launch's egress server (D-04, D-09): the run's token and the CONNECT allowlist
 /// live here, on the launcher side. Dropping the guard stops the server and removes
 /// the socket file, so every return path out of [`supervise`] cleans up.
-struct EgressGuard {
+pub(crate) struct EgressGuard {
     handle: Option<EgressHandle>,
     sock: PathBuf,
 }
@@ -1714,13 +1714,6 @@ impl EgressGuard {
     /// Bind the run's egress socket (the run lock is held, so a stale socket from a
     /// killed launcher is replaced) and start serving it with this launch's token.
     fn start(ctx: &LaunchContext) -> Result<Self, LauncherError> {
-        let listener =
-            bind_run_socket(&ctx.egress_sock).map_err(|e| io_error("bind the egress socket", e))?;
-        // Declared before the server starts so a failed start still removes the file.
-        let mut guard = EgressGuard {
-            handle: None,
-            sock: ctx.egress_sock.clone(),
-        };
         let token = match ctx.token.source {
             TokenSource::Stored => TokenProvider::Static(ctx.token.value.clone()),
             TokenSource::Host => TokenProvider::Host {
@@ -1728,16 +1721,41 @@ impl EgressGuard {
                 initial: ctx.token.value.clone(),
             },
         };
+        Self::start_with(
+            &ctx.egress_sock,
+            token,
+            ctx.opts.egress_allow.clone(),
+            Upstream::Tls {
+                host: INFERENCE_HOST.to_owned(),
+                port: 443,
+            },
+            ctx.state_dir.join(EGRESS_LOG),
+        )
+    }
+
+    /// Bind `sock` and serve it with `token`, `allow_hosts` and `upstream`, logging
+    /// to `log_path` (the run's lock must be held). Shared with one-off runs (quick
+    /// 261103-f5y).
+    pub(crate) fn start_with(
+        sock: &Path,
+        token: TokenProvider,
+        allow_hosts: Vec<String>,
+        upstream: Upstream,
+        log_path: PathBuf,
+    ) -> Result<Self, LauncherError> {
+        let listener = bind_run_socket(sock).map_err(|e| io_error("bind the egress socket", e))?;
+        // Declared before the server starts so a failed start still removes the file.
+        let mut guard = EgressGuard {
+            handle: None,
+            sock: sock.to_owned(),
+        };
         let handle = EgressServer::start(
             listener,
             EgressSpec {
-                allow_hosts: ctx.opts.egress_allow.clone(),
+                allow_hosts,
                 token,
-                upstream: Upstream::Tls {
-                    host: INFERENCE_HOST.to_owned(),
-                    port: 443,
-                },
-                log_path: ctx.state_dir.join(EGRESS_LOG),
+                upstream,
+                log_path,
             },
         )
         .map_err(|e| io_error("start the egress server", e))?;
@@ -1746,7 +1764,7 @@ impl EgressGuard {
     }
 
     /// Stop the server and return what it counted.
-    fn finish(mut self) -> EgressStats {
+    pub(crate) fn finish(mut self) -> EgressStats {
         self.handle
             .take()
             .map(EgressHandle::stop)

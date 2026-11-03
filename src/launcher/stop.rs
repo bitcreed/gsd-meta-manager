@@ -108,7 +108,7 @@ pub fn stop_run(project: &Path, run_id: &str, wait: Duration) -> Result<StopRepo
 }
 
 /// The pid a `SIGTERM` may be sent to, or why not.
-fn signal_target(pid: u32) -> Result<Pid, LauncherError> {
+pub(crate) fn signal_target(pid: u32) -> Result<Pid, LauncherError> {
     if pid <= 1 || pid == std::process::id() {
         return Err(LauncherError::InvalidRun {
             detail: format!("the run lock names pid {pid}, which is not a launcher"),

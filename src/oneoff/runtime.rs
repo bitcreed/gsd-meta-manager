@@ -58,6 +58,14 @@ impl AgentRuntime {
         }
     }
 
+    /// The agent's per-project config directory, relative to the project root, with a
+    /// trailing `/`. A merge that changes anything under it is called out (I-10).
+    pub fn project_config_dir(self) -> &'static str {
+        match self {
+            AgentRuntime::Claude => ".claude/",
+        }
+    }
+
     /// The models a user may pick, the default first.
     pub fn models(self) -> &'static [&'static str] {
         match self {

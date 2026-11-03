@@ -35,6 +35,11 @@ pub mod runtime;
 pub mod store;
 pub mod todos;
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub mod land;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub mod launch;
+
 /// The environment variable that names the report directory inside the sandbox.
 pub const REPORT_DIR_ENV: &str = "GSDMM_ONEOFF_REPORT_DIR";
 /// The agent's report, inside [`REPORT_SUBDIR`].

@@ -204,6 +204,15 @@ pub enum Commands {
         #[command(subcommand)]
         action: DriverAction,
     },
+    // One-off sandboxed task dispatch (quick 261103-f5y): the host verbs. Users type
+    // these, so they are NOT hidden (I-12); not `#[cfg]`-gated either: off Linux and
+    // macOS the handler returns a typed refusal. Not flag-gated: the experimental flag
+    // is a discovery gate for the TUI, as it is for `driver`.
+    /// Run one sandboxed /gsd-quick or /gsd-fast session on a project, and land its work
+    Task {
+        #[command(subcommand)]
+        action: TaskAction,
+    },
     // The read-only half of the master prompt's "what next" citation (Phase 29,
     // D-20, D-21). The Phase 20 router answers from the state reader and nothing
     // else, so the hint needs no registry write, no lock, no journal and no log
@@ -471,6 +480,116 @@ pub struct DriverctlLog {
     pub loop_mode: Option<String>,
     #[arg(long)]
     pub session: Option<String>,
+}
+
+/// The verbs of `task` (quick 261103-f5y).
+#[derive(Subcommand)]
+pub enum TaskAction {
+    /// Run one headless agent session on a todo or a typed task, in a private clone,
+    /// inside the launcher's sandbox (detaches unless --foreground)
+    Run(Box<TaskRunArgs>),
+    /// Show the project's latest one-off run
+    Status {
+        /// Alias or path of a registered project
+        project: String,
+        /// Print the record as one JSON object
+        #[arg(long)]
+        json: bool,
+    },
+    /// Stop the project's live one-off run
+    Stop {
+        /// Alias or path of a registered project
+        project: String,
+        /// How long to wait for the run to finish stopping, in seconds
+        #[arg(long, default_value_t = 60)]
+        wait_secs: u64,
+    },
+    /// Land a finished run's work: merge, push or discard
+    Land {
+        #[command(subcommand)]
+        action: LandAction,
+    },
+}
+
+/// The verbs of `task land`.
+#[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
+pub enum LandAction {
+    /// Fast-forward your checkout to the run's head (clean checkout on a branch only)
+    Merge {
+        /// Alias or path of a registered project
+        project: String,
+        /// The run id (`task status` shows it)
+        run_id: String,
+    },
+    /// Push the run's head to refs/heads/gsd-auto/<alias>/<run-id> (scanned first)
+    Push {
+        /// Alias or path of a registered project
+        project: String,
+        /// The run id (`task status` shows it)
+        run_id: String,
+    },
+    /// Delete the run's directory, its clone included
+    Discard {
+        /// Alias or path of a registered project
+        project: String,
+        /// The run id (`task status` shows it)
+        run_id: String,
+    },
+}
+
+/// Arguments of `task run <project> (--todo <file> | --text <task>)`.
+#[derive(Args, Debug, Clone)]
+#[command(group(clap::ArgGroup::new("task").required(true).args(["todo", "text"])))]
+pub struct TaskRunArgs {
+    /// Alias or path of a registered project
+    pub project: String,
+    /// A pending todo's file name under .planning/todos/pending/ (must be committed)
+    #[arg(long)]
+    pub todo: Option<String>,
+    /// A typed task: one line, at most 2000 characters
+    #[arg(long, allow_hyphen_values = true)]
+    pub text: Option<String>,
+    /// quick runs /gsd-quick, fast runs /gsd-fast
+    #[arg(long, value_enum, default_value_t = crate::oneoff::Mode::Quick)]
+    pub mode: crate::oneoff::Mode,
+    /// The agent's model
+    #[arg(long, default_value = "opus")]
+    pub model: String,
+    /// The agent's spend ceiling, in US dollars
+    #[arg(long, default_value_t = 10.0, value_parser = positive_finite_usd)]
+    pub max_budget_usd: f64,
+    /// The wall clock in minutes, enforced from outside the sandbox
+    #[arg(long, default_value_t = 60.0, value_parser = positive_finite_minutes)]
+    pub cap_minutes: f64,
+    /// Run WITHOUT bwrap and a systemd scope (degraded); recorded on the run
+    #[arg(long)]
+    pub unsandboxed: bool,
+    /// Stay in this terminal for the run's life
+    #[arg(long)]
+    pub foreground: bool,
+    /// Internal: this process is the re-executed detached run
+    #[arg(long, hide = true)]
+    pub daemon_child: bool,
+    /// Internal: the run id the detached parent minted
+    #[arg(long, hide = true)]
+    pub run_id: Option<String>,
+}
+
+/// `task run`'s own parser, reachable without a command line (the
+/// [`launch_defaults`] pattern): the TUI reads the defaults from clap, never a copy.
+#[derive(Parser, Debug)]
+#[command(name = "run", disable_help_flag = true, disable_version_flag = true)]
+struct TaskRunFieldParser {
+    #[command(flatten)]
+    args: TaskRunArgs,
+}
+
+/// What `task run <project> --text <t>` means with no other flag: the clap defaults
+/// of [`TaskRunArgs`]. `project` and `text` hold placeholders.
+pub fn task_run_defaults() -> TaskRunArgs {
+    TaskRunFieldParser::try_parse_from(["run", "_", "--text", "_"])
+        .expect("the task run defaults always parse")
+        .args
 }
 
 /// The sandbox-side verbs of `taskctl` (quick 261103-f5y).
@@ -1065,6 +1184,40 @@ mod tests {
             driver_action(&["check", "p"]).is_err(),
             "the run id is required"
         );
+    }
+
+    #[test]
+    fn task_run_defaults_are_the_launch_defaults() {
+        let defaults = task_run_defaults();
+        assert_eq!(defaults.max_budget_usd, 10.0);
+        assert_eq!(defaults.cap_minutes, 60.0);
+        assert_eq!(defaults.model, "opus");
+        assert_eq!(defaults.mode, crate::oneoff::Mode::Quick);
+        assert!(!defaults.unsandboxed);
+    }
+
+    #[test]
+    fn task_run_needs_exactly_one_of_todo_and_text() {
+        let parse = |args: &[&str]| {
+            Cli::try_parse_checked_from(
+                ["gsd-meta-manager", "task", "run", "p"]
+                    .iter()
+                    .chain(args.iter()),
+            )
+        };
+        assert!(parse(&[]).is_err());
+        assert!(parse(&["--todo", "a.md", "--text", "x"]).is_err());
+        assert!(parse(&["--todo", "a.md"]).is_ok());
+        assert!(parse(&["--text", "-x", "--mode", "fast"]).is_ok());
+        assert!(parse(&["--text", "x", "--cap-minutes", "0"]).is_err());
+    }
+
+    #[test]
+    fn task_is_listed_in_help() {
+        let rendered = Cli::command().render_help().to_string();
+        assert!(rendered
+            .lines()
+            .any(|line| is_subcommand_entry(line, "task")));
     }
 
     #[test]

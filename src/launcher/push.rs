@@ -82,10 +82,10 @@ const MAX_CAPTURED_LINE_CHARS: usize = 512;
 const ALLOWED_PROTOCOLS: &str = "file:git:http:https:ssh";
 
 /// Reads and local writes (`config`, `rev-parse`, `init`, `worktree`).
-const GIT_QUICK: Duration = Duration::from_secs(30);
+pub(crate) const GIT_QUICK: Duration = Duration::from_secs(30);
 
 /// Fetching the tip from the checkout into the mirror.
-const GIT_FETCH: Duration = Duration::from_secs(120);
+pub(crate) const GIT_FETCH: Duration = Duration::from_secs(120);
 
 /// The push to the remote (D-25: 300 s).
 const GIT_PUSH: Duration = Duration::from_secs(300);
@@ -214,7 +214,7 @@ pub fn check_destination(dest: &str, alias: &str) -> Result<(), &'static str> {
 /// A branch name safe to put inside a fetch refspec: what git itself would accept
 /// from `symbolic-ref`, minus every character that could end the ref or start an
 /// option.
-fn plausible_branch(branch: &str) -> bool {
+pub(crate) fn plausible_branch(branch: &str) -> bool {
     !branch.is_empty()
         && branch.len() <= 200
         && !branch.starts_with(['-', '+', '/'])
@@ -227,7 +227,7 @@ fn plausible_branch(branch: &str) -> bool {
 
 /// A remote URL that may be pinned and pushed to: not option-shaped, not the `ext::`
 /// command transport, one line.
-fn plausible_url(url: &str) -> bool {
+pub(crate) fn plausible_url(url: &str) -> bool {
     !url.is_empty()
         && url.len() <= 2048
         && !url.starts_with('-')
@@ -255,7 +255,7 @@ fn redact_captured(line: &str) -> String {
     redacted.chars().take(MAX_CAPTURED_LINE_CHARS).collect()
 }
 
-fn is_hex_sha(text: &str) -> bool {
+pub(crate) fn is_hex_sha(text: &str) -> bool {
     matches!(text.len(), 40 | 64) && text.chars().all(|c| c.is_ascii_hexdigit())
 }
 
@@ -266,11 +266,11 @@ fn os(args: &[&str]) -> Vec<OsString> {
 // ---------------------------------------------------------------- git
 
 /// What one `git` call came to.
-struct GitRun {
-    success: bool,
-    stdout: String,
+pub(crate) struct GitRun {
+    pub(crate) success: bool,
+    pub(crate) stdout: String,
     /// The last non-empty stderr line, or why the call produced none.
-    last_error: String,
+    pub(crate) last_error: String,
 }
 
 /// Config overrides every launcher `git` carries, placed before the subcommand: the
@@ -316,12 +316,12 @@ const MIRROR_ONLY_ENV: &[(&str, &str)] = &[
 /// `GIT_TERMINAL_PROMPT=0` so a credential prompt cannot hang the launcher, and
 /// `GIT_ALLOW_PROTOCOL` so the `ext::` transport is out of reach. Every call starts
 /// with [`GIT_HARDENING`]; this is the only path that starts a launcher `git`.
-fn git(args: Vec<OsString>, budget: Duration) -> GitRun {
+pub(crate) fn git(args: Vec<OsString>, budget: Duration) -> GitRun {
     git_with_env(args, budget, &[])
 }
 
 /// [`git`] with the host's global and system configuration off ([`MIRROR_ONLY_ENV`]).
-fn git_mirror_only(args: Vec<OsString>, budget: Duration) -> GitRun {
+pub(crate) fn git_mirror_only(args: Vec<OsString>, budget: Duration) -> GitRun {
     git_with_env(args, budget, MIRROR_ONLY_ENV)
 }
 
@@ -347,14 +347,14 @@ fn git_with_env(args: Vec<OsString>, budget: Duration, more_env: &[(&str, &str)]
 }
 
 /// `git --git-dir <mirror> <args...>`.
-fn git_mirror(mirror: &Path, args: &[&str], budget: Duration) -> GitRun {
+pub(crate) fn git_mirror(mirror: &Path, args: &[&str], budget: Duration) -> GitRun {
     let mut full = vec![OsString::from("--git-dir"), mirror.as_os_str().to_owned()];
     full.extend(os(args));
     git(full, budget)
 }
 
 /// `git -C <dir> <args...>`.
-fn git_in(dir: &Path, args: &[&str], budget: Duration) -> GitRun {
+pub(crate) fn git_in(dir: &Path, args: &[&str], budget: Duration) -> GitRun {
     let mut full = vec![OsString::from("-C"), dir.as_os_str().to_owned()];
     full.extend(os(args));
     git(full, budget)
@@ -632,22 +632,151 @@ pub fn push_run_with(ctx: &PushContext, store: &mut RunStore, ack_planted: bool)
         }
     }
 
-    let refspec = format!("+refs/heads/{branch}:{private_ref}");
+    let scan_dir = mirror
+        .parent()
+        .unwrap_or(&ctx.driver_root)
+        .join(format!("scan-{}", ctx.run_id));
+    let prior_pushed = match &prior {
+        Some((Some(sha), Some(outcome))) if outcome == "pushed" => Some(sha.clone()),
+        _ => None,
+    };
+    let tip = match push_tip(&TipPush {
+        mirror: &mirror,
+        url: &url,
+        checkout: &ctx.project,
+        branch: &branch,
+        private_ref: &private_ref,
+        dest: &dest,
+        start_sha: start_sha.as_deref(),
+        prior_pushed_sha: prior_pushed.as_deref(),
+        scan_dir: &scan_dir,
+    }) {
+        TipPushed::Pushed { sha } => sha,
+        TipPushed::NothingToPush => return PushOutcome::NothingToPush,
+        TipPushed::AlreadyPushed => return PushOutcome::AlreadyPushed,
+        TipPushed::FetchFailed { detail } | TipPushed::ScanFailed { detail } => {
+            return PushOutcome::Failed { detail }
+        }
+        TipPushed::SecretFound { findings, rendered } => {
+            // The report cannot hold a secret (`Finding` has nowhere to put one).
+            eprintln!("{rendered}");
+            if let Err(e) = store.park_after_push(&format!("push-refused:{REASON_SECRET_DETECTED}"))
+            {
+                eprintln!("driver push: could not park the run: {e}");
+            }
+            log_event(
+                store,
+                "push-refused",
+                vec![
+                    ("reason", Some(REASON_SECRET_DETECTED.to_owned())),
+                    ("findings", Some(findings.to_string())),
+                ],
+            );
+            return refused(
+                REASON_SECRET_DETECTED,
+                format!(
+                    "the credential scan found {findings} finding(s) in the tip; nothing was pushed and \
+                     the run is parked"
+                ),
+            );
+        }
+        TipPushed::PushFailed { detail } => {
+            log_event(
+                store,
+                "push-failed",
+                vec![
+                    ("dest", Some(dest.clone())),
+                    ("detail", Some(detail.clone())),
+                ],
+            );
+            return PushOutcome::Failed {
+                detail: format!("git push to {dest} failed: {detail}"),
+            };
+        }
+    };
+
+    let record = PushRecord {
+        at: Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
+        dest: dest.clone(),
+        sha: tip.clone(),
+        outcome: "pushed".to_owned(),
+        pr: None,
+    };
+    if let Err(e) = store.record_push(&record) {
+        eprintln!("driver push: the push succeeded but could not be recorded: {e}");
+    }
+    if ctx.open_pr {
+        open_pull_request(ctx, store, &url, &dest, &branch);
+    }
+    PushOutcome::Pushed { dest, sha: tip }
+}
+
+/// What [`push_tip`] sends, and from where (quick 261103-f5y extracted it from
+/// [`push_run_with`] so a one-off run pushes through the same store-free core).
+pub(crate) struct TipPush<'a> {
+    /// The launcher-owned bare mirror.
+    pub mirror: &'a Path,
+    /// The push URL pinned in the mirror before any sandbox existed.
+    pub url: &'a str,
+    /// The repository the tip is fetched from (the driven checkout, or a one-off clone).
+    pub checkout: &'a Path,
+    /// The branch whose tip is pushed (already [`plausible_branch`]).
+    pub branch: &'a str,
+    /// `refs/gsdmm/<run-id>`: the mirror ref the tip is fetched into.
+    pub private_ref: &'a str,
+    /// The one destination ([`dest_ref`], already checked).
+    pub dest: &'a str,
+    /// The commit the run started from: a tip equal to it is nothing to push.
+    pub start_sha: Option<&'a str>,
+    /// The sha the last successful push sent, if any.
+    pub prior_pushed_sha: Option<&'a str>,
+    /// Where the SAFE-03 scan materializes the tip.
+    pub scan_dir: &'a Path,
+}
+
+/// What [`push_tip`] came to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TipPushed {
+    /// The tip was pushed to the destination.
+    Pushed { sha: String },
+    /// The tip is the start commit.
+    NothingToPush,
+    /// The tip is what the last push already sent.
+    AlreadyPushed,
+    /// The SAFE-03 scan found credentials; nothing was pushed. `rendered` is the
+    /// scan report (it cannot hold a secret).
+    SecretFound { findings: usize, rendered: String },
+    /// The fetch failed or the fetched tip is not a commit (the full message).
+    FetchFailed { detail: String },
+    /// The tip could not be materialized for the scan (the full message).
+    ScanFailed { detail: String },
+    /// `git push` failed; `detail` is git's last line with URL userinfo removed.
+    PushFailed { detail: String },
+}
+
+/// The store-free core of a push: fetch the tip of `branch` from the checkout into
+/// the mirror's private ref, stop when it is the start commit or what was already
+/// pushed, scan the tip's whole tree (SAFE-03), then push it to `dest` from the
+/// mirror to the pinned URL, one fixed refspec, no force. The planted-file gate and
+/// the destination checks are the caller's and come first.
+pub(crate) fn push_tip(req: &TipPush<'_>) -> TipPushed {
+    let branch = req.branch;
+    let refspec = format!("+refs/heads/{branch}:{}", req.private_ref);
     let fetch = git(
         vec![
             "--git-dir".into(),
-            mirror.as_os_str().to_owned(),
+            req.mirror.as_os_str().to_owned(),
             "fetch".into(),
             "--quiet".into(),
             "--no-tags".into(),
             "--no-recurse-submodules".into(),
-            ctx.project.as_os_str().to_owned(),
+            req.checkout.as_os_str().to_owned(),
             refspec.into(),
         ],
         GIT_FETCH,
     );
     if !fetch.success {
-        return PushOutcome::Failed {
+        return TipPushed::FetchFailed {
             detail: format!(
                 "could not fetch branch {branch} from the checkout: {}",
                 fetch.last_error
@@ -657,36 +786,32 @@ pub fn push_run_with(ctx: &PushContext, store: &mut RunStore, ack_planted: bool)
     let tip = git_mirror_only(
         vec![
             "--git-dir".into(),
-            mirror.as_os_str().to_owned(),
+            req.mirror.as_os_str().to_owned(),
             "rev-parse".into(),
             "--verify".into(),
             "--quiet".into(),
-            format!("{private_ref}^{{commit}}").into(),
+            format!("{}^{{commit}}", req.private_ref).into(),
         ],
         GIT_QUICK,
     );
     if !tip.success || !is_hex_sha(&tip.stdout) {
-        return PushOutcome::Failed {
+        return TipPushed::FetchFailed {
             detail: format!("the fetched tip of {branch} is not a commit"),
         };
     }
     let tip = tip.stdout;
 
-    if start_sha.as_deref() == Some(tip.as_str()) {
-        return PushOutcome::NothingToPush;
+    if req.start_sha == Some(tip.as_str()) {
+        return TipPushed::NothingToPush;
     }
-    if let Some((Some(sha), Some(outcome))) = &prior {
-        if sha == &tip && outcome == "pushed" {
-            return PushOutcome::AlreadyPushed;
-        }
+    if req.prior_pushed_sha == Some(tip.as_str()) {
+        return TipPushed::AlreadyPushed;
     }
 
     // SAFE-03: the whole tree of the tip, not the diff.
-    let scan_dir = mirror
-        .parent()
-        .unwrap_or(&ctx.driver_root)
-        .join(format!("scan-{}", ctx.run_id));
-    remove_scan_dir(&mirror, &scan_dir);
+    let mirror = req.mirror;
+    let scan_dir = req.scan_dir;
+    remove_scan_dir(mirror, scan_dir);
     // WR-06: the checkout of driver-written content runs with the host's global and
     // system git configuration off.
     let add = git_mirror_only(
@@ -704,38 +829,21 @@ pub fn push_run_with(ctx: &PushContext, store: &mut RunStore, ack_planted: bool)
         GIT_FETCH,
     );
     if !add.success {
-        remove_scan_dir(&mirror, &scan_dir);
-        return PushOutcome::Failed {
+        remove_scan_dir(mirror, scan_dir);
+        return TipPushed::ScanFailed {
             detail: format!(
                 "could not materialize the tip for the credential scan (nothing was pushed): {}",
                 add.last_error
             ),
         };
     }
-    let report = scan_with_external(&scan_dir, ScanLimits::default());
-    remove_scan_dir(&mirror, &scan_dir);
+    let report = scan_with_external(scan_dir, ScanLimits::default());
+    remove_scan_dir(mirror, scan_dir);
     if !report.is_clean() {
-        // The report cannot hold a secret (`Finding` has nowhere to put one).
-        eprintln!("{}", report.render());
-        if let Err(e) = store.park_after_push(&format!("push-refused:{REASON_SECRET_DETECTED}")) {
-            eprintln!("driver push: could not park the run: {e}");
-        }
-        log_event(
-            store,
-            "push-refused",
-            vec![
-                ("reason", Some(REASON_SECRET_DETECTED.to_owned())),
-                ("findings", Some(report.findings.len().to_string())),
-            ],
-        );
-        return refused(
-            REASON_SECRET_DETECTED,
-            format!(
-                "the credential scan found {} finding(s) in the tip; nothing was pushed and \
-                 the run is parked",
-                report.findings.len()
-            ),
-        );
+        return TipPushed::SecretFound {
+            findings: report.findings.len(),
+            rendered: report.render(),
+        };
     }
 
     // The one push: a fixed refspec, no force, from the mirror, to the pinned URL.
@@ -746,40 +854,26 @@ pub fn push_run_with(ctx: &PushContext, store: &mut RunStore, ack_planted: bool)
             "push".into(),
             "--quiet".into(),
             "--no-recurse-submodules".into(),
-            url.clone().into(),
-            format!("{tip}:{dest}").into(),
+            req.url.into(),
+            format!("{tip}:{}", req.dest).into(),
         ],
         GIT_PUSH,
     );
     if !pushed.success {
-        let detail = redact_urls(&pushed.last_error);
-        log_event(
-            store,
-            "push-failed",
-            vec![
-                ("dest", Some(dest.clone())),
-                ("detail", Some(detail.clone())),
-            ],
-        );
-        return PushOutcome::Failed {
-            detail: format!("git push to {dest} failed: {detail}"),
+        return TipPushed::PushFailed {
+            detail: redact_urls(&pushed.last_error),
         };
     }
+    TipPushed::Pushed { sha: tip }
+}
 
-    let record = PushRecord {
-        at: Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
-        dest: dest.clone(),
-        sha: tip.clone(),
-        outcome: "pushed".to_owned(),
-        pr: None,
-    };
-    if let Err(e) = store.record_push(&record) {
-        eprintln!("driver push: the push succeeded but could not be recorded: {e}");
+/// The push URL pinned in `mirror`, if it is a usable one.
+pub(crate) fn pinned_push_url(mirror: &Path) -> Option<String> {
+    if !mirror.join("HEAD").is_file() {
+        return None;
     }
-    if ctx.open_pr {
-        open_pull_request(ctx, store, &url, &dest, &branch);
-    }
-    PushOutcome::Pushed { dest, sha: tip }
+    let pinned = git_mirror(mirror, &["config", "--get", PUSH_URL_KEY], GIT_QUICK);
+    (pinned.success && plausible_url(&pinned.stdout)).then_some(pinned.stdout)
 }
 
 /// The git-relevant planted findings in the checkout right now, against the
