@@ -457,6 +457,8 @@ pub fn merge(project: &Path, run_id: &str, opts: &LandOptions) -> Result<String,
     let (_, first_view) = view_of(&project, run_id)?;
     // I-13: one landing of a run at a time; the view is read again under the lock.
     let _land_lock = take_land_lock(&first_view.run_dir, run_id)?;
+    // klf I-09: a stop request left by an earlier landing must not stop this one.
+    super::cancel::clear_request(&first_view.run_dir.join(super::LAND_DIR));
     let (_, view) = view_of(&project, run_id)?;
     let record = &view.record;
     let head = record.head.clone();

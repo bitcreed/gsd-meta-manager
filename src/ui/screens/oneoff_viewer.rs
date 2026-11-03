@@ -14,6 +14,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+use super::oneoff::{CutKey, OneoffScreen};
 use super::{AppContext, Screen, ScreenAction};
 use crate::action::Action;
 use crate::oneoff::inbox::{validate_message, InboxRequest};
@@ -338,6 +339,33 @@ impl Screen for OneoffViewerScreen {
                 }
             }
             KeyCode::Char('G') | KeyCode::End => self.follow = true,
+            // klf C-01, I-16: stop, kill now and pause, asked first. The resolver viewer
+            // always aims at the landing; the run viewer at the agent while it is live,
+            // at the landing when it is not live but its landing runs.
+            KeyCode::Char('x' | 'X' | 'z') => {
+                let key = CutKey::from_key(code).unwrap_or(CutKey::Stop);
+                let live = matches!(stream.info.live, LiveState::Running | LiveState::Preparing);
+                let landing_runs = ctx
+                    .view_cache
+                    .get(&self.alias)
+                    .and_then(|c| {
+                        c.oneoff_runs
+                            .iter()
+                            .find(|v| v.record.run_id == stream.run_id)
+                    })
+                    .is_some_and(|v| v.landing);
+                let target_landing = stream.attempt.is_some() || (!live && landing_runs);
+                if target_landing || live {
+                    let (command, prompt) = key.ask(&stream.run_id, target_landing);
+                    return ScreenAction::Push(Box::new(OneoffScreen::ask_for(
+                        self.alias.clone(),
+                        stream.run_id.clone(),
+                        command,
+                        prompt,
+                    )));
+                }
+                self.notice = Some(key.refusal(&stream.run_id));
+            }
             KeyCode::Char('i' | 'b') if stream.attempt.is_some() => {
                 self.notice = Some(RESOLVER_NOTICE.to_owned());
             }
@@ -459,13 +487,13 @@ impl Screen for OneoffViewerScreen {
                 Style::default().fg(Color::Yellow),
             )),
             (None, None) => {
-                let follow = if self.follow { " [following]" } else { "" };
+                let follow = if self.follow { "[following] " } else { "" };
                 let keys = if stream.attempt.is_some() {
-                    "PgUp/PgDn j/k scroll · f follow · G end · Esc close"
+                    "PgUp/PgDn j/k scroll · f follow · G end · x stop · X kill · z pause · Esc close"
                 } else {
-                    "PgUp/PgDn j/k scroll · f follow · G end · i message · b soft cap · Esc close"
+                    "PgUp/PgDn j/k scroll · f follow · G end · i message · b soft cap · x stop · X kill · z pause · Esc close"
                 };
-                Line::from(Span::styled(format!("{keys}{follow}"), dim))
+                Line::from(Span::styled(format!("{follow}{keys}"), dim))
             }
         };
 
@@ -822,5 +850,105 @@ pub(crate) mod tests {
         key(&mut own, &mut ctx, KeyCode::Char('i'));
         assert!(own.composer.is_some());
         assert!(!text(&own, &ctx, 120, 20).contains("resolver land"));
+    }
+
+    #[test]
+    fn x_big_x_and_z_push_a_confirmation_for_the_viewed_run() {
+        use crate::oneoff::OneoffCommand;
+        for (code, expected) in [
+            ('x', OneoffCommand::Stop),
+            ('X', OneoffCommand::Kill),
+            ('z', OneoffCommand::Pause),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let (mut ctx, mut rx) = ctx_with_project(dir.path());
+            let mut screen = seed(&mut ctx, ALIAS, "oneoff-x", numbered(3), LiveState::Running);
+            let ScreenAction::Push(mut ask) = key(&mut screen, &mut ctx, KeyCode::Char(code))
+            else {
+                panic!("{code}: a confirmation is pushed");
+            };
+            // n pops back to the viewer; y dispatches the command and pops.
+            assert!(matches!(
+                ask.handle_key(KeyCode::Char('n'), KeyModifiers::NONE, &mut ctx),
+                ScreenAction::Pop
+            ));
+            let ScreenAction::Push(mut ask) = key(&mut screen, &mut ctx, KeyCode::Char(code))
+            else {
+                panic!("pushed again");
+            };
+            assert!(matches!(
+                ask.handle_key(KeyCode::Char('y'), KeyModifiers::NONE, &mut ctx),
+                ScreenAction::Pop
+            ));
+            match rx.try_recv() {
+                Ok(Action::OneoffCommandRequested {
+                    command, run_id, ..
+                }) => {
+                    assert_eq!(command, expected);
+                    assert_eq!(run_id.as_deref(), Some("oneoff-x"));
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+        // A finished run with no landing refuses with a notice.
+        let (mut ctx, mut screen) = viewer_over("oneoff-x", numbered(3), LiveState::Finished);
+        assert!(matches!(
+            key(&mut screen, &mut ctx, KeyCode::Char('z')),
+            ScreenAction::None
+        ));
+        assert!(text(&screen, &ctx, 120, 20).contains("nothing to pause"));
+    }
+
+    #[test]
+    fn the_composer_keeps_x_big_x_and_z_as_typed_text() {
+        let (mut ctx, mut screen) = viewer_over("oneoff-x", numbered(3), LiveState::Running);
+        key(&mut screen, &mut ctx, KeyCode::Char('i'));
+        for k in ['x', 'X', 'z'] {
+            assert!(matches!(
+                key(&mut screen, &mut ctx, KeyCode::Char(k)),
+                ScreenAction::None
+            ));
+        }
+        assert_eq!(screen.composer.as_deref(), Some("xXz"));
+        // The soft-cap input takes only digits and a dot; the keys do not escape it.
+        let (mut ctx, mut screen) = viewer_over("oneoff-x", numbered(3), LiveState::Running);
+        key(&mut screen, &mut ctx, KeyCode::Char('b'));
+        assert!(matches!(
+            key(&mut screen, &mut ctx, KeyCode::Char('x')),
+            ScreenAction::None
+        ));
+        assert_eq!(screen.soft_input.as_deref(), Some(""));
+    }
+
+    #[test]
+    fn in_the_resolver_viewer_the_keys_target_the_landing() {
+        use crate::oneoff::OneoffCommand;
+        let dir = tempfile::tempdir().unwrap();
+        let (mut ctx, mut rx) = ctx_with_project(dir.path());
+        let mut screen = seed(&mut ctx, ALIAS, "oneoff-x", numbered(3), LiveState::Running);
+        let stream = ctx
+            .view_cache
+            .get_mut(ALIAS)
+            .and_then(|c| c.oneoff_stream.take())
+            .unwrap()
+            .with_attempt(Some(2));
+        ctx.view_cache.get_mut(ALIAS).unwrap().oneoff_stream = Some(stream);
+        for (code, expected) in [
+            ('x', OneoffCommand::StopLanding),
+            ('X', OneoffCommand::KillLanding),
+            ('z', OneoffCommand::PauseLanding),
+        ] {
+            let ScreenAction::Push(mut ask) = key(&mut screen, &mut ctx, KeyCode::Char(code))
+            else {
+                panic!("{code}");
+            };
+            ask.handle_key(KeyCode::Char('y'), KeyModifiers::NONE, &mut ctx);
+            match rx.try_recv() {
+                Ok(Action::OneoffCommandRequested { command, .. }) => {
+                    assert_eq!(command, expected, "{code}");
+                }
+                other => panic!("{other:?}"),
+            }
+        }
     }
 }

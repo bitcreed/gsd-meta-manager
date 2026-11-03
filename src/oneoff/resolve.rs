@@ -40,6 +40,7 @@ use crate::launcher::process::run_bounded_with_stderr;
 use crate::launcher::push::{self, planted};
 use crate::state_reader::driver_frontmatter::read_run_file_capped;
 
+use super::cancel::{read_request, StopKind};
 use super::land::{
     clear_tracking_after_landing, git_relevant_planted, sensitive_warning, tracked_ref, LandOptions,
 };
@@ -84,6 +85,37 @@ enum Step {
     Moved,
     /// Nothing landed, and trying again cannot help.
     Failed(String),
+    /// The user stopped, killed or paused the landing (klf, C-13, C-14, I-15): nothing
+    /// landed and no further attempt starts.
+    Stopped(StopKind),
+}
+
+/// The stop the user asked of this landing, if any (klf, I-15): the request file in
+/// `<run-dir>/land/`, or a hard stop when the caller's own stop flag is set (Ctrl-C or
+/// TERM of `task land merge`, the TUI's per-run flag).
+fn stop_wanted(land: &Land<'_>) -> Option<StopKind> {
+    let from_file = read_request(&land.run_dir.join(LAND_DIR))
+        .ok()
+        .flatten()
+        .map(|r| r.kind);
+    let from_flag = land
+        .opts
+        .user_stop
+        .load(std::sync::atomic::Ordering::SeqCst)
+        .then_some(StopKind::Hard);
+    match (from_file, from_flag) {
+        (Some(a), Some(b)) => Some(a.stronger(b)),
+        (a, b) => a.or(b),
+    }
+}
+
+/// The `land_failure` reason of a landing the user ended (klf, C-13, C-14).
+fn stop_reason(kind: StopKind) -> &'static str {
+    match kind {
+        StopKind::Hard => "stopped by user",
+        StopKind::Kill => "killed by user",
+        StopKind::Pause => "paused",
+    }
 }
 
 /// `git -C <work> <args>` with hooks off and the host's global and system config off.
@@ -272,18 +304,39 @@ pub fn land_by_merge(
                     ))
                 }
                 Step::Moved => {}
-                Step::Failed(reason) => break 'tries reason,
+                Step::Failed(reason) => break 'tries (reason, None),
+                Step::Stopped(kind) => {
+                    break 'tries (
+                        format!(
+                            "the landing was {}; nothing was merged",
+                            match kind {
+                                StopKind::Pause => "paused",
+                                StopKind::Hard => "stopped",
+                                StopKind::Kill => "killed",
+                            }
+                        ),
+                        Some(kind),
+                    )
+                }
             }
         }
-        "the target kept moving; nothing was merged".to_owned()
+        (
+            "the target kept moving; nothing was merged".to_owned(),
+            None,
+        )
     };
 
-    let reason = clean_text(&failure, 400);
+    let (failure, stop) = failure;
+    let reason = match stop {
+        Some(kind) => stop_reason(kind).to_owned(),
+        None => clean_text(&failure, 400),
+    };
     record.land_failure = Some(LandFailure {
         at: rfc3339(Utc::now()),
         reason: reason.clone(),
         conflicted,
         attempts: attempts.clone(),
+        stop,
     });
     persist(land.run_dir, &record);
     let kept = if attempts.is_empty() {
@@ -291,6 +344,9 @@ pub fn land_by_merge(
     } else {
         format!(" ({} kept under land/)", attempts.join(", "))
     };
+    if stop.is_some() {
+        return Err(format!("{failure}{kept}"));
+    }
     Err(format!("{reason}{kept}"))
 }
 
@@ -349,6 +405,11 @@ fn attempt(
 ) -> Step {
     let project = land.project;
     let fail = |why: String| Step::Failed(why);
+
+    // klf I-15: a stop between attempts ends the landing here.
+    if let Some(kind) = stop_wanted(land) {
+        return Step::Stopped(kind);
+    }
 
     // The target: the checkout's current branch and tip, read again for every attempt.
     let branch = pgit(project, &["symbolic-ref", "-q", "--short", "HEAD"]);
@@ -497,7 +558,11 @@ fn attempt(
         *conflicted_out = recorded_names(&found);
         log_line(&dir, &format!("{} file(s) conflict", found.len()));
         if let Err(why) = resolve_conflicts(land, record, n, &dir, &work, &tip, &found) {
-            return fail(why);
+            // A stop the user asked for explains the failure better than the session's.
+            return match stop_wanted(land) {
+                Some(kind) => Step::Stopped(kind),
+                None => fail(why),
+            };
         }
         how = MergeHow::Resolved;
         names = found;
@@ -528,6 +593,11 @@ fn attempt(
     }
     log_line(&dir, &format!("merge commit {merge_sha}"));
 
+    // klf I-15: nothing lands once a stop was asked, even a merge that resolved or was
+    // clean; the attempt dir is kept.
+    if let Some(kind) = stop_wanted(land) {
+        return Step::Stopped(kind);
+    }
     match fast_forward(land, &work, &label, &tip, &merge_sha) {
         Ok(Forwarded::Landed) => Step::Landed {
             merge_sha,
@@ -627,6 +697,10 @@ fn resolve_conflicts(
         project: land.project,
         user_stop: &land.opts.user_stop,
         inbox: false,
+        // klf C-14: the resolver is not asked to pause; its attempt may finish within
+        // the pause grace and is then not landed.
+        control: Some(&land.run_dir.join(LAND_DIR)),
+        pause_message: None,
     };
     let session = run_sandboxed_session(&spec, &mut |event| {
         if let SessionEvent::ScopeUnit(Some(unit)) = event {
@@ -653,6 +727,10 @@ fn resolve_conflicts(
     match session.end {
         HostEnd::Exited => {}
         HostEnd::UserStop => return Err("the landing was stopped; nothing was merged".to_owned()),
+        HostEnd::Killed { .. } => {
+            return Err("the landing was killed; nothing was merged".to_owned())
+        }
+        HostEnd::Paused => return Err("the landing was paused; nothing was merged".to_owned()),
         HostEnd::WallClock => {
             return Err(format!(
                 "the resolver hit its {RESOLVER_CAP_MINUTES} minute wall clock; nothing was merged"

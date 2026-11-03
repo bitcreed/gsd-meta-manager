@@ -120,10 +120,7 @@ pub fn grace_from_env() -> Duration {
 
 /// [`grace_from_env`] with the value given.
 pub fn grace_from(value: Option<&str>) -> Duration {
-    value
-        .and_then(|v| v.trim().parse::<u64>().ok())
-        .filter(|secs| (1..=600).contains(secs))
-        .map_or(SOFT_CAP_GRACE, Duration::from_secs)
+    super::cancel::grace_with_default(value, SOFT_CAP_GRACE)
 }
 
 /// Judge a soft cap against the hard ceiling: `None` clears; a value must be finite,
@@ -365,6 +362,19 @@ mod supervisor {
                     .push(format!("message {id} was recorded but not written"));
             }
             sent
+        }
+
+        /// Deliver a host-made message (the pause message): recorded BEFORE the write,
+        /// not counted against [`MAX_INJECTIONS`], refused and recorded when the
+        /// session is ending or its input is closed (quick 261103-klf, S-01).
+        pub fn inject_host(&mut self, kind: InjectionKind, text: &str, now: Instant) -> bool {
+            let id = format!("pause-{}", Utc::now().timestamp_millis());
+            if self.lifecycle.can_write() && self.input.is_open() {
+                self.deliver(&id, kind, text, now)
+            } else {
+                self.refused(&id, kind, Some(text.to_owned()), "the session is ending");
+                false
+            }
         }
 
         fn handle(&mut self, taken: Taken, now: Instant, outcome: &mut TickOutcome) {

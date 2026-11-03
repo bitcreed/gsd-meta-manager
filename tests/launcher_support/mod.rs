@@ -133,7 +133,7 @@ exec "$@"
 "#;
 
 const SYSTEMCTL_SHIM: &str = r#"#!/bin/sh
-# Fake systemctl: is-system-running, is-active and stop, keyed on the pid files.
+# Fake systemctl: is-system-running, is-active, stop and kill, keyed on the pid files.
 SHIMS=$(dirname "$0")
 {
   printf 'systemctl'
@@ -146,6 +146,17 @@ unit=${2%.scope}
 pid=""
 [ -n "$unit" ] && pid=$(cat "$SHIMS/$unit.pid" 2>/dev/null)
 case "$verb" in
+  kill)
+    # `kill --signal=<SIG> <unit>` (the one-off cut, klf): the signal to the unit's group.
+    sig=TERM; target=""
+    shift
+    for a in "$@"; do
+      case "$a" in --signal=*) sig=${a#--signal=};; -*) ;; *) target=${a%.scope};; esac
+    done
+    kpid=""
+    [ -n "$target" ] && kpid=$(cat "$SHIMS/$target.pid" 2>/dev/null)
+    [ -n "$kpid" ] && kill -s "$sig" -- "-$kpid" 2>/dev/null
+    exit 0;;
   is-system-running) echo running; exit 0;;
   is-active)
     if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then echo active; exit 0; fi

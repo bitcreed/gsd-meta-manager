@@ -2299,11 +2299,19 @@ fn fixture_for(type_name: &str) -> Option<Fixture> {
                     attempts: vec![identity.to_string()],
                     range: Some(identity.to_string()),
                 });
+                view.record.stop = Some(crate::oneoff::cancel::StopRecord {
+                    kind: crate::oneoff::cancel::StopKind::Pause,
+                    requested_at: identity.to_string(),
+                    ended_at: Some(identity.to_string()),
+                    escalated: true,
+                    by: crate::oneoff::cancel::StopBy::Tui,
+                });
                 view.record.land_failure = Some(crate::oneoff::store::LandFailure {
                     at: "2026-11-03T11:00:00Z".to_string(),
                     reason: identity.to_string(),
                     conflicted: vec![identity.to_string()],
                     attempts: vec![identity.to_string()],
+                    stop: None,
                 });
                 let mut live = super::oneoff::tests::finished_view(identity);
                 live.record.run_id = format!("{identity}-2");
@@ -2343,6 +2351,15 @@ fn fixture_for(type_name: &str) -> Option<Fixture> {
                 list_ctx,
                 Box::new(OneoffScreen::list(identity.to_string())),
             ));
+            // klf: the stop / kill / pause confirmations name the hostile run id.
+            for (key, name) in [('x', "ask stop"), ('X', "ask kill"), ('z', "ask pause")] {
+                let mut ask_ctx = probe_ctx(identity);
+                seed(identity, &mut ask_ctx);
+                let mut ask = OneoffScreen::list(identity.to_string());
+                // The first row is the live run.
+                ask.handle_key(KeyCode::Char(key), KeyModifiers::NONE, &mut ask_ctx);
+                states.push(one_state(name, ask_ctx, Box::new(ask)));
+            }
             let mut diff_ctx = probe_ctx(identity);
             seed(identity, &mut diff_ctx);
             let mut diff = OneoffScreen::list(identity.to_string());

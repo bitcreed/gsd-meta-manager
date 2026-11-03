@@ -19,6 +19,7 @@ use chrono::{DateTime, Utc};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
+use super::cancel::{StopKind, StopRecord};
 use super::report::{Report, ReportStatus, MAX_HEADLINE};
 use super::{AgentOutcome, Mode, TaskSpec, RUN_ID_PREFIX};
 
@@ -154,6 +155,11 @@ pub struct LandFailure {
     /// Every attempt dir the landing made (`land/<n>`), kept on disk.
     #[serde(default)]
     pub attempts: Vec<String>,
+    /// Set when the landing ended because the user stopped, killed or paused it
+    /// (quick 261103-klf, I-15). The TUI's `u` and `task resume` read this, never the
+    /// reason text.
+    #[serde(default)]
+    pub stop: Option<StopKind>,
 }
 
 /// The sandbox posture the run had.
@@ -230,6 +236,9 @@ pub struct RunRecord {
     /// Why the latest merge landing failed, if it did.
     #[serde(default)]
     pub land_failure: Option<LandFailure>,
+    /// How the user stopped, killed or paused the run, if they did (klf, C-07).
+    #[serde(default)]
+    pub stop: Option<StopRecord>,
 }
 
 impl RunRecord {
@@ -281,6 +290,7 @@ impl RunRecord {
             tracking_note: None,
             spend_usd: None,
             land_failure: None,
+            stop: None,
         }
     }
 
@@ -425,6 +435,14 @@ pub fn synthesize(outcome: &AgentOutcome, max_budget_usd: f64, cap_minutes: f64)
         AgentOutcome::Stopped => (
             ReportStatus::Failed,
             "The run was stopped before the agent reported".to_owned(),
+        ),
+        AgentOutcome::Paused => (
+            ReportStatus::Partial,
+            "The run was paused before the agent reported".to_owned(),
+        ),
+        AgentOutcome::Killed => (
+            ReportStatus::Failed,
+            "The run was killed before the agent reported".to_owned(),
         ),
     };
     let headline = fit(&headline, MAX_HEADLINE);
@@ -1147,6 +1165,8 @@ pub(crate) mod tests {
             (AgentOutcome::OverBudget, ReportStatus::Failed),
             (AgentOutcome::TimedOut, ReportStatus::Failed),
             (AgentOutcome::Stopped, ReportStatus::Failed),
+            (AgentOutcome::Paused, ReportStatus::Partial),
+            (AgentOutcome::Killed, ReportStatus::Failed),
         ] {
             let report = synthesize(&outcome, 10.0, 60.0);
             assert_eq!(report.status, status, "{outcome:?}");
@@ -1244,6 +1264,7 @@ pub(crate) mod tests {
             reason: "the resolver's report was failed".to_owned(),
             conflicted: vec!["shared.txt".to_owned()],
             attempts: vec!["land/1".to_owned()],
+            stop: None,
         });
         full.landed.push(Landing {
             kind: LandingKind::Merged,
@@ -1352,6 +1373,18 @@ pub(crate) mod tests {
                 why: NOTE_DELETED_AFTER_LANDING.to_owned()
             }
         );
+    }
+
+    #[test]
+    fn a_record_and_a_land_failure_without_a_stop_read_back_as_none() {
+        let record: RunRecord = serde_json::from_str(PRE_KLF_RECORD).expect("parses");
+        assert!(record.stop.is_none());
+        let failure: LandFailure =
+            serde_json::from_str(r#"{"at":"t","reason":"r"}"#).expect("parses");
+        assert!(failure.stop.is_none());
+        let with: LandFailure =
+            serde_json::from_str(r#"{"at":"t","reason":"paused","stop":"pause"}"#).unwrap();
+        assert_eq!(with.stop, Some(StopKind::Pause));
     }
 
     #[test]

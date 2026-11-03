@@ -597,6 +597,11 @@ fn a_second_run_starts_while_one_is_live_and_stop_takes_a_run_id() {
     assert!(exited, "the foreground run did not exit after stop");
     let after = status_of_run(&fx, &first);
     assert_eq!(after["record"]["outcome"]["kind"], "stopped", "{after}");
+    let stop = &after["record"]["stop"];
+    assert_eq!(stop["kind"], "hard", "{after}");
+    assert_eq!(stop["by"], "cli", "{after}");
+    assert_eq!(stop["escalated"], false, "{after}");
+    assert!(stop["ended_at"].is_string(), "{after}");
     assert_eq!(after["live"], "finished");
     assert_eq!(
         status_of_run(&fx, &second)["live"],
@@ -1619,4 +1624,265 @@ fn a_failed_discard_leaves_no_stale_branch_ref() {
         assert!(record["tracked_branch"].is_null(), "{record}");
         assert_eq!(record["tracking_note"], "deleted by discard", "{record}");
     }
+}
+
+// ---------------------------------------------------------------- klf: stop, kill, pause
+
+/// Ignores SIGTERM and spins: only a KILL ends it.
+const IGNORES_TERM_SCENARIO: &str = r#"
+trap '' TERM
+touch "$FAKE_CLAUDE_DIR/started"
+while :; do sleep 0.1; done
+"#;
+
+/// Start a run detached with the graces shortened, and wait until its scenario runs.
+fn start_with_graces(fx: &Fixture, scenario: &str, stop_secs: &str, pause_secs: &str) -> String {
+    fx.write_scenario(scenario);
+    let out = task(fx, &["run", ALIAS, "--text", "spin"])
+        .env("GSDMM_ONEOFF_STOP_GRACE_SECS", stop_secs)
+        .env("GSDMM_ONEOFF_PAUSE_GRACE_SECS", pause_secs)
+        .output()
+        .expect("the binary runs");
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert!(
+        wait_until(Duration::from_secs(30), || fx.scenario_started()),
+        "the scenario never started"
+    );
+    started_id(&out)
+}
+
+#[test]
+fn a_hard_stop_escalates_to_kill_when_the_agent_ignores_term() {
+    let fx = fixture();
+    let id = start_with_graces(&fx, IGNORES_TERM_SCENARIO, "1", "300");
+    let stopped = run(&fx, &["stop", ALIAS, "--run-id", &id]);
+    assert_eq!(stopped.status.code(), Some(0), "{stopped:?}");
+    let done = wait_run_finished(&fx, &id);
+    let record = &done["record"];
+    assert_eq!(record["outcome"]["kind"], "killed", "{done}");
+    assert_eq!(record["stop"]["kind"], "hard", "{done}");
+    assert_eq!(record["stop"]["escalated"], true, "{done}");
+    assert_eq!(record["stop"]["by"], "cli", "{done}");
+    let log = fx.shim_log();
+    let term = log
+        .find("systemctl --user kill --signal=TERM gsdmm-oneoff-")
+        .unwrap_or_else(|| panic!("no TERM kill in {log}"));
+    let kill = log
+        .find("systemctl --user kill --signal=KILL gsdmm-oneoff-")
+        .unwrap_or_else(|| panic!("no KILL kill in {log}"));
+    assert!(term < kill, "TERM comes before KILL: {log}");
+}
+
+#[test]
+fn kill_is_immediate_and_sends_no_term() {
+    let fx = fixture();
+    fx.write_scenario(PARALLEL_SCENARIO);
+    let out = run(&fx, &["run", ALIAS, "--text", "wait"]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let id = started_id(&out);
+    assert!(
+        wait_until(Duration::from_secs(30), || started_count(&fx) == 1),
+        "the scenario never started"
+    );
+    let killed = run(&fx, &["stop", ALIAS, "--run-id", &id, "--kill"]);
+    assert_eq!(killed.status.code(), Some(0), "{killed:?}");
+    let done = wait_run_finished(&fx, &id);
+    let record = &done["record"];
+    assert_eq!(record["outcome"]["kind"], "killed", "{done}");
+    assert_eq!(record["stop"]["kind"], "kill", "{done}");
+    assert_eq!(record["stop"]["escalated"], false, "{done}");
+    let log = fx.shim_log();
+    assert!(log.contains("--signal=KILL gsdmm-oneoff-"), "{log}");
+    assert!(!log.contains("--signal=TERM"), "no TERM on a kill: {log}");
+}
+
+/// Replays every stdin line; on the pause message it commits `wip.txt`, reports
+/// `partial` and ends.
+const PAUSE_HONOURED_SCENARIO: &str = r#"
+touch "$FAKE_CLAUDE_DIR/started"
+G="git -c user.name=t -c user.email=t@example.com"
+while IFS= read -r line; do
+  printf '%s\n' "$line" | sed 's/^{/{"isReplay":true,/'
+  case "$line" in
+    *"Pause requested"*)
+      echo wip > wip.txt
+      $G add -A
+      $G commit -qm "wip: paused"
+      gsd-meta-manager taskctl report --status partial --headline "Paused" --followup "finish it"
+      printf '%s\n' '{"type":"result","subtype":"success"}'
+      exit 0;;
+  esac
+done
+"#;
+
+/// Replays every stdin line and never ends its turn.
+const PAUSE_IGNORED_SCENARIO: &str = r#"
+touch "$FAKE_CLAUDE_DIR/started"
+while IFS= read -r line; do
+  printf '%s\n' "$line" | sed 's/^{/{"isReplay":true,/'
+done
+"#;
+
+/// A run paused through the honouring scenario; returns its id and the finished status.
+fn paused_run(fx: &Fixture) -> (String, Value) {
+    let id = start_with_graces(fx, PAUSE_HONOURED_SCENARIO, "5", "60");
+    let paused = run(
+        fx,
+        &[
+            "stop",
+            ALIAS,
+            "--run-id",
+            &id,
+            "--pause",
+            "--wait-secs",
+            "30",
+        ],
+    );
+    assert_eq!(paused.status.code(), Some(0), "{paused:?}");
+    let done = wait_run_finished(fx, &id);
+    (id, done)
+}
+
+#[test]
+fn a_paused_run_commits_its_wip_reports_partial_and_is_tracked() {
+    let fx = fixture();
+    let (id, done) = paused_run(&fx);
+    let record = &done["record"];
+    assert_eq!(record["outcome"]["kind"], "paused", "{done}");
+    assert_eq!(record["report"]["status"], "partial", "{done}");
+    assert_eq!(record["report_source"]["kind"], "agent", "{done}");
+    assert_eq!(record["stop"]["kind"], "pause", "{done}");
+    assert_eq!(record["stop"]["escalated"], false, "{done}");
+    assert_eq!(
+        record["tracked_branch"],
+        format!("refs/heads/gsd-oneoff/{id}"),
+        "{done}"
+    );
+    assert_eq!(
+        branch_head(fx.project(), &id).as_deref(),
+        record["head"].as_str(),
+        "{done}"
+    );
+    let dir = run_dir(&fx, &id);
+    let injections = lines_of(&dir.join("injections.jsonl"));
+    let pauses: Vec<&Value> = injections.iter().filter(|i| i["kind"] == "pause").collect();
+    assert_eq!(pauses.len(), 1, "{injections:?}");
+    assert_eq!(pauses[0]["outcome"], "delivered");
+    assert!(pauses[0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("taskctl report --status partial"));
+    let stream = fs::read_to_string(dir.join("stream.jsonl")).unwrap();
+    assert!(stream.contains("Pause requested"), "{stream}");
+}
+
+#[test]
+fn a_pause_the_agent_ignores_is_cut_after_its_grace() {
+    let fx = fixture();
+    let id = start_with_graces(&fx, PAUSE_IGNORED_SCENARIO, "1", "1");
+    let paused = run(
+        &fx,
+        &[
+            "stop",
+            ALIAS,
+            "--run-id",
+            &id,
+            "--pause",
+            "--wait-secs",
+            "30",
+        ],
+    );
+    assert_eq!(paused.status.code(), Some(0), "{paused:?}");
+    let done = wait_run_finished(&fx, &id);
+    let record = &done["record"];
+    assert_eq!(record["outcome"]["kind"], "killed", "{done}");
+    assert_eq!(record["stop"]["kind"], "pause", "{done}");
+    assert_eq!(record["stop"]["escalated"], true, "{done}");
+}
+
+/// A conflicting run whose resolver announces itself and waits for `release`, then runs
+/// `then`.
+fn waiting_resolver(then: &str) -> String {
+    merge_scenario(&format!(
+        r#"
+  touch "$FAKE_CLAUDE_DIR/resolver-started"
+  while [ ! -f "$FAKE_CLAUDE_DIR/release" ]; do sleep 0.1; done
+{then}
+"#
+    ))
+}
+
+/// Spawn `task land merge` as a child and wait until its resolver runs.
+fn landing_child(fx: &Fixture, id: &str) -> std::process::Child {
+    let child = task(fx, &["land", "merge", ALIAS, id])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    assert!(
+        wait_until(Duration::from_secs(60), || fx
+            .rec_dir()
+            .join("resolver-started")
+            .exists()),
+        "the resolver never started"
+    );
+    child
+}
+
+#[test]
+fn stopping_a_resolver_lands_nothing_and_keeps_the_branch() {
+    let fx = conflict_fixture();
+    let (id, _, tip) = conflicting_run(&fx, &waiting_resolver(RESOLVES));
+    let child = landing_child(&fx, &id);
+    let stopped = run(&fx, &["stop", ALIAS, "--run-id", &id]);
+    assert_eq!(stopped.status.code(), Some(0), "{stopped:?}");
+    assert!(
+        String::from_utf8_lossy(&stopped.stdout).contains("landing"),
+        "it says it stopped the landing: {stopped:?}"
+    );
+    let out = child.wait_with_output().unwrap();
+    let after = assert_nothing_landed(&fx, &id, &tip, &out);
+    let failure = &after["record"]["land_failure"];
+    assert_eq!(failure["reason"], "stopped by user", "{after}");
+    assert_eq!(failure["stop"], "hard", "{after}");
+}
+
+#[test]
+fn pausing_a_resolver_lands_nothing_even_when_it_resolves() {
+    let fx = conflict_fixture();
+    let (id, _, tip) = conflicting_run(&fx, &waiting_resolver(RESOLVES));
+    let child = landing_child(&fx, &id);
+    let paused = run(
+        &fx,
+        &[
+            "stop",
+            ALIAS,
+            "--run-id",
+            &id,
+            "--pause",
+            "--wait-secs",
+            "0",
+        ],
+    );
+    assert_eq!(paused.status.code(), Some(0), "{paused:?}");
+    fs::write(fx.rec_dir().join("release"), "").unwrap();
+    let out = child.wait_with_output().unwrap();
+    let after = assert_nothing_landed(&fx, &id, &tip, &out);
+    let failure = &after["record"]["land_failure"];
+    assert_eq!(failure["reason"], "paused", "{after}");
+    assert_eq!(failure["stop"], "pause", "{after}");
+    let attempts: Vec<_> = fs::read_dir(run_dir(&fx, &id).join("land"))
+        .unwrap()
+        .flatten()
+        .filter(|e| e.path().is_dir())
+        .collect();
+    assert_eq!(attempts.len(), 1, "no further attempt starts: {attempts:?}");
+
+    // A stale request does not stop the next landing: it takes the lock and clears it.
+    let again = run(&fx, &["land", "merge", ALIAS, &id]);
+    assert_eq!(again.status.code(), Some(0), "{again:?}");
+    assert_eq!(
+        fs::read_to_string(fx.project().join("shared.txt")).unwrap(),
+        "merged\n"
+    );
 }

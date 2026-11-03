@@ -33,12 +33,13 @@ mod unix {
 
     use gsd_meta_manager::cli::{LandAction, TaskAction, TaskRunArgs};
     use gsd_meta_manager::launcher::LauncherError;
+    use gsd_meta_manager::oneoff::cancel::{StopBy, StopKind};
     use gsd_meta_manager::oneoff::inbox::{
         send_message, set_soft_cap, wait_outcome, InboxError, InjectionOutcome,
     };
     use gsd_meta_manager::oneoff::land;
     use gsd_meta_manager::oneoff::launch::{
-        run_detached, run_foreground, stop, OneoffOptions, StopOutcome,
+        run_detached, run_foreground, stop, OneoffOptions, StopOutcome, StopTarget,
     };
     use gsd_meta_manager::oneoff::session::validate_soft_cap;
     use gsd_meta_manager::oneoff::store::{
@@ -103,7 +104,24 @@ mod unix {
                 project,
                 run_id,
                 wait_secs,
-            } => stop_main(&project, run_id.as_deref(), wait_secs, config),
+                kill,
+                pause,
+                resolver,
+            } => {
+                let kind = if kill {
+                    StopKind::Kill
+                } else if pause {
+                    StopKind::Pause
+                } else {
+                    StopKind::Hard
+                };
+                let target = if resolver {
+                    StopTarget::Landing
+                } else {
+                    StopTarget::Auto
+                };
+                stop_main(&project, run_id.as_deref(), wait_secs, kind, target, config)
+            }
             TaskAction::Send {
                 project,
                 text,
@@ -286,6 +304,22 @@ mod unix {
                 "absent"
             }
         ));
+        if let Some(stop) = &record.stop {
+            let pending = stop.ended_at.is_none() && view.live.may_be_live();
+            let state = match (pending, stop.kind) {
+                (true, StopKind::Pause) => "pausing",
+                (true, StopKind::Hard) => "stopping",
+                (true, StopKind::Kill) => "killing",
+                (false, kind) => kind.word(),
+            };
+            lines.push(format!(
+                "stop:      {state} ({} by {} at {}{})",
+                stop.kind.word(),
+                stop.by.word(),
+                shown(&stop.requested_at),
+                if stop.escalated { ", escalated" } else { "" }
+            ));
+        }
         lines.push(match record.branch_state() {
             BranchState::Tracked { name, head } => match head {
                 Some(head) => format!(
@@ -478,6 +512,8 @@ mod unix {
         target: &str,
         run_id: Option<&str>,
         wait_secs: u64,
+        kind: StopKind,
+        which: StopTarget,
         config: Option<PathBuf>,
     ) -> i32 {
         let (_, project, _) = match resolve_project(target, config) {
@@ -492,8 +528,8 @@ mod unix {
             err_line("task stop: no one-off directory for this project");
             return 1;
         };
-        let run_id = match resolve_run(&project_dir, run_id, true) {
-            Ok(view) => view.record.run_id,
+        let picked = match resolve_run(&project_dir, run_id, true) {
+            Ok(view) => view,
             Err(RunPick::NoRuns) => {
                 out_line("task stop: no one-off is running on this project");
                 return 0;
@@ -503,7 +539,23 @@ mod unix {
                 return 1;
             }
         };
-        match stop(&project, Some(&run_id), Duration::from_secs(wait_secs)) {
+        let run_id = picked.record.run_id.clone();
+        // Say which target was acted on when it was picked automatically (C-02).
+        if which == StopTarget::Auto && !picked.live.may_be_live() && picked.landing {
+            out_line(&format!(
+                "task stop: {run_id} is not live but its landing is running; \
+                 acting on the landing (--resolver)"
+            ));
+        }
+        let word = kind.word();
+        match stop(
+            &project,
+            Some(&run_id),
+            kind,
+            StopBy::Cli,
+            which,
+            Duration::from_secs(wait_secs),
+        ) {
             Ok(StopOutcome::Stopped { run_id, pid }) => {
                 out_line(&format!("task stop: {run_id} stopped (pid {pid})"));
                 0
@@ -514,6 +566,10 @@ mod unix {
                 ));
                 1
             }
+            Ok(outcome @ StopOutcome::PauseRequested { .. }) => {
+                out_line(&format!("task stop: {}", outcome.message()));
+                0
+            }
             Ok(StopOutcome::OrphanScopeStopped { unit }) => {
                 out_line(&format!(
                     "task stop: no live one-off launcher; stopped the leftover scope {unit}"
@@ -522,6 +578,16 @@ mod unix {
             }
             Ok(StopOutcome::NotRunning) => {
                 out_line("task stop: no one-off is running on this project");
+                0
+            }
+            Ok(
+                outcome @ (StopOutcome::LandingStopped { .. }
+                | StopOutcome::LandingRequested { .. }),
+            ) => {
+                out_line(&format!(
+                    "task stop: stopped the landing ({word}): {}",
+                    outcome.message()
+                ));
                 0
             }
             Err(e) => report("stop", &e),

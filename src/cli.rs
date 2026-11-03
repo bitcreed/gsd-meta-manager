@@ -507,7 +507,8 @@ pub enum TaskAction {
         #[arg(long)]
         json: bool,
     },
-    /// Stop a live one-off run (the live one unless --run-id; refused when several are live)
+    /// Stop a live one-off run: SIGTERM, then SIGKILL after a short grace (the live one
+    /// unless --run-id; refused when several are live)
     Stop {
         /// Alias or path of a registered project
         project: String,
@@ -517,6 +518,19 @@ pub enum TaskAction {
         /// How long to wait for the run to finish stopping, in seconds
         #[arg(long, default_value_t = 60)]
         wait_secs: u64,
+        /// SIGKILL the whole scope at once, with no SIGTERM and no grace
+        #[arg(long, conflicts_with = "pause")]
+        kill: bool,
+        /// Ask the agent to commit its work in progress, report `partial` and end; the
+        /// run ends `paused` and `task resume` picks it up. A pause the agent ignores is
+        /// cut hard after its grace (300 s)
+        #[arg(long)]
+        pause: bool,
+        /// Aim at the run's in-progress landing (its conflict resolver) instead of its
+        /// agent. Without it, a run that is not live whose landing is running is
+        /// targeted automatically
+        #[arg(long)]
+        resolver: bool,
     },
     /// Send a message to a running one-off agent (experimental)
     Send {

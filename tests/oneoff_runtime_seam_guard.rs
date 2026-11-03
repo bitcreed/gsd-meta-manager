@@ -21,6 +21,7 @@ const NEUTRAL_FILES: &[&str] = &[
     "src/oneoff/stream.rs",
     "src/oneoff/session.rs",
     "src/oneoff/inbox.rs",
+    "src/oneoff/cancel.rs",
     "src/ui/screens/oneoff.rs",
     "src/ui/screens/oneoff_viewer.rs",
 ];

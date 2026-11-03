@@ -52,8 +52,12 @@ use crate::launcher::sandbox::{
 use crate::launcher::stop::signal_target;
 use crate::launcher::LauncherError;
 
-use super::inbox::ensure_inbox;
-use super::land::{git_relevant_planted, track_branch};
+use super::cancel::{
+    pause_grace_from_env, read_request, request_now, signal_scope, stop_grace_from_env,
+    write_request, Cancel, CancelStep, CutEnd, StopBy, StopKind, StopRecord, StopRequest,
+};
+use super::inbox::{ensure_inbox, InjectionKind};
+use super::land::{git_relevant_planted, landing_in_progress, track_branch};
 use super::report::read_validated;
 use super::runtime::{AgentRuntime, HostEnd};
 use super::session::{grace_from_env, Supervisor};
@@ -65,8 +69,8 @@ use super::store::{
 use super::stream::spend_of_file;
 use super::todos::{valid_todo_file_name, PENDING_REL};
 use super::{
-    prompt, Mode, TaskSpec, BRANCH_PREFIX, LAUNCH_LOG, REPORT_DIR_ENV, REPORT_FILE, REPORT_SUBDIR,
-    STREAM_FILE, WORK_DIR,
+    prompt, Mode, TaskSpec, BRANCH_PREFIX, LAND_DIR, LAUNCH_LOG, REPORT_DIR_ENV, REPORT_FILE,
+    REPORT_SUBDIR, STREAM_FILE, WORK_DIR,
 };
 
 /// The first word of every one-off scope unit name (I-16).
@@ -413,6 +417,8 @@ fn run_session(ctx: &Ctx<'_>, record: &mut RunRecord) -> Result<(), LauncherErro
         project: ctx.project,
         user_stop: ctx.user_stop,
         inbox: true,
+        control: Some(run_dir),
+        pause_message: Some(ctx.runtime.pause_message()),
     };
     let mut on_event = |event: SessionEvent<'_>| match event {
         SessionEvent::ScopeUnit(unit) => record.scope_unit = unit.map(str::to_owned),
@@ -429,6 +435,12 @@ fn run_session(ctx: &Ctx<'_>, record: &mut RunRecord) -> Result<(), LauncherErro
                 eprintln!("task run: could not record the soft cap: {e}");
             }
         }
+        SessionEvent::Stop(stop) => {
+            record.stop = Some(stop.clone());
+            if let Err(e) = write_record(run_dir, record) {
+                eprintln!("task run: could not record the stop request: {e}");
+            }
+        }
     };
     let session = run_sandboxed_session(&spec, &mut on_event)?;
     record.warnings.extend(session.warnings);
@@ -436,6 +448,9 @@ fn run_session(ctx: &Ctx<'_>, record: &mut RunRecord) -> Result<(), LauncherErro
     record.soft_cap_hit_at = session.soft_cap_hit_at;
     // I-17: the session's estimate is recorded, so a later resolver knows what is left.
     record.spend_usd = Some(session.spend_usd);
+    if session.stop.is_some() {
+        record.stop = session.stop;
+    }
 
     finalize(
         ctx,
@@ -477,6 +492,12 @@ pub(crate) struct SessionSpec<'a> {
     pub user_stop: &'a AtomicBool,
     /// Create the operator's inbox (a run has one; a resolver does not).
     pub inbox: bool,
+    /// The directory a stop request file is read from (quick 261103-klf, I-09): the
+    /// run dir for a run, `<run-dir>/land/` for a resolver.
+    pub control: Option<&'a Path>,
+    /// The message injected when the user pauses (a run has one; a resolver is not
+    /// asked to pause, its attempt just finishes within the grace).
+    pub pause_message: Option<&'a str>,
 }
 
 /// What the session tells its caller while it runs.
@@ -491,6 +512,8 @@ pub(crate) enum SessionEvent<'a> {
         usd: Option<f64>,
         hit_at: Option<&'a str>,
     },
+    /// A stop request was first seen, or came in stronger (klf, I-13).
+    Stop(&'a StopRecord),
 }
 
 /// How a sandboxed session ended.
@@ -504,6 +527,8 @@ pub(crate) struct SessionRun {
     /// The session's spend in notional dollars, read from the whole stream after the
     /// capture pump drained (the supervisor's last tick can miss the final lines).
     pub spend_usd: f64,
+    /// How the user stopped, killed or paused the session, completed (klf, C-07).
+    pub stop: Option<StopRecord>,
 }
 
 /// Run one agent session: config dir, snapshot, `$HOME` allowlist, seed, egress, the
@@ -627,11 +652,48 @@ pub(crate) fn run_sandboxed_session(
     // I-17: the wall clock starts at the spawn.
     let started = Instant::now();
     let cap = Duration::from_secs_f64(spec.cap_minutes * 60.0);
+    let mut cancel = Cancel::new(stop_grace_from_env(), pause_grace_from_env());
+    // klf: the strongest stop the user asked for, and what `run.json` keeps of it.
+    let mut stop: Option<StopRequest> = None;
+    let mut stop_record: Option<StopRecord> = None;
     let (status, end) = loop {
+        // klf I-09, I-13: a request file, or a signal with or without one.
+        let mut wanted = None;
+        if let Some(dir) = spec.control {
+            wanted = read_request(dir).ok().flatten();
+        }
         if spec.user_stop.load(Ordering::SeqCst) {
-            containment.stop(&mut child);
-            supervisor.close_input();
-            break (child.wait(), HostEnd::UserStop);
+            wanted = Some(match wanted {
+                Some(file) if file.kind != StopKind::Pause => file,
+                Some(file) => StopRequest {
+                    kind: StopKind::Hard,
+                    ..file
+                },
+                None => request_now(StopKind::Hard, StopBy::Signal),
+            });
+        }
+        if let Some(request) = wanted {
+            if stop.as_ref().is_none_or(|s| request.kind.outranks(s.kind)) {
+                let record = StopRecord::begun(&request);
+                on_event(SessionEvent::Stop(&record));
+                stop_record = Some(record);
+                stop = Some(request);
+            }
+        }
+        match cancel.tick(stop.as_ref().map(|s| s.kind), Instant::now()) {
+            CancelStep::Wait => {}
+            CancelStep::InjectPause => {
+                if let Some(message) = spec.pause_message {
+                    supervisor.inject_host(InjectionKind::Pause, message, Instant::now());
+                }
+            }
+            CancelStep::Term => send_signal(&containment, "TERM"),
+            CancelStep::Kill => {
+                send_signal(&containment, "KILL");
+                let _ = child.kill();
+                supervisor.close_input();
+                break (child.wait(), end_of_cut(&cancel));
+            }
         }
         if started.elapsed() >= cap {
             containment.stop(&mut child);
@@ -651,7 +713,30 @@ pub(crate) fn run_sandboxed_session(
             break (child.wait(), HostEnd::SoftCap);
         }
         match child.try_wait() {
-            Ok(Some(status)) => break (Ok(status), HostEnd::Exited),
+            Ok(Some(status)) => {
+                let end = if cancel.cutting() {
+                    end_of_cut(&cancel)
+                } else {
+                    // The agent ended by itself: a pause the request file still carries
+                    // and a clean exit is a paused run (C-06, I-13). A resolver is not
+                    // asked to pause, so it never ends `Paused`.
+                    let late = spec
+                        .control
+                        .and_then(|dir| read_request(dir).ok().flatten());
+                    if let Some(late) = &late {
+                        if stop_record.is_none() {
+                            stop_record = Some(StopRecord::begun(late));
+                        }
+                    }
+                    match (late.map(|l| l.kind), spec.pause_message.is_some()) {
+                        (Some(StopKind::Pause), true) if status.success() => HostEnd::Paused,
+                        (Some(StopKind::Hard), _) => HostEnd::UserStop,
+                        (Some(StopKind::Kill), _) => HostEnd::Killed { escalated: false },
+                        _ => HostEnd::Exited,
+                    }
+                };
+                break (Ok(status), end);
+            }
             Ok(None) => {}
             Err(e) => {
                 containment.stop(&mut child);
@@ -661,9 +746,14 @@ pub(crate) fn run_sandboxed_session(
         }
         std::thread::sleep(WAIT_POLL);
     };
-    if end == HostEnd::Exited {
+    if !matches!(end, HostEnd::WallClock | HostEnd::SoftCap) {
         containment.stop_leftovers();
     }
+    let stop = stop_record.map(|mut record| {
+        record.ended_at = Some(rfc3339(Utc::now()));
+        record.escalated = cancel.escalated();
+        record
+    });
     if let Some(guard) = egress_guard {
         guard.finish();
     }
@@ -681,7 +771,33 @@ pub(crate) fn run_sandboxed_session(
         soft_cap_usd: end_of_session.soft_cap_usd,
         soft_cap_hit_at: end_of_session.soft_cap_hit_at,
         spend_usd,
+        stop,
     })
+}
+
+/// The `HostEnd` of a session the daemon cut (klf, C-05, I-13).
+fn end_of_cut(cancel: &Cancel) -> HostEnd {
+    match cancel.end() {
+        Some(CutEnd::Terminated) | None => HostEnd::UserStop,
+        Some(CutEnd::Killed { escalated }) => HostEnd::Killed { escalated },
+        Some(CutEnd::PauseCut) => HostEnd::Killed { escalated: true },
+    }
+}
+
+/// Send `signal` to everything the session runs in: the scope by name, or the process
+/// group (klf, I-12). The caller reaps the child.
+fn send_signal(containment: &Containment, signal: &str) {
+    match containment {
+        Containment::Scope { unit } => signal_scope(unit, signal),
+        Containment::Group { pgid } => {
+            let sig = if signal == "KILL" {
+                rustix::process::Signal::KILL
+            } else {
+                rustix::process::Signal::TERM
+            };
+            let _ = crate::driver::kill::signal_group(*pgid, sig);
+        }
+    }
 }
 
 /// `text` with control characters replaced and cut to `max` characters.
@@ -934,14 +1050,23 @@ pub fn run_detached(opts: &OneoffOptions, config: Option<&Path>) -> Result<Start
 /// What `stop` did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StopOutcome {
-    /// The daemon was signalled and the lock went free.
+    /// The daemon was asked and the lock went free.
     Stopped { run_id: String, pid: u32 },
     /// The daemon was signalled but still holds the lock.
     StillRunning { run_id: String, pid: u32 },
+    /// A pause was asked and the run is still winding down; the launcher cuts it after
+    /// the pause grace (quick 261103-klf, I-14).
+    PauseRequested { run_id: String, pid: u32 },
     /// No daemon; the recorded scope was stopped by name.
     OrphanScopeStopped { unit: String },
     /// Nothing is running.
     NotRunning,
+    /// The run's landing (its conflict resolver) was asked to `kind` and has ended
+    /// (klf, C-13).
+    LandingStopped { run_id: String, kind: StopKind },
+    /// The landing was asked to `kind` and is still running; it acts on the request
+    /// itself.
+    LandingRequested { run_id: String, kind: StopKind },
 }
 
 impl StopOutcome {
@@ -952,10 +1077,24 @@ impl StopOutcome {
             StopOutcome::StillRunning { run_id, pid } => {
                 format!("{run_id} (pid {pid}) was signalled but is still running")
             }
+            StopOutcome::PauseRequested { run_id, .. } => format!(
+                "{run_id} was asked to pause and is still winding down; the launcher cuts it \
+                 after its pause grace"
+            ),
             StopOutcome::OrphanScopeStopped { unit } => {
                 format!("no live one-off launcher; stopped the leftover scope {unit}")
             }
             StopOutcome::NotRunning => "that one-off is not running".to_owned(),
+            StopOutcome::LandingStopped { run_id, kind } => {
+                format!(
+                    "the landing of {run_id} ended after a {} request; nothing landed",
+                    kind.word()
+                )
+            }
+            StopOutcome::LandingRequested { run_id, kind } => format!(
+                "the landing of {run_id} was asked to {} and is still ending; nothing will land",
+                kind.word()
+            ),
         }
     }
 }
@@ -969,14 +1108,35 @@ fn plausible_scope(unit: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c))
 }
 
-/// Stop a one-off of `project`, waiting up to `wait` for its lock to go free.
+/// Whom a stop is aimed at (klf, C-02, I-10).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StopTarget {
+    /// The run's agent session.
+    Run,
+    /// The run's in-progress landing (its conflict resolver): `--resolver`.
+    Landing,
+    /// The agent when the run is live; otherwise the landing when its lock is held.
+    Auto,
+}
+
+/// Stop, kill or pause a one-off of `project`, waiting up to `wait` for the targeted
+/// lock to go free.
 ///
 /// `run_id` names the run; without it the run is picked like every other verb does
 /// ([`resolve_run`] with `refuse_several_live`): the only live run, or a refusal that
 /// lists the live ids when several may be live (quick 261103-hx7, I-03).
+///
+/// A request is written only while the target's lock is held (`run.lock` for the run,
+/// `land.lock` for a landing); the run's daemon is signalled (TERM, for hard and kill)
+/// only through its run lock's holder, and a landing's lock holder is NEVER signalled:
+/// it may be this very process (the TUI), so the landing polls its request file
+/// instead (klf, I-10, T-klf-04).
 pub fn stop(
     project: &Path,
     run_id: Option<&str>,
+    kind: StopKind,
+    by: StopBy,
+    target: StopTarget,
     wait: Duration,
 ) -> Result<StopOutcome, LauncherError> {
     let project_dir = project_dir_for(project).ok_or_else(|| LauncherError::Io {
@@ -992,7 +1152,16 @@ pub fn stop(
         }
     };
     let lock_file = live_lock_path(&project_dir, &view.run_dir);
-    match probe_at(&lock_file) {
+    let probe = probe_at(&lock_file);
+    let landing = match target {
+        StopTarget::Run => false,
+        StopTarget::Landing => true,
+        StopTarget::Auto => probe != LockProbe::Held && landing_in_progress(&view.run_dir),
+    };
+    if landing {
+        return stop_landing(&view, kind, by, wait);
+    }
+    match probe {
         LockProbe::Held => {
             let deadline = Instant::now() + HOLDER_WAIT;
             let holder = loop {
@@ -1013,15 +1182,20 @@ pub fn stop(
                 return Ok(StopOutcome::NotRunning);
             }
             let target = signal_target(holder.pgid)?;
-            // Signal only while the lock is still held, so the pid is the daemon's.
+            // Request and signal only while the lock is still held, so the pid is the
+            // daemon's.
             if probe_at(&lock_file) == LockProbe::Held {
-                match rustix::process::kill_process(target, rustix::process::Signal::TERM) {
-                    Ok(()) | Err(rustix::io::Errno::SRCH) => {}
-                    Err(errno) => {
-                        return Err(io_error(
-                            &format!("could not signal pid {}", holder.pgid),
-                            errno,
-                        ))
+                write_request(&view.run_dir, request_now(kind, by))
+                    .map_err(|e| io_error("could not write the stop request", e))?;
+                if kind != StopKind::Pause {
+                    match rustix::process::kill_process(target, rustix::process::Signal::TERM) {
+                        Ok(()) | Err(rustix::io::Errno::SRCH) => {}
+                        Err(errno) => {
+                            return Err(io_error(
+                                &format!("could not signal pid {}", holder.pgid),
+                                errno,
+                            ))
+                        }
                     }
                 }
             }
@@ -1034,9 +1208,16 @@ pub fn stop(
                     });
                 }
                 if Instant::now() >= deadline {
-                    return Ok(StopOutcome::StillRunning {
-                        run_id: holder.run_id,
-                        pid: holder.pgid,
+                    return Ok(if kind == StopKind::Pause {
+                        StopOutcome::PauseRequested {
+                            run_id: holder.run_id,
+                            pid: holder.pgid,
+                        }
+                    } else {
+                        StopOutcome::StillRunning {
+                            run_id: holder.run_id,
+                            pid: holder.pgid,
+                        }
                     });
                 }
                 std::thread::sleep(WAIT_POLL);
@@ -1048,7 +1229,15 @@ pub fn stop(
             if record.status != RecordStatus::Finished
                 && record.scope_unit.as_deref().is_some_and(plausible_scope)
             {
+                if kind == StopKind::Pause {
+                    return Err(LauncherError::InvalidRun {
+                        detail: "no live launcher to pause it; use stop or kill".to_owned(),
+                    });
+                }
                 let unit = record.scope_unit.unwrap_or_default();
+                if kind == StopKind::Kill {
+                    signal_scope(&unit, "KILL");
+                }
                 let _ = run_bounded(
                     "systemctl",
                     &["--user".into(), "stop".into(), unit.clone().into()],
@@ -1062,6 +1251,47 @@ pub fn stop(
             }
         }
         LockProbe::Unknown(errno) => Err(io_error("could not probe the one-off lock", errno)),
+    }
+}
+
+/// Ask the run's in-progress landing to stop, be killed or pause (klf, C-13, C-14).
+fn stop_landing(
+    view: &super::store::OneoffView,
+    kind: StopKind,
+    by: StopBy,
+    wait: Duration,
+) -> Result<StopOutcome, LauncherError> {
+    let run_dir = &view.run_dir;
+    let run_id = view.record.run_id.clone();
+    if !landing_in_progress(run_dir) {
+        return Err(LauncherError::InvalidRun {
+            detail: "no landing of this run is in progress".to_owned(),
+        });
+    }
+    write_request(&run_dir.join(LAND_DIR), request_now(kind, by))
+        .map_err(|e| io_error("could not write the landing's stop request", e))?;
+    // X on a resolver kills its scope directly (C-13). The unit name is rebuilt from the
+    // run id, the attempt number and the project hash, and checked for its shape.
+    if kind == StopKind::Kill {
+        if let Some(n) = view.land_attempts.last() {
+            let name = format!(
+                "{}.scope",
+                scope_unit(&format!("{run_id}-land{n}"), &hash8(&view.record.project))
+            );
+            if plausible_scope(&name) && name.contains(&format!("-land{n}-")) {
+                signal_scope(&name, "KILL");
+            }
+        }
+    }
+    let deadline = Instant::now() + wait;
+    loop {
+        if !landing_in_progress(run_dir) {
+            return Ok(StopOutcome::LandingStopped { run_id, kind });
+        }
+        if Instant::now() >= deadline {
+            return Ok(StopOutcome::LandingRequested { run_id, kind });
+        }
+        std::thread::sleep(WAIT_POLL);
     }
 }
 

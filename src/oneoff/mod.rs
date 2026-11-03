@@ -34,6 +34,7 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod cancel;
 pub mod inbox;
 pub mod merge;
 pub mod prompt;
@@ -143,6 +144,12 @@ pub enum AgentOutcome {
     TimedOut,
     /// The user stopped the session.
     Stopped,
+    /// The user paused it: the agent committed its work in progress, reported and ended
+    /// within the grace (quick 261103-klf, C-05). Resumable.
+    Paused,
+    /// The session was killed, immediately or after a TERM or pause grace ran out
+    /// (quick 261103-klf, C-05). The `stop` record says which.
+    Killed,
 }
 
 impl AgentOutcome {
@@ -155,6 +162,8 @@ impl AgentOutcome {
             AgentOutcome::OverBudget => "over_budget",
             AgentOutcome::TimedOut => "timed_out",
             AgentOutcome::Stopped => "stopped",
+            AgentOutcome::Paused => "paused",
+            AgentOutcome::Killed => "killed",
         }
     }
 }
@@ -165,7 +174,17 @@ pub enum OneoffCommand {
     Merge,
     Push,
     Discard,
+    /// A hard cut of the run (TERM, then KILL after the grace).
     Stop,
+    /// KILL the run's whole scope or group at once (quick 261103-klf, C-01).
+    Kill,
+    /// Ask the run to commit its work in progress, report and end (C-01).
+    Pause,
+    /// The same three, aimed at the run's conflict resolver (its landing) instead of
+    /// its agent (C-13, C-14).
+    StopLanding,
+    KillLanding,
+    PauseLanding,
 }
 
 impl OneoffCommand {
@@ -176,6 +195,11 @@ impl OneoffCommand {
             OneoffCommand::Push => "push",
             OneoffCommand::Discard => "discard",
             OneoffCommand::Stop => "stop",
+            OneoffCommand::Kill => "kill",
+            OneoffCommand::Pause => "pause",
+            OneoffCommand::StopLanding => "stop the landing of",
+            OneoffCommand::KillLanding => "kill the landing of",
+            OneoffCommand::PauseLanding => "pause the landing of",
         }
     }
 }
@@ -213,6 +237,8 @@ mod tests {
             AgentOutcome::OverBudget,
             AgentOutcome::TimedOut,
             AgentOutcome::Stopped,
+            AgentOutcome::Paused,
+            AgentOutcome::Killed,
         ] {
             let text = serde_json::to_string(&outcome).unwrap();
             assert!(text.contains(outcome.word()), "{text}");

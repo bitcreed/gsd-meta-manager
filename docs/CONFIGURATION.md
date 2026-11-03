@@ -119,6 +119,8 @@ The binary itself does not require any environment variables to start. It does, 
 | `GSDMM_EXPERIMENTAL_FEATURES` | Optional | `src/experimental.rs` (read once at startup by `App::from_config`) | Turns on the experimental surfaces, which today means the **Driver** tab and everything that leads to it, one-off tasks (`t` / `T`) included. **Default is OFF.** Accepted truthy values are `1`, `true`, `yes` and `on`, ASCII-case-insensitive with surrounding whitespace trimmed; unset, empty, `0`, `false`, `no`, `off` and any unrecognised value are OFF. |
 | `GSDMM_ONEOFF_REPORT_DIR` | Never set by users | `src/taskctl_cli.rs` (`taskctl report`) | Set by the one-off launcher inside the sandbox (and pinned by the run's `gsd-meta-manager` shim): the directory `taskctl report` writes `report.json` to. Unset, relative or missing makes `taskctl report` exit 1. |
 | `GSDMM_ONEOFF_SOFT_CAP_GRACE_SECS` | Tests only | `src/oneoff/session.rs` (`grace_from_env`) | Shortens the one-off soft cap's grace (integer 1-600 seconds; default 300). Read once by the launcher daemon at session start. |
+| `GSDMM_ONEOFF_STOP_GRACE_SECS` | Tests only | `src/oneoff/cancel.rs` (`stop_grace_from_env`) | Shortens the one-off hard cut's grace between SIGTERM and SIGKILL (integer 1-600 seconds; default 10). Read by the launcher daemon (and a landing) at session start. |
+| `GSDMM_ONEOFF_PAUSE_GRACE_SECS` | Tests only | `src/oneoff/cancel.rs` (`pause_grace_from_env`) | Shortens how long a one-off pause may take before the launcher cuts the run hard (integer 1-600 seconds; default 300). Read at session start. |
 
 Editor fallback chain: `$VISUAL` → `$EDITOR` → `vi`.
 
@@ -182,16 +184,21 @@ the SELECTED run: Enter shows its summary (status, headline, changed items,
 verifications, follow-ups, the SUMMARY path, spend and tracked branch, labelled
 agent-reported versus host facts; Esc goes back to the list, and Esc in the list
 closes it), `e` opens its SUMMARY.md from the clone in `$EDITOR`, `m` merges it, `p`
-pushes it, `D` discards it (a capital D: `d` is the merge diff now) and `x` kills it
-(a live run); each of those asks first, and a merge is refused while a landing of the
-same run is already in progress. A run an agent resolved a merge for is marked
+pushes it, `D` discards it (a capital D: `d` is the merge diff now), `x` stops it
+(SIGTERM, then SIGKILL after 10 s), `X` kills it at once and `z` pauses it (a live run);
+each of those asks first, and a merge is refused while a landing of the same run is
+already in progress. The same three keys work in the run's summary and in both live
+views (the run's and its resolver's); on a run that is not live but whose landing is
+running they act on the landing's conflict resolver instead, and the confirmation says
+so. While the live view's message or soft-cap input is open they are typed text. A run an agent resolved a merge for is marked
 `resolved by agent` with its conflicted files and attempt dirs; a landing that
 failed shows `land failed: <reason>` with the files and the attempt dirs kept.
 `d` opens the landed merge's diff (`git diff <merge>^1 <merge>`, hardened git, no
 external diff or textconv) in a scrollable full-screen view headed by the conflicted
-files: `j`/`k`, PgUp/PgDn, `g`/`G`, Esc back. It is read off the render thread, cut at
-5000 lines or 512 KiB with a `... diff truncated` line, and exists only for a run
-landed by a `merge` or `resolved` landing (a fast-forward has no merge commit). `r`
+files: `j`/`k`, PgUp/PgDn, `g`/`G`, `o` for the whole diff in `$EDITOR`, Esc back. It
+is read off the render thread, bounded as "The merge diff" below says, and exists only
+for a run landed by a `merge` or `resolved` landing (a fast-forward has no merge
+commit; `task status` prints the range it landed). `r`
 opens the live view on the run's newest conflict-resolver session (read-only: no
 message or soft cap; its header says `resolver land/<n>`), and says so when the run
 has none.
@@ -200,7 +207,7 @@ has none.
 [--mode quick|fast] [--model opus] [--max-budget-usd 10] [--cap-minutes 60]
 [--unsandboxed] [--foreground]`; `task status <project> [--run-id <id>] [--json]`;
 `task list <project> [--json]`; `task stop <project> [--run-id <id>] [--wait-secs
-60]`; `task send <project> <text> [--run-id <id>] [--wait-secs 10]`;
+60] [--kill | --pause] [--resolver]`; `task send <project> <text> [--run-id <id>] [--wait-secs 10]`;
 `task budget <project> (--soft <usd> | --clear) [--run-id <id>] [--wait-secs 10]`;
 `task attach <project> [--run-id <id>] [--no-input]` (prints the same rendered lines as the live
 view, follows until the run is finished and drained, and turns each line you type
@@ -208,6 +215,43 @@ into a message; `--no-input` only follows); `task land merge|push|discard <proje
 <run-id>`.
 The defaults are the ones shown above (the same as `driver launch`). `task` is not
 gated by this variable: the flag is a discovery gate, as it is for `driver`.
+
+**Stop, kill and pause.** Three ways to end a run (or its conflict resolver) early, from
+`task stop` and from `x`, `X` and `z`. **Stop** (the default of `task stop`) sends
+SIGTERM to the run's scope (its process group with `--unsandboxed`) and SIGKILL after 10
+seconds if anything is left: the run ends `stopped`, or `killed` when it needed the
+SIGKILL. **Kill** (`--kill`, `X`) sends SIGKILL at once: `killed`. **Pause** (`--pause`,
+`z`) injects ONE message through the agent's stdin (recorded in `injections.jsonl` as
+`pause`) asking it to commit its work in progress, call `taskctl report --status
+partial` and end. The host, not the agent, decides the outcome `paused`: a pause request
+plus a clean exit. The branch is tracked exactly as for any finished run, so a paused run
+is `gsd-oneoff/<run-id>` at its head. A pause the agent ignores is cut hard after 5
+minutes and ends `killed` with `escalated: true`. The launcher daemon, which owns the
+scope, does all of the signalling: the CLI and the TUI only write a request file
+(`<run-dir>/stop.request`, host-only, never mounted, at most 4 KiB, the stronger of two
+requests wins) and, for stop and kill, SIGTERM the daemon so an older daemon and a
+terminal's Ctrl-C still work. `run.json` keeps `stop {kind, requested_at, ended_at,
+escalated, by}`; `by` is `tui`, `cli` or `signal`, and `ended_at` stays empty while the
+run is still stopping (the summary says `Stopping...` or `Pausing...`). Without a live
+daemon (an orphaned scope) `task stop` stops, or with `--kill` kills, the leftover scope
+itself, and a pause is refused. With `--pause`, `--wait-secs` bounds the wait for the run
+to wind down; a run still winding down exits 0 and is cut by its own launcher after the
+grace.
+
+The same three apply to a **landing** (the resolver agent of a `resolved` merge):
+`task stop --resolver`, or no flag when the run is not live but its `land.lock` is held
+(the command says which it chose), and `x`/`X`/`z` on such a run. The landing's own
+request file is `<run-dir>/land/stop.request`; the process doing the landing reads it
+(`task land merge`, or the TUI), and the lock holder's pid is never signalled, because
+the holder of a TUI landing is the TUI itself. Stop and kill end the resolver and
+`X` also kills its scope by name. Pause lets the current attempt finish (up to the
+pause grace) and then lands NOTHING and starts no further attempt. All three leave the
+run unlanded with its branch, keep the attempt dirs, and record `land_failure` with the
+reason `stopped by user`, `killed by user` or `paused` and `stop` set to `hard`, `kill`
+or `pause`. `task land merge` (or `u` in the TUI) tries again; a stale request is
+cleared when a landing takes its lock. The two graces are read by the daemon at start
+and can be shortened for tests with `GSDMM_ONEOFF_STOP_GRACE_SECS` and
+`GSDMM_ONEOFF_PAUSE_GRACE_SECS` (integers 1-600).
 
 **Live view and messages.** `v` in the `T` run list opens a full-screen view of the
 selected run (live or finished): it replays `stream.jsonl` from the start and then follows

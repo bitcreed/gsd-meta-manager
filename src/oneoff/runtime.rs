@@ -43,6 +43,10 @@ pub enum HostEnd {
     WallClock,
     /// The soft spend cap's grace ran out while the session was still alive.
     SoftCap,
+    /// The user's pause was honoured: a pause request, then a clean exit (klf, C-06).
+    Paused,
+    /// The session was killed, immediately or by an escalation (klf, C-05).
+    Killed { escalated: bool },
 }
 
 /// The models the TUI cycles through, first is the default.
@@ -151,6 +155,14 @@ impl AgentRuntime {
         rendered
     }
 
+    /// The one message the launcher injects when the user pauses a run (klf, L-2, C-06):
+    /// stop at a safe point, commit the work in progress, report `partial`, end.
+    pub fn pause_message(self) -> &'static str {
+        match self {
+            AgentRuntime::Claude => PAUSE_MESSAGE,
+        }
+    }
+
     /// The wrap-up message the launcher injects when a soft spend cap is reached.
     pub fn wrap_up_message(self) -> &'static str {
         match self {
@@ -244,6 +256,9 @@ impl AgentRuntime {
 
 /// The one message the launcher injects at the soft spend cap (C-18).
 const WRAP_UP_MESSAGE: &str = "Budget reached: commit your work now, call `gsd-meta-manager taskctl report` with your status, then stop.";
+
+/// The message the launcher injects when the user pauses a run (klf).
+const PAUSE_MESSAGE: &str = "Pause requested: stop at a safe point, commit your work in progress on your branch, then call `gsd-meta-manager taskctl report --status partial` with a headline and one `--followup` per thing still left to do, then stop.";
 
 /// The longest text a classified event keeps (characters).
 const EVENT_TEXT_MAX: usize = 32 * 1024;
@@ -532,6 +547,8 @@ mod host_side {
         ) -> AgentOutcome {
             match end {
                 HostEnd::UserStop => return AgentOutcome::Stopped,
+                HostEnd::Paused => return AgentOutcome::Paused,
+                HostEnd::Killed { .. } => return AgentOutcome::Killed,
                 HostEnd::WallClock => return AgentOutcome::TimedOut,
                 HostEnd::SoftCap => return AgentOutcome::OverBudget,
                 HostEnd::Exited => {}
@@ -735,6 +752,27 @@ mod host_side {
                 outcome_of(&success, Some(0), HostEnd::UserStop),
                 AgentOutcome::Stopped
             );
+        }
+
+        #[test]
+        fn pause_and_kill_ends_map_to_their_outcomes_and_the_pause_message_names_the_report() {
+            let success = [r#"{"type":"result","subtype":"success"}"#];
+            assert_eq!(
+                outcome_of(&success, Some(0), HostEnd::Paused),
+                AgentOutcome::Paused
+            );
+            for escalated in [false, true] {
+                assert_eq!(
+                    outcome_of(&success, Some(137), HostEnd::Killed { escalated }),
+                    AgentOutcome::Killed
+                );
+            }
+            let message = AgentRuntime::default().pause_message();
+            assert!(
+                message.contains("taskctl report --status partial"),
+                "{message}"
+            );
+            assert!(message.contains("--followup"), "{message}");
         }
 
         #[test]

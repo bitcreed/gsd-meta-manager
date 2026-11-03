@@ -534,6 +534,14 @@ pub struct App {
     /// When set, the main loop should suspend the TUI and open this file in
     /// $EDITOR, at the 1-based line when one is carried (see [`editor_args`]).
     pub pending_editor: Option<(PathBuf, Option<usize>)>,
+    /// The stop flag of every landing this App started, by `<alias>/<run-id>` (quick
+    /// 261103-klf, C-13): a stop of such a landing sets it, and the landing removes its
+    /// entry when it ends.
+    pub oneoff_landings: std::sync::Arc<
+        std::sync::Mutex<
+            std::collections::HashMap<String, std::sync::Arc<std::sync::atomic::AtomicBool>>,
+        >,
+    >,
     /// The DIRECTION.md edit sessions awaiting their editor's exit, keyed by the temp's
     /// path (30-04, D-17). A path here is what makes [`App::after_editor`] apply it.
     pub edit_sessions: HashMap<PathBuf, EditSession>,
@@ -956,6 +964,7 @@ impl App {
             active_sessions: Vec::new(),
             session_poll_counter: 0,
             pending_editor: None,
+            oneoff_landings: Default::default(),
             edit_sessions: HashMap::new(),
             new_run_flow: std::collections::HashSet::new(),
             #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -1685,16 +1694,60 @@ impl App {
                 Vec::new()
             };
             let alias_for_task = alias.to_string();
+            let landings = std::sync::Arc::clone(&self.oneoff_landings);
+            let landing_key = format!("{alias}/{}", run_id.clone().unwrap_or_default());
+            // klf C-13: a landing this App starts gets a stop flag the App can set; a
+            // stop of the landing sets it and writes the request file. If the TUI exits,
+            // bwrap's `--die-with-parent` still ends the resolver.
+            let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            if command == OneoffCommand::Merge {
+                if let Ok(mut map) = self.oneoff_landings.lock() {
+                    map.insert(landing_key.clone(), std::sync::Arc::clone(&flag));
+                }
+            }
             tokio::task::spawn_blocking(move || {
+                use crate::oneoff::cancel::{StopBy, StopKind};
+                use crate::oneoff::launch::StopTarget;
                 let id = run_id.unwrap_or_default();
-                let result = match command {
-                    // The land runs off the render thread with a never-set stop flag: if
-                    // the TUI exits, bwrap's `--die-with-parent` ends the resolver.
-                    OneoffCommand::Merge => crate::oneoff::land::merge(
+                let stop_with = |kind: StopKind, target: StopTarget| {
+                    // A landing this App started also gets its flag set for a hard cut
+                    // or a kill (a pause waits for the attempt to end).
+                    if target == StopTarget::Landing && kind != StopKind::Pause {
+                        if let Ok(map) = landings.lock() {
+                            if let Some(flag) = map.get(&landing_key) {
+                                flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                            }
+                        }
+                    }
+                    // A pause and a landing request come back at once; a hard cut or a
+                    // kill of a run waits for it to end.
+                    let wait = if kind == StopKind::Pause || target == StopTarget::Landing {
+                        std::time::Duration::ZERO
+                    } else {
+                        std::time::Duration::from_secs(60)
+                    };
+                    match crate::oneoff::launch::stop(
                         &project,
-                        &id,
-                        &crate::oneoff::land::LandOptions::new(egress_allow),
-                    ),
+                        (!id.is_empty()).then_some(id.as_str()),
+                        kind,
+                        StopBy::Tui,
+                        target,
+                        wait,
+                    ) {
+                        Ok(outcome) => Ok(outcome.message()),
+                        Err(error) => Err(error.to_string()),
+                    }
+                };
+                let result = match command {
+                    OneoffCommand::Merge => {
+                        let mut opts = crate::oneoff::land::LandOptions::new(egress_allow);
+                        opts.user_stop = std::sync::Arc::clone(&flag);
+                        let result = crate::oneoff::land::merge(&project, &id, &opts);
+                        if let Ok(mut map) = landings.lock() {
+                            map.remove(&landing_key);
+                        }
+                        result
+                    }
                     OneoffCommand::Push => match crate::launcher::config_dir::driver_root() {
                         Some(root) => {
                             crate::oneoff::land::push(&project, &alias_for_task, &id, &root)
@@ -1702,16 +1755,12 @@ impl App {
                         None => Err("no per-user data directory is available".to_owned()),
                     },
                     OneoffCommand::Discard => crate::oneoff::land::discard(&project, &id),
-                    OneoffCommand::Stop => {
-                        match crate::oneoff::launch::stop(
-                            &project,
-                            (!id.is_empty()).then_some(id.as_str()),
-                            std::time::Duration::from_secs(60),
-                        ) {
-                            Ok(outcome) => Ok(outcome.message()),
-                            Err(error) => Err(error.to_string()),
-                        }
-                    }
+                    OneoffCommand::Stop => stop_with(StopKind::Hard, StopTarget::Run),
+                    OneoffCommand::Kill => stop_with(StopKind::Kill, StopTarget::Run),
+                    OneoffCommand::Pause => stop_with(StopKind::Pause, StopTarget::Run),
+                    OneoffCommand::StopLanding => stop_with(StopKind::Hard, StopTarget::Landing),
+                    OneoffCommand::KillLanding => stop_with(StopKind::Kill, StopTarget::Landing),
+                    OneoffCommand::PauseLanding => stop_with(StopKind::Pause, StopTarget::Landing),
                 };
                 let message = match result {
                     Ok(done) => done.replace('\n', "; "),
@@ -8811,6 +8860,40 @@ mod tests {
         let (stored, result) = app.ctx.view_cache[OBS_ALIAS].oneoff_diff.clone().unwrap();
         assert_eq!(stored, id);
         assert!(result.is_err());
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
+    async fn stopping_a_landing_this_app_started_sets_its_flag_but_a_pause_does_not() {
+        use crate::oneoff::OneoffCommand;
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, mut rx) = app_on_the_driver_tab(dir.path());
+        app.ctx.experimental = true;
+        let id = "oneoff-20261103-142233";
+        let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        app.oneoff_landings
+            .lock()
+            .unwrap()
+            .insert(format!("{OBS_ALIAS}/{id}"), std::sync::Arc::clone(&flag));
+        let ask = |app: &mut App, command| {
+            app.update(Action::OneoffCommandRequested {
+                alias: OBS_ALIAS.to_string(),
+                run_id: Some(id.to_owned()),
+                command,
+            });
+        };
+        // A pause waits for the attempt to end: the flag stays down.
+        ask(&mut app, OneoffCommand::PauseLanding);
+        next_matching(&mut rx, |a| matches!(a, Action::OneoffCommandDone { .. })).await;
+        assert!(!flag.load(std::sync::atomic::Ordering::SeqCst));
+        // A hard cut and a kill set it, whatever the request file's fate.
+        ask(&mut app, OneoffCommand::StopLanding);
+        next_matching(&mut rx, |a| matches!(a, Action::OneoffCommandDone { .. })).await;
+        assert!(flag.load(std::sync::atomic::Ordering::SeqCst));
+        flag.store(false, std::sync::atomic::Ordering::SeqCst);
+        ask(&mut app, OneoffCommand::KillLanding);
+        next_matching(&mut rx, |a| matches!(a, Action::OneoffCommandDone { .. })).await;
+        assert!(flag.load(std::sync::atomic::Ordering::SeqCst));
     }
 
     #[test]

@@ -19,6 +19,7 @@ use std::cell::Cell;
 
 use super::{AppContext, Screen, ScreenAction};
 use crate::action::Action;
+use crate::oneoff::cancel::StopKind;
 use crate::oneoff::runtime::AgentRuntime;
 use crate::oneoff::store::{
     run_counts, BranchState, Landing, LandingKind, LiveState, MergeHow, OneoffView, ReportSource,
@@ -100,10 +101,107 @@ enum OneoffMode {
         command: OneoffCommand,
         run_id: String,
         /// Where `n` and Esc return to.
-        from_list: bool,
+        from: AskFrom,
     },
     /// The landed merge's diff (`d`), scrolled.
     Diff { scroll: usize },
+}
+
+/// Where an [`OneoffMode::Ask`] returns to when it is declined.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AskFrom {
+    List,
+    Result,
+    /// A viewer pushed the popup: popping it returns there (quick 261103-klf, I-16).
+    Viewer,
+}
+
+/// What `x`, `X` and `z` ask for (quick 261103-klf, C-01).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CutKey {
+    Stop,
+    Kill,
+    Pause,
+}
+
+impl CutKey {
+    /// The key, if `code` is one of the three.
+    pub fn from_key(code: KeyCode) -> Option<CutKey> {
+        match code {
+            KeyCode::Char('x') => Some(CutKey::Stop),
+            KeyCode::Char('X') => Some(CutKey::Kill),
+            KeyCode::Char('z') => Some(CutKey::Pause),
+            _ => None,
+        }
+    }
+
+    fn word(self) -> &'static str {
+        match self {
+            CutKey::Stop => "stop",
+            CutKey::Kill => "kill",
+            CutKey::Pause => "pause",
+        }
+    }
+
+    /// The command and the confirmation text for the run (`landing`: its conflict
+    /// resolver instead of its agent).
+    pub fn ask(self, run_id: &str, landing: bool) -> (OneoffCommand, Vec<String>) {
+        let id = shown(run_id);
+        match (self, landing) {
+            (CutKey::Stop, false) => (
+                OneoffCommand::Stop,
+                vec![format!(
+                    "Stop one-off {id}? Its sandbox gets SIGTERM, then SIGKILL after 10 s \
+                     if it is still there. Nothing lands."
+                )],
+            ),
+            (CutKey::Kill, false) => (
+                OneoffCommand::Kill,
+                vec![format!(
+                    "Kill one-off {id} now? Its whole sandbox gets SIGKILL at once: no SIGTERM, \
+                     no wrap-up."
+                )],
+            ),
+            (CutKey::Pause, false) => (
+                OneoffCommand::Pause,
+                vec![format!(
+                    "Pause one-off {id}? The agent is asked to commit its work in progress, \
+                     report partial and end; it is cut hard if it ignores that for 5 minutes. \
+                     u resumes it afterwards."
+                )],
+            ),
+            (CutKey::Stop, true) => (
+                OneoffCommand::StopLanding,
+                vec![format!(
+                    "Stop the landing of {id}? Its conflict resolver is cut (SIGTERM, then \
+                     SIGKILL); nothing lands and the run keeps its branch."
+                )],
+            ),
+            (CutKey::Kill, true) => (
+                OneoffCommand::KillLanding,
+                vec![format!(
+                    "Kill the landing of {id} now? Its conflict resolver gets SIGKILL at once; \
+                     nothing lands and the run keeps its branch."
+                )],
+            ),
+            (CutKey::Pause, true) => (
+                OneoffCommand::PauseLanding,
+                vec![format!(
+                    "Pause the landing of {id}? The current resolver attempt may finish, but \
+                     nothing lands and no further attempt starts. u retries the landing."
+                )],
+            ),
+        }
+    }
+
+    /// The refusal when the run is neither live nor being landed.
+    pub fn refusal(self, run_id: &str) -> String {
+        format!(
+            "One-off {} is not running, so there is nothing to {}.",
+            shown(run_id),
+            self.word()
+        )
+    }
 }
 
 /// The one-off popup of one project.
@@ -124,6 +222,25 @@ impl OneoffScreen {
             run_id: None,
             diff_height: Cell::new(20),
         }
+    }
+
+    /// A confirmation for one run, pushed by the viewers (quick 261103-klf, I-16): `y`
+    /// dispatches and pops, `n` and Esc pop back to the viewer.
+    pub fn ask_for(
+        alias: String,
+        run_id: String,
+        command: OneoffCommand,
+        prompt: Vec<String>,
+    ) -> Self {
+        Self::in_mode(
+            alias,
+            OneoffMode::Ask {
+                prompt,
+                command,
+                run_id,
+                from: AskFrom::Viewer,
+            },
+        )
     }
 
     /// The picker (`t`).
@@ -349,7 +466,11 @@ impl OneoffScreen {
             prompt,
             command,
             run_id: run_id.clone(),
-            from_list,
+            from: if from_list {
+                AskFrom::List
+            } else {
+                AskFrom::Result
+            },
         };
         match code {
             KeyCode::Char('e') => match &view.summary_file {
@@ -430,20 +551,17 @@ impl OneoffScreen {
                     run_id,
                 }))
             }
-            KeyCode::Char('x') => {
-                if matches!(view.live, LiveState::Running | LiveState::Preparing) {
-                    self.mode = ask(
-                        OneoffCommand::Stop,
-                        vec![format!(
-                            "Kill one-off {id} now? Its sandbox is stopped mid-task."
-                        )],
-                    );
+            // klf C-01: stop, kill now and pause; a run that is not live but whose
+            // landing is running asks about its landing (I-16).
+            KeyCode::Char('x' | 'X' | 'z') => {
+                let key = CutKey::from_key(code).unwrap_or(CutKey::Stop);
+                let live = matches!(view.live, LiveState::Running | LiveState::Preparing);
+                if live || view.landing {
+                    let (command, prompt) = key.ask(&run_id, !live);
+                    self.mode = ask(command, prompt);
                     ScreenAction::None
                 } else {
-                    message(
-                        ctx,
-                        format!("One-off {id} is not running, so there is nothing to kill."),
-                    )
+                    message(ctx, key.refusal(&run_id))
                 }
             }
             _ => ScreenAction::None,
@@ -454,7 +572,7 @@ impl OneoffScreen {
         let OneoffMode::Ask {
             command,
             run_id,
-            from_list,
+            from,
             ..
         } = &self.mode
         else {
@@ -470,14 +588,17 @@ impl OneoffScreen {
                 super::driver_confirm::dispatch(ctx, action, &self.alias);
                 ScreenAction::Pop
             }
-            KeyCode::Char('n') | KeyCode::Esc => {
-                self.mode = if *from_list {
-                    OneoffMode::List
-                } else {
-                    OneoffMode::Result
-                };
-                ScreenAction::None
-            }
+            KeyCode::Char('n') | KeyCode::Esc => match from {
+                AskFrom::Viewer => ScreenAction::Pop,
+                AskFrom::List => {
+                    self.mode = OneoffMode::List;
+                    ScreenAction::None
+                }
+                AskFrom::Result => {
+                    self.mode = OneoffMode::Result;
+                    ScreenAction::None
+                }
+            },
             _ => ScreenAction::None,
         }
     }
@@ -739,8 +860,8 @@ fn landing_label(view: &OneoffView) -> String {
 /// `avail` rows are drawn, windowed around the selection.
 fn list_lines(runs: &[OneoffView], selected: usize, avail: usize) -> Vec<Line<'static>> {
     let hint = Line::from(Span::styled(
-        "j/k select   Enter details   m merge   p push   D discard   x kill   e SUMMARY   \
-         v view   r resolver   d merge diff   Esc close",
+        "j/k select   Enter details   m merge   p push   D discard   x stop   X kill now   \
+         z pause   e SUMMARY   v view   r resolver   d merge diff   Esc close",
         Style::default().fg(Color::DarkGray),
     ));
     // The title row, a blank line and the hint (which may wrap onto a second row).
@@ -911,6 +1032,23 @@ pub fn result_lines(view: &OneoffView) -> Vec<Line<'static>> {
             "absent"
         }
     )));
+    if let Some(stop) = &record.stop {
+        let pending = stop.ended_at.is_none() && view.live.may_be_live();
+        let state = match (pending, stop.kind) {
+            (true, StopKind::Pause) => "Pausing...".to_owned(),
+            (true, StopKind::Hard) => "Stopping...".to_owned(),
+            (true, StopKind::Kill) => "Killing...".to_owned(),
+            (false, StopKind::Pause) => "Paused (pause)".to_owned(),
+            (false, StopKind::Hard) => "Stopped (hard)".to_owned(),
+            (false, StopKind::Kill) => "Killed (kill)".to_owned(),
+        };
+        lines.push(Line::from(format!(
+            "Stop:      {state} by {} at {}{}",
+            stop.by.word(),
+            shown(&stop.requested_at),
+            if stop.escalated { ", escalated" } else { "" }
+        )));
+    }
     lines.push(Line::from(match &record.summary_path {
         Some(path) => format!("SUMMARY:   {}", shown(path)),
         None => "SUMMARY:   none".to_owned(),
@@ -972,7 +1110,7 @@ pub fn result_lines(view: &OneoffView) -> Vec<Line<'static>> {
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         "e SUMMARY   v live view   r resolver view   d merge diff   m merge   p push   \
-         D discard   x kill   Esc back",
+         D discard   x stop   X kill now   z pause   Esc back",
         Style::default().fg(Color::DarkGray),
     )));
     lines
@@ -1399,6 +1537,124 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn x_big_x_and_z_ask_about_a_live_run_and_dispatch_the_right_command() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut ctx, mut rx) = ctx_with_project(dir.path());
+        set_runs(&mut ctx, three_runs());
+        for (code, expected) in [
+            ('X', OneoffCommand::Kill),
+            ('z', OneoffCommand::Pause),
+            ('x', OneoffCommand::Stop),
+        ] {
+            let mut screen = OneoffScreen::list(ALIAS.to_owned());
+            key(&mut screen, &mut ctx, KeyCode::Char(code));
+            match &screen.mode {
+                OneoffMode::Ask {
+                    command, run_id, ..
+                } => {
+                    assert_eq!(*command, expected);
+                    assert_eq!(run_id, NEWEST);
+                }
+                other => panic!("{other:?}"),
+            }
+            // From the run's own summary the same keys ask the same thing.
+            key(&mut screen, &mut ctx, KeyCode::Char('n'));
+            assert_eq!(screen.mode, OneoffMode::List);
+            key(&mut screen, &mut ctx, KeyCode::Char(code));
+            key(&mut screen, &mut ctx, KeyCode::Char('y'));
+            match rx.try_recv() {
+                Ok(Action::OneoffCommandRequested {
+                    command, run_id, ..
+                }) => {
+                    assert_eq!(command, expected);
+                    assert_eq!(run_id.as_deref(), Some(NEWEST));
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+        // `z` and `X` on a finished run with no landing are refused with a message.
+        let mut screen = OneoffScreen::list(ALIAS.to_owned());
+        key(&mut screen, &mut ctx, KeyCode::Char('j'));
+        for code in ['z', 'X'] {
+            ctx.status_message = None;
+            key(&mut screen, &mut ctx, KeyCode::Char(code));
+            assert_eq!(screen.mode, OneoffMode::List);
+            assert!(
+                ctx.status_message
+                    .as_ref()
+                    .is_some_and(|(m, _)| m.contains("nothing to")),
+                "{code}"
+            );
+        }
+    }
+
+    #[test]
+    fn on_a_run_that_is_not_live_but_being_landed_the_keys_ask_about_its_landing() {
+        let mut runs = three_runs();
+        runs[1].landing = true;
+        let dir = tempfile::tempdir().unwrap();
+        let (mut ctx, mut rx) = ctx_with_project(dir.path());
+        set_runs(&mut ctx, runs);
+        for (code, expected) in [
+            ('x', OneoffCommand::StopLanding),
+            ('X', OneoffCommand::KillLanding),
+            ('z', OneoffCommand::PauseLanding),
+        ] {
+            let mut screen = OneoffScreen::list(ALIAS.to_owned());
+            key(&mut screen, &mut ctx, KeyCode::Char('j'));
+            key(&mut screen, &mut ctx, KeyCode::Char(code));
+            let OneoffMode::Ask {
+                prompt, command, ..
+            } = &screen.mode
+            else {
+                panic!("{:?}", screen.mode);
+            };
+            assert_eq!(*command, expected);
+            assert!(prompt[0].contains("landing"), "{prompt:?}");
+            key(&mut screen, &mut ctx, KeyCode::Char('y'));
+            match rx.try_recv() {
+                Ok(Action::OneoffCommandRequested {
+                    command, run_id, ..
+                }) => {
+                    assert_eq!(command, expected);
+                    assert_eq!(run_id.as_deref(), Some(MIDDLE));
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn the_summary_names_a_pending_and_a_finished_stop() {
+        use crate::oneoff::cancel::{StopBy, StopRecord};
+        let mut runs = three_runs();
+        runs[0].record.stop = Some(StopRecord {
+            kind: StopKind::Pause,
+            requested_at: "2026-11-03T10:00:00Z".to_owned(),
+            ended_at: None,
+            escalated: false,
+            by: StopBy::Tui,
+        });
+        runs[1].record.stop = Some(StopRecord {
+            kind: StopKind::Hard,
+            requested_at: "2026-11-03T10:00:00Z".to_owned(),
+            ended_at: Some("2026-11-03T10:00:12Z".to_owned()),
+            escalated: true,
+            by: StopBy::Cli,
+        });
+        let (mut ctx, mut screen) = list_over(runs);
+        key(&mut screen, &mut ctx, KeyCode::Enter);
+        let text = render_text(&screen, &ctx);
+        assert!(text.contains("Pausing..."), "{text}");
+        let mut screen = OneoffScreen::list(ALIAS.to_owned());
+        key(&mut screen, &mut ctx, KeyCode::Char('j'));
+        key(&mut screen, &mut ctx, KeyCode::Enter);
+        let text = render_text(&screen, &ctx);
+        assert!(text.contains("Stopped (hard) by cli"), "{text}");
+        assert!(text.contains("escalated"), "{text}");
+    }
+
+    #[test]
     fn m_is_refused_while_a_landing_of_that_run_is_in_progress() {
         let mut runs = three_runs();
         runs[1].landing = true;
@@ -1434,6 +1690,7 @@ pub(crate) mod tests {
             reason: "the resolver's report was failed".to_owned(),
             conflicted: vec!["a.txt".to_owned()],
             attempts: vec!["land/1".to_owned()],
+            stop: None,
         });
         set_runs(&mut ctx, runs);
         let mut screen = OneoffScreen::list(ALIAS.to_owned());

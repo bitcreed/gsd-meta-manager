@@ -451,6 +451,7 @@ impl Renderer {
             InjectionKind::Message => "message",
             InjectionKind::SoftCap => "soft_cap",
             InjectionKind::WrapUp => "wrap_up",
+            InjectionKind::Pause => "pause",
         };
         let reason = record.reason.as_deref().unwrap_or("no reason given");
         vec![cut(

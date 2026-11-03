@@ -30,6 +30,8 @@ pub enum InjectionKind {
     SoftCap,
     /// The launcher's own wrap-up message at the soft cap.
     WrapUp,
+    /// The launcher's own message when the user pauses the run (quick 261103-klf).
+    Pause,
 }
 
 /// Whether the launcher acted on a request.
