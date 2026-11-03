@@ -1,188 +1,259 @@
+---
+last_mapped_commit: 5146cf11780714b72ed3b2e6224e849a93e10a08
+last_mapped_at: 2026-11-03
+---
+<!-- refreshed: 2026-11-03 -->
 # Codebase Structure
 
-**Analysis Date:** 2026-08-18
+**Analysis Date:** 2026-11-03
 
 ## Directory Layout
 
 ```
-gsd-meta-manager/
-├── src/
-│   ├── main.rs              # Binary entry point: CLI parse, mode select, TUI loop shim
-│   ├── lib.rs                # Library crate root (re-exports modules for tests/binary)
-│   ├── action.rs             # Action enum — the entire internal message vocabulary
-│   ├── app.rs                # App state/reducer: App::update, App::apply_exec_event, start_driver_run
-│   ├── main_loop.rs           # Testable core of the TUI event loop (pump/select!)
-│   ├── event.rs               # EventBus: crossterm reader + tick spawner
-│   ├── watcher.rs              # notify-based filesystem watcher → Action::FileChanged
-│   ├── cli.rs                  # clap CLI definitions (Add/Remove/List/Drive)
-│   ├── config.rs               # Config, RegisteredProject, DriverOptIn (TOML)
-│   ├── registry.rs             # add/remove/list project registry operations
-│   ├── error.rs                 # Shared typed error enums (DriveError, SpawnError, SendError, OptInError)
-│   ├── change_tracker.rs        # Detects/tracks project changes for status highlighting
-│   ├── session_detector.rs      # Detects active `claude` CLI sessions for auto-registration
-│   ├── project_creator.rs       # Scaffolds a new GSD project from the TUI
-│   ├── terminal_switch.rs       # Terminal-switching integration (opening a project's terminal)
-│   ├── browser.rs               # File/dir browsing helper for screens
-│   ├── archive.rs               # Reads archived milestone data
-│   ├── state_reader/            # READ SIDE: parses one project's .planning/ into ProjectState
-│   │   ├── mod.rs                #  ProjectState struct, HANDOFF pause detection
-│   │   ├── state_md.rs            #  STATE.md frontmatter parsing
-│   │   ├── roadmap_md.rs           #  ROADMAP.md phase parsing
-│   │   ├── queue_md.rs              #  queue.md parsing, suggest_next_commands
-│   │   ├── backlog.rs                #  backlog.md parsing
-│   │   ├── config_json.rs             #  .planning/config.json parsing
-│   │   ├── disk_status.rs              #  per-phase disk-state inference
-│   │   ├── git_ops.rs                   #  git log/diff-stat shell-outs
-│   │   └── workstreams.rs                #  GSD 1.8.0 parallel workstream state
-│   ├── driver/                   # DRIVE SIDE: orchestrates one detached agent run
-│   │   ├── mod.rs                 #  drive() entry, gate, dry-run branch, dispatch
-│   │   ├── spawn.rs                #  THE spawn seam: spawn_detached, drive_argv, admit()
-│   │   ├── run.rs                   #  Unix run body: lock → executor → journal → unlock
-│   │   ├── lock.rs                   #  per-project run lock + concurrency cap
-│   │   ├── liveness.rs                 #  /proc-based liveness probe
-│   │   ├── reconcile.rs                 #  startup + periodic scan of on-disk run state
-│   │   ├── kill.rs                       #  two-layer stop (signal driver's process group)
-│   │   └── dry_run.rs                      #  preview report builder/renderer
-│   ├── executor/                  # Agent process transport
-│   │   ├── mod.rs                  #  Executor trait, DrivableProject capability token
-│   │   ├── claude.rs                 #  ClaudeExecutor: spawns `claude`, stream-json duplex
-│   │   ├── gate.rs                     #  system/init capability validation
-│   │   ├── outcome.rs                    #  RunOutcome derivation from exit + stream
-│   │   └── stream_json.rs                  #  typed wire model for the stream-json protocol
-│   ├── journal/                     # Durable, redacted run record
-│   │   ├── mod.rs                    #  JournalRun, RunRecord, run-id validation
-│   │   ├── writer.rs                   #  append-only NDJSON writer
-│   │   ├── reader.rs                     #  byte-offset tail + tolerant record parse
-│   │   ├── redact.rs                       #  RedactedLine capture-path type gate
-│   │   └── inbox.rs                          #  durable steering-message inbox (inbox.jsonl)
-│   └── ui/                           # Presentation layer
-│       ├── mod.rs                     #  render() dispatch to top of screen_stack
-│       ├── project_list.rs              #  project list widget
-│       ├── roadmap_view.rs                #  Roadmap tab lanes widget
-│       └── screens/                        #  one file per modal screen/tab
-│           ├── mod.rs                       #  Screen trait, AppContext, ScreenAction
-│           ├── normal.rs                      #  base dashboard/list screen
-│           ├── detail.rs                        #  per-project detail view (largest screen file)
-│           ├── driver.rs                          #  Driver tab: run list/detail/live output
-│           ├── driver_confirm.rs                    #  confirm-before-start dialog
-│           ├── driver_start.rs                        #  start-run flow (command/goal picker)
-│           ├── driver_inject.rs                         #  steering-message injection dialog
-│           ├── add_project.rs, create_project.rs          #  registration/creation dialogs
-│           ├── delete_confirm.rs, queue_delete_confirm.rs   #  destructive-action confirms
-│           ├── enqueue.rs                                    #  queue-a-command dialog
-│           └── help.rs                                         #  help overlay
-├── tests/                             # Integration tests (one file per subsystem/property)
-│   ├── driver_dry_run.rs, driver_kill.rs, driver_kill_startup.rs,
-│   │   driver_lock.rs, driver_optin.rs, driver_reattach.rs, driver_tracer.rs
-│   ├── executor_lifecycle.rs, executor_transport.rs
-│   ├── journal_crash.rs, journal_gitignore.rs, journal_run_paths.rs
-│   ├── registry_test.rs, state_reader_test.rs
-│   └── spawn_seam_guard.rs           # Mechanically enforces the single spawn seam invariant
-├── docs/                               # Project documentation (not code)
-├── .planning/                          # GSD workflow state (phases, plans, STATE.md, codebase docs)
-├── Cargo.toml / Cargo.lock
-├── CLAUDE.md, CONTRIBUTING.md, README.md, LICENSE
+[project-root]/                         # gsd-meta-manager (Rust crate, single binary)
+├── Cargo.toml / Cargo.lock             # Crate manifest (edition 2021, rust-version 1.89)
+├── README.md, CLAUDE.md, CONTRIBUTING.md, LICENSE
+├── src/                                # All production code (28 top-level .rs files + 13 subtrees)
+│   ├── main.rs                         # Binary entry: subcommand dispatch, tokio runtime, TUI loop
+│   ├── lib.rs                          # Re-exports every non-binary module as `pub mod`
+│   ├── action.rs, app.rs, event.rs     # Message enum, reducer, event bus
+│   ├── cli.rs, tui.rs, main_loop.rs    # clap definitions, terminal init, loop helpers
+│   ├── config.rs, registry.rs          # Config/preferences I/O, project registry
+│   ├── watcher.rs, session_detector.rs # Filesystem watch, /proc session scan
+│   ├── terminal_switch.rs              # tmux pane switching
+│   ├── change_tracker.rs, archive.rs, browser.rs, project_creator.rs
+│   ├── driver_cli.rs, driverctl_cli.rs, task_cli.rs, taskctl_cli.rs, next_cli.rs  # subcommand handlers
+│   ├── launch_target.rs, experimental.rs, bounded_output.rs, text.rs, error.rs
+│   ├── agents/                         # Read-only agent-worktree observation
+│   ├── driver/                         # Pure driver modules (direction, steer, router, …)
+│   ├── driver_templates/               # `driver new` templates and DIRECTION lint
+│   ├── driverctl/                      # Run store, Unix socket server, protocol
+│   ├── envelope/                       # PR-cap / envelope policy and ledger
+│   ├── executor/                       # Claude stream-json parsing
+│   ├── journal/                        # Event journal + redaction
+│   ├── launcher/                       # Sandboxed driver launcher (bwrap, systemd-run, egress)
+│   ├── oneoff/                         # One-off task runner (experimental)
+│   ├── state_reader/                   # `.planning/` parsers → ProjectState
+│   └── ui/                             # ratatui rendering and Screen implementations
+├── tests/                              # Integration tests (~80 files) + fixtures
+│   ├── *.rs                            # One file per area (agents_*, driverctl_*, launcher_*, oneoff_*, state_reader_*, …)
+│   ├── common/mod.rs                   # Shared test helpers
+│   ├── launcher_support/mod.rs         # Launcher test helpers
+│   ├── fixtures/                       # Golden and replay data (driverctl, prompt, roadmaps, transcripts)
+│   └── *_guard.rs                      # Architecture guards (async, spawn seam, oneoff seam)
+├── docs/                               # Human-facing architecture, config, testing, sandbox docs
+├── scripts/                            # Acceptance, conformance and pre-tag check scripts
+├── assets/screenshots/                 # README images (not included in the published crate)
+└── .github/workflows/release.yml       # Release and MSRV job
 ```
 
 ## Directory Purposes
 
-**`src/state_reader/`:**
-- Purpose: pure, read-only parsing of a registered project's `.planning/` tree into `ProjectState`
-- Contains: one file per source-of-truth artifact (`STATE.md`, `ROADMAP.md`, `queue.md`, `backlog.md`, `config.json`, git log, workstreams) plus disk-state inference
-- Key files: `src/state_reader/mod.rs` (the `ProjectState` struct and top-level `parse_project_state` entry), `src/state_reader/git_ops.rs` (the only submodule that shells out)
-
-**`src/driver/`:**
-- Purpose: orchestrate one detached, journaled agent run against an opted-in project
-- Contains: the gate/dispatch entry point, the single spawn seam, lock/concurrency, liveness/reconciliation, the two-layer kill switch, the dry-run preview
-- Key files: `src/driver/mod.rs` (entry + module-level design doc), `src/driver/spawn.rs` (the seam), `src/driver/run.rs` (the actual run body)
-
-**`src/executor/`:**
-- Purpose: drive an agent process (`claude`) over its `stream-json` duplex protocol
-- Contains: the `Executor` trait and its sole implementor, the capability gate, outcome derivation, the wire model
-- Key files: `src/executor/mod.rs` (trait + `DrivableProject` capability token), `src/executor/claude.rs` (concrete transport)
-
-**`src/journal/`:**
-- Purpose: durable, redacted, append-only record of one driver run, plus the inbox that carries steering messages the other direction
-- Contains: writer, tolerant reader (byte-offset tail), capture-path redaction, inbox
-- Key files: `src/journal/mod.rs` (module-level design doc, `RunRecord`, run-id validation), `src/journal/redact.rs` (the type gate)
+**`src/` (top level):**
+- Purpose: Binary and library root. Each subsystem is either a single file or a directory.
+- Contains: `main.rs` (entry), `lib.rs` (module exports), TUI core, subcommand handlers
+  (`*_cli.rs`), and standalone modules.
+- Key files: `src/main.rs`, `src/app.rs`, `src/action.rs`, `src/event.rs`, `src/config.rs`,
+  `src/registry.rs`, `src/watcher.rs`.
 
 **`src/ui/`:**
-- Purpose: everything ratatui-facing; render dispatch plus one `Screen` implementor per view/dialog
-- Contains: `Screen` trait + `AppContext` (`screens/mod.rs`), the dashboard (`normal.rs`), the per-project detail view (`detail.rs`, the largest file in the repo), the Driver tab (`driver.rs`) and its supporting dialogs
-- Key files: `src/ui/screens/mod.rs` (trait + shared context), `src/ui/screens/detail.rs`, `src/ui/screens/driver.rs`
+- Purpose: Rendering and input handling for the TUI.
+- Contains: `mod.rs` (`render` entry), `roadmap_view.rs`, `roadmap_graph.rs`, `glyphs.rs`,
+  `mouse.rs`, and `screens/`.
+- Key files: `src/ui/mod.rs`, `src/ui/screens/mod.rs` (`Screen`, `ScreenAction`, `AppContext`),
+  `src/ui/screens/detail.rs` (largest screen, about 35k bytes), `src/ui/screens/normal.rs`.
+
+**`src/ui/screens/`:**
+- Purpose: One file per screen or modal.
+- Contains: normal, detail, help, add/create/delete project, enqueue, queue delete confirm,
+  driver (`driver.rs`, `driver_confirm.rs`, `driver_launch.rs`, `driver_run.rs`,
+  `driver_steer.rs`), oneoff (`oneoff.rs`, `oneoff_viewer.rs`), preferences, confirm popup,
+  and `render_escape_guard.rs`.
+
+**`src/state_reader/`:**
+- Purpose: Read-only parsers for `.planning/` artifacts and git.
+- Contains: One module per artifact (STATE.md, ROADMAP.md, QUEUE.md, backlog, config.json,
+  secrets presence, driver frontmatter, plan waves, workstreams, install detection, git ops).
+- Key files: `src/state_reader/mod.rs` (`ProjectState`, `parse_project_state`),
+  `src/state_reader/roadmap_md.rs`, `src/state_reader/disk_status.rs`.
+
+**`src/launcher/`:**
+- Purpose: Experimental sandboxed driver launcher.
+- Contains: `run.rs` (orchestration), `sandbox.rs` (pure argv builders), `process.rs` (sole spawn
+  entry), `egress/` (`http1.rs`, `upstream.rs`, `policy.rs`, `log.rs`), `push.rs` and
+  `push/planted.rs`, `auth.rs`, `config_dir.rs`, `home.rs`, `host.rs`, `bridge.rs`, `gate.rs`,
+  `outcome.rs`, `prompt.rs`, `stop.rs`, `assets/MASTER-PROMPT.md`.
+
+**`src/oneoff/`:**
+- Purpose: Experimental one-off task runner.
+- Contains: `runtime.rs` (only agent-specific seam), `launch.rs`, `session.rs`, `stream.rs`,
+  `prompt.rs`, `report.rs`, `store.rs`, `inbox.rs`, `merge.rs`, `land.rs`, `resolve.rs`,
+  `resume.rs`, `cancel.rs`, `todos.rs`, `mod.rs` (module docs and the trust split).
+
+**`src/driver/` and `src/driverctl/`:**
+- Purpose: `driver/` holds pure readers and classifiers; `driverctl/` holds the stateful run
+  store and its socket server.
+- Key files: `src/driver/direction.rs`, `src/driver/router.rs`, `src/driverctl/store.rs`,
+  `src/driverctl/serve.rs`, `src/driverctl/protocol.rs`.
+
+**`src/driver_templates/`:**
+- Purpose: Templates for `driver new`.
+- Contains: `mod.rs`, `lint.rs`, `assets/DIRECTION.md`, `assets/LOG.md`.
+
+**`src/agents/`:**
+- Purpose: Read-only scan of agent worktrees and wave derivation.
+- Key files: `src/agents/mod.rs` (`scan_projects_guarded`), `src/agents/waves.rs`,
+  `src/agents/adapters/claude.rs`, `src/agents/worktrees.rs`.
+
+**`src/envelope/`, `src/journal/`, `src/executor/`:**
+- Purpose: Respectively, PR-cap policy and ledger; redacted event journal and reader;
+  Claude stream-json parser.
 
 **`tests/`:**
-- Purpose: integration tests, one file per subsystem or cross-cutting property
-- Contains: driver lifecycle/lock/kill/dry-run/reattach tests, executor transport/lifecycle tests, journal crash/gitignore/run-path tests, and `spawn_seam_guard.rs`, which mechanically enforces the single-spawn-seam and no-`deny_unknown_fields` invariants across the whole `src/` tree
-- Key files: `tests/spawn_seam_guard.rs`
+- Purpose: Integration tests. Most build `assert_fs` trees mimicking `.planning/`.
+- Contains: `*_guard.rs` architecture guards (`async_blocking_guard.rs`,
+  `spawn_seam_guard.rs`, `oneoff_runtime_seam_guard.rs`), `*_e2e.rs` end-to-end tests,
+  `launcher_live_*.rs` (live-environment tests), and `fixtures/`.
+- Key files: `tests/common/mod.rs`, `tests/launcher_support/mod.rs`.
+
+**`tests/fixtures/`:**
+- Purpose: Static inputs.
+- Contains: `driverctl/` (golden run files, replay logs, spike run artifacts),
+  `prompt/MASTER-PROMPT.no-gap-rules.md`, `roadmaps/` (sample ROADMAP/STATE pairs),
+  `roadmap-shapes/`, `transcripts/` (stream-json NDJSON scenarios with a README).
+
+**`docs/`:**
+- Purpose: Long-form documentation: `ARCHITECTURE.md`, `CONFIGURATION.md`, `DEVELOPMENT.md`,
+  `DRIVER-SANDBOX.md`, `GETTING-STARTED.md`, `GSD-CORE-SYNC.md`, `TESTING.md`.
+
+**`scripts/`:**
+- Purpose: Acceptance and release checks: `launcher-acceptance.sh`, `prompt-acceptance.sh`,
+  `install-conformance-oracle.sh`, `pre-tag-check.sh`, `pre-tag-check.Dockerfile`.
+
+**`.planning/` (per-project, written by the app, not by this repo's source):**
+- The repo itself carries `.planning/` for its own GSD work. At runtime the app reads
+  `.planning/` in each registered project and writes `.planning/config.json` and
+  `.planning/meta-manager/QUEUE.md` only on user action.
 
 ## Key File Locations
 
 **Entry Points:**
-- `src/main.rs`: process entry, CLI parse, TUI-vs-Drive mode branch, `run_tui_loop`
+- `src/main.rs`: binary entry and subcommand dispatch.
+- `src/lib.rs`: library root for tests.
 
 **Configuration:**
-- `src/config.rs`: `Config`/`RegisteredProject`/`DriverOptIn`, loaded from `~/.config/gsd-meta-manager/config.toml` by default
-- `src/cli.rs`: `clap` argument definitions
+- `Cargo.toml`: crate metadata, dependency set, `exclude` list for publishing.
+- `src/config.rs`: `Config`, `RegisteredProject`, `Preferences`.
+- `src/state_reader/config_json.rs`, `src/state_reader/config_write.rs`: GSD project config.
+- `src/experimental.rs`: `GSDMM_EXPERIMENTAL_FEATURES` gate.
 
 **Core Logic:**
-- `src/app.rs`: the reducer (`App::update`) and the TUI-side spawn seam call site (`start_driver_run`)
-- `src/driver/mod.rs`: the drive-mode gate/dispatch entry point
-- `src/state_reader/mod.rs`: the read-side entry point (`parse_project_state`)
+- `src/app.rs`: reducer.
+- `src/action.rs`: message enum.
+- `src/state_reader/mod.rs`: project state aggregation.
+- `src/driver/router.rs`: next-command router (`next --json` contract).
+- `src/launcher/run.rs`, `src/launcher/sandbox.rs`: driver launch.
+- `src/oneoff/launch.rs`, `src/oneoff/runtime.rs`: one-off launch and agent seam.
 
 **Testing:**
-- `tests/*.rs`: integration tests, run with `cargo test` or `cargo nextest run`
-- `#[cfg(test)] mod tests` blocks embedded in most `src/` files for unit tests co-located with the code they cover (e.g. `src/action.rs`, `src/driver/mod.rs`, `src/main_loop.rs`)
+- `tests/*_guard.rs`: architecture invariants.
+- `tests/fixtures/`: golden data.
+
+**Documentation:**
+- `docs/ARCHITECTURE.md`: system overview.
+- `CLAUDE.md`: project instructions for agents.
 
 ## Naming Conventions
 
 **Files:**
-- One file per cohesive submodule/subsystem concern, named after its noun (`spawn.rs`, `lock.rs`, `kill.rs`, `reconcile.rs`) rather than a generic `utils.rs` bucket.
-- Screens are named after the view or dialog they implement (`driver_confirm.rs`, `queue_delete_confirm.rs`, `add_project.rs`) and live under `src/ui/screens/`.
-- Test files are named after the subsystem plus the property under test (`driver_kill_startup.rs`, `journal_gitignore.rs`, `spawn_seam_guard.rs`), not `test_1.rs`-style.
+- `snake_case.rs` for all Rust modules (`state_reader`, `driver_cli.rs`, `queue_delete_confirm.rs`).
+- `*_cli.rs` for subcommand handlers (`driver_cli.rs`, `taskctl_cli.rs`).
+- `*_guard.rs` for architecture-invariant tests under `tests/`.
+- `*_e2e.rs` for end-to-end tests; `launcher_live_*.rs` for environment-dependent tests.
+- `ALL-CAPS.md` for assets consumed by `include_str!` (`MASTER-PROMPT.md`, `DIRECTION.md`, `LOG.md`).
+- Module doc comments name the phase or quick-task that introduced them (for example, "quick 261103-f5y").
 
 **Directories:**
-- Top-level `src/` subdirectories are named after architectural layers (`driver`, `executor`, `journal`, `state_reader`, `ui`), each with its own `mod.rs` carrying a module-level design doc comment explaining the submodule split and the load-bearing decisions behind it.
-- `#[cfg(unix)]` submodules sit inside otherwise cross-platform directories (e.g. `driver/kill.rs`, `driver/lock.rs`, `driver/run.rs`, `driver/spawn.rs`, `executor/claude.rs`) rather than being split into a separate `unix/` tree.
+- `snake_case` for module directories (`state_reader/`, `driver_templates/`).
+- Subdirectories that are themselves modules have a `mod.rs` (for example `src/ui/screens/mod.rs`);
+  a few use the Rust 2018 sibling form with a same-named `.rs` file (`src/launcher/push.rs`
+  alongside `src/launcher/push/`).
+
+**Functions and types:**
+- Screen types end with `Screen` (for example `DetailScreen`); the modal forms are named by
+  purpose, for example `DeleteConfirmScreen`.
+- Action variants are past-tense results (`ProjectStateLoaded`, `GitLogLoaded`) or events
+  (`FileChanged`, `Tick`).
 
 ## Where to Add New Code
 
-**New read-side parser (another `.planning/` artifact):**
-- Add a new file under `src/state_reader/`, following the existing per-file pattern (e.g. `queue_md.rs`); wire its output into `ProjectState` in `src/state_reader/mod.rs`.
-- Tests: co-located `#[cfg(test)]` module in the new file, or extend `tests/state_reader_test.rs`.
+**New TUI screen or modal:**
+- Implementation: `src/ui/screens/<name>.rs`, implementing `Screen` and `RenderAdjudicated`.
+- Register it in `src/ui/screens/mod.rs`. Open it from `normal.rs` or `detail.rs` via
+  `ScreenAction::Push` (or `Replace` when the handed-off screen must not be re-submittable).
+- Tests: `tests/` integration test that drives the same code the binary uses through `lib.rs`.
 
-**New TUI screen/dialog:**
-- Add a file under `src/ui/screens/`, implement the `Screen` trait (`handle_key`, `render`) as defined in `src/ui/screens/mod.rs`, and push it onto `App.screen_stack` from the triggering key handler.
-- Any new cross-screen state goes on `AppContext` (`src/ui/screens/mod.rs`), not on `App` directly, unless it's truly loop-level (redraw flags, watcher handle).
+**New detail sub-view:**
+- Implementation: add a variant to `DetailSubView` in `src/app.rs` and render it from
+  `src/ui/screens/detail.rs`.
 
-**New driver subsystem behavior (e.g. a new refusal, a new reconciliation fact):**
-- Extend `src/driver/mod.rs`'s `drive()` gate ordering carefully — refusals are positioned before any disk write by design; add a test asserting the refused path writes nothing, following the pattern in `src/driver/mod.rs`'s `#[cfg(test)]` module.
-- Never add a second call site for `DrivableProject::from_registry` or `spawn_detached` — `tests/spawn_seam_guard.rs` will fail the build.
+**New `.planning/` artifact reader:**
+- Implementation: `src/state_reader/<artifact>.rs`, then wire it into `parse_project_state` in
+  `src/state_reader/mod.rs` and add the field to `ProjectState`.
+- Tests: `tests/state_reader_test.rs` with a fixture under `tests/fixtures/roadmaps/` or a new
+  folder.
 
-**New Action/message variant:**
-- Add the variant to `src/action.rs`, document its sizing (`Action` is intentionally kept small; boxes are used only for genuinely large payloads like `ProjectState`), and add the handling arm in `App::update` (`src/app.rs`).
-- If it's high-volume executor/stream traffic, it belongs on the separate bounded `ExecEvent` channel (`src/main_loop.rs`), never on the `Action` FIFO.
+**New background (async) data load:**
+- Add an `Action` variant in `src/action.rs`; spawn a `spawn_blocking` worker from `App::update`
+  in `src/app.rs` that sends the result back on `event_tx`.
+
+**New CLI subcommand:**
+- Add the clap variant in `src/cli.rs` (`Commands`), handle it in `src/main.rs` before
+  `init_tracing` if it must write nothing or run in a sandbox, or after it if it is synchronous
+  but may log. Put its handler in a `*_cli.rs` file at `src/`.
+
+**New one-off or launcher capability:**
+- Agent-specific facts go in `src/oneoff/runtime.rs` (or `src/launcher/` equivalents), never in
+  other `oneoff/` files. Spawns go through `src/launcher/process.rs`.
+- Tests: add or extend `tests/oneoff_e2e.rs` or `tests/launcher_*.rs`, and run the guard tests.
+
+**New pure driver logic:**
+- Implementation: `src/driver/<module>.rs`; keep it free of process spawns and TUI types so it
+  compiles on every platform.
 
 **Utilities:**
-- Shared helpers live beside their single consumer's module rather than in a generic `utils.rs`; if genuinely cross-cutting, add to `src/error.rs` (errors) or a new top-level `src/*.rs` module named after its concern (as with `src/change_tracker.rs`, `src/session_detector.rs`).
+- Shared text helpers: `src/text.rs`.
+- Bounded external command output: `src/bounded_output.rs`.
+
+**New integration test:**
+- `tests/<area>_<topic>.rs`. Use `tests/common/mod.rs` for shared helpers and `tests/fixtures/`
+  for static inputs.
 
 ## Special Directories
 
+**`tests/fixtures/`:**
+- Purpose: Golden files, replay logs, and sample roadmaps and transcripts.
+- Generated: No (hand-maintained, with some captured from real runs).
+- Committed: Yes.
+
+**`assets/`:**
+- Purpose: README screenshots.
+- Generated: No.
+- Committed: Yes. Excluded from the published crate by `Cargo.toml` (`exclude = ["/assets/"]`).
+  The `src/**/assets/` directories are NOT excluded, because they are `include_str!` targets.
+
 **`.planning/`:**
-- Purpose: this project's own GSD workflow state (phases, plans, STATE.md, codebase docs including this one)
-- Generated: partially — phase/plan artifacts are written by GSD commands; `codebase/*.md` docs are written by the codebase mapper
-- Committed: yes
+- Purpose: GSD planning state for this repo's own development.
+- Generated: Yes (by GSD workflow commands).
+- Committed: Yes for the repo's own history; excluded from the published crate.
 
-**`target/`:**
-- Purpose: Cargo build output
-- Generated: yes
-- Committed: no (gitignored)
-
-**`docs/`:**
-- Purpose: project-facing documentation (not GSD planning state)
-- Generated: no
-- Committed: yes
+**Runtime data directories (outside the repo):**
+- Driver runs: `.planning/meta-manager/drivers/` in each registered project.
+- One-off runs: `gsd-meta-manager/oneoff/` under the user data directory, one run directory per
+  task holding a private `work/` clone, `inbox/`, `report/`, `run.json`, `stream.jsonl`,
+  `launch.log`, and `injections.jsonl`.
+- Not committed; created at run time.
 
 ---
 
-*Structure analysis: 2026-08-18*
+*Structure analysis: 2026-11-03*

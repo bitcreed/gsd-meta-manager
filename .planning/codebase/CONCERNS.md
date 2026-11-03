@@ -1,183 +1,186 @@
+---
+last_mapped_commit: 5146cf11780714b72ed3b2e6224e849a93e10a08
+last_mapped_at: 2026-11-03
+---
+<!-- refreshed: 2026-11-03 -->
 # Codebase Concerns
 
-**Analysis Date:** 2026-08-18
+**Analysis Date:** 2026-11-03
 
-This is a Rust ratatui TUI that, as of milestone v2.0, spawns and supervises `claude -p`
-child processes to drive other GSD projects (`src/driver/`, `src/executor/`). The relevant
-risk surface is process supervision, filesystem trust boundaries between the TUI and the
-projects it manages, and secret handling in captured agent output — not typical web-app
-concerns.
+## Tech Debt
 
-The codebase is unusually disciplined about the risks it does recognize: extensive
-doc-comments cite the design decision (`D-NN`) or code-review finding (`CR-NN`/`WR-NN`)
-that shaped each defensive line, mechanical tests guard against permission-bypass flags and
-development-only flags leaking into production argv, and a dedicated redaction module
-(`src/journal/redact.rs`) sits on the capture path before anything reaches disk. Most gaps
-below are already tracked with a scheduled owner rather than freshly discovered.
+**Oversized UI screen module:**
+- Issue: `src/ui/screens/detail.rs` is about 35,200 lines, by far the largest file in the crate. Rendering, input handling, escaping helpers and a very large inline test block all live in one file.
+- Files: `src/ui/screens/detail.rs`, `src/app.rs` (about 9,100 lines), `src/ui/screens/driver_run.rs` (about 7,000 lines)
+- Impact: Hard to review, slow to compile incrementally, and changes to one screen risk side effects in unrelated code paths. Contributors have to load a huge context to change anything.
+- Fix approach: Split `detail.rs` into submodules by panel (for example `detail/render.rs`, `detail/input.rs`, `detail/escape.rs`) and move its tests next to the code they cover. Do this as a behaviour-preserving refactor with the existing test suite as the guard.
 
-## Tracked with a Scheduled Owner (verified still present)
+**Deferred review findings carried across milestones:**
+- Issue: 123 open or deferred review entries (0 critical, 41 warning, 82 info) are recorded across Phases 24-31 and never closed.
+- Files: `.planning/MILESTONES.md`, `.planning/STATE.md` (Review advisories section), `.planning/milestones/v2.0-phases/*/*-REVIEW-DISPOSITION.md`
+- Impact: Known warnings accumulate without an owner, so real defects can hide inside the backlog.
+- Fix approach: Triage the 41 warnings first. Fix the small ones, convert each remaining one into a todo under `.planning/todos/pending/`, and close the dispositions append-only.
 
-These are pre-existing, deliberately deferred items recorded in `.planning/STATE.md` /
-`17-08-PLAN.md`'s deferral table. Each was re-checked against current source for this audit;
-all are confirmed still open exactly as logged, not fixed since.
+**Executor code kept without a caller:**
+- Issue: The Codex executor and in-process Claude transport were held pending a user decision (plan 31-07, D-04). Executor code remains in the tree with a narrow `dead_code` allow on `DrivableProject::with_runtime`.
+- Files: `.planning/STATE.md` (Phase 31 entry), `src/executor/mod.rs`, `src/executor/stream_json.rs`
+- Impact: Dead code that is not exercised by the binary can rot silently and still needs maintenance during refactors.
+- Fix approach: Make the D-04 decision. Either delete the unused executor path or wire it up behind the `experimental` gate in `src/experimental.rs` with a test that exercises it.
 
-### WR-02 — `run_id` path-join has no component validation
+**Test-side setup relies on sleeps and polling:**
+- Issue: Many tests synchronise with `std::thread::sleep` polling loops (the `*_within` helpers) rather than explicit signals. The planning history records several flake fixes of this kind; the tests that needed them (`tests/driver_reattach.rs`, `tests/envelope_tracer.rs`, the `driver::run` tests) were deleted in Phase 31 (commits `2a23d9e` and `13ba5ac`), but the polling style remains.
+- Files: `src/bounded_output.rs:111`, `src/launcher/run.rs:546`, `src/launcher/run.rs:593`, `src/launcher/stop.rs:143`, `src/launcher/stop.rs:168`, `src/launcher/process.rs:643`, `src/launcher/process.rs:688`
+- Impact: Timing-dependent tests fail only under CPU contention, which makes CI results non-deterministic.
+- Fix approach: Replace artifact polling with channel or condition-variable signals where the code under test can emit them.
 
-- Files: `src/journal/writer.rs` (`create_run_dir` line 329, `run_paths`, `write_active_pointer`
-  line 440, and the raw `root.join(run_id)` / `root.join(&run_id)` uses at lines 502 and 672)
-- Issue: `run_id` (attacker/caller-controlled string, ultimately sourced from `--run-id` on a
-  spawned driver's argv) is joined directly into a filesystem path with no check that it is a
-  single, traversal-free path component. Reproduced during Phase 17: a `run_id` containing
-  `../` segments can escape the project's run directory.
-- Status: deliberately deferred (WR-02 in `17-08-PLAN.md`'s table) as "a separate hardening
-  axis (path-component validation across four call sites in `src/journal/`), untouched by any
-  fix here." Owner: a future hardening phase, not yet scheduled by name.
-- Fix approach: validate `run_id` is a single path component (no `/`, no `..`, no leading `.`)
-  at the one seam where it enters `src/journal/`, before any of the four call sites join it.
+**Large number of `unwrap`/`expect` calls:**
+- Issue: About 3,370 `.unwrap()` or `.expect(` occurrences exist under `src/`. Most are in `#[cfg(test)]` modules, but the count is high enough that non-test paths need auditing.
+- Files: `src/oneoff/mod.rs`, `src/oneoff/merge.rs`, `src/driverctl/serve.rs`, `src/driverctl_cli.rs`
+- Impact: A malformed file or unexpected state in a production path can panic the TUI or a driver process instead of returning a recoverable error.
+- Fix approach: Run `cargo clippy` with `unwrap_used` and `expect_used` enabled for non-test targets, and convert production call sites to `?` with contextual errors.
 
-### WR-10 — blocking `flock`/filesystem/git calls inside `async fn`
+## Known Bugs
 
-- Files: `src/driver/lock.rs` (`acquire`, uses `rustix::fs::flock` synchronously), `src/driver/mod.rs`
-  (`drive`, `dry_run`)
-- Issue: `flock(2)` and other blocking fs/git calls run directly inside `async fn` bodies,
-  which can starve the async runtime's worker thread. This is not hypothetical — it caused an
-  **observed deadlock** in `tests/driver_lock.rs` (see the block of comments starting around
-  line 209: "the run body's blocking work runs on the ... suite deadlocks instead of" and the
-  WR-10/D-28 regression note at line 244–288).
-- Status: deliberately deferred — "a runtime-shape change across `drive`, `lock::acquire` and
-  `dry_run`; no blocker depends on it." `tests/driver_lock.rs` carries a regression test
-  documenting the deadlock so a future fix has a red test to turn green.
-- Fix approach: move blocking calls to `tokio::task::spawn_blocking`, or make the lock
-  acquisition synchronous end-to-end and hand it off from a dedicated blocking thread.
+**Live-session detection is Linux only:**
+- Symptoms: On macOS no running sessions are detected. Windows builds compile but are not exercised at runtime.
+- Files: `src/session_detector.rs`, `src/driver/liveness.rs`
+- Trigger: Run the TUI on macOS or Windows and expect running sessions to appear.
+- Workaround: None. README states the feature is Linux only (`README.md` lines 35 and 414-420).
 
-### WR-15 — `DriverStopped` drops the observed run unconditionally
+**Environment-pinned test failure:**
+- Symptoms: One git-version-constants test fails on any machine whose installed git differs from the version the constants were derived against (git 2.53.0 locally against 2.55.0 expected).
+- Files: `scripts/pre-tag-check.sh` (gate 4), the git-version constants test
+- Trigger: Run `cargo test` on a machine with a different git version.
+- Workaround: Accept the single known failure locally, or re-derive the constants on the target git version.
 
-- Files: `src/action.rs` (`Action::DriverStopped` definition, line 224), `src/app.rs` (dispatch
-  around line 1501, 1974)
-- Issue: the `DriverStopped` action always drops the observed run from UI state, even when the
-  underlying stop request did nothing (e.g., the run was already gone). The action carries no
-  `StopOutcome` distinguishing "I stopped it" from "there was nothing to stop."
-- Status: deliberately deferred — "requires carrying `StopOutcome` as a value through `Action`;
-  a UI-state change, not a teardown one." Related: WR-11 ("silent return with no event channel"
-  inside `stop_driver_run`) shares the same code path and was folded into the same CR-05 note.
-- Fix approach: extend `Action::DriverStopped` with a `StopOutcome` enum (stopped / already-gone
-  / error) and branch the UI update on it instead of unconditionally clearing the row.
+## Security Considerations
 
-### WR-16 — hidden `--claude-program` / `--claude-args` flags ship in release builds
+**Shell execution of user-configured hooks:**
+- Risk: Project hook commands are passed to `sh -c` with the project name, path and alias exported as environment variables. Any value in the hook string is interpreted by the shell, and the hook runs with the user's full privileges.
+- Files: `src/project_creator.rs` (`execute_hook`, around line 69), `src/terminal_switch.rs` (around line 212)
+- Current mitigation: Hook stdout and stderr are discarded. The hook string comes from the user's own config, not from remote input.
+- Recommendations: Document that hook strings are trusted shell code. Do not interpolate `name`, `path` or `alias` into the hook string; keep them only in environment variables, which the code already does. Add a test that a project name containing shell metacharacters is not executed.
 
-- Files: `src/cli.rs` (flag definitions, lines 138–143), `src/driver/spawn.rs` (doc comment,
-  line 25: "carries two hidden development flags")
-- Issue: `--claude-program` and `--claude-args` let a caller point the driver's executor at an
-  arbitrary program instead of the real `claude` binary. They are undocumented/hidden but not
-  compiled out of release builds, so a hand-typed `drive` invocation on a shipped binary can
-  substitute a different executable for the agent.
-- Status: deliberately deferred — "every integration test in this phase depends on those flags
-  being present in the test build." `src/driver/spawn.rs::drive_argv` is separately proven
-  (`the_drive_argv_carries_no_development_flag` test) to never let the **TUI-initiated** spawn
-  path emit either flag, so the risk is scoped to a hand-typed CLI invocation, not the TUI's own
-  spawn seam.
-- Fix approach: `#[cfg(any(test, feature = "dev-fixtures"))]`-gate the two flags so they cannot
-  exist in a release binary, and update the integration tests to build with the feature enabled.
+**Process termination by recorded process group:**
+- Risk: Kill and cancel paths signal a process group id read back from `run.json`. If the recorded pgid is stale and the id has been reused, the signal can hit an unrelated process group.
+- Files: `src/driver/kill.rs` (pgid validation, refusing zero and out-of-range values), `src/oneoff/cancel.rs` (`signal_scope`, around line 388), `src/driver/liveness.rs` (reads `/proc/<pid>/cmdline` to decide liveness)
+- Current mitigation: pgid zero and values that do not fit `pid_t` are refused. The liveness check reads `/proc`.
+- Recommendations: Before signalling a recorded pgid, confirm the process group still belongs to the run (for example by matching the process start time or the command line recorded at launch), not only that the pid exists.
 
-### Unbounded git authority in a driven run — Phase 19 scope, not an unrecognized gap
+**Bridge listens on a caller-supplied loopback port:**
+- Risk: The in-sandbox bridge binds `127.0.0.1:<port>` from its command line. Any local process can connect to that port while the bridge is up.
+- Files: `src/launcher/bridge.rs` (line 64)
+- Current mitigation: The bridge only relays bytes. Policy and run tokens are enforced by the launcher-side egress server, so bypassing the bridge gains nothing (fact 3 in the module header).
+- Recommendations: Confirm that the egress server rejects connections without a valid run token even when they arrive through the bridge, and add a test for that path.
 
-- Files: `src/state_reader/git_ops.rs` (all git subprocess calls), `src/journal/writer.rs:365`
-  (a `git` invocation in the journal writer itself), `src/executor/outcome.rs` (head-sha/dirty
-  checks after a run)
-- Issue: a driven agent process (`claude -p`, spawned via `src/driver/spawn.rs`) has no
-  enforced boundary on which git operations it may perform inside the project it is driving —
-  commit, push, branch changes are all reachable with `--permission-mode dontAsk`.
-- Status: **this is Phase 19's stated goal** ("GITSAFE — Git & Blast-Radius Envelope"), currently
-  planned (8 plans, 8 waves per `19-PLAN.md`) but not yet executed as of this audit
-  (`.planning/STATE.md`: `current_phase: 19`, `status: executing`, `Plan: Not started`). Report
-  this as a scheduled gap, not a new discovery — the phase exists specifically because the team
-  already identified it.
+**Sensitive file permissions depend on per-call `mode` settings:**
+- Risk: Files holding run state, sentinels and steering data are created with explicit modes (`0o600` for most, `0o644` for `src/driver/lock.rs:342` and `src/driverctl/log.rs:97`). A new write path that forgets the mode would create world-readable files.
+- Files: `src/driver/direction.rs` (lines 728-731, 1537), `src/driver/lock.rs` (342, 560), `src/driver/steer.rs` (674, 1885), `src/driverctl/log.rs` (97)
+- Current mitigation: Tests assert `0o600` on sentinels and steering files (`src/driver/steer.rs` around lines 1995-1997).
+- Recommendations: Centralise file creation for run-state files in one helper that always applies `0o600`, and review whether `0o644` at `src/driver/lock.rs:342` and `src/driverctl/log.rs:97` must be world-readable.
 
-### Broken-windows ledger — 1 open deviation
+**Two `unsafe` blocks in the tree are text-only:**
+- Risk: The `unsafe` matches under `src/` are string literals and comments, not code. No real `unsafe` block was found, so the crate's safety depends on its dependencies.
+- Files: `src/ui/glyphs.rs` (line 205), `src/text.rs` (line 630)
+- Current mitigation: Not applicable.
+- Recommendations: Add `#![forbid(unsafe_code)]` to `src/lib.rs` to keep it that way.
 
-- File: `src/ui/screens/driver.rs` (no specific line recorded)
-- Issue (from `.planning/WINDOWS.md`, id 1): "18-10: injection state refuses to promote an
-  interjected record with `delivered:false`" — a deliberate deviation toward the safer
-  prohibition rather than the originally planned behavior.
-- Status: open, unwaived, blocks `/gsd-ship` while `open_count > 0`. Owner: revisit "if the
-  driver ever stops writing the failed-write record."
+## Performance Bottlenecks
 
-### 3 open todos in `.planning/todos/pending/`
+**Full-document rendering in the detail screen:**
+- Problem: The detail screen rebuilds large rendered line sets from planning markdown on each change.
+- Files: `src/ui/screens/detail.rs`, `src/archive.rs` (`render_markdown_lines`, `read_archive_file`), `src/state_reader/roadmap_md.rs` (about 4,160 lines)
+- Cause: Rendering is done on the render path rather than cached per file version. `read_archive_file` reads whole archive files.
+- Improvement path: Cache parsed roadmap and archive output keyed by file mtime and size, and re-render only when the source changes.
 
-1. **Badge glyph display width** (`2026-07-29-badge-glyph-display-width-alignment.md`) — UI
-   alignment issue with wide glyphs in status badges.
-2. **Driver tab blank pipeline row at terminal heights 8–13** (`src/ui/screens/driver.rs`) —
-   logged as Phase 18 code-review finding WR-05; the medium-height layout tier renders section
-   headers ("── steps ──") with no content underneath at that height band. Needs an additional
-   height tier or a minimum-height single-line fallback; requires observation at a real
-   terminal (UAT), not a unit test.
-3. **`$EDITOR` exit does not invalidate `cache.browser_file_content`** (`src/main.rs`) — after
-   shelling out to `$EDITOR`, the markdown viewer's file-content cache is not invalidated on
-   resume, so a user's own edit does not appear until some unrelated event refreshes the cache.
-   Carried forward from Phase 14 (WR-03); no PTY/suspend-resume test harness exists in this
-   repo, so closing it needs either a testable seam or an explicit manual UAT step.
+**Polling loops with short sleeps in the launcher:**
+- Problem: Child-process supervision polls with `try_wait` and short sleeps, for example 2 ms and 5 ms in `src/launcher/process.rs` and 50 ms in `src/launcher/stop.rs`.
+- Files: `src/launcher/process.rs:643`, `src/launcher/process.rs:688`, `src/launcher/run.rs:546`, `src/launcher/run.rs:593`, `src/launcher/stop.rs:143`
+- Cause: No blocking wait on the child is used, so each supervised process costs a wakeup every few milliseconds.
+- Improvement path: Use `wait` on a dedicated thread, or a pidfd where available, to avoid periodic wakeups.
 
-### 5 pre-existing `cargo clippy --all-targets` lints
+**Fork-based process spawns for every git query:**
+- Problem: Git state is read by spawning `git` subprocesses for each query.
+- Files: `src/state_reader/git_ops.rs` (about 2,060 lines), `src/oneoff/merge.rs`
+- Cause: Each status or diff call starts a new process.
+- Improvement path: Batch queries into a single `git status --porcelain=v2` or `git for-each-ref` call per refresh, and cache results for the length of one refresh cycle.
 
-Reconfirmed by direct clippy run on 2026-08-18; all five below are the only lints reported.
+## Fragile Areas
 
-- `src/browser.rs:131`, `132`, `133` — three `assert_eq!(x, true)` / `assert_eq!(x, false)`
-  calls in test code; clippy prefers `assert!(x)` / `assert!(!x)`. (Note: these live in
-  `src/browser.rs`, not `src/ui/browser.rs` — there is no `src/ui/browser.rs` in this tree.)
-- `src/project_creator.rs:146` — `assert!(result != PathBuf::from("~") || ...)` constructs an
-  owned `PathBuf` purely for a comparison; clippy suggests comparing against a borrowed `Path`.
-- `src/state_reader/mod.rs:258` — `items after a test module`: the `mod tests { ... }` block is
-  not the last item in the file, which clippy flags as an organizational lint (not a bug).
+**Process group and pid handling:**
+- Files: `src/driver/kill.rs` (`signal_group`), `src/launcher/run.rs` (`stop_group`), `src/launcher/process.rs` (`process_group(0)` around line 213), `src/driver/lock.rs` (`LockHolder::pgid`)
+- Why fragile: There are two process groups, the driver's and the agent's own, so a signal aimed at one does not reach the other (`src/driver/kill.rs` module doc). The lock records `pgid == pid` on the assumption that the driver became a group leader at run entry. A refusal to signal group zero lives only in `signal_group`.
+- Safe modification: Route every group signal through `signal_group`. Keep the `process_group(0)` spawn settings and the deliberate exceptions documented in `src/launcher/process.rs` (the bridge must not be a group leader) in sync with `stop_group`'s teardown grace.
+- Test coverage: The earlier `driver::run` process-group tests and their race retry helper were removed with the drive subcommand in Phase 31. Coverage now comes from the launcher stop tests (`src/launcher/stop.rs`, `tests/launcher_*.rs`). [inferred — audit]
 
-All five are cosmetic/style lints in test code or test-adjacent code, none affecting runtime
-behavior. No owner scheduled; low priority.
+**Socket and bind path handling:**
+- Files: `src/driverctl/serve.rs` (`bind_private`, `replace_and_bind`, lines 521-580)
+- Why fragile: Socket binding stages a file, changes its mode and renames it. The code avoids `umask` swaps because `umask` is per-process and races with other threads. Path-length limits for Unix sockets also apply.
+- Safe modification: Keep the staging-then-rename sequence. Do not replace it with a `umask` change.
+- Test coverage: `tests/driverctl_serve.rs` and `tests/driverctl_race.rs` cover the main cases.
 
-## Newly Identified Concerns (not accounted for above)
+**Cancel and stop request state machine:**
+- Files: `src/oneoff/cancel.rs` (`tick`, `outranks`, `merge_request`, `read_request`, `write_request`)
+- Why fragile: Stop, kill and pause requests are persisted to disk and merged by rank. A request written during an escalation can be lost or downgraded if the ordering rules change.
+- Safe modification: Keep `outranks` as the single source of truth for precedence and add a test for any new `StopKind`.
+- Test coverage: Unit tests in `src/oneoff/cancel.rs` cover precedence and round-tripping.
 
-### Two very large "god files" in the UI layer
+**Configuration writes:**
+- Files: `src/state_reader/config_write.rs`, `src/state_reader/config_json.rs`, `src/ui/screens/mod.rs` (`U+XXXX` handling near line 876)
+- Why fragile: Writes to the user's `config.json` must preserve bytes that were not changed and avoid writing escaped spellings such as `U+XXXX` into values. Mistakes corrupt the user's configuration.
+- Safe modification: Use the atomic temp-file-and-rename helper in `config_write.rs`. Add a round-trip test for any new field.
+- Test coverage: Covered by unit tests in `config_write.rs` and `detail.rs`.
 
-- `src/ui/screens/detail.rs` — **6,615 lines**, the largest file in the tree.
-- `src/app.rs` — **4,366 lines**.
-- `src/ui/screens/driver.rs` — **3,436 lines**.
-- Impact: these files mix rendering, state transitions, and business logic for their respective
-  screens/app-loop in single modules. Navigating and safely modifying any one of them requires
-  holding a large amount of context; a future contributor unfamiliar with the file's internal
-  organization is more likely to introduce a regression than in a codebase with more granular
-  modules. `detail.rs` in particular is more than 1.5x the size of the next-largest file.
-- No test-coverage or correctness issue was found tied specifically to file size, but this is a
-  maintainability risk worth flagging before the next major feature lands in either file — it
-  is not mentioned in `.planning/STATE.md`'s deferral list or the WINDOWS ledger.
-- Fix approach: if a future phase touches `detail.rs` or `app.rs` substantially, consider
-  splitting render logic from state-update logic into separate submodules (e.g.,
-  `detail/render.rs` + `detail/update.rs`) as a low-risk refactor riding along with that work,
-  rather than as a standalone project.
+## Scaling Limits
 
-### `run.json` and the lock file are written world-readable (`0o644`)
+**One-off run and todo limits:**
+- Current capacity: `MAX_TODOS` is 200, and each todo is read for its first 8 KiB only (`src/oneoff/todos.rs`, line 26 and line 104).
+- Limit: Todo items beyond 200 are ignored, and content beyond 8 KiB is invisible to the listing.
+- Scaling path: Make the cap configurable and read the title from the first line only, so the limit does not affect valid long backlogs.
 
-- Files: `src/journal/writer.rs:562-566`, `src/driver/lock.rs:234-236`
-- Observation: both explicitly `set_permissions(..., 0o644)`. Given the redaction module's own
-  stated threat model ("a false negative is a persistent secret sink under `.planning/`"), any
-  future field added to `run.json` or the lock record should be held to the same no-secrets
-  bar as journal content, since the file is not access-restricted to the owning user beyond
-  standard directory permissions.
-- Impact: currently benign — `run.json`/lock records hold pid/pgid/timestamps, not secrets —
-  but the permission choice is a standing invariant that a future change could violate silently
-  (there is no test asserting `run.json`'s *contents* stay secret-free, only that redaction
-  runs on the separate journal capture path).
-- Fix approach: no code change needed today; note as a review checkpoint for any future PR that
-  adds a field to `RunRecord`.
+**Roadmap and state parsing:**
+- Current capacity: The roadmap and state parsers read the full `ROADMAP.md` and `STATE.md` (`.planning/STATE.md` is about 121 KB, `.planning/STATE-ARCHIVE.md` about 67 KB) on each refresh.
+- Limit: Parse time and memory grow linearly with planning history. STATE.md is already large because each quick task adds a long table row.
+- Scaling path: Move quick-task history out of STATE.md into per-task files, and keep STATE.md as a short index.
 
-### No dependency-audit or supply-chain check found
+## Dependencies at Risk
 
-- `cargo audit`, `cargo deny`, or an equivalent supply-chain scan was not found configured in
-  CI or as a local tool in this repo (no `deny.toml`, no `audit.toml`, no workflow file
-  invoking either). Given that this project executes another program's git/filesystem
-  operations autonomously, an unpatched CVE in a transitive dependency (e.g., in `notify`,
-  `tokio`, or the git-shelling path) has an elevated blast radius compared to a purely
-  interactive tool.
-- Fix approach: add `cargo audit` (or `cargo-deny`) as a CI step; low effort, meaningful
-  coverage gain, not currently tracked anywhere in `.planning/`.
+**Dependency on external `gsd-core` and `claude` CLIs:**
+- Risk: The launcher and driver shell out to `claude` and the gsd-core tooling. Output format changes in those tools (for example the stream-json schema in `src/executor/stream_json.rs` and `tests/fixtures/transcripts/`) break parsing.
+- Impact: Runs can stall or misreport state after an upstream upgrade.
+- Migration plan: Pin the expected schema version in `docs/GSD-CORE-SYNC.md` and fail with a clear error on unknown event types instead of silently ignoring them.
+
+**`systemctl --user` for run scopes:**
+- Risk: Cancel and kill of one-off runs call `systemctl --user kill` (`src/oneoff/cancel.rs`, `signal_scope`). This is unavailable on systems without a user systemd instance.
+- Impact: Stop requests on such systems cannot signal the scope by name.
+- Migration plan: Fall back to pgid signalling with the validation described under Security Considerations when `systemctl` is absent.
+
+## Missing Critical Features
+
+**No macOS or Windows runtime support for session detection:**
+- Problem: Running-session detection and the sandbox launcher are Linux only (`README.md` lines 35 and 414-420; `src/launcher/egress/upstream.rs` TLS path is Linux only).
+- Blocks: Cross-platform use of the launcher, and reliable running-session status on macOS and Windows.
+
+## Test Coverage Gaps
+
+**Real Claude process behaviour:**
+- What's not tested: Live `claude` runs are gated behind `tests/launcher_live_*.rs`, which need credentials and are not part of the default suite.
+- Files: `tests/launcher_live_egress.rs`, `tests/launcher_live_isolation.rs`, `tests/launcher_live_managed.rs`, `tests/launcher_live_scope.rs`, `tests/launcher_live_token_reach.rs`
+- Risk: Changes to the real CLI behaviour (stream-json, rate limits, interrupts) can pass the suite and fail in use. Fixtures in `tests/fixtures/transcripts/` may drift from the real format.
+- Priority: High
+
+**Windows and macOS code paths:**
+- What's not tested: Windows builds are compile-checked only, and macOS session detection has no tests.
+- Files: `src/session_detector.rs`, `src/driver/liveness.rs`
+- Risk: Platform-specific regressions reach users unnoticed.
+- Priority: Medium
+
+**Terminal rendering edge cases:**
+- What's not tested: Escaping of invisible and control characters is tested with hand-written cases in `src/ui/screens/render_escape_guard.rs` and `src/text.rs`, but not with broad generated input.
+- Files: `src/text.rs`, `src/ui/screens/render_escape_guard.rs`, `src/state_reader/driver_frontmatter.rs`
+- Risk: A character class that is missed in the escape table can corrupt the terminal or inject control sequences into the display.
+- Priority: Medium
 
 ---
 
-*Concerns audit: 2026-08-18*
+*Concerns audit: 2026-11-03*
