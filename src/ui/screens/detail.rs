@@ -12121,6 +12121,18 @@ fn build_defaults_entries(
             ("false", "no watchdog; a lost completion handoff needs a manual interrupt"),
         ],
     ).since("v1.15.0"));
+    // Quick task 261103-f5i (gsd-core v1.20.0): promoted from pass-through
+    // to typed rows because 1.20.0 (#3923) lists both in `/gsd-config
+    // --advanced`. The `since` is MEASURED: `git log v1.20.0 --reverse -S<key>`
+    // gives 067a4d1c6 (#2650, PR #3015) for both, first tag v1.10.0.
+    let (v, k) = opt_u32(ppn.and_then(|p| p.stall_threshold_minutes));
+    push(cat, "planner.stall_threshold_minutes", v, k, false, ConfigHelp::new(
+        "Minutes of silence before plan-phase offers accept/retry/stop for a stalled planner or plan-checker; raise it for slow models. Minimum 1, default 10.",
+    ).since("v1.10.0"));
+    let (v, k) = opt_u32(ppn.and_then(|p| p.stall_detect_interval_minutes));
+    push(cat, "planner.stall_detect_interval_minutes", v, k, false, ConfigHelp::new(
+        "Minutes between the stall checks plan-phase runs while a planner or plan-checker agent is active. Whole minutes, minimum 1, default 5.",
+    ).since("v1.10.0"));
     let prv = config.plan_review.as_ref();
     let (v, k) = opt_bool(prv.and_then(|p| p.source_grounding));
     push(cat, "plan_review.source_grounding", v, k, false, ConfigHelp::new(
@@ -12916,6 +12928,9 @@ fn builtin_default_for_key(key: &str) -> Option<&'static str> {
         "branching_strategy" => "none",
         // gsd-core v1.19.0 config-defaults.manifest.json (quick task 261027-184).
         "git.repo_tagging" => "single",
+        // gsd-core v1.20.0 src/config.cts (quick task 261103-f5i).
+        "planner.stall_threshold_minutes" => "10",
+        "planner.stall_detect_interval_minutes" => "5",
         "phase_branch_template" => "gsd/phase-{phase}-{slug}",
         "milestone_branch_template" => "gsd/{milestone}-{slug}",
         "discuss_mode" => "discuss",
@@ -14880,6 +14895,20 @@ fn clear_config_value(config: &mut crate::state_reader::config_json::GsdConfig, 
                 .stall_detection_enabled = None;
             true
         }
+        "planner.stall_threshold_minutes" => {
+            config
+                .planner
+                .get_or_insert_with(PlannerConfig::default)
+                .stall_threshold_minutes = None;
+            true
+        }
+        "planner.stall_detect_interval_minutes" => {
+            config
+                .planner
+                .get_or_insert_with(PlannerConfig::default)
+                .stall_detect_interval_minutes = None;
+            true
+        }
         // gsd-core v1.16.0 delta (quick task 261012-jqb).
         "audit.enabled" => {
             config
@@ -15638,6 +15667,21 @@ fn mutate_config_entry(
                     wf.inline_plan_threshold = Some(if current >= 20 { 1 } else { current + 1 });
                     true
                 }
+                // Quick task 261103-f5i. The wrap target is 1, never 0: gsd-core's
+                // minimum for both stall knobs is 1 (I-3).
+                "planner.stall_threshold_minutes" => {
+                    let p = config.planner.get_or_insert_with(PlannerConfig::default);
+                    let current = p.stall_threshold_minutes.unwrap_or(0);
+                    p.stall_threshold_minutes = Some(if current >= 30 { 1 } else { current + 1 });
+                    true
+                }
+                "planner.stall_detect_interval_minutes" => {
+                    let p = config.planner.get_or_insert_with(PlannerConfig::default);
+                    let current = p.stall_detect_interval_minutes.unwrap_or(0);
+                    p.stall_detect_interval_minutes =
+                        Some(if current >= 15 { 1 } else { current + 1 });
+                    true
+                }
                 "workflow.max_discuss_passes" => {
                     let wf = config.workflow.get_or_insert_with(WorkflowConfig::default);
                     let current = wf.max_discuss_passes.unwrap_or(0);
@@ -15772,7 +15816,11 @@ mod tests {
                 "source_grounding": true,
                 "source_grounding_authority": "grep"
             },
-            "planner": { "stall_detection_enabled": true },
+            "planner": {
+                "stall_detection_enabled": true,
+                "stall_threshold_minutes": 12,
+                "stall_detect_interval_minutes": 3
+            },
             "git": {
                 "branching_strategy": "phase",
                 "base_branch": "master",
@@ -15909,8 +15957,10 @@ mod tests {
     /// key), and 139 -> 135 at quick task 261012-jqb (gsd-core v1.16.0:
     /// +gates.confirm_milestone_scope, +audit.enabled, -6 gates.* keys), and
     /// 135 -> 136 at quick task 261027-184 (gsd-core v1.19.0:
-    /// +git.repo_tagging). It is
-    /// asserted rather than trusted so a 137th option cannot slip past the
+    /// +git.repo_tagging), and 136 -> 138 at quick task 261103-f5i (gsd-core
+    /// v1.20.0: +planner.stall_threshold_minutes,
+    /// +planner.stall_detect_interval_minutes, promoted from pass-through). It is
+    /// asserted rather than trusted so a 139th option cannot slip past the
     /// coverage assertions below by being added to a list nobody counted.
     ///
     /// **It counts STATIC rows only.** `append_passthrough_entries` emits one
@@ -15918,7 +15968,7 @@ mod tests {
     /// carrying such a key would make this number a property of the fixture
     /// rather than of the tab. [`populated_gsd_config`] is therefore kept free
     /// of unmodelled keys, and the pass-through rows have their own fixture.
-    const DEFAULTS_OPTION_COUNT: usize = 136;
+    const DEFAULTS_OPTION_COUNT: usize = 138;
 
     #[test]
     fn every_config_entry_carries_a_non_empty_summary() {
@@ -16779,52 +16829,129 @@ mod tests {
         );
     }
 
-    /// `planner` became a typed block at 1.15.0, but only its boolean is
-    /// modelled. The two stall-tuning knobs must stay VISIBLE (as `planner.`-
-    /// prefixed pass-through rows, not a single `planner` row holding the whole
-    /// object) and survive a toggle of the typed key (T-gtk-01 / T-gtk-02).
+    /// `planner` became a typed block at 1.15.0 with one boolean; the v1.20.0
+    /// sync (quick task 261103-f5i, I-1) promoted its two stall-tuning knobs
+    /// from pass-through to typed Integer rows. Same guarantees as the other
+    /// promoted rows: one typed row, `since v1.10.0` drawn, the built-in
+    /// default while unset, cycle / clear writing gsd-core's own JSON path
+    /// (a cleared key leaves the file, a cycle never writes 0 because
+    /// upstream's minimum is 1), and a toggle of the bool leaving both minute
+    /// values byte-identical (T-f5i-01 / T-f5i-03).
     #[test]
-    fn planner_stall_tuning_keys_stay_visible_and_survive_a_toggle() {
-        use crate::state_reader::config_json::{parse_gsd_config, serialize_gsd_config};
+    fn planner_stall_tuning_keys_are_integer_rows_writing_their_own_json_paths() {
+        use crate::state_reader::config_json::{parse_gsd_config, GsdConfig};
 
+        // (key, JSON pointer, built-in default, wrap cap)
+        let cases = [
+            (
+                "planner.stall_threshold_minutes",
+                "/planner/stall_threshold_minutes",
+                "10",
+                30u64,
+            ),
+            (
+                "planner.stall_detect_interval_minutes",
+                "/planner/stall_detect_interval_minutes",
+                "5",
+                15u64,
+            ),
+        ];
+        let entries = all_config_entries();
+        for (key, pointer, default, cap) in cases {
+            let matching: Vec<(usize, &ConfigEntry)> = entries
+                .iter()
+                .enumerate()
+                .filter(|(_, entry)| entry.key.as_ref() == key)
+                .collect();
+            assert_eq!(matching.len(), 1, "`{key}` must have exactly one row");
+            let (idx, entry) = matching[0];
+            assert!(
+                matches!(entry.kind, ConfigValueKind::Integer),
+                "`{key}` is an integer; kind is {:?}",
+                entry.kind
+            );
+            assert_ne!(entry.category, PASSTHROUGH_CATEGORY);
+            assert_eq!(entry.help.since, "v1.10.0");
+
+            // The built-in default shows only while the key is unset.
+            let unset_rows = build_defaults_entries(&parse_gsd_config("{}").unwrap());
+            let unset_row = unset_rows
+                .iter()
+                .find(|e| e.key.as_ref() == key)
+                .expect("the unset config still lists the row");
+            assert_eq!(unset_row.builtin_default, Some(default), "{key} default");
+
+            let at = |config: &GsdConfig| {
+                serde_json::to_value(config)
+                    .expect("the config serialises")
+                    .pointer(pointer)
+                    .cloned()
+            };
+            let mut config = parse_gsd_config("{}").unwrap();
+            assert!(mutate_config_entry(&mut config, key, &entry.kind), "cycle");
+            assert_eq!(
+                at(&config),
+                Some(serde_json::json!(1)),
+                "{key}: the first press from unset writes 1, never 0"
+            );
+            let mut config =
+                parse_gsd_config(&format!(r#"{{"planner":{{"{}":{cap}}}}}"#, &key[8..])).unwrap();
+            assert!(mutate_config_entry(&mut config, key, &entry.kind), "wrap");
+            assert_eq!(
+                at(&config),
+                Some(serde_json::json!(1)),
+                "{key}: a press at the cap {cap} wraps to 1, not 0"
+            );
+            assert!(clear_config_value(&mut config, key), "clear");
+            assert_eq!(at(&config), None, "{key} clear left the key in the file");
+
+            let rendered = squeeze_ws(&render_defaults_to_text(120, 40, idx));
+            assert!(
+                rendered.contains(&squeeze_ws(&format!("{SINCE_PREFIX}v1.10.0"))),
+                "the help pane for `{key}` did not draw the `since` marker: {rendered}"
+            );
+        }
+
+        // Row order (I-5): threshold, then interval, right after the bool.
+        let pos = |key: &str| {
+            entries
+                .iter()
+                .position(|e| e.key.as_ref() == key)
+                .unwrap_or_else(|| panic!("`{key}` has no row"))
+        };
+        assert_eq!(
+            pos("planner.stall_threshold_minutes"),
+            pos("planner.stall_detection_enabled") + 1
+        );
+        assert_eq!(
+            pos("planner.stall_detect_interval_minutes"),
+            pos("planner.stall_threshold_minutes") + 1
+        );
+
+        // A file carrying all three keys: no pass-through row for either
+        // minute key, none for the whole object, and a toggle of the bool
+        // leaves both minute values untouched.
         let mut config = parse_gsd_config(
             r#"{"planner":{"stall_detection_enabled":false,"stall_detect_interval_minutes":5,"stall_threshold_minutes":10}}"#,
         )
         .expect("the planner fixture parses");
-        let entries = build_defaults_entries(&config);
-
-        let rows = passthrough_rows(&entries);
-        for tuning in [
-            "planner.stall_detect_interval_minutes",
-            "planner.stall_threshold_minutes",
-        ] {
-            let row = rows
-                .iter()
-                .find(|entry| entry.key.as_ref() == tuning)
-                .unwrap_or_else(|| panic!("`{tuning}` has no pass-through row"));
-            assert!(
-                matches!(row.kind, ConfigValueKind::ReadOnly),
-                "`{tuning}` is pass-through but its kind is {:?}",
-                row.kind
-            );
-        }
+        let rows = build_defaults_entries(&config);
         assert!(
-            !entries.iter().any(|entry| entry.key.as_ref() == "planner"),
-            "the whole planner object still renders as one top-level pass-through row"
+            !rows.iter().any(|entry| entry.key.as_ref() == "planner"),
+            "the whole planner object rendered as one top-level pass-through row"
         );
-        let typed = entries
-            .iter()
-            .find(|entry| entry.key.as_ref() == "planner.stall_detection_enabled")
-            .expect("the typed planner row exists");
-        assert_eq!(typed.value, "false");
-
+        assert!(
+            passthrough_rows(&rows)
+                .iter()
+                .all(|entry| !entry.key.as_ref().starts_with("planner.")),
+            "a planner key still renders as a pass-through row"
+        );
         assert!(mutate_config_entry(
             &mut config,
             "planner.stall_detection_enabled",
             &ConfigValueKind::Bool
         ));
-        let saved = serialize_gsd_config(&config).expect("serialises");
-        let value: serde_json::Value = serde_json::from_str(&saved).unwrap();
+        let value = serde_json::to_value(&config).expect("serialises");
         assert_eq!(
             value.pointer("/planner/stall_detection_enabled"),
             Some(&serde_json::json!(true))
@@ -16894,7 +17021,7 @@ mod tests {
     /// carries them shows each ONCE, read-only, under `Not modelled`; no
     /// mutation arm claims them; and toggling a live gate then saving keeps
     /// all six with their original values (T-jqb-01). Modelled on
-    /// `planner_stall_tuning_keys_stay_visible_and_survive_a_toggle`.
+    /// `planner_stall_tuning_keys_are_integer_rows_writing_their_own_json_paths`.
     #[test]
     fn the_gates_keys_gsd_core_1_16_0_removed_stay_visible_read_only_and_survive_a_toggle() {
         use crate::state_reader::config_json::{parse_gsd_config, serialize_gsd_config};
@@ -17151,6 +17278,19 @@ mod tests {
     /// separate: each pins its own measurement. The per-kind loops iterate all.
     const RESYNCED_KEYS_1_19_0: &[(&str, &str)] = &[("git.repo_tagging", "enum")];
 
+    /// The two planner keys quick task 261103-f5i promoted from pass-through to
+    /// typed Integer rows (planner INFERRED I-1 / I-2). This is NOT a v1.20.0
+    /// key-cell delta: both were documented key cells at v1.19.0 already (the
+    /// v1.20.0 delta is +1, `review.context_window_tokens`, which stays
+    /// pass-through, so there is no `RESYNCED_KEYS_1_20_0`). gsd-core 1.20.0
+    /// (#3923) lists them in `/gsd-config --advanced`, which reverses quick
+    /// task 260926-gtk's pass-through decision (I-3) [inferred — audit]. Their
+    /// `since` is v1.10.0, MEASURED (067a4d1c6, #2650).
+    const PROMOTED_PLANNER_KEYS_1_20_0: &[(&str, &str)] = &[
+        ("planner.stall_threshold_minutes", "integer"),
+        ("planner.stall_detect_interval_minutes", "integer"),
+    ];
+
     /// The real top-level gsd-core keys that were still pass-through after the
     /// release-1.15.0 re-sync, promoted to typed rows by quick task
     /// 260926-jnf — MEASURED against `upstream/release-1.15.0` (the 260926-gtk
@@ -17331,6 +17471,12 @@ mod tests {
              gsd-core and update docs/GSD-CORE-SYNC.md in the SAME commit"
         );
         assert_eq!(
+            PROMOTED_PLANNER_KEYS_1_20_0.len(),
+            2,
+            "quick task 261103-f5i promoted exactly 2 planner keys; re-measure \
+             against gsd-core and update docs/GSD-CORE-SYNC.md in the SAME commit"
+        );
+        assert_eq!(
             PROMOTED_TOP_LEVEL_KEYS.len(),
             7,
             "quick task 260926-jnf promoted exactly 7 top-level keys (kg_backend is \
@@ -17486,6 +17632,7 @@ mod tests {
             .chain(RESYNCED_KEYS_1_15_0)
             .chain(RESYNCED_KEYS_1_16_0)
             .chain(RESYNCED_KEYS_1_19_0)
+            .chain(PROMOTED_PLANNER_KEYS_1_20_0)
             .chain(PROMOTED_TOP_LEVEL_KEYS)
         {
             let matching: Vec<&ConfigEntry> = entries
@@ -17538,6 +17685,7 @@ mod tests {
             .chain(RESYNCED_KEYS_1_15_0)
             .chain(RESYNCED_KEYS_1_16_0)
             .chain(RESYNCED_KEYS_1_19_0)
+            .chain(PROMOTED_PLANNER_KEYS_1_20_0)
             .chain(PROMOTED_TOP_LEVEL_KEYS)
         {
             let entry = entries

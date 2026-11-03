@@ -480,19 +480,22 @@ in another value, is displayed like any other value (T-jnf-07, accepted).
 
 ## Modelled
 
-Every key `build_defaults_entries` pushes a row for, in display order. **136
+Every key `build_defaults_entries` pushes a row for, in display order. **138
 rows**: **51** carry a `since` measured at the 1.14.0 re-sync (260916-vqw
 measured 57; six were retired at 261012-jqb), **2** carry `v1.15.0` (added by
 260926-gtk, measured against the v1.15.0 tag at 261012-jqb), **7** carry a
 `since` measured when quick task 260926-jnf promoted them, **2** carry
 `v1.16.0` (261012-jqb), **1** carries `v1.6.0`, measured at 261019-guw, **1**
-carries `v1.19.0` (261027-184), and the **72** without one predate this record
+carries `v1.19.0` (261027-184), **2** carry `v1.10.0`, measured when quick task
+261103-f5i promoted them, and the **72** without one predate this record
 and were not retro-measured.
 
-`DEFAULTS_OPTION_COUNT` in `src/ui/screens/detail.rs` pins this count at 136
-(132 -> 139 at 260926-jnf, 139 -> 135 at 261012-jqb, 135 -> 136 at 261027-184),
+`DEFAULTS_OPTION_COUNT` in `src/ui/screens/detail.rs` pins this count at 138
+(132 -> 139 at 260926-jnf, 139 -> 135 at 261012-jqb, 135 -> 136 at 261027-184,
+136 -> 138 at 261103-f5i),
 `RESYNCED_KEYS` / `RESYNCED_KEYS_1_15_0` / `RESYNCED_KEYS_1_16_0` /
-`RESYNCED_KEYS_1_19_0` / `PROMOTED_TOP_LEVEL_KEYS` pin the five key lists,
+`RESYNCED_KEYS_1_19_0` / `PROMOTED_PLANNER_KEYS_1_20_0` /
+`PROMOTED_TOP_LEVEL_KEYS` pin the six key lists,
 `REMOVED_KEYS_1_16_0` pins the six retired ones, and three coverage assertions
 refuse a row with no `ConfigHelp`.
 
@@ -529,6 +532,8 @@ refuse a row with no `ConfigHelp`.
 | `planning.chunked_parallel` | v1.13.0 |
 | `planning.pr_strict` | v1.12.0 |
 | `planner.stall_detection_enabled` | v1.15.0 |
+| `planner.stall_threshold_minutes` | v1.10.0 |
+| `planner.stall_detect_interval_minutes` | v1.10.0 |
 | `plan_review.source_grounding` | v1.2.0 |
 | `plan_review.source_grounding_authority` | v1.2.0 |
 | `features.global_learnings` | v1.01.0 |
@@ -746,7 +751,7 @@ a name nobody here has seen, is handled by the same mechanism without an edit.
 | `parallelization.*` (6 keys) | gsd-core's namespaced expansion of the top-level `parallelization` boolean this tab already edits; promoting them needs a decision about which wins. |
 | `refactor.*`, `security.injection_blocking` | Small coherent blocks, no typed row yet. |
 | `gates.confirm_project`, `gates.confirm_phases`, `gates.confirm_roadmap`, `gates.confirm_breakdown`, `gates.confirm_plan`, `gates.issues_review`, `safety.always_confirm_destructive`, `safety.always_confirm_external_services` | Removed upstream at v1.16.0 (ded8b6259, #4974): no longer read by anything and rejected by gsd-core's `config-set`. They never get a typed row; a pre-1.16.0 file keeps them (`GatesConfig.extra` / the top-level extra map) and shows them read-only. The six `gates.*` keys had typed rows from 260916-vqw until 261012-jqb retired them. |
-| `executor.stall_*`, `planner.stall_detect_interval_minutes`, `planner.stall_threshold_minutes`, `manager.flags.*` | Runtime tuning knobs, rarely edited by hand. Since 260926-gtk `planner` is a TYPED block (`planner.stall_detection_enabled` is modelled), so its two remaining knobs render as separate `planner.<key>` rows; before it, the whole `planner` object was a single top-level `planner` row. |
+| `executor.stall_*`, `manager.flags.*` | Runtime tuning knobs, rarely edited by hand. `executor.stall_*` is not exposed in `/gsd-config --advanced`, so it stays a runtime knob. `planner` has been a fully typed block since 261103-f5i: it became typed at 260926-gtk with `planner.stall_detection_enabled`, and its two minute knobs became typed rows when gsd-core 1.20.0 (#3923) exposed them in `/gsd-config --advanced` (reversing 260926-gtk I-3). Before 260926-gtk, the whole `planner` object was a single top-level `planner` row. |
 | `context` | The one undotted top-level key still pass-through: upstream's docs call it a free-form string, its `config-set` an enum. See "Still pass-through at the top level". |
 | `claude_md_assembly.mode`, `learnings.max_inject` | Singletons that did not fit an existing category. |
 | `ponytail.*`, `musk.*` (third-party capability `configKeys`) | Owned by community or locally installed capabilities rather than by gsd-core; open-ended by capability name, so a typed row is not expressible. They reach the tab through the top-level extra map. |

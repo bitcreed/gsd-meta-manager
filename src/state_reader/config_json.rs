@@ -302,11 +302,15 @@ pub struct PlanReviewConfig {
 /// gsd-core's `planner` block, added at 1.15.0 (#4570 / PR #4585) with one
 /// documented key, `stall_detection_enabled` (default `true`).
 ///
-/// **Only that key is typed.** `stall_detect_interval_minutes` and
-/// `stall_threshold_minutes`, which projects can also carry here, stay in
-/// [`Self::extra`] as pass-through, per docs/GSD-CORE-SYNC.md's
-/// runtime-tuning-knobs decision (quick task 260926-gtk, INFERRED I-3) — they
-/// render as read-only `planner.<key>` rows and round-trip untouched.
+/// **All three documented planner keys are typed** since quick task
+/// 261103-f5i. gsd-core 1.20.0 (#3923) exposes `stall_threshold_minutes` and
+/// `stall_detect_interval_minutes` in `/gsd-config --advanced` (Planning
+/// Tuning) as whole minutes, minimum 1, defaulting to 10 and 5 (gsd-core
+/// src/config.cts). That reverses quick task 260926-gtk's INFERRED I-3
+/// ("runtime tuning knobs, pass-through") [inferred — audit]. Both keys were
+/// introduced at v1.10.0 (067a4d1c6, #2650), so that is their `since`. A
+/// non-integer hand edit of either is a whole-file parse failure, the same
+/// accepted divergence as I-5 below (I-4 of 261103-f5i).
 ///
 /// **A deliberate divergence from gsd-core (INFERRED I-5, accepted).** gsd-core
 /// treats a non-boolean `stall_detection_enabled` (string, number, null) as
@@ -320,6 +324,10 @@ pub struct PlanReviewConfig {
 pub struct PlannerConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stall_detection_enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stall_threshold_minutes: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stall_detect_interval_minutes: Option<u32>,
     /// See [`ExtraKeys`].
     #[serde(flatten)]
     pub extra: ExtraKeys,
@@ -1251,22 +1259,23 @@ mod tests {
     }
 
     /// The tracer key of the gsd-core release-1.15.0 re-sync (quick task
-    /// 260926-gtk): `planner` became a typed block, but only its one boolean
-    /// is modelled — the two stall-tuning knobs beside it must stay in the
-    /// pass-through map and survive a save untouched (T-gtk-02).
+    /// 260926-gtk), widened at the v1.20.0 sync (quick task 261103-f5i):
+    /// `planner` is a typed block carrying all three documented keys. The two
+    /// stall-tuning knobs used to stay in the pass-through map (260926-gtk
+    /// I-3); gsd-core 1.20.0 (#3923) exposes them in `/gsd-config --advanced`,
+    /// so they are typed now and nothing is left in `extra` for this fixture.
     #[test]
-    fn planner_stall_detection_enabled_is_a_modelled_planner_key() {
+    fn planner_stall_keys_are_modelled_planner_keys() {
         let content = r#"{"planner":{"stall_detection_enabled":false,"stall_detect_interval_minutes":5,"stall_threshold_minutes":10}}"#;
         let config = parse_gsd_config(content).expect("the planner fixture parses");
         let planner = config.planner.as_ref().expect("planner is a typed block");
         assert_eq!(planner.stall_detection_enabled, Some(false));
-
-        let mut extra: Vec<&str> = planner.extra.keys().map(String::as_str).collect();
-        extra.sort_unstable();
-        assert_eq!(
-            extra,
-            ["stall_detect_interval_minutes", "stall_threshold_minutes"],
-            "the planner pass-through map must hold exactly the two tuning knobs"
+        assert_eq!(planner.stall_detect_interval_minutes, Some(5));
+        assert_eq!(planner.stall_threshold_minutes, Some(10));
+        assert!(
+            planner.extra.is_empty(),
+            "all three documented planner keys are typed, so the pass-through map is empty, got {:?}",
+            planner.extra.keys().collect::<Vec<_>>()
         );
         assert!(
             !config.extra.contains_key("planner"),
@@ -1280,10 +1289,19 @@ mod tests {
             serialize_gsd_config(&reparsed).unwrap(),
             "the save path is not a fixed point over the planner block"
         );
-        assert_eq!(
-            reparsed.planner.as_ref().unwrap().stall_detection_enabled,
-            Some(false)
-        );
+        let re_planner = reparsed.planner.as_ref().unwrap();
+        assert_eq!(re_planner.stall_detection_enabled, Some(false));
+        assert_eq!(re_planner.stall_detect_interval_minutes, Some(5));
+        assert_eq!(re_planner.stall_threshold_minutes, Some(10));
+
+        // An unset minute value serialises as an absent key, never a null.
+        let only_bool =
+            parse_gsd_config(r#"{"planner":{"stall_detection_enabled":true}}"#).unwrap();
+        let out: serde_json::Value =
+            serde_json::from_str(&serialize_gsd_config(&only_bool).unwrap()).unwrap();
+        let planner_obj = out.get("planner").and_then(|p| p.as_object()).unwrap();
+        assert!(!planner_obj.contains_key("stall_threshold_minutes"));
+        assert!(!planner_obj.contains_key("stall_detect_interval_minutes"));
     }
 
     /// The second gsd-core release-1.15.0 key (#4223, capability-registered in
