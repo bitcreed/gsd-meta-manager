@@ -8,6 +8,7 @@
   "exa_search": false,
   "git": {
     "branching_strategy": "none",
+    "allow_default_branch_commits": true,
     "phase_branch_template": "gsd/phase-{phase}-{slug}",
     "milestone_branch_template": "gsd/{milestone}-{slug}",
     "quick_branch_template": null
