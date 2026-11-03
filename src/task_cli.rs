@@ -1,9 +1,11 @@
-//! `gsd-meta-manager task run|status|stop|land` (quick 261103-f5y): the host verbs of
-//! one-off sandboxed task dispatch.
+//! `gsd-meta-manager task run|status|list|stop|send|budget|attach|land` (quick
+//! 261103-f5y): the host verbs of one-off sandboxed task dispatch.
 //!
 //! Synchronous, dispatched in `main` after tracing and before the tokio runtime, like
-//! `driver`. The return value is the exit code: `0` success, `3` a one-off is already
-//! running on the project, `1` every other refusal or failure.
+//! `driver`. The return value is the exit code: `0` success, `1` every refusal or
+//! failure. Any number of runs may be live on a project (quick 261103-hx7); `status`,
+//! `stop`, `send` and `budget` take `--run-id` and refuse, listing the live ids, when
+//! none is given and several runs may be live.
 
 use std::io::Write;
 
@@ -39,8 +41,9 @@ mod unix {
         run_detached, run_foreground, stop, OneoffOptions, StopOutcome,
     };
     use gsd_meta_manager::oneoff::session::validate_soft_cap;
-    use gsd_meta_manager::oneoff::store::{project_dir_for, read_view};
-    use gsd_meta_manager::oneoff::store::{read_latest, LiveState, OneoffView, ReportSource};
+    use gsd_meta_manager::oneoff::store::{
+        project_dir_for, read_runs_in, resolve_run, LiveState, OneoffView, ReportSource, RunPick,
+    };
     use gsd_meta_manager::oneoff::stream::{meter_text, Follower};
     use gsd_meta_manager::oneoff::todos::{title_from, valid_todo_file_name, PENDING_REL};
     use gsd_meta_manager::oneoff::TaskSpec;
@@ -66,22 +69,59 @@ mod unix {
         render_for_terminal(text).to_string()
     }
 
+    /// The run `verb` acts on (quick 261103-hx7, I-03): `run_id`, or the newest run, or
+    /// with `refuse_several_live` the only live one. A refusal is printed and is exit 1.
+    fn pick(
+        verb: &str,
+        project: &Path,
+        run_id: Option<&str>,
+        refuse_several_live: bool,
+    ) -> Result<OneoffView, i32> {
+        let Some(project_dir) = project_dir_for(project) else {
+            err_line(&format!(
+                "task {verb}: no one-off directory for this project"
+            ));
+            return Err(1);
+        };
+        resolve_run(&project_dir, run_id, refuse_several_live).map_err(|pick| {
+            err_line(&shown(&pick.message(&format!("task {verb}"))));
+            1
+        })
+    }
+
     pub fn run(action: TaskAction, config: Option<PathBuf>) -> i32 {
         match action {
             TaskAction::Run(args) => run_main(&args, config),
-            TaskAction::Status { project, json } => status_main(&project, json, config),
-            TaskAction::Stop { project, wait_secs } => stop_main(&project, wait_secs, config),
+            TaskAction::Status {
+                project,
+                run_id,
+                json,
+            } => status_main(&project, run_id.as_deref(), json, config),
+            TaskAction::List { project, json } => list_main(&project, json, config),
+            TaskAction::Stop {
+                project,
+                run_id,
+                wait_secs,
+            } => stop_main(&project, run_id.as_deref(), wait_secs, config),
             TaskAction::Send {
                 project,
                 text,
+                run_id,
                 wait_secs,
-            } => send_main(&project, &text, wait_secs, config),
+            } => send_main(&project, &text, run_id.as_deref(), wait_secs, config),
             TaskAction::Budget {
                 project,
                 soft,
                 clear,
+                run_id,
                 wait_secs,
-            } => budget_main(&project, soft.filter(|_| !clear), wait_secs, config),
+            } => budget_main(
+                &project,
+                soft.filter(|_| !clear),
+                run_id.as_deref(),
+                wait_secs,
+                config,
+            ),
             TaskAction::Attach {
                 project,
                 run_id,
@@ -245,6 +285,11 @@ mod unix {
                 "absent"
             }
         ));
+        lines.push(match (&record.tracked_branch, &record.tracking_note) {
+            (Some(reference), _) => format!("branch:    {}", shown(reference)),
+            (None, Some(note)) => format!("branch:    none ({})", shown(note)),
+            (None, None) => "branch:    none".to_owned(),
+        });
         if let Some(path) = &record.summary_path {
             lines.push(format!(
                 "summary:   {}",
@@ -265,28 +310,20 @@ mod unix {
         lines
     }
 
-    fn status_main(target: &str, json: bool, config: Option<PathBuf>) -> i32 {
-        let (alias, project, _) = match resolve_project(target, config) {
+    fn status_main(target: &str, run_id: Option<&str>, json: bool, config: Option<PathBuf>) -> i32 {
+        let (_, project, _) = match resolve_project(target, config) {
             Ok(resolved) => resolved,
             Err(message) => {
                 err_line(&format!("task status: {message}"));
                 return 1;
             }
         };
-        let Some(view) = read_latest(&project) else {
-            err_line(&format!(
-                "task status: no one-off run for {}",
-                shown(&alias)
-            ));
-            return 1;
+        let view = match pick("status", &project, run_id, true) {
+            Ok(view) => view,
+            Err(code) => return code,
         };
         if json {
-            let value = serde_json::json!({
-                "record": view.record,
-                "live": view.live,
-                "run_dir": view.run_dir,
-            });
-            out_line(&value.to_string());
+            out_line(&view_json(&view).to_string());
         } else {
             for line in summary_lines(&view) {
                 out_line(&line);
@@ -295,7 +332,75 @@ mod unix {
         0
     }
 
-    fn stop_main(target: &str, wait_secs: u64, config: Option<PathBuf>) -> i32 {
+    /// One run as the JSON `status --json` and `list --json` print.
+    fn view_json(view: &OneoffView) -> serde_json::Value {
+        serde_json::json!({
+            "record": view.record,
+            "live": view.live,
+            "run_dir": view.run_dir,
+        })
+    }
+
+    /// One line of `task list`.
+    fn list_line(view: &OneoffView) -> String {
+        let record = &view.record;
+        let result = match (&record.report, &record.outcome) {
+            (Some(report), _) => report.status.as_str(),
+            (None, Some(outcome)) => outcome.word(),
+            (None, None) => "-",
+        };
+        let landed = record.landed.last().map_or_else(
+            || "-".to_owned(),
+            |l| format!("{:?}", l.kind).to_lowercase(),
+        );
+        format!(
+            "{}  {:<9}  {}  {:<8}  {} commit(s)  branch {}  landed {}",
+            shown(&record.run_id),
+            view.live.as_str(),
+            record.mode.as_str(),
+            result,
+            record.commits.unwrap_or(0),
+            if record.tracked_branch.is_some() {
+                "yes"
+            } else {
+                "no"
+            },
+            landed
+        )
+    }
+
+    fn list_main(target: &str, json: bool, config: Option<PathBuf>) -> i32 {
+        let (_, project, _) = match resolve_project(target, config) {
+            Ok(resolved) => resolved,
+            Err(message) => {
+                err_line(&format!("task list: {message}"));
+                return 1;
+            }
+        };
+        let Some(project_dir) = project_dir_for(&project) else {
+            err_line("task list: no one-off directory for this project");
+            return 1;
+        };
+        let views = read_runs_in(&project_dir, None);
+        if json {
+            let all: Vec<serde_json::Value> = views.iter().map(view_json).collect();
+            out_line(&serde_json::Value::Array(all).to_string());
+        } else if views.is_empty() {
+            out_line("task list: no one-off runs");
+        } else {
+            for view in &views {
+                out_line(&list_line(view));
+            }
+        }
+        0
+    }
+
+    fn stop_main(
+        target: &str,
+        run_id: Option<&str>,
+        wait_secs: u64,
+        config: Option<PathBuf>,
+    ) -> i32 {
         let (_, project, _) = match resolve_project(target, config) {
             Ok(resolved) => resolved,
             Err(message) => {
@@ -303,7 +408,23 @@ mod unix {
                 return 1;
             }
         };
-        match stop(&project, Duration::from_secs(wait_secs)) {
+        // Refuse a guess before anything is signalled: `stop` resolves the same way.
+        let Some(project_dir) = project_dir_for(&project) else {
+            err_line("task stop: no one-off directory for this project");
+            return 1;
+        };
+        let run_id = match resolve_run(&project_dir, run_id, true) {
+            Ok(view) => view.record.run_id,
+            Err(RunPick::NoRuns) => {
+                out_line("task stop: no one-off is running on this project");
+                return 0;
+            }
+            Err(refusal) => {
+                err_line(&shown(&refusal.message("task stop")));
+                return 1;
+            }
+        };
+        match stop(&project, Some(&run_id), Duration::from_secs(wait_secs)) {
             Ok(StopOutcome::Stopped { run_id, pid }) => {
                 out_line(&format!("task stop: {run_id} stopped (pid {pid})"));
                 0
@@ -349,7 +470,13 @@ mod unix {
         }
     }
 
-    fn send_main(target: &str, text: &str, wait_secs: u64, config: Option<PathBuf>) -> i32 {
+    fn send_main(
+        target: &str,
+        text: &str,
+        run_id: Option<&str>,
+        wait_secs: u64,
+        config: Option<PathBuf>,
+    ) -> i32 {
         let (alias, project, _) = match resolve_project(target, config) {
             Ok(resolved) => resolved,
             Err(message) => {
@@ -364,8 +491,9 @@ mod unix {
             ));
             1
         };
-        let Some(view) = read_latest(&project) else {
-            return not_live();
+        let view = match pick("send", &project, run_id, true) {
+            Ok(view) => view,
+            Err(code) => return code,
         };
         if view.live != LiveState::Running {
             return not_live();
@@ -383,6 +511,7 @@ mod unix {
     fn budget_main(
         target: &str,
         soft: Option<f64>,
+        run_id: Option<&str>,
         wait_secs: u64,
         config: Option<PathBuf>,
     ) -> i32 {
@@ -400,8 +529,9 @@ mod unix {
             ));
             1
         };
-        let Some(view) = read_latest(&project) else {
-            return not_live();
+        let view = match pick("budget", &project, run_id, true) {
+            Ok(view) => view,
+            Err(code) => return code,
         };
         if view.live != LiveState::Running {
             return not_live();
@@ -434,17 +564,23 @@ mod unix {
                 return 1;
             }
         };
-        let read = || match run_id {
-            Some(id) => project_dir_for(&project).and_then(|dir| read_view(&dir, id)),
-            None => read_latest(&project),
-        };
-        let Some(mut view) = read() else {
+        let Some(project_dir) = project_dir_for(&project) else {
             err_line(&format!(
                 "task attach: no one-off run for {}",
                 shown(&alias)
             ));
             return 1;
         };
+        let mut view = match resolve_run(&project_dir, run_id, true) {
+            Ok(view) => view,
+            Err(refusal) => {
+                err_line(&shown(&refusal.message("task attach")));
+                return 1;
+            }
+        };
+        // Follow the picked run, not whichever is newest by then.
+        let followed = view.record.run_id.clone();
+        let read = || resolve_run(&project_dir, Some(&followed), false).ok();
         let run_dir = view.run_dir.clone();
         if !no_input {
             let dir = run_dir.clone();

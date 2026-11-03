@@ -142,6 +142,22 @@ pub fn driver_root() -> Option<PathBuf> {
     dirs::data_local_dir().map(|d| d.join(APP_SUBDIR).join(DRIVER_SUBDIR))
 }
 
+/// The host directories the sandbox must mask because they hold this app's own state
+/// and live outside both `$HOME` and `/tmp` (quick 261103-hx7, D-09, C-33, I-06):
+/// `dirs::data_local_dir()/gsd-meta-manager` (the one-off run dirs with their host-only
+/// inbox, the driver's per-run config dirs and push mirrors) and
+/// `dirs::config_dir()/gsd-meta-manager` (the stored run OAuth token). Only an existing
+/// directory is returned. The host-reading half of [`super::sandbox::masks_outside`].
+pub fn app_root_masks(home: &Path) -> Vec<PathBuf> {
+    let candidates: Vec<PathBuf> = [dirs::data_local_dir(), dirs::config_dir()]
+        .into_iter()
+        .flatten()
+        .map(|d| d.join(APP_SUBDIR))
+        .filter(|d| fs::metadata(d).is_ok_and(|m| m.is_dir()))
+        .collect();
+    super::sandbox::masks_outside(home, &candidates)
+}
+
 /// `<root>/<hash8(canonical project)>/<run-id>`: the launcher's state directory
 /// for one run (the config dir, the launch logs).
 ///

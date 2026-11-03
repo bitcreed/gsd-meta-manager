@@ -113,7 +113,7 @@ mod fs_inbox {
     use super::{
         valid_inbox_name, validate_message, InboxRequest, InjectionRecord, MAX_REQUEST_BYTES,
     };
-    use crate::oneoff::store::{lock_path, probe, LockSeen};
+    use crate::oneoff::store::{live_seen, LockSeen};
     use crate::oneoff::stream::StreamTail;
     use crate::oneoff::{INBOX_DIR, INJECTIONS_FILE};
     use crate::state_reader::driver_frontmatter::read_run_file_capped;
@@ -124,7 +124,7 @@ mod fs_inbox {
     /// Why a client could not put a request in the inbox.
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub enum InboxError {
-        /// The run is not live: the project lock is not held by this run id.
+        /// The run is not live: its lock is not held by this run id.
         NotLive,
         /// The request is not valid.
         Invalid(String),
@@ -152,7 +152,8 @@ mod fs_inbox {
         }
     }
 
-    /// Whether the run in `run_dir` holds its project's lock.
+    /// Whether the run in `run_dir` holds its lock: its own `run.lock`, or the legacy
+    /// per-project one for a run dir that has none (`store::live_seen`).
     fn is_live(run_dir: &Path) -> bool {
         let (Some(project_dir), Some(run_id)) = (
             run_dir.parent(),
@@ -160,7 +161,7 @@ mod fs_inbox {
         ) else {
             return false;
         };
-        probe(&lock_path(project_dir)) == LockSeen::HeldBy(run_id.to_owned())
+        live_seen(project_dir, run_dir) == LockSeen::HeldBy(run_id.to_owned())
     }
 
     /// A monotonic nanosecond stamp, so two requests from one process never collide.

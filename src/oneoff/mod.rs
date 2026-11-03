@@ -62,8 +62,17 @@ pub const LAUNCH_LOG: &str = "launch.log";
 pub const WORK_DIR: &str = "work";
 /// The one directory of the run dir the sandbox may write besides the clone.
 pub const REPORT_SUBDIR: &str = "report";
-/// The per-project lock, held by the daemon for the run's life.
+/// The LEGACY per-project lock of runs made before quick 261103-hx7. It is probed (for
+/// a run dir without [`RUN_LOCK_FILE`]) and never taken any more.
 pub const LOCK_FILE: &str = "oneoff.lock";
+/// The per-run lock inside the run dir, taken by the daemon before `run.json` exists
+/// and held for the run's life, released last (quick 261103-hx7, C-01). Host-only,
+/// never mounted.
+pub const RUN_LOCK_FILE: &str = "run.lock";
+/// The per-run land lock: one landing of a run at a time (quick 261103-hx7, I-13).
+pub const LAND_LOCK_FILE: &str = "land.lock";
+/// The directory of a run dir that holds the landing attempts (`land/<n>/`).
+pub const LAND_DIR: &str = "land";
 /// The branch prefix of the clone's work branch.
 pub const BRANCH_PREFIX: &str = "gsd-oneoff/";
 /// The host-only directory operator requests are put in (never mounted).

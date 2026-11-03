@@ -3,7 +3,9 @@
 //!
 //! The order mirrors the driver launcher's (`launcher::run`'s module header):
 //! validate; the credential, the host probe and the posture (a refusal writes
-//! nothing); the per-project lock, held for the run's life; the signal handlers;
+//! nothing); the run dir, claimed by an atomic mkdir (any number of runs per project,
+//! quick 261103-hx7); the per-run lock `<run-dir>/run.lock`, held for the run's life;
+//! the signal handlers;
 //! `run.json` as `preparing`; the private clone `<run-dir>/work` (a `--no-hardlinks`
 //! clone on branch `gsd-oneoff/<run-id>` at the project's HEAD, recorded as `base`);
 //! the planted-file baseline of the clone; the push mirror (pinned before any
@@ -32,7 +34,7 @@ use crate::driver::lock::{
 };
 use crate::driverctl::serve::{hash8, install_signal_handlers, socket_path};
 use crate::error::LockError;
-use crate::launcher::config_dir::{driver_root, resolve_current_exe, snapshot_exe};
+use crate::launcher::config_dir::{app_root_masks, driver_root, resolve_current_exe, snapshot_exe};
 use crate::launcher::egress::socket_path_for;
 use crate::launcher::home::HomeSetup;
 use crate::launcher::host::{detect, Posture};
@@ -44,20 +46,21 @@ use crate::launcher::run::{
     log_tail, runtime_max_sec, Containment, EgressGuard, DETACH_BUDGET, DETACH_POLL,
 };
 use crate::launcher::sandbox::{
-    bridged_command, bwrap_argv_with, child_env, systemd_run_argv, LaunchPaths, RunDirMode,
+    bridged_command, bwrap_argv_masking, child_env, systemd_run_argv, LaunchPaths, RunDirMode,
     SandboxSpec, BRIDGE_PORT, MAX_PROMPT_BYTES,
 };
 use crate::launcher::stop::signal_target;
 use crate::launcher::LauncherError;
 
 use super::inbox::ensure_inbox;
+use super::land::{git_relevant_planted, track_branch};
 use super::report::read_validated;
 use super::runtime::{AgentRuntime, HostEnd};
 use super::session::{grace_from_env, Supervisor};
 use super::store::{
-    lock_path, mint_run_id, oneoff_root, probe, project_dir_for, project_dir_in, rfc3339,
-    summary_path_from, synthesize, valid_oneoff_run_id, write_record, LockSeen, RecordStatus,
-    ReportSource, RunRecord, SandboxRecord, MAX_CHANGED_FILES,
+    live_lock_path, mint_run_id, oneoff_root, project_dir_for, project_dir_in, resolve_run,
+    rfc3339, run_lock_path, summary_path_from, synthesize, valid_oneoff_run_id, write_record,
+    RecordStatus, ReportSource, RunPick, RunRecord, SandboxRecord, MAX_CHANGED_FILES,
 };
 use super::todos::{valid_todo_file_name, PENDING_REL};
 use super::{
@@ -179,22 +182,39 @@ fn create_private_dir(dir: &Path) -> Result<(), LauncherError> {
         .map_err(|e| io_error(&format!("create {}", dir.display()), e))
 }
 
-/// A fresh run id under `project_dir`: minted now, `-2`, `-3`... on a collision.
-fn unique_run_id(project_dir: &Path) -> String {
-    let base = mint_run_id(Utc::now());
-    if !project_dir.join(&base).exists() {
-        return base;
-    }
-    (2..10_000)
-        .map(|n| format!("{base}-{n}"))
-        .find(|id| !project_dir.join(id).exists())
-        .unwrap_or(base)
+/// Claim a fresh run directory under `project_dir` with an atomic, non-recursive
+/// `mkdir` (quick 261103-hx7, I-01): the id minted now, `-2`, `-3`... when the name is
+/// taken. `AlreadyExists` is never treated as success, so two launches at the same
+/// second get distinct ids and distinct directories.
+fn claim_run_dir(project_dir: &Path) -> Result<(String, PathBuf), LauncherError> {
+    claim_run_dir_at(project_dir, &mint_run_id(Utc::now()))
 }
 
-/// The refusal for a held lock.
+/// [`claim_run_dir`] for the base id `base`.
+fn claim_run_dir_at(project_dir: &Path, base: &str) -> Result<(String, PathBuf), LauncherError> {
+    for n in 1..10_000_u32 {
+        let id = if n == 1 {
+            base.to_owned()
+        } else {
+            format!("{base}-{n}")
+        };
+        let dir = project_dir.join(&id);
+        match fs::DirBuilder::new().mode(0o700).create(&dir) {
+            Ok(()) => return Ok((id, dir)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(io_error(&format!("create {}", dir.display()), e)),
+        }
+    }
+    Err(io_error(
+        "claim a run directory",
+        "too many runs started in the same second",
+    ))
+}
+
+/// The refusal for a held per-run lock.
 fn locked(holder: &str) -> LauncherError {
     LauncherError::Locked {
-        detail: format!("a one-off is already running on this project: {holder}"),
+        detail: format!("{holder} is already live"),
     }
 }
 
@@ -209,15 +229,21 @@ pub fn run_foreground(opts: OneoffOptions) -> Result<RunRecord, LauncherError> {
         detail: "the home directory is unknown".to_owned(),
     })?;
     let (project, project_dir) = project_dirs(&opts.project)?;
-    let run_id = opts
-        .run_id
-        .clone()
-        .unwrap_or_else(|| unique_run_id(&project_dir));
+    // I-01: the daemon child opens the dir its parent claimed; a foreground run claims
+    // its own.
+    let (run_id, run_dir) = match &opts.run_id {
+        Some(id) => {
+            let dir = project_dir.join(id);
+            create_private_dir(&dir)?;
+            (id.clone(), dir)
+        }
+        None => claim_run_dir(&project_dir)?,
+    };
 
-    // C-17: the per-project lock first. Nothing below writes before this.
-    let lock_file = lock_path(&project_dir);
+    // C-01: the per-run lock first, before `run.json` exists. Nothing below writes
+    // before this.
     let lock = acquire_at_with_retry(
-        &lock_file,
+        &run_lock_path(&run_dir),
         &run_id,
         std::process::id(),
         ACQUIRE_RETRY_BUDGET,
@@ -227,13 +253,11 @@ pub fn run_foreground(opts: OneoffOptions) -> Result<RunRecord, LauncherError> {
             detail: format!("one-off lock: {detail}"),
         },
         LockError::HeldBy { run_id, .. } => locked(&run_id),
-        LockError::HeldByUnknownRun => locked("an unknown run"),
+        LockError::HeldByUnknownRun => locked(&run_id),
     })?;
     let user_stop = Arc::new(AtomicBool::new(false));
     install_signal_handlers(&user_stop)?;
 
-    let run_dir = project_dir.join(&run_id);
-    create_private_dir(&run_dir)?;
     let mut record = RunRecord::new(
         &run_id,
         &opts.alias,
@@ -427,7 +451,12 @@ fn run_session(ctx: &Ctx<'_>, record: &mut RunRecord) -> Result<(), LauncherErro
         let argv = systemd_run_argv(
             &name,
             Some(runtime_max_sec_for(opts.cap_minutes)),
-            &bwrap_argv_with(&spec, RunDirMode::ReportWritable, &bridged),
+            &bwrap_argv_masking(
+                &spec,
+                RunDirMode::ReportWritable,
+                &app_root_masks(ctx.home),
+                &bridged,
+            ),
         );
         unit = Some(format!("{name}.scope"));
         argv
@@ -551,6 +580,9 @@ fn finalize(
     end: HostEnd,
 ) {
     let opts = ctx.opts;
+    // C-05: the planted-file gate reads files only, so it runs before any git touches
+    // the clone (the tracking fetch starts `upload-pack` inside the agent's repository).
+    let planted_findings = git_relevant_planted(ctx.run_dir, work).len();
     let outcome = ctx.runtime.outcome(stream_path, rc, end);
     match read_validated(&report_dir.join(REPORT_FILE)) {
         Ok(report) => {
@@ -622,8 +654,24 @@ fn finalize(
                 ctx.run_id
             ));
         }
-        record.head = Some(head);
+        record.head = Some(head.clone());
+        // C-05, C-06: the branch is tracked in the project only for a run with commits
+        // and a clean planted gate. A tracking failure is never a run failure.
+        if planted_findings > 0 {
+            record.tracking_note = Some(format!(
+                "{planted_findings} git-relevant planted finding(s) in the clone; not tracked"
+            ));
+        } else if record.commits.unwrap_or(0) == 0 {
+            record.tracking_note = Some("the run made no commits; no branch tracked".to_owned());
+        } else {
+            match track_branch(ctx.project, work, ctx.run_id, &head) {
+                Ok(reference) => record.tracked_branch = Some(reference),
+                Err(note) => record.tracking_note = Some(clean(&note, 400)),
+            }
+        }
     } else {
+        record.tracking_note =
+            Some("no head: the work branch is gone; no branch tracked".to_owned());
         record.warnings.push(format!(
             "the work branch {branch_ref} is gone; nothing can be landed"
         ));
@@ -666,8 +714,8 @@ pub fn daemon_argv(opts: &OneoffOptions, run_id: &str, config: Option<&Path>) ->
     argv
 }
 
-/// Start a one-off as a daemon in its own session and return once it holds the
-/// project's lock (the driver's `launch_detached` pattern).
+/// Start a one-off as a daemon in its own session and return once it holds the run's
+/// own lock (the driver's `launch_detached` pattern).
 pub fn run_detached(opts: &OneoffOptions, config: Option<&Path>) -> Result<Started, LauncherError> {
     validate(opts)?;
     let runtime = AgentRuntime::default();
@@ -676,26 +724,20 @@ pub fn run_detached(opts: &OneoffOptions, config: Option<&Path>) -> Result<Start
     runtime.credential(Utc::now())?;
     runtime.decide_posture(&detect(), opts.unsandboxed)?;
     let (project, project_dir) = project_dirs(&opts.project)?;
-    let lock_file = lock_path(&project_dir);
-    match probe(&lock_file) {
-        LockSeen::HeldBy(id) => return Err(locked(&id)),
-        LockSeen::Unknown => {
-            return Err(LauncherError::Io {
-                detail: "the one-off lock could not be probed".to_owned(),
-            })
-        }
-        LockSeen::Free => {}
-    }
+    // C-03: no per-project lock and no cap; every launch claims its own run dir.
     let config = config
         .map(std::path::absolute)
         .transpose()
         .map_err(|e| io_error("resolve --config", e))?;
-    let run_id = match &opts.run_id {
-        Some(id) => id.clone(),
-        None => unique_run_id(&project_dir),
+    let (run_id, run_dir) = match &opts.run_id {
+        Some(id) => {
+            let dir = project_dir.join(id);
+            create_private_dir(&dir)?;
+            (id.clone(), dir)
+        }
+        None => claim_run_dir(&project_dir)?,
     };
-    let run_dir = project_dir.join(&run_id);
-    create_private_dir(&run_dir)?;
+    let lock_file = run_lock_path(&run_dir);
     let log_path = run_dir.join(LAUNCH_LOG);
     let log = fs::OpenOptions::new()
         .create(true)
@@ -789,7 +831,7 @@ impl StopOutcome {
             StopOutcome::OrphanScopeStopped { unit } => {
                 format!("no live one-off launcher; stopped the leftover scope {unit}")
             }
-            StopOutcome::NotRunning => "no one-off is running on this project".to_owned(),
+            StopOutcome::NotRunning => "that one-off is not running".to_owned(),
         }
     }
 }
@@ -803,12 +845,29 @@ fn plausible_scope(unit: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c))
 }
 
-/// Stop the live one-off of `project`, waiting up to `wait` for its lock to go free.
-pub fn stop(project: &Path, wait: Duration) -> Result<StopOutcome, LauncherError> {
+/// Stop a one-off of `project`, waiting up to `wait` for its lock to go free.
+///
+/// `run_id` names the run; without it the run is picked like every other verb does
+/// ([`resolve_run`] with `refuse_several_live`): the only live run, or a refusal that
+/// lists the live ids when several may be live (quick 261103-hx7, I-03).
+pub fn stop(
+    project: &Path,
+    run_id: Option<&str>,
+    wait: Duration,
+) -> Result<StopOutcome, LauncherError> {
     let project_dir = project_dir_for(project).ok_or_else(|| LauncherError::Io {
         detail: "no one-off directory for this project".to_owned(),
     })?;
-    let lock_file = lock_path(&project_dir);
+    let view = match resolve_run(&project_dir, run_id, true) {
+        Ok(view) => view,
+        Err(RunPick::NoRuns) => return Ok(StopOutcome::NotRunning),
+        Err(pick) => {
+            return Err(LauncherError::InvalidRun {
+                detail: pick.detail(),
+            })
+        }
+    };
+    let lock_file = live_lock_path(&project_dir, &view.run_dir);
     match probe_at(&lock_file) {
         LockProbe::Held => {
             let deadline = Instant::now() + HOLDER_WAIT;
@@ -824,6 +883,11 @@ pub fn stop(project: &Path, wait: Duration) -> Result<StopOutcome, LauncherError
                 }
                 std::thread::sleep(Duration::from_millis(50));
             };
+            // A legacy project lock may be held by another run of the old kind; only
+            // the selected run's own holder is signalled.
+            if holder.run_id != view.record.run_id {
+                return Ok(StopOutcome::NotRunning);
+            }
             let target = signal_target(holder.pgid)?;
             // Signal only while the lock is still held, so the pid is the daemon's.
             if probe_at(&lock_file) == LockProbe::Held {
@@ -855,24 +919,22 @@ pub fn stop(project: &Path, wait: Duration) -> Result<StopOutcome, LauncherError
             }
         }
         LockProbe::Free | LockProbe::Absent => {
-            let latest = super::store::latest_run_id(&project_dir)
-                .and_then(|id| super::store::read_record(&project_dir.join(id)).ok());
-            match latest {
-                Some(record)
-                    if record.status != RecordStatus::Finished
-                        && record.scope_unit.as_deref().is_some_and(plausible_scope) =>
-                {
-                    let unit = record.scope_unit.unwrap_or_default();
-                    let _ = run_bounded(
-                        "systemctl",
-                        &["--user".into(), "stop".into(), unit.clone().into()],
-                        None,
-                        &[],
-                        Duration::from_secs(60),
-                    );
-                    Ok(StopOutcome::OrphanScopeStopped { unit })
-                }
-                _ => Ok(StopOutcome::NotRunning),
+            // The selected run's own record, not the latest's.
+            let record = view.record;
+            if record.status != RecordStatus::Finished
+                && record.scope_unit.as_deref().is_some_and(plausible_scope)
+            {
+                let unit = record.scope_unit.unwrap_or_default();
+                let _ = run_bounded(
+                    "systemctl",
+                    &["--user".into(), "stop".into(), unit.clone().into()],
+                    None,
+                    &[],
+                    Duration::from_secs(60),
+                );
+                Ok(StopOutcome::OrphanScopeStopped { unit })
+            } else {
+                Ok(StopOutcome::NotRunning)
             }
         }
         LockProbe::Unknown(errno) => Err(io_error("could not probe the one-off lock", errno)),
@@ -942,6 +1004,21 @@ mod tests {
         assert!(argv.windows(2).any(|w| w == ["--text", "fix x"]));
         assert!(argv.windows(2).any(|w| w == ["--mode", "fast"]));
         assert!(argv.contains(&"--unsandboxed".to_owned()));
+    }
+
+    #[test]
+    fn claiming_a_run_dir_never_reuses_an_existing_one() {
+        let root = tempfile::TempDir::new().unwrap();
+        let base = "oneoff-20261103-100000";
+        let (first, first_dir) = claim_run_dir_at(root.path(), base).unwrap();
+        assert_eq!(first, base);
+        assert!(first_dir.is_dir());
+        let (second, second_dir) = claim_run_dir_at(root.path(), base).unwrap();
+        assert_eq!(second, format!("{base}-2"));
+        assert!(second_dir.is_dir());
+        let (third, _) = claim_run_dir_at(root.path(), base).unwrap();
+        assert_eq!(third, format!("{base}-3"));
+        assert!(valid_oneoff_run_id(&third));
     }
 
     #[test]

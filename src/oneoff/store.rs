@@ -1,9 +1,12 @@
 //! Where a one-off run lives and what the host records about it (C-06, C-13, C-14).
 //!
 //! Layout: `<data_local_dir>/gsd-meta-manager/oneoff/<hash8(canonical project)>/`
-//! holds the per-project lock ([`super::LOCK_FILE`]) and one directory per run,
-//! `<run-id>/`, which holds `run.json` (this module's [`RunRecord`]), `stream.jsonl`,
+//! holds one directory per run, `<run-id>/`, which holds `run.lock` (the per-run lock,
+//! [`super::RUN_LOCK_FILE`]), `run.json` (this module's [`RunRecord`]), `stream.jsonl`,
 //! `launch.log`, the clone `work/`, the agent's `report/` and the per-run config dir.
+//! Any number of runs may be live at once (quick 261103-hx7). A run dir made before
+//! per-run locks has no `run.lock`; it is judged by the legacy per-project lock
+//! ([`super::LOCK_FILE`], probed only) exactly as before ([`live_seen`]).
 //!
 //! Everything in `run.json` is host-written. The commit range, the commit count, the
 //! changed files and the SUMMARY path are derived on the host from git
@@ -118,6 +121,14 @@ pub struct RunRecord {
     /// When the spend estimate first reached the soft cap.
     #[serde(default)]
     pub soft_cap_hit_at: Option<String>,
+    /// The full ref (`refs/heads/gsd-oneoff/<run-id>`) the host tracks the run's work
+    /// under in the user's project, when it was made at finish or already matched
+    /// (quick 261103-hx7, C-05, C-06).
+    #[serde(default)]
+    pub tracked_branch: Option<String>,
+    /// Why there is no tracked branch, or why it was refused.
+    #[serde(default)]
+    pub tracking_note: Option<String>,
 }
 
 impl RunRecord {
@@ -165,6 +176,8 @@ impl RunRecord {
             landed: Vec::new(),
             soft_cap_usd: None,
             soft_cap_hit_at: None,
+            tracked_branch: None,
+            tracking_note: None,
         }
     }
 
@@ -346,6 +359,37 @@ pub struct OneoffView {
     pub summary_file: Option<PathBuf>,
 }
 
+/// Why a run could not be picked (quick 261103-hx7, I-03).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RunPick {
+    /// The project has no run at all.
+    NoRuns,
+    /// The id is not a run of this project (or is not a run id).
+    NotFound(String),
+    /// Several runs may be live and no id was given: the live ids, newest first.
+    SeveralLive(Vec<String>),
+}
+
+impl RunPick {
+    /// The refusal without a verb (the ids are the host's own validated names, a
+    /// user-given one is escaped by its debug form).
+    pub fn detail(&self) -> String {
+        match self {
+            RunPick::NoRuns => "this project has no one-off runs".to_owned(),
+            RunPick::NotFound(id) => format!("no one-off run {id:?} for this project"),
+            RunPick::SeveralLive(ids) => format!(
+                "several one-offs may be live; pass --run-id: {}",
+                ids.join(", ")
+            ),
+        }
+    }
+
+    /// The refusal as one line for `verb`.
+    pub fn message(&self, verb: &str) -> String {
+        format!("{verb}: {}", self.detail())
+    }
+}
+
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub use self::fs_store::*;
 
@@ -360,9 +404,10 @@ mod fs_store {
     use crate::state_reader::driver_frontmatter::read_run_file_capped;
 
     use super::{
-        derive_live, summary_path_from, valid_oneoff_run_id, LockSeen, OneoffView, RunRecord,
+        derive_live, summary_path_from, valid_oneoff_run_id, LockSeen, OneoffView, RunPick,
+        RunRecord,
     };
-    use crate::oneoff::{LOCK_FILE, RUN_FILE, WORK_DIR};
+    use crate::oneoff::{LOCK_FILE, RUN_FILE, RUN_LOCK_FILE, WORK_DIR};
 
     /// `dirs::data_local_dir()/gsd-meta-manager/oneoff`, or `None` without a data dir.
     /// Never a `/tmp` fallback.
@@ -378,6 +423,34 @@ mod fs_store {
     /// The per-project lock under `project_dir`.
     pub fn lock_path(project_dir: &Path) -> PathBuf {
         project_dir.join(LOCK_FILE)
+    }
+
+    /// The per-run lock inside `run_dir` (quick 261103-hx7, C-01).
+    pub fn run_lock_path(run_dir: &Path) -> PathBuf {
+        run_dir.join(RUN_LOCK_FILE)
+    }
+
+    /// What the lock that judges the run in `run_dir` says (I-02): its own `run.lock`
+    /// when that exists, otherwise the LEGACY per-project lock under `project_dir`, so a
+    /// run dir made before per-run locks reads exactly as it did.
+    pub fn live_seen(project_dir: &Path, run_dir: &Path) -> LockSeen {
+        let own = run_lock_path(run_dir);
+        if fs::symlink_metadata(&own).is_ok() {
+            probe(&own)
+        } else {
+            probe(&lock_path(project_dir))
+        }
+    }
+
+    /// The lock file [`live_seen`] judges the run in `run_dir` by: the same choice,
+    /// for callers that must signal the holder (`stop`).
+    pub fn live_lock_path(project_dir: &Path, run_dir: &Path) -> PathBuf {
+        let own = run_lock_path(run_dir);
+        if fs::symlink_metadata(&own).is_ok() {
+            own
+        } else {
+            lock_path(project_dir)
+        }
     }
 
     /// Write `record` to `<run_dir>/run.json` atomically, 0600.
@@ -465,7 +538,7 @@ mod fs_store {
         }
         let run_dir = project_dir.join(run_id);
         let record = read_record(&run_dir).ok()?;
-        let live = derive_live(&record, &probe(&lock_path(project_dir)));
+        let live = derive_live(&record, &live_seen(project_dir, &run_dir));
         let summary_file = record
             .summary_path
             .as_deref()
@@ -483,6 +556,68 @@ mod fs_store {
         let project_dir = project_dir_for(project)?;
         let run_id = latest_run_id(&project_dir)?;
         read_view(&project_dir, &run_id)
+    }
+
+    /// Every valid run id under `project_dir`, newest first.
+    pub fn run_ids_newest_first(project_dir: &Path) -> Vec<String> {
+        let mut ids: Vec<String> = fs::read_dir(project_dir)
+            .into_iter()
+            .flatten()
+            .filter_map(Result::ok)
+            .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+            .filter_map(|e| e.file_name().into_string().ok())
+            .filter(|name| valid_oneoff_run_id(name))
+            .collect();
+        ids.sort_by_key(|id| std::cmp::Reverse(run_id_order(id)));
+        ids
+    }
+
+    /// The views of the runs under `project_dir` that have a readable `run.json`,
+    /// newest first, at most `limit`.
+    pub fn read_runs_in(project_dir: &Path, limit: Option<usize>) -> Vec<OneoffView> {
+        let views = run_ids_newest_first(project_dir)
+            .into_iter()
+            .filter_map(|id| read_view(project_dir, &id));
+        match limit {
+            Some(n) => views.take(n).collect(),
+            None => views.collect(),
+        }
+    }
+
+    /// [`read_runs_in`] for `project`.
+    pub fn read_runs(project: &Path, limit: Option<usize>) -> Vec<OneoffView> {
+        project_dir_for(project)
+            .map(|dir| read_runs_in(&dir, limit))
+            .unwrap_or_default()
+    }
+
+    /// The run a verb acts on (quick 261103-hx7, I-03). `Some(id)` is that run, or
+    /// `NotFound`. `None` is the newest run, except when `refuse_several_live` is set:
+    /// then exactly one live run is that run (even when a newer one has finished), and
+    /// more than one run that may be live is `SeveralLive` (newest first), never a
+    /// guess `[inferred — audit]`.
+    pub fn resolve_run(
+        project_dir: &Path,
+        run_id: Option<&str>,
+        refuse_several_live: bool,
+    ) -> Result<OneoffView, RunPick> {
+        if let Some(id) = run_id {
+            return read_view(project_dir, id).ok_or_else(|| RunPick::NotFound(id.to_owned()));
+        }
+        let views = read_runs_in(project_dir, None);
+        if refuse_several_live {
+            let live: Vec<&OneoffView> = views.iter().filter(|v| v.live.may_be_live()).collect();
+            match live.len() {
+                0 => {}
+                1 => return Ok(live[0].clone()),
+                _ => {
+                    return Err(RunPick::SeveralLive(
+                        live.iter().map(|v| v.record.run_id.clone()).collect(),
+                    ))
+                }
+            }
+        }
+        views.into_iter().next().ok_or(RunPick::NoRuns)
     }
 
     #[cfg(test)]
@@ -526,6 +661,109 @@ mod fs_store {
             std::os::unix::fs::symlink(&outside, dir.join("261103-abc-SUMMARY.md")).unwrap();
             assert_eq!(verified_summary(root.path(), rel), None, "symlink");
             assert_eq!(verified_summary(root.path(), "../secret.txt"), None);
+        }
+
+        use crate::driver::lock::acquire_at;
+
+        fn running(run_id: &str) -> RunRecord {
+            let mut record = super::super::tests::record();
+            record.run_id = run_id.to_owned();
+            record.status = crate::oneoff::store::RecordStatus::Running;
+            record
+        }
+
+        /// A run dir under `project_dir` with a record and, when `held`, a held lock.
+        fn run_in(
+            project_dir: &Path,
+            id: &str,
+            held: bool,
+        ) -> Option<crate::driver::lock::RunLock> {
+            let run_dir = project_dir.join(id);
+            fs::create_dir(&run_dir).unwrap();
+            let lock = held.then(|| acquire_at(&run_lock_path(&run_dir), id, 1).unwrap());
+            write_record(&run_dir, &running(id)).unwrap();
+            lock
+        }
+
+        #[test]
+        fn a_run_lock_is_preferred_and_the_legacy_project_lock_is_the_fallback() {
+            let project_dir = TempDir::new().unwrap();
+            let legacy = "oneoff-20261103-100000";
+            let modern = "oneoff-20261103-100001";
+            // A legacy run: no run.lock, judged by the project lock.
+            let legacy_dir = project_dir.path().join(legacy);
+            fs::create_dir(&legacy_dir).unwrap();
+            write_record(&legacy_dir, &running(legacy)).unwrap();
+            let project_lock =
+                acquire_at(&lock_path(project_dir.path()), legacy, 1).expect("legacy lock");
+            assert_eq!(
+                read_view(project_dir.path(), legacy).unwrap().live,
+                crate::oneoff::store::LiveState::Running
+            );
+            // A modern run whose own lock is free is Crashed even while the project
+            // lock is held by the legacy run.
+            let _ = run_in(project_dir.path(), modern, false);
+            fs::write(project_dir.path().join(modern).join("run.lock"), "").unwrap();
+            assert_eq!(
+                read_view(project_dir.path(), modern).unwrap().live,
+                crate::oneoff::store::LiveState::Crashed
+            );
+            drop(project_lock);
+            assert_eq!(
+                read_view(project_dir.path(), legacy).unwrap().live,
+                crate::oneoff::store::LiveState::Crashed
+            );
+        }
+
+        #[test]
+        fn resolve_run_picks_the_newest_and_refuses_when_several_are_live() {
+            use crate::oneoff::store::RunPick;
+            let project_dir = TempDir::new().unwrap();
+            let (a, b, c) = (
+                "oneoff-20261103-100000",
+                "oneoff-20261103-100001",
+                "oneoff-20261103-100002",
+            );
+            assert_eq!(
+                resolve_run(project_dir.path(), None, true).unwrap_err(),
+                RunPick::NoRuns
+            );
+            let _lock_a = run_in(project_dir.path(), a, true);
+            let picked = resolve_run(project_dir.path(), None, true).unwrap();
+            assert_eq!(picked.record.run_id, a, "the only live run");
+            let _lock_b = run_in(project_dir.path(), b, true);
+            assert_eq!(
+                resolve_run(project_dir.path(), None, true).unwrap_err(),
+                RunPick::SeveralLive(vec![b.to_owned(), a.to_owned()])
+            );
+            // Without the refusal the newest run is picked.
+            assert_eq!(
+                resolve_run(project_dir.path(), None, false)
+                    .unwrap()
+                    .record
+                    .run_id,
+                b
+            );
+            // An id picks that run, and an unknown or invalid one is NotFound.
+            assert_eq!(
+                resolve_run(project_dir.path(), Some(a), true)
+                    .unwrap()
+                    .record
+                    .run_id,
+                a
+            );
+            for bad in [c, "../x", "r1"] {
+                assert_eq!(
+                    resolve_run(project_dir.path(), Some(bad), true).unwrap_err(),
+                    RunPick::NotFound(bad.to_owned())
+                );
+            }
+            let listed: Vec<String> = read_runs_in(project_dir.path(), None)
+                .into_iter()
+                .map(|v| v.record.run_id)
+                .collect();
+            assert_eq!(listed, [b, a]);
+            assert_eq!(read_runs_in(project_dir.path(), Some(1)).len(), 1);
         }
 
         #[test]
@@ -698,6 +936,23 @@ pub(crate) mod tests {
         let back: RunRecord = serde_json::from_str(&text).unwrap();
         assert_eq!(back, record);
         assert_eq!(back.last_pushed_sha().as_deref(), Some("abc123"));
+    }
+
+    #[test]
+    fn the_tracking_fields_are_optional_on_read_and_round_trip() {
+        let mut value = serde_json::to_value(record()).unwrap();
+        let object = value.as_object_mut().unwrap();
+        object.remove("tracked_branch");
+        object.remove("tracking_note");
+        let old: RunRecord = serde_json::from_value(value).unwrap();
+        assert_eq!(old.tracked_branch, None);
+        assert_eq!(old.tracking_note, None);
+        let mut tracked = record();
+        tracked.tracked_branch = Some("refs/heads/gsd-oneoff/x".to_owned());
+        tracked.tracking_note = Some("note".to_owned());
+        let back: RunRecord =
+            serde_json::from_str(&serde_json::to_string(&tracked).unwrap()).unwrap();
+        assert_eq!(back, tracked);
     }
 
     #[test]

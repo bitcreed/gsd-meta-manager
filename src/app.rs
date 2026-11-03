@@ -1511,6 +1511,7 @@ impl App {
                     OneoffCommand::Stop => {
                         match crate::oneoff::launch::stop(
                             &project,
+                            (!id.is_empty()).then_some(id.as_str()),
                             std::time::Duration::from_secs(60),
                         ) {
                             Ok(outcome) => Ok(outcome.message()),

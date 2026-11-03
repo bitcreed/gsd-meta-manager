@@ -5994,7 +5994,8 @@ impl Screen for DetailScreen {
             // `t` / `T` on the Driver tab (quick 261103-f5y): the one-off picker and the
             // one-off status popup. Driver-tab guarded, so the experimental flag gates them
             // for free (the Driver view is unreachable with it off). `t` asks the App for
-            // the todo listing; the popup reads only the view cache.
+            // the todo listing and starts a run even while others are live (quick
+            // 261103-hx7, C-28); the popup reads only the view cache.
             KeyCode::Char('t') if current_view == DetailSubView::Driver => {
                 ctx.needs_redraw = true;
                 if !super::driver_steer::can_steer() {
@@ -6005,17 +6006,6 @@ impl Screen for DetailScreen {
                     return ScreenAction::None;
                 }
                 let cache = ctx.view_cache.entry(self.alias.clone()).or_default();
-                if let Some(view) = cache.oneoff.as_deref() {
-                    use crate::oneoff::store::LiveState;
-                    if matches!(view.live, LiveState::Running | LiveState::Preparing) {
-                        let message = format!(
-                            "One-off {} is already running here; press T to see it.",
-                            crate::text::render_for_terminal(&view.record.run_id)
-                        );
-                        ctx.status_message = Some((message, std::time::Instant::now()));
-                        return ScreenAction::None;
-                    }
-                }
                 cache.oneoff_todos = None;
                 super::driver_confirm::dispatch(
                     ctx,
@@ -20717,7 +20707,8 @@ mod tests {
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
-    fn t_with_a_live_one_off_says_so_and_opens_nothing() {
+    fn t_with_a_live_one_off_still_starts_a_new_run() {
+        // Quick 261103-hx7 (C-28): any number of runs may be live on a project.
         let (mut screen, mut ctx, mut rx) = driver_action_fixture();
         let mut view = crate::ui::screens::oneoff::tests::finished_view("x");
         view.live = crate::oneoff::store::LiveState::Running;
@@ -20726,10 +20717,11 @@ mod tests {
             .or_default()
             .oneoff = Some(Box::new(view));
         let action = screen.handle_key(KeyCode::Char('t'), KeyModifiers::NONE, &mut ctx);
-        assert!(matches!(action, ScreenAction::None));
-        assert!(rx.try_recv().is_err());
-        let message = ctx.status_message.map(|(t, _)| t).unwrap_or_default();
-        assert!(message.contains("already running"), "{message}");
+        assert_eq!(pushed_screen_name(&action).as_deref(), Some("oneoff"));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(crate::action::Action::OneoffTodosRequested { alias }) if alias == TEST_ALIAS
+        ));
     }
 
     #[test]

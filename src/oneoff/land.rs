@@ -8,7 +8,12 @@
 //! * **push** sends the head only to `refs/heads/gsd-auto/<alias>/<run-id>`, from
 //!   the launcher's mirror whose URL was pinned before any sandbox, after the SAFE-03
 //!   scan, through the store-free core the driver's push uses. No pull request (I-11).
-//! * **discard** deletes the run dir once the run is not live.
+//! * **discard** deletes the run dir once the run is not live, and the run's tracked
+//!   branch `gsd-oneoff/<run-id>` while it still points at the recorded head.
+//!
+//! Quick 261103-hx7: the daemon tracks every finished run that made commits as
+//! `refs/heads/gsd-oneoff/<run-id>` in the project ([`track_branch`], after the same
+//! planted-file gate), and a landing deletes that branch with a safe `git branch -d`.
 //!
 //! Every refusal changes nothing in the checkout.
 
@@ -135,20 +140,97 @@ fn view_of(project: &Path, run_id: &str) -> Result<(PathBuf, OneoffView), String
     Ok((project_dir, view))
 }
 
+/// Git-relevant planted findings in `work` against the baseline saved in `run_dir`
+/// (strict without one). File reads only, so it may run before any git touches the
+/// clone (quick 261103-hx7, C-05).
+pub(crate) fn git_relevant_planted(run_dir: &Path, work: &Path) -> Vec<planted::Finding> {
+    let baseline = planted::load_baseline(run_dir).ok().flatten();
+    planted::findings(baseline.as_ref(), &planted::snapshot(work), work)
+        .into_iter()
+        .filter(planted::Finding::is_git_relevant)
+        .collect()
+}
+
 /// Git-relevant planted findings in the clone against its launch baseline (strict
 /// without one). File reads only.
 fn planted_count(view: &OneoffView) -> usize {
     let work = view.run_dir.join(WORK_DIR);
-    let baseline = planted::load_baseline(&view.run_dir).ok().flatten();
-    let found: Vec<planted::Finding> =
-        planted::findings(baseline.as_ref(), &planted::snapshot(&work), &work)
-            .into_iter()
-            .filter(planted::Finding::is_git_relevant)
-            .collect();
+    let found = git_relevant_planted(&view.run_dir, &work);
     for line in planted::render_bounded(&found) {
         eprintln!("task land: planted: {line}");
     }
     found.len()
+}
+
+/// The full ref a run's work is tracked under in the user's project.
+pub(crate) fn tracked_ref(run_id: &str) -> String {
+    format!("refs/heads/{BRANCH_PREFIX}{run_id}")
+}
+
+/// The commit `reference` names in `project`, if it exists.
+fn ref_commit(project: &Path, reference: &str) -> Option<String> {
+    let found = git_in(
+        project,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("{reference}^{{commit}}"),
+        ],
+    );
+    (found.success && push::is_hex_sha(&found.stdout)).then_some(found.stdout)
+}
+
+/// Track the run's `head` in `project` as `refs/heads/gsd-oneoff/<run-id>` so that
+/// `git branch --no-merged` shows unmerged work (quick 261103-hx7, D-02, C-06).
+///
+/// `Ok(ref)` when the branch was made or already pointed at `head`; `Err(note)` says why
+/// not. A branch that points elsewhere is never overwritten (the refspec has no `+`),
+/// and the fetch is the hardened one. The caller has already run the planted-file gate.
+pub(crate) fn track_branch(
+    project: &Path,
+    work: &Path,
+    run_id: &str,
+    head: &str,
+) -> Result<String, String> {
+    let reference = tracked_ref(run_id);
+    if let Some(existing) = ref_commit(project, &reference) {
+        return if existing == head {
+            Ok(reference)
+        } else {
+            Err(format!(
+                "a branch {BRANCH_PREFIX}{run_id} already exists at {}; not overwritten",
+                &existing[..existing.len().min(12)]
+            ))
+        };
+    }
+    let fetch = push::git(
+        vec![
+            "-C".into(),
+            project.as_os_str().to_owned(),
+            "fetch".into(),
+            "--quiet".into(),
+            "--no-tags".into(),
+            "--no-recurse-submodules".into(),
+            work.as_os_str().to_owned(),
+            format!("{reference}:{reference}").into(),
+        ],
+        push::GIT_FETCH,
+    );
+    if !fetch.success {
+        return Err(format!(
+            "could not fetch the run's branch into the project: {}",
+            push::redact_urls(&fetch.last_error)
+        ));
+    }
+    match ref_commit(project, &reference) {
+        Some(sha) if sha == head => Ok(reference),
+        Some(sha) => Err(format!(
+            "the fetched branch is at {}, not the recorded head; not tracked",
+            &sha[..sha.len().min(12)]
+        )),
+        None => Err("the fetch made no branch; not tracked".to_owned()),
+    }
 }
 
 fn git_in(dir: &Path, args: &[&str]) -> push::GitRun {
@@ -264,8 +346,29 @@ pub fn merge(project: &Path, run_id: &str) -> Result<String, String> {
         facts.commits,
         &head[..head.len().min(12)]
     )];
+    if let Some(line) = delete_tracked_branch_after_landing(&project, run_id, &head) {
+        lines.push(line);
+    }
     lines.extend(sensitive_warning(&record.changed_files));
     Ok(lines.join("\n"))
+}
+
+/// After a landing the tracked branch is merged and stays reachable from the target, so
+/// a safe `git branch -d` removes it (C-07). Only a branch that points at `head` is
+/// touched; a failure is one line, never an error.
+fn delete_tracked_branch_after_landing(project: &Path, run_id: &str, head: &str) -> Option<String> {
+    let reference = tracked_ref(run_id);
+    if ref_commit(project, &reference).as_deref() != Some(head) {
+        return None;
+    }
+    let name = format!("{BRANCH_PREFIX}{run_id}");
+    let deleted = git_in(project, &["branch", "--delete", "--quiet", &name]);
+    (!deleted.success).then(|| {
+        format!(
+            "the tracked branch was not deleted: {}",
+            push::redact_urls(&deleted.last_error)
+        )
+    })
 }
 
 /// Push the run's recorded head to `refs/heads/gsd-auto/<alias>/<run-id>`.
@@ -363,8 +466,25 @@ pub fn discard(project: &Path, run_id: &str) -> Result<String, String> {
             run_dir.display()
         ));
     }
+    // C-08, I-09: the tracked branch goes first, by an atomic compare-and-delete that
+    // only succeeds while it still points at the recorded head.
+    let mut lines = Vec::new();
+    if let Some(head) = &view.record.head {
+        let reference = tracked_ref(run_id);
+        if ref_commit(project, &reference).is_some() {
+            let deleted = git_in(project, &["update-ref", "-d", &reference, head]);
+            lines.push(if deleted.success {
+                format!("deleted branch {BRANCH_PREFIX}{run_id}")
+            } else {
+                format!(
+                    "left branch {BRANCH_PREFIX}{run_id}: it no longer points at the run's head"
+                )
+            });
+        }
+    }
     fs::remove_dir_all(&canonical).map_err(|e| format!("remove {}: {e}", canonical.display()))?;
-    Ok(format!("discarded {run_id}"))
+    lines.insert(0, format!("discarded {run_id}"));
+    Ok(lines.join("\n"))
 }
 
 #[cfg(test)]

@@ -175,10 +175,11 @@ discard and `x` kill (a live run); each of those asks first.
 
 **CLI.** `gsd-meta-manager task run <alias|path> (--todo <file> | --text <task>)
 [--mode quick|fast] [--model opus] [--max-budget-usd 10] [--cap-minutes 60]
-[--unsandboxed] [--foreground]`; `task status <project> [--json]`; `task stop
-<project> [--wait-secs 60]`; `task send <project> <text> [--wait-secs 10]`;
-`task budget <project> (--soft <usd> | --clear) [--wait-secs 10]`; `task attach
-<project> [--run-id <id>] [--no-input]` (prints the same rendered lines as the live
+[--unsandboxed] [--foreground]`; `task status <project> [--run-id <id>] [--json]`;
+`task list <project> [--json]`; `task stop <project> [--run-id <id>] [--wait-secs
+60]`; `task send <project> <text> [--run-id <id>] [--wait-secs 10]`;
+`task budget <project> (--soft <usd> | --clear) [--run-id <id>] [--wait-secs 10]`;
+`task attach <project> [--run-id <id>] [--no-input]` (prints the same rendered lines as the live
 view, follows until the run is finished and drained, and turns each line you type
 into a message; `--no-input` only follows); `task land merge|push|discard <project>
 <run-id>`.
@@ -228,8 +229,8 @@ second crossing restarts the grace without a second message. `run.json` records
 subagents, so the cap can fire late: the hard ceiling stays the real limit.
 
 **Where runs live.** `<data dir>/gsd-meta-manager/oneoff/<hash8 of the
-project path>/<run-id>/` (`~/.local/share/...` on Linux): `run.json` (the host's
-record), `stream.jsonl` (the agent's stream-json output, credential-redacted),
+project path>/<run-id>/` (`~/.local/share/...` on Linux): `run.lock` (the run's own
+lock, see "Several at once"), `run.json` (the host's record), `stream.jsonl` (the agent's stream-json output, credential-redacted),
 `launch.log`, `injections.jsonl` and `inbox/` (host-only, see above), `report/report.json`, the per-run config dir and `work/`, a
 `git clone --no-hardlinks` of the project on branch `gsd-oneoff/<run-id>`. The
 clone copies the whole object store, so each run costs about the repository's
@@ -244,6 +245,13 @@ config dir are writable; there is no driverctl and no gate hook. A host that
 cannot sandbox is refused; `--unsandboxed` (CLI only, never the TUI) runs it
 degraded and records that. The wall clock is enforced from outside the sandbox,
 plus systemd's `RuntimeMaxSec`; the spend ceiling is the agent's `--max-budget-usd`.
+The sandbox mounts the host root read-only and masks only `/tmp` and `$HOME`, so
+when `XDG_DATA_HOME` or `XDG_CONFIG_HOME` puts `gsd-meta-manager`'s data or config
+directory outside both (the run dirs with their host-only inbox, the stored run
+token), an empty tmpfs hides that directory inside the sandbox, and only the run's
+own clone, `report/` and config dir are bound back on top. This applies to the
+driver's sandbox as well. With the default layout (everything under `$HOME`) the
+sandbox is unchanged.
 
 **The report contract.** The agent ends with `gsd-meta-manager taskctl report
 --status done|partial|blocked|failed --headline <one line, max 120>
@@ -262,10 +270,38 @@ paths under `.claude/`, `.github/`, `.husky/` or named `.gitattributes`,
 `refs/heads/gsd-auto/<alias>/<run-id>` from the launcher's pinned mirror after the
 credential scan; no pull request is opened. A git-relevant planted file in the
 clone refuses both; `discard` is the way out. `discard` deletes the run dir once
-the run is not live.
+the run is not live, and the run's tracked branch (see below) while it still points
+at the run's recorded head. A landing that succeeds deletes the tracked branch with a
+safe `git branch -d`, because the work is then reachable from the branch you merged
+into. A merge that is not a fast-forward is still refused.
 
-**One at a time.** One one-off runs per project at a time; a second is refused
-(exit 3 on the CLI) until the first ends or is stopped.
+**Several at once.** Any number of one-offs may run on a project at the same time,
+each with its own wall clock and spend ceiling; `task run` and the TUI's `t` no longer
+refuse (and `task run` no longer exits 3) while another run is live. Liveness comes from a lock file inside
+each run dir, `<run-dir>/run.lock`, which the launcher takes before `run.json`
+exists and releases last; it is host-only and never mounted into the sandbox. A run
+dir made before this change has no `run.lock` and is judged by the old per-project
+`oneoff.lock`, exactly as before. Two runs started in the same second get distinct
+ids (`oneoff-YYYYMMDD-HHMMSS`, then `-2`, `-3`...). Every verb that acts on one run
+takes `--run-id <id>`: `task status`, `stop`, `send`, `budget` and `attach` act on
+the newest run when it is omitted, except that when more than one run may be live
+they refuse (exit 1) and list the live ids instead of guessing; exactly one live run
+is picked even when a newer run has finished. `task land` always names its run.
+`task list <project> [--json]` prints every run, newest first: its id, live state,
+mode, report status, commit count, whether a tracked branch exists and its last
+landing. Parallel `/gsd-quick` runs can mint the same quick id; nothing prevents
+that, and a later merge of their STATE.md rows is yours to resolve.
+
+**Tracked branches.** When a run finishes with commits and the planted-file gate
+(file reads, run before any git touches the clone) finds nothing git-relevant, the
+launcher fetches the clone's branch into your project as
+`refs/heads/gsd-oneoff/<run-id>` (hardened git, no tags, no submodule recursion),
+checks that it equals the recorded head, and records it as `tracked_branch` in
+`run.json`; `git branch --no-merged` then lists unmerged one-off work. A branch of
+that name that points elsewhere is never overwritten: nothing is fetched and
+`tracking_note` says so. A run with no commits, a planted finding or no head gets no
+branch and a `tracking_note` saying why. A tracking failure never fails the run.
+`task status` prints a `branch:` line.
 
 The binary additionally reads `dirs::data_local_dir()` (typically `~/.local/share` on Linux) to choose the log directory `gsd-meta-manager/`. If `dirs::data_local_dir()` returns `None`, logs are written to `/tmp` (see `src/main.rs`). Logs themselves are configured by `tracing-subscriber`, but no environment variable currently feeds the subscriber (the `env-filter` feature is compiled in, so `RUST_LOG`-style filtering may be added later but is not currently wired into `tracing_subscriber::fmt().init()`).
 

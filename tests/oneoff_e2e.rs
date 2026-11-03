@@ -41,7 +41,11 @@ fn git_text(dir: &Path, args: &[&str]) -> String {
 
 /// A fixture whose project is a git repository with one committed pending todo.
 fn fixture() -> Fixture {
-    let fx = Fixture::new();
+    prepared(Fixture::new())
+}
+
+/// `fx` with its project made a git repository holding one committed pending todo.
+fn prepared(fx: Fixture) -> Fixture {
     let project = fx.project();
     let pending = project.join(".planning/todos/pending");
     fs::create_dir_all(&pending).unwrap();
@@ -179,6 +183,12 @@ fn a_detached_quick_run_on_a_todo_reports_records_and_merges() {
     );
     assert!(!shims.contains("launcher.lock"), "{shims}");
     assert!(!shims.contains("gsdmm-driverctl/oneoff"), "{shims}");
+    // The default fixture lives under /tmp, so the data and config roots are not masked.
+    let data_root = fx.scratch.path().join("data/gsd-meta-manager");
+    assert!(
+        !shims.contains(&format!("--tmpfs {}", data_root.display())),
+        "{shims}"
+    );
     assert!(!dir.join("claude-config/bin/driverctl").exists());
     assert!(dir.join("claude-config/bin/gsd-meta-manager").exists());
     let object = first_object_file(&dir.join("work/.git/objects")).expect("an object file");
@@ -297,34 +307,258 @@ fn a_fast_run_has_the_fast_prompt_and_no_summary() {
     assert_eq!(record["report"]["status"], "partial");
 }
 
+/// Waits for `release`, then commits a file named after its own pid and reports done.
+const PARALLEL_SCENARIO: &str = r#"
+touch "$FAKE_CLAUDE_DIR/started-$$"
+while [ ! -f "$FAKE_CLAUDE_DIR/release" ]; do sleep 0.1; done
+G="git -c user.name=t -c user.email=t@example.com"
+echo work > "file-$$.txt"
+$G add -A
+$G commit -qm "work $$"
+gsd-meta-manager taskctl report --status done --headline "Did $$" --verified "true: ok"
+printf '%s\n' '{"type":"result","subtype":"success"}'
+"#;
+
+/// How many scenarios have started (each touches `started-<pid>`).
+fn started_count(fx: &Fixture) -> usize {
+    fs::read_dir(fx.rec_dir())
+        .map(|dir| {
+            dir.flatten()
+                .filter(|e| e.file_name().to_string_lossy().starts_with("started-"))
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+/// The run id `task run` printed.
+fn started_id(out: &Output) -> String {
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    stdout
+        .split_whitespace()
+        .find(|w| w.starts_with("oneoff-"))
+        .unwrap_or_else(|| panic!("no run id in {out:?}"))
+        .to_owned()
+}
+
+fn status_of_run(fx: &Fixture, id: &str) -> Value {
+    let out = run(fx, &["status", ALIAS, "--run-id", id, "--json"]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    serde_json::from_slice(&out.stdout).expect("status --json parses")
+}
+
+/// Wait until run `id` is finished and its lock is free.
+fn wait_run_finished(fx: &Fixture, id: &str) -> Value {
+    let mut last = Value::Null;
+    let done = wait_until(Duration::from_secs(60), || {
+        let out = run(fx, &["status", ALIAS, "--run-id", id, "--json"]);
+        if !out.status.success() {
+            return false;
+        }
+        last = serde_json::from_slice(&out.stdout).unwrap_or(Value::Null);
+        last["live"] == "finished"
+    });
+    assert!(done, "run {id} never finished: {last}");
+    last
+}
+
+fn branch_head(project: &Path, id: &str) -> Option<String> {
+    let out = Command::new("git")
+        .current_dir(project)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .args([
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/gsd-oneoff/{id}^{{commit}}"),
+        ])
+        .output()
+        .expect("git runs");
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).trim().to_owned())
+}
+
 #[test]
-fn a_second_run_is_refused_while_one_is_live_and_stop_ends_it() {
+fn two_concurrent_runs_on_one_project_run_and_are_tracked() {
     let fx = fixture();
-    fx.write_scenario(
-        "touch \"$FAKE_CLAUDE_DIR/started\"\nwhile [ ! -f \"$FAKE_CLAUDE_DIR/release\" ]; do sleep 0.1; done\n",
+    fx.write_scenario(PARALLEL_SCENARIO);
+    let spawn = |text: &str| {
+        task(&fx, &["run", ALIAS, "--text", text])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap()
+    };
+    // Both are started at the same moment: the run dir is claimed by an atomic mkdir.
+    let (first, second) = (spawn("alpha"), spawn("beta"));
+    let first = first.wait_with_output().unwrap();
+    let second = second.wait_with_output().unwrap();
+    assert_eq!(first.status.code(), Some(0), "{first:?}");
+    assert_eq!(second.status.code(), Some(0), "{second:?}");
+    let (a, b) = (started_id(&first), started_id(&second));
+    assert_ne!(a, b, "two simultaneous launches shared an id");
+    assert!(
+        wait_until(Duration::from_secs(30), || started_count(&fx) == 2),
+        "both scenarios must be running at once"
     );
-    let mut child = task(&fx, &["run", ALIAS, "--text", "wait", "--foreground"])
+    for id in [&a, &b] {
+        assert_eq!(status_of_run(&fx, id)["live"], "running", "{id}");
+    }
+
+    // No verb guesses between live runs.
+    let status = run(&fx, &["status", ALIAS]);
+    assert_eq!(status.status.code(), Some(1), "{status:?}");
+    let stop = run(&fx, &["stop", ALIAS]);
+    assert_eq!(stop.status.code(), Some(1), "{stop:?}");
+    for out in [&status, &stop] {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.contains(&a) && stderr.contains(&b), "{out:?}");
+        assert!(stderr.contains("--run-id"), "{out:?}");
+    }
+    let listed = run(&fx, &["list", ALIAS, "--json"]);
+    assert_eq!(listed.status.code(), Some(0), "{listed:?}");
+    let listed: Value = serde_json::from_slice(&listed.stdout).unwrap();
+    let ids: Vec<&str> = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["record"]["run_id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids.len(), 2, "{listed}");
+    assert!(ids.contains(&a.as_str()) && ids.contains(&b.as_str()));
+
+    fs::write(fx.rec_dir().join("release"), "").unwrap();
+    for id in [&a, &b] {
+        let done = wait_run_finished(&fx, id);
+        let head = done["record"]["head"].as_str().unwrap();
+        assert_eq!(done["record"]["commits"], 1, "{done}");
+        assert_eq!(
+            done["record"]["tracked_branch"],
+            format!("refs/heads/gsd-oneoff/{id}"),
+            "{done}"
+        );
+        assert_eq!(branch_head(fx.project(), id).as_deref(), Some(head), "{id}");
+    }
+    let unmerged = git_text(fx.project(), &["branch", "--no-merged"]);
+    assert!(
+        unmerged.contains(&format!("gsd-oneoff/{a}"))
+            && unmerged.contains(&format!("gsd-oneoff/{b}")),
+        "{unmerged}"
+    );
+
+    // A fast-forward landing deletes the tracked branch of the run it landed.
+    let merged = run(&fx, &["land", "merge", ALIAS, &a]);
+    assert_eq!(merged.status.code(), Some(0), "{merged:?}");
+    assert_eq!(branch_head(fx.project(), &a), None, "{merged:?}");
+    assert!(branch_head(fx.project(), &b).is_some());
+    // The finished runs no longer need an id: the newest is the default.
+    assert_eq!(run(&fx, &["status", ALIAS]).status.code(), Some(0));
+}
+
+#[test]
+fn a_finished_run_is_tracked_as_a_branch_and_discard_deletes_it() {
+    let fx = fixture();
+    let (id, status) = quick_run(&fx);
+    let head = status["record"]["head"].as_str().unwrap().to_owned();
+    assert_eq!(
+        branch_head(fx.project(), &id).as_deref(),
+        Some(head.as_str())
+    );
+    assert_eq!(
+        status["record"]["tracked_branch"],
+        format!("refs/heads/gsd-oneoff/{id}")
+    );
+    let shown = run(&fx, &["status", ALIAS]);
+    assert!(
+        String::from_utf8_lossy(&shown.stdout)
+            .contains(&format!("branch:    refs/heads/gsd-oneoff/{id}")),
+        "{shown:?}"
+    );
+    let discarded = run(&fx, &["land", "discard", ALIAS, &id]);
+    assert_eq!(discarded.status.code(), Some(0), "{discarded:?}");
+    assert!(
+        String::from_utf8_lossy(&discarded.stdout).contains("deleted branch"),
+        "{discarded:?}"
+    );
+    assert_eq!(branch_head(fx.project(), &id), None);
+    assert!(!run_dir(&fx, &id).exists());
+
+    // A branch that no longer points at the recorded head is left alone.
+    let (moved, _) = quick_run(&fx);
+    let init = git_text(fx.project(), &["rev-parse", "HEAD"]);
+    git(
+        fx.project(),
+        &[
+            "update-ref",
+            &format!("refs/heads/gsd-oneoff/{moved}"),
+            &init,
+        ],
+    );
+    let left = run(&fx, &["land", "discard", ALIAS, &moved]);
+    assert_eq!(left.status.code(), Some(0), "{left:?}");
+    assert!(
+        String::from_utf8_lossy(&left.stdout).contains(&format!("left branch gsd-oneoff/{moved}")),
+        "{left:?}"
+    );
+    assert_eq!(
+        branch_head(fx.project(), &moved).as_deref(),
+        Some(init.as_str())
+    );
+    assert!(!run_dir(&fx, &moved).exists());
+}
+
+#[test]
+fn a_run_without_commits_has_no_branch_and_says_why() {
+    let fx = fixture();
+    fx.write_scenario("printf '%s\\n' '{\"type\":\"result\",\"subtype\":\"success\"}'\n");
+    let out = run(&fx, &["run", ALIAS, "--text", "nothing", "--foreground"]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let record = &status(&fx)["record"];
+    assert!(record["tracked_branch"].is_null(), "{record}");
+    assert!(
+        record["tracking_note"]
+            .as_str()
+            .is_some_and(|n| n.contains("no commits")),
+        "{record}"
+    );
+    let id = record["run_id"].as_str().unwrap();
+    assert_eq!(branch_head(fx.project(), id), None);
+    assert!(git_text(fx.project(), &["branch", "--list", "gsd-oneoff/*"]).is_empty());
+}
+
+#[test]
+fn a_second_run_starts_while_one_is_live_and_stop_takes_a_run_id() {
+    let fx = fixture();
+    fx.write_scenario(PARALLEL_SCENARIO);
+    let mut child = task(&fx, &["run", ALIAS, "--text", "first", "--foreground"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
     assert!(
-        wait_until(Duration::from_secs(30), || fx.scenario_started()),
-        "the scenario never started"
+        wait_until(Duration::from_secs(30), || started_count(&fx) == 1),
+        "the first scenario never started"
     );
     let live = status(&fx);
-    let id = live["record"]["run_id"].as_str().unwrap().to_owned();
+    let first = live["record"]["run_id"].as_str().unwrap().to_owned();
     assert_eq!(live["live"], "running");
 
-    let second = run(&fx, &["run", ALIAS, "--text", "another"]);
-    assert_eq!(second.status.code(), Some(3), "{second:?}");
+    let second = run(&fx, &["run", ALIAS, "--text", "second"]);
+    assert_eq!(second.status.code(), Some(0), "{second:?}");
+    let second = started_id(&second);
+    assert_ne!(first, second);
     assert!(
-        String::from_utf8_lossy(&second.stderr).contains(&id),
-        "{second:?}"
+        wait_until(Duration::from_secs(30), || started_count(&fx) == 2),
+        "the second scenario never started"
     );
 
-    let stopped = run(&fx, &["stop", ALIAS]);
+    let stopped = run(&fx, &["stop", ALIAS, "--run-id", &first]);
     assert_eq!(stopped.status.code(), Some(0), "{stopped:?}");
+    assert!(
+        String::from_utf8_lossy(&stopped.stdout).contains(&first),
+        "{stopped:?}"
+    );
     let exited = wait_until(Duration::from_secs(30), || {
         matches!(child.try_wait(), Ok(Some(_)))
     });
@@ -332,9 +566,61 @@ fn a_second_run_is_refused_while_one_is_live_and_stop_ends_it() {
         let _ = child.kill();
     }
     assert!(exited, "the foreground run did not exit after stop");
-    let after = status(&fx);
+    let after = status_of_run(&fx, &first);
     assert_eq!(after["record"]["outcome"]["kind"], "stopped", "{after}");
     assert_eq!(after["live"], "finished");
+    assert_eq!(
+        status_of_run(&fx, &second)["live"],
+        "running",
+        "stopping one run must not touch the other"
+    );
+    // One live run left: no id is needed any more, and it is the one picked.
+    let picked = status(&fx);
+    assert_eq!(picked["record"]["run_id"], second.as_str(), "{picked}");
+
+    fs::write(fx.rec_dir().join("release"), "").unwrap();
+    let done = wait_run_finished(&fx, &second);
+    assert_eq!(done["record"]["outcome"]["kind"], "finished", "{done}");
+}
+
+#[test]
+fn a_data_root_outside_home_is_masked_in_the_sandbox() {
+    let base = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("hx7-mask");
+    let mut fx = Fixture::new_in(&base);
+    // The socket path limit (107 bytes) needs a short runtime dir.
+    let runtime = tempfile::TempDir::new().unwrap();
+    fs::set_permissions(
+        runtime.path(),
+        std::os::unix::fs::PermissionsExt::from_mode(0o700),
+    )
+    .unwrap();
+    fx.runtime_dir = runtime.path().to_path_buf();
+    let fx = prepared(fx);
+    fx.write_scenario(QUICK_SCENARIO);
+    let out = run(&fx, &["run", ALIAS, "--todo", TODO, "--foreground"]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let id = status(&fx)["record"]["run_id"].as_str().unwrap().to_owned();
+    let work = run_dir(&fx, &id).join("work").display().to_string();
+    let shims = fx.shim_log();
+    let line = shims
+        .lines()
+        .find(|l| l.starts_with("bwrap ") && l.contains("--tmpfs"))
+        .unwrap_or_else(|| panic!("no bwrap line in {shims}"));
+    let at = |needle: String| {
+        line.find(&needle)
+            .unwrap_or_else(|| panic!("{needle:?} missing from {line}"))
+    };
+    let data = at(format!(
+        " --tmpfs {}",
+        fx.scratch.path().join("data/gsd-meta-manager").display()
+    ));
+    let config = at(format!(
+        " --tmpfs {}",
+        fx.scratch.path().join("config/gsd-meta-manager").display()
+    ));
+    let bind = at(format!(" --bind {work} {work}"));
+    assert!(data < bind && config < bind, "{line}");
+    assert!(data < config, "{line}");
 }
 
 #[test]

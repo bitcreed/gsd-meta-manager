@@ -59,6 +59,13 @@
 //! for one-off runs (`crate::oneoff`): the "run dir" bound there is the run's `report/`
 //! directory, bound read-write, with no lock masks and no driverctl socket. Everything
 //! else is the driver profile, in the same order ([`bwrap_argv_with`]).
+//!
+//! Quick task 261103-hx7 (D-09) adds [`bwrap_argv_masking`]: the app's data and config
+//! roots (`dirs::data_local_dir()` and `dirs::config_dir()` joined with
+//! `gsd-meta-manager`) are masked with an empty tmpfs when they live outside `$HOME` and
+//! `/tmp`, which the read-only root would otherwise leave readable (one-off inboxes, the
+//! stored run token). [`masks_outside`] is the pure filter; the host-reading half is
+//! `config_dir::app_root_masks`. With no masks the argv is unchanged.
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -531,6 +538,42 @@ pub fn bwrap_argv_with(
     mode: RunDirMode,
     command: &[OsString],
 ) -> Vec<OsString> {
+    bwrap_argv_masking(spec, mode, &[], command)
+}
+
+/// The directories among `candidates` that the sandbox must mask with an empty tmpfs
+/// because `$HOME` and `/tmp` (already masked) do not cover them (quick 261103-hx7,
+/// D-09, C-32). Pure and lexical: a candidate under `home` or under `/tmp` is dropped,
+/// and so is a duplicate. The order of `candidates` is kept.
+pub fn masks_outside(home: &Path, candidates: &[PathBuf]) -> Vec<PathBuf> {
+    let mut kept: Vec<PathBuf> = Vec::new();
+    for candidate in candidates {
+        if candidate.starts_with(home) || candidate.starts_with("/tmp") || kept.contains(candidate)
+        {
+            continue;
+        }
+        kept.push(candidate.clone());
+    }
+    kept
+}
+
+/// [`bwrap_argv_with`] plus an empty `--tmpfs` for every directory in `masks` (quick
+/// 261103-hx7, D-09).
+///
+/// The root is mounted read-only and only `/tmp` and `$HOME` are masked, so the host's
+/// application data and config roots stay readable inside the sandbox when
+/// `XDG_DATA_HOME` or `XDG_CONFIG_HOME` points outside `$HOME`: the one-off run dirs
+/// with their host-only inbox, the driver's config dirs, and the stored run token. Each
+/// mask follows the non-project `$HOME` entries and precedes the project bind, so the
+/// binds that re-establish this run's own paths (clone, report dir, config dir,
+/// sockets) land on top of it. With `masks` empty the argv is byte-identical to
+/// [`bwrap_argv_with`]'s historical output.
+pub fn bwrap_argv_masking(
+    spec: &SandboxSpec,
+    mode: RunDirMode,
+    masks: &[PathBuf],
+    command: &[OsString],
+) -> Vec<OsString> {
     let paths = &spec.paths;
     let mut argv: Vec<OsString> = ["bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "--proc"]
         .iter()
@@ -580,6 +623,11 @@ pub fn bwrap_argv_with(
     // WR-05: an entry that lies under the project is emitted after the project bind
     // (below), because a later bind covers an earlier one.
     push_home_entries(&mut argv, spec, |path| !path.starts_with(&paths.project));
+    // D-09: host roots outside `$HOME` and `/tmp` that hold this app's own state.
+    for mask in masks {
+        argv.push(os("--tmpfs"));
+        argv.push(mask.as_os_str().to_owned());
+    }
     let bind = |argv: &mut Vec<OsString>, flag: &str, path: &Path| {
         argv.push(os(flag));
         argv.push(path.as_os_str().to_owned());

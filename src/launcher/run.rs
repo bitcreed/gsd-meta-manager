@@ -63,8 +63,8 @@ use serde_json::Value;
 
 use super::auth::{host_access_token, resolve_launch_token, AuthError, TokenSource};
 use super::config_dir::{
-    driver_root, resolve_current_exe, run_state_dir_in, seed, snapshot_exe, SeedSpec,
-    HOST_MANAGED_DIR,
+    app_root_masks, driver_root, resolve_current_exe, run_state_dir_in, seed, snapshot_exe,
+    SeedSpec, HOST_MANAGED_DIR,
 };
 use super::egress::upstream::Upstream;
 use super::egress::{
@@ -80,9 +80,9 @@ use super::process::{
 use super::prompt::{self, ResolvedPrompt};
 use super::push::{self, planted};
 use super::sandbox::{
-    bridged_command, bwrap_argv, child_env, claude_argv, common_env_sets, egress_env_sets,
-    render_prompt, scope_unit_name, systemd_run_argv, LaunchPaths, SandboxSpec, BRIDGE_PORT,
-    MAX_PROMPT_BYTES,
+    bridged_command, bwrap_argv_masking, child_env, claude_argv, common_env_sets, egress_env_sets,
+    render_prompt, scope_unit_name, systemd_run_argv, LaunchPaths, RunDirMode, SandboxSpec,
+    BRIDGE_PORT, MAX_PROMPT_BYTES,
 };
 use super::LauncherError;
 use crate::driver::direction::{direction_lock_path, sweep_stale_temps};
@@ -1594,7 +1594,12 @@ fn supervise(
             // D-13: the backstop behind the monitor. A degraded launch has none (D-29).
             let runtime_max = budget.remaining.map(runtime_max_sec);
             let bridged = bridged_command(&ctx.binary, BRIDGE_PORT, &ctx.egress_sock, &driver_argv);
-            systemd_run_argv(unit, runtime_max, &bwrap_argv(&spec, &bridged))
+            let masks = app_root_masks(&ctx.home);
+            systemd_run_argv(
+                unit,
+                runtime_max,
+                &bwrap_argv_masking(&spec, RunDirMode::DriverReadOnly, &masks, &bridged),
+            )
         }
         Posture::Degraded { .. } => driver_argv,
     };

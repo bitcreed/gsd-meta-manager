@@ -488,34 +488,51 @@ pub enum TaskAction {
     /// Run one headless agent session on a todo or a typed task, in a private clone,
     /// inside the launcher's sandbox (detaches unless --foreground)
     Run(Box<TaskRunArgs>),
-    /// Show the project's latest one-off run
+    /// Show a one-off run (the newest unless --run-id)
     Status {
         /// Alias or path of a registered project
         project: String,
+        /// A run id (default: the newest run; refused when several may be live)
+        #[arg(long)]
+        run_id: Option<String>,
         /// Print the record as one JSON object
         #[arg(long)]
         json: bool,
     },
-    /// Stop the project's live one-off run
+    /// List the project's one-off runs, newest first
+    List {
+        /// Alias or path of a registered project
+        project: String,
+        /// Print the runs as one JSON array
+        #[arg(long)]
+        json: bool,
+    },
+    /// Stop a live one-off run (the live one unless --run-id; refused when several are live)
     Stop {
         /// Alias or path of a registered project
         project: String,
+        /// A run id (default: the live run; refused when several may be live)
+        #[arg(long)]
+        run_id: Option<String>,
         /// How long to wait for the run to finish stopping, in seconds
         #[arg(long, default_value_t = 60)]
         wait_secs: u64,
     },
-    /// Send a message to the project's running one-off agent (experimental)
+    /// Send a message to a running one-off agent (experimental)
     Send {
         /// Alias or path of a registered project
         project: String,
         /// The message (at most 4000 characters)
         #[arg(allow_hyphen_values = true)]
         text: String,
+        /// A run id (default: the live run; refused when several may be live)
+        #[arg(long)]
+        run_id: Option<String>,
         /// How long to wait for the launcher to pick the message up, in seconds
         #[arg(long, default_value_t = 10)]
         wait_secs: u64,
     },
-    /// Set or clear the soft spend cap of the project's running one-off (experimental)
+    /// Set or clear the soft spend cap of a running one-off (experimental)
     #[command(group(clap::ArgGroup::new("cap").required(true).args(["soft", "clear"])))]
     Budget {
         /// Alias or path of a registered project
@@ -526,6 +543,9 @@ pub enum TaskAction {
         /// Remove the soft cap
         #[arg(long)]
         clear: bool,
+        /// A run id (default: the live run; refused when several may be live)
+        #[arg(long)]
+        run_id: Option<String>,
         /// How long to wait for the launcher to pick the request up, in seconds
         #[arg(long, default_value_t = 10)]
         wait_secs: u64,
@@ -535,7 +555,7 @@ pub enum TaskAction {
     Attach {
         /// Alias or path of a registered project
         project: String,
-        /// A run id (default: the project's latest run)
+        /// A run id (default: the live run, else the newest; refused when several may be live)
         #[arg(long)]
         run_id: Option<String>,
         /// Only follow; do not read messages from stdin
