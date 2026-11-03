@@ -925,7 +925,8 @@ pub fn parse_project_state_with(
         .unwrap_or(false);
 
     // Parse ROADMAP.md. The `## Progress` table (GSD 1.8.0) is authoritative
-    // for progress counts when present; otherwise STATE.md frontmatter stands.
+    // for progress counts when present, read for the current milestone (#5165);
+    // otherwise STATE.md frontmatter stands.
     let roadmap_path = planning_dir.join("ROADMAP.md");
     if let Ok(content) = std::fs::read_to_string(&roadmap_path) {
         state.phases = roadmap_md::parse_roadmap_phases(&content);
@@ -942,7 +943,7 @@ pub fn parse_project_state_with(
                 state.milestone = name;
             }
         }
-        if let Some(prog) = roadmap_md::roadmap_progress(&content) {
+        if let Some(prog) = roadmap_md::roadmap_progress(&content, &state.milestone) {
             state.total_phases = prog.total_phases;
             state.completed_phases = prog.completed_phases;
             state.total_plans = prog.total_plans;
@@ -1602,6 +1603,62 @@ mod tests {
         assert_eq!(state.completed_phases, 1);
         assert_eq!(state.total_plans, 5);
         assert_eq!(state.completed_plans, 3);
+    }
+
+    // --- quick 261103-em6: gsd-core #5165 milestone slice ------------------
+
+    const ROADMAP_5165: &str = "# Roadmap\n\n## Milestones\n\n\
+        - \u{2705} **v1.0 Alpha** - Phases 1-2\n\
+        - \u{1F6A7} **v1.1 Beta** - Phases 3-4 (in progress)\n\n\
+        ## Progress\n\n\
+        | Phase | Milestone | Plans Complete | Status | Completed |\n\
+        | --- | --- | --- | --- | --- |\n\
+        | 1. A | v1.0 | 2/2 | Complete | x |\n\
+        | 2. B | v1.0 | 3/3 | Complete | x |\n\
+        | 3. C | v1.1 | 1/1 | Complete | x |\n\
+        | 4. D | v1.1 | 0/2 | Planned | |\n";
+
+    fn state_md_5165(milestone_line: &str) -> String {
+        format!(
+            "---\n{milestone_line}status: executing\nprogress:\n  total_phases: 9\n  completed_phases: 9\n  total_plans: 20\n  completed_plans: 20\n---\n"
+        )
+    }
+
+    #[test]
+    fn progress_5165_milestone_grouped_roadmap_counts_only_the_current_milestone() {
+        // STATE.md names the milestone: its rows alone are counted.
+        let td = make_planning(&[
+            ("STATE.md", &state_md_5165("milestone: v1.1\n")),
+            ("ROADMAP.md", ROADMAP_5165),
+        ]);
+        let state = parse_project_state(&td.path().join(".planning"));
+        assert_eq!(state.total_phases, 2);
+        assert_eq!(state.completed_phases, 1);
+        assert_eq!(state.total_plans, 3);
+        assert_eq!(state.completed_plans, 1);
+
+        // STATE.md lacks `milestone:`: the roadmap's in-progress milestone fills in.
+        let td = make_planning(&[
+            ("STATE.md", &state_md_5165("")),
+            ("ROADMAP.md", ROADMAP_5165),
+        ]);
+        let state = parse_project_state(&td.path().join(".planning"));
+        assert_eq!(state.milestone, "v1.1 Beta");
+        assert_eq!(state.total_phases, 2);
+        assert_eq!(state.completed_phases, 1);
+        assert_eq!(state.total_plans, 3);
+        assert_eq!(state.completed_plans, 1);
+
+        // A milestone the table has no row for keeps the frontmatter counts.
+        let td = make_planning(&[
+            ("STATE.md", &state_md_5165("milestone: v9\n")),
+            ("ROADMAP.md", ROADMAP_5165),
+        ]);
+        let state = parse_project_state(&td.path().join(".planning"));
+        assert_eq!(state.total_phases, 9);
+        assert_eq!(state.completed_phases, 9);
+        assert_eq!(state.total_plans, 20);
+        assert_eq!(state.completed_plans, 20);
     }
 
     /// Quick 260923-md1: ROADMAP.md milestones reach `ProjectState`.

@@ -25,12 +25,12 @@ pub struct RoadmapPhase {
     pub depends_on: Vec<String>,
 }
 
-/// Aggregate phase/plan counts parsed from a ROADMAP.md `## Progress` table.
+/// Aggregate phase/plan counts parsed from a ROADMAP.md Progress table, for the
+/// current milestone when the table is grouped by milestone.
 ///
-/// The `## Progress` table is the authoritative source of progress counts for a
-/// GSD 1.8.0 roadmap. plan 6 (mod.rs) prefers this over STATE.md frontmatter
-/// when present; when the section is absent `roadmap_progress` returns `None` and
-/// the caller falls back to STATE.md.
+/// The Progress table is the authoritative source of progress counts for a GSD
+/// 1.8.0 roadmap. mod.rs prefers this over STATE.md frontmatter when present;
+/// when [`roadmap_progress`] returns `None` the caller keeps the STATE.md counts.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct RoadmapProgress {
     pub total_phases: u32,
@@ -1227,7 +1227,32 @@ fn split_table_row(line: &str) -> Vec<String> {
         .collect()
 }
 
-/// Parse the authoritative `## Progress` table from ROADMAP.md content.
+/// The milestone token gsd-core compares by identity, not spelling (#5165,
+/// `normalizeMilestoneToken` in `src/roadmap-progress.cts`): `v1.1`, `V1.1`,
+/// ` 1.1 `, `**v1.1**`, a backticked `v1.1`, `v1.1 (current)` and
+/// `[v1.1](ROADMAP.md#v11)` all name `1.1`, and `v1.10` stays `1.10`.
+///
+/// A markdown link is replaced by its text; the first whitespace-separated
+/// token is kept; a leading run of `*`, `_`, backtick and a trailing run of
+/// `*`, `_`, backtick, `:`, `,`, `;` are stripped; then one leading `v`/`V` is
+/// dropped and the rest ASCII-lowercased. Blank input gives an empty string.
+///
+/// Deliberately not built on [`same_milestone`] / `split_milestone_label`:
+/// those need a `v`/`M` short id and so would not match `1.1` to `v1.1`.
+fn normalize_milestone_token(value: &str) -> String {
+    static LINK: OnceLock<Regex> = OnceLock::new();
+    let link = LINK.get_or_init(|| Regex::new(r"\[([^\]]*)\]\([^)]*\)").unwrap());
+    let unlinked = link.replace_all(value.trim(), "$1");
+    let first = unlinked.split_whitespace().next().unwrap_or("");
+    let first = first
+        .trim_start_matches(['*', '_', '`'])
+        .trim_end_matches(['*', '_', '`', ':', ',', ';']);
+    let first = first.strip_prefix(['v', 'V']).unwrap_or(first);
+    first.to_ascii_lowercase()
+}
+
+/// Parse the authoritative `## Progress` table from ROADMAP.md content, for the
+/// current milestone.
 ///
 /// Columns are matched by NAME (case-insensitive), not position, so both the
 /// flat 4-column layout (`Phase | Plans Complete | Status | Completed`) and the
@@ -1236,10 +1261,23 @@ fn split_table_row(line: &str) -> Vec<String> {
 /// `## Progress` section is absent or its table header cannot be interpreted
 /// (missing the required `Phase` / `Plans Complete` columns).
 ///
+/// **Milestone slice (gsd-core #5165, `src/roadmap-progress.cts`).** The wanted
+/// milestone is `state_milestone` (STATE.md `milestone:`, the caller's source),
+/// else the ROADMAP's own in-progress milestone ([`active_milestone`]). When one
+/// resolves and the table has a `Milestone` column, only rows whose Milestone
+/// cell names it (compared by [`normalize_milestone_token`]) are counted, so a
+/// roadmap that keeps v1, v2 and v3 rows in one table reports the current
+/// milestone's counts alone. Two rules, each an audit-tagged inference:
+/// - no resolvable milestone, or no `Milestone` column: every row counts
+///   (upstream: an absent milestone keeps every row);
+/// - a resolved milestone the table has no row for: `None`, so the caller keeps
+///   the STATE.md counts rather than a foreign milestone's (upstream's
+///   `deriveProgressFromRoadmap` yields nulls for the same case).
+///
 /// Pure: takes `&str`, returns `Option<RoadmapProgress>`, mutates nothing.
 ///
-/// plan 6 (mod.rs) prefers this over STATE.md frontmatter when present.
-pub fn roadmap_progress(content: &str) -> Option<RoadmapProgress> {
+/// mod.rs prefers this over STATE.md frontmatter when present.
+pub fn roadmap_progress(content: &str, state_milestone: &str) -> Option<RoadmapProgress> {
     let lines: Vec<&str> = content.lines().collect();
 
     // Locate the `## Progress` section heading.
@@ -1283,10 +1321,21 @@ pub fn roadmap_progress(content: &str) -> Option<RoadmapProgress> {
     let phase_col = col("Phase")?;
     let plans_col = col("Plans Complete")?;
     let status_col = col("Status");
+    let milestone_col = col("Milestone");
+
+    // #5165: the wanted milestone, STATE.md's first, else the roadmap's own.
+    let mut want = normalize_milestone_token(state_milestone);
+    if want.is_empty() {
+        want = active_milestone(content)
+            .map(|name| normalize_milestone_token(&name))
+            .unwrap_or_default();
+    }
+    let slice = milestone_col.filter(|_| !want.is_empty());
 
     let plans_re = Regex::new(r"(\d+)\s*/\s*(\d+)").unwrap();
 
     let mut progress = RoadmapProgress::default();
+    let mut matched_milestone = false;
 
     for l in scope.iter().skip(header_idx + 2) {
         if !is_row(l) {
@@ -1295,6 +1344,13 @@ pub fn roadmap_progress(content: &str) -> Option<RoadmapProgress> {
         let cells = split_table_row(l);
         if cells.len() < headers.len() {
             continue;
+        }
+        if let Some(mc) = slice {
+            let cell = cells.get(mc).map(String::as_str).unwrap_or("");
+            if normalize_milestone_token(cell) != want {
+                continue;
+            }
+            matched_milestone = true;
         }
         let phase_cell = cells
             .get(phase_col)
@@ -1323,6 +1379,9 @@ pub fn roadmap_progress(content: &str) -> Option<RoadmapProgress> {
         }
     }
 
+    if slice.is_some() && !matched_milestone {
+        return None;
+    }
     Some(progress)
 }
 
@@ -2455,7 +2514,7 @@ Plans:
 | 1. Alpha | 2/2 | Complete | ✅ |
 | 2. Beta | 1/2 | In Progress | |
 "#;
-        let p = roadmap_progress(content).expect("progress table parses");
+        let p = roadmap_progress(content, "").expect("progress table parses");
         assert_eq!(p.total_phases, 2);
         assert_eq!(p.completed_phases, 1);
         assert_eq!(p.total_plans, 4);
@@ -2471,7 +2530,7 @@ Plans:
 | 1. Alpha | v1.0 | 2/2 | Complete | ✅ |
 | 2. Beta | v1.1 | 0/3 | Planned | |
 "#;
-        let p = roadmap_progress(content).expect("5-column table parses");
+        let p = roadmap_progress(content, "").expect("5-column table parses");
         assert_eq!(p.total_phases, 2);
         assert_eq!(p.completed_phases, 1);
         assert_eq!(p.total_plans, 5);
@@ -2488,7 +2547,7 @@ Plans:
 | Complete | ✅ | 3/3 | 1. Alpha |
 | Planned | | 0/2 | 2. Beta |
 "#;
-        let p = roadmap_progress(content).expect("reordered table parses");
+        let p = roadmap_progress(content, "").expect("reordered table parses");
         assert_eq!(p.total_phases, 2);
         assert_eq!(p.completed_phases, 1);
         assert_eq!(p.total_plans, 5);
@@ -2505,7 +2564,7 @@ Plans:
 | 1. Alpha | 2/2 | Complete | ✅ |
 | 999. Backlog | 0/9 | Planned | |
 "#;
-        let p = roadmap_progress(content).expect("table parses");
+        let p = roadmap_progress(content, "").expect("table parses");
         assert_eq!(p.total_phases, 1);
         assert_eq!(p.completed_phases, 1);
         assert_eq!(p.total_plans, 2);
@@ -2518,7 +2577,7 @@ Plans:
 
 - [ ] **Phase 1: Alpha** - no progress table here
 "#;
-        assert_eq!(roadmap_progress(content), None);
+        assert_eq!(roadmap_progress(content, ""), None);
     }
 
     #[test]
@@ -2530,7 +2589,102 @@ Plans:
 | --- | --- |
 | a | b |
 "#;
-        assert_eq!(roadmap_progress(content), None);
+        assert_eq!(roadmap_progress(content, ""), None);
+    }
+
+    // ── quick 261103-em6: gsd-core #5165 milestone slice ───────────────────
+
+    /// The milestone-grouped Progress table the #5165 tests share: v1.0 has two
+    /// complete phases (5 plans), v1.1 one complete of two (1 of 3 plans), and a
+    /// v1.1 backlog sentinel row that is never counted.
+    const PROGRESS_5165: &str = "# Roadmap\n\n## Progress\n\n\
+        | Phase | Milestone | Plans Complete | Status | Completed |\n\
+        | --- | --- | --- | --- | --- |\n\
+        | 1. A | v1.0 | 2/2 | Complete | x |\n\
+        | 2. B | v1.0 | 3/3 | Complete | x |\n\
+        | 3. C | v1.1 | 1/1 | Complete | x |\n\
+        | 4. D | v1.1 | 0/2 | Planned | |\n\
+        | 999.1 Backlog | v1.1 | 0/9 | Planned | |\n";
+
+    fn counts(p: &RoadmapProgress) -> (u32, u32, u32, u32) {
+        (
+            p.total_phases,
+            p.completed_phases,
+            p.total_plans,
+            p.completed_plans,
+        )
+    }
+
+    #[test]
+    fn progress_5165_slice_counts_only_the_named_milestone_rows() {
+        let p = roadmap_progress(PROGRESS_5165, "v1.1").expect("v1.1 has rows");
+        assert_eq!(counts(&p), (2, 1, 3, 1));
+        let p = roadmap_progress(PROGRESS_5165, "v1.0").expect("v1.0 has rows");
+        assert_eq!(counts(&p), (2, 2, 5, 5));
+    }
+
+    #[test]
+    fn progress_5165_milestone_token_compares_identity_not_spelling() {
+        for (raw, want) in [
+            ("v1.1", "1.1"),
+            ("V1.1", "1.1"),
+            (" 1.1 ", "1.1"),
+            ("**v1.1**", "1.1"),
+            ("`v1.1`", "1.1"),
+            ("v1.1 (current)", "1.1"),
+            ("[v1.1](ROADMAP.md#v11)", "1.1"),
+            ("v1.1:", "1.1"),
+            ("v1.10", "1.10"),
+            ("v3 (M3)", "3"),
+            ("", ""),
+            ("   ", ""),
+        ] {
+            assert_eq!(normalize_milestone_token(raw), want, "token {raw:?}");
+        }
+        let decorated = PROGRESS_5165
+            .replace("| v1.1 | 1/1", "| **v1.1** | 1/1")
+            .replace("| v1.1 | 0/2", "| [v1.1](#v11) | 0/2");
+        let p = roadmap_progress(&decorated, "v1.1 Beta").expect("v1.1 has rows");
+        assert_eq!(counts(&p), (2, 1, 3, 1));
+        // `v1.10` is its own milestone, not `v1.1`.
+        let with_ten = PROGRESS_5165.replace("| v1.1 | 0/2", "| v1.10 | 0/2");
+        let p = roadmap_progress(&with_ten, "v1.1").expect("v1.1 has rows");
+        assert_eq!(counts(&p), (1, 1, 1, 1));
+        let p = roadmap_progress(&with_ten, "v1.10").expect("v1.10 has rows");
+        assert_eq!(counts(&p), (1, 0, 2, 0));
+    }
+
+    #[test]
+    fn progress_5165_blank_state_milestone_falls_back_to_the_roadmap_in_progress_milestone() {
+        let roadmap = format!(
+            "# Roadmap\n\n## Milestones\n\n\
+            - \u{2705} **v1.0 Alpha** - Phases 1-2\n\
+            - \u{1F6A7} **v1.1 Beta** - Phases 3-4 (in progress)\n\n{PROGRESS_5165}"
+        );
+        let p = roadmap_progress(&roadmap, "").expect("falls back to v1.1");
+        assert_eq!(counts(&p), (2, 1, 3, 1));
+    }
+
+    #[test]
+    fn progress_5165_no_resolvable_milestone_counts_every_row() {
+        let p = roadmap_progress(PROGRESS_5165, "").expect("table parses");
+        assert_eq!(counts(&p), (4, 3, 8, 6));
+    }
+
+    #[test]
+    fn progress_5165_named_milestone_without_rows_is_none() {
+        assert_eq!(roadmap_progress(PROGRESS_5165, "v9"), None);
+    }
+
+    #[test]
+    fn progress_5165_table_without_milestone_column_is_not_sliced() {
+        let content = "## Progress\n\n\
+            | Phase | Plans Complete | Status | Completed |\n\
+            | --- | --- | --- | --- |\n\
+            | 1. Alpha | 2/2 | Complete | x |\n\
+            | 2. Beta | 1/2 | In Progress | |\n";
+        let p = roadmap_progress(content, "v1.1").expect("table parses");
+        assert_eq!(counts(&p), (2, 1, 4, 3));
     }
 
     // ── quick 260923-md1: milestone membership ─────────────────────────────
