@@ -272,14 +272,48 @@ struct RecognizedLine {
     shape: EntryShape,
 }
 
+/// The opening of a checklist phase entry, shared by every recognizer so that
+/// [`is_entry_line`], both phase parsers and the milestone scope agree on what
+/// starts a line (gsd-core #5763 readers, #5764 writers;
+/// `src/phase-entry-grammar.cts`, `docs/reference/roadmap-phase-entry.md`).
+///
+/// Up to the caller's tail the grammar is: line start, an optional BOM, a
+/// space/tab indent, one `markers` character (`-`, or `[-*]`), a **1-4 space or
+/// tab gap** (`-[ ]` is not a list item, five spaces make a code block), a
+/// `[ ]` / `[x]` / `[X]` box, and any run of spaces or tabs. Anchoring at the
+/// line start is what keeps `see - [ ] **Phase 1: X**` and a blockquoted
+/// `> - [ ] ...` from being entries. With `capture_box` the box character is
+/// capture group 1.
+///
+/// The indent is spaces and tabs plus the BOM, exactly upstream's grammar (I-8);
+/// it was `\s*` (any Unicode whitespace) before. A caller adds [`PHASE_ENTRY_BOLD_OPEN`]
+/// when its entries must be bold, after its own `(~~)?` strike slot (a local
+/// extension beyond upstream, I-7).
+fn phase_entry_open(markers: &str, capture_box: bool) -> String {
+    let state = if capture_box { "([ xX])" } else { "[ xX]" };
+    format!(r"^\x{{FEFF}}?[ \t]*{markers}[ \t]{{1,4}}\[{state}\][ \t]*")
+}
+
+/// The bold wrapper's opening token and the gap after it: `**` or `__`, then
+/// spaces/tabs (`- [ ] ** Phase 6: X**` is an entry).
+const PHASE_ENTRY_BOLD_OPEN: &str = r"(?:\*\*|__)[ \t]*";
+
 /// R1, the original bold checklist grammar. Groups: 1=checkbox,
 /// 2=strike-open (`~~`), 3=id, 4=name, 5=strike-close (`~~`), 6=description.
-/// Unanchored and byte-identical to the grammar this parser always had.
+///
+/// Anchored on [`phase_entry_open`] (#5763); it was an unanchored `- [x] `
+/// pattern. Keeps the `-` marker only (I-9): `*` bullets have always gone to
+/// [`bold_checkbox_re`], whose [`split_bold_tail`] strips a `--` separator
+/// differently (`desc`, not `- desc`), so moving them here would change
+/// captures. It closes on `**` only: a `__` wrapper closes only at the end of
+/// the line and so never has this grammar's dash tail.
 fn checklist_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
         Regex::new(&format!(
-            r"- \[([ xX])\] (~~)?\*\*Phase ({id})(?:\s*\([^)]*\))?:\s*(.+?)\*\*(~~)?\s*[-\x{{2014}}]\s*(.*)",
+            r"{open}(~~)?{bold}Phase ({id})(?:\s*\([^)]*\))?:\s*(.+?)\*\*(~~)?\s*[-\x{{2014}}]\s*(.*)",
+            open = phase_entry_open("-", true),
+            bold = PHASE_ENTRY_BOLD_OPEN,
             id = PHASE_ID
         ))
         .unwrap()
@@ -288,11 +322,19 @@ fn checklist_re() -> &'static Regex {
 
 /// R2, a bold checklist line whose tail is not a dash description — nothing,
 /// a `(TAG)`, a plan tally. Anchored. Groups as [`checklist_re`], 6=the tail.
+///
+/// The wrapper closes on `**` anywhere, or on `__` only at the end of the line
+/// so a name holding `__init__` is not cut short (upstream's
+/// `PHASE_ENTRY_BOLD_CLOSE_SRC`). The `regex` crate has no lookahead, so the
+/// `__` close consumes its trailing blanks and asserts `$`; groups 5 and 6 then
+/// match empty.
 fn bold_checkbox_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
         Regex::new(&format!(
-            r"^\s*[-*] \[([ xX])\] (~~)?\*\*Phase ({id})(?:\s*\([^)]*\))?:\s*(.+?)\*\*(~~)?(.*)$",
+            r"{open}(~~)?{bold}Phase ({id})(?:\s*\([^)]*\))?:\s*(.+?)(?:\*\*|__[ \t]*$)(~~)?(.*)$",
+            open = phase_entry_open("[-*]", true),
+            bold = PHASE_ENTRY_BOLD_OPEN,
             id = PHASE_ID
         ))
         .unwrap()
@@ -729,13 +771,15 @@ fn split_summary_rest(rest: &str) -> (String, String, Option<PlanTally>) {
 }
 
 /// R3, the plain (non-bold) checkbox phase line GSD's `complete-milestone`
-/// workflow writes: `- [x] Phase 1: Name (2/2 plans) — completed D`.
+/// workflow writes: `- [x] Phase 1: Name (2/2 plans) — completed D`. Opens on
+/// [`phase_entry_open`], so `- [ ]Phase 1: Name` (no gap after the box) counts.
 /// Groups: 1=checkbox, 2=strike-open, 3=id, 4=the text after the colon.
 fn plain_checkbox_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
         Regex::new(&format!(
-            r"^\s*[-*] \[([ xX])\] (~~)?Phase ({id})(?:\s*\([^)]*\))?:\s+(.+?)\s*$",
+            r"{open}(~~)?Phase ({id})(?:\s*\([^)]*\))?:\s+(.+?)\s*$",
+            open = phase_entry_open("[-*]", true),
             id = PHASE_ID
         ))
         .unwrap()
@@ -1778,8 +1822,13 @@ pub fn roadmap_milestones(content: &str) -> Vec<RoadmapMilestone> {
         id = PHASE_ID
     ))
     .unwrap();
+    // The same entry opening as the phase parsers (#5763). Bold stays required
+    // here (I-10): widening the milestone scope to plain bullets is not part of
+    // this port.
     let phase_checklist = Regex::new(&format!(
-        r"^\s*- \[[ xX]\] (?:~~)?\*\*Phase ({id})",
+        r"{open}(?:~~)?{bold}Phase ({id})",
+        open = phase_entry_open("[-*]", false),
+        bold = PHASE_ENTRY_BOLD_OPEN,
         id = PHASE_ID
     ))
     .unwrap();
@@ -2896,6 +2945,137 @@ Plans:
             fenced_line_mask(&lines),
             [false, false, true, true, true, true, false, true, true, true, false]
         );
+    }
+
+    // ── quick 261103-em6: gsd-core #5763 phase-entry grammar ───────────────
+    //
+    // Upstream: `src/phase-entry-grammar.cts` and
+    // `docs/reference/roadmap-phase-entry.md` (readers #5763, writers #5764).
+
+    fn one_phase(line: &str) -> RoadmapPhase {
+        let phases = parse_roadmap_phases(line);
+        assert_eq!(phases.len(), 1, "exactly one phase from {line:?}");
+        phases.into_iter().next().unwrap()
+    }
+
+    #[test]
+    fn entry_grammar_5763_newly_accepted_forms() {
+        // (line, number, name, completed, description)
+        let cases: [(&str, &str, &str, bool, &str); 9] = [
+            (
+                "-\t[ ] **Phase 1: Tab Gap** - d",
+                "1",
+                "Tab Gap",
+                false,
+                "d",
+            ),
+            (
+                "-    [x] **Phase 2: Four Spaces** - d",
+                "2",
+                "Four Spaces",
+                true,
+                "d",
+            ),
+            (
+                "- [ ]  **Phase 3: Two After Box** - d",
+                "3",
+                "Two After Box",
+                false,
+                "d",
+            ),
+            ("- [X]**Phase 4: No Gap** - d", "4", "No Gap", true, "d"),
+            ("* [ ]\t**Phase 5: Star Tab**", "5", "Star Tab", false, ""),
+            (
+                "- [ ] ** Phase 6: Spaced Bold** - d",
+                "6",
+                "Spaced Bold",
+                false,
+                "d",
+            ),
+            (
+                "- [ ] __Phase 7: Underscore__",
+                "7",
+                "Underscore",
+                false,
+                "",
+            ),
+            ("- [ ]Phase 8: Plain No Gap", "8", "Plain No Gap", false, ""),
+            ("\u{FEFF}- [ ] **Phase 9: Bom**", "9", "Bom", false, ""),
+        ];
+        for (line, number, name, completed, description) in cases {
+            let phase = one_phase(line);
+            assert_eq!(phase.number, number, "{line:?}");
+            assert_eq!(phase.name, name, "{line:?}");
+            assert_eq!(phase.completed, completed, "{line:?}");
+            assert_eq!(phase.description, description, "{line:?}");
+        }
+    }
+
+    #[test]
+    fn entry_grammar_5763_underscore_bold_closes_only_at_line_end() {
+        let phase = one_phase("- [ ] __Phase 1: __init__ helpers__");
+        assert_eq!(phase.name, "__init__ helpers");
+        // Upstream parity: `__` closes only at the end of the line.
+        assert!(parse_roadmap_phases("- [ ] __Phase 2: Name__ - tail").is_empty());
+    }
+
+    #[test]
+    fn entry_grammar_5763_mid_line_mentions_are_not_entries() {
+        // Both were entries at HEAD through the unanchored R1.
+        for line in [
+            "text - [ ] **Phase 1: Mid** - d",
+            "> - [ ] **Phase 2: Quoted** - d",
+            "See - [x] Phase 3: Plain mention",
+        ] {
+            assert!(parse_roadmap_phases(line).is_empty(), "{line:?}");
+        }
+    }
+
+    #[test]
+    fn entry_grammar_5763_gapless_split_and_lone_star_forms_are_not_entries() {
+        for line in [
+            // No marker gap: not a list item (#5764 row).
+            "-[ ] **Phase 1: A** - d",
+            "-[ ] Phase 1: A",
+            "*[x] **Phase 1: A**",
+            // Five spaces after the marker: an indented code block.
+            "-     [ ] **Phase 2: B** - d",
+            // Marker and box, or box and label, split across a line break.
+            "-\n[ ] **Phase 3: C** - d",
+            "- [ ]\n**Phase 3: C** - d",
+            // A lone `*` is not a bold wrapper.
+            "- [ ] *Phase 4: D* - d",
+        ] {
+            assert!(parse_roadmap_phases(line).is_empty(), "{line:?}");
+        }
+    }
+
+    #[test]
+    fn entry_grammar_5763_shipped_phases_follow_the_grammar() {
+        let roadmap = "<details>\n\
+            <summary>v1.0 MVP (Phases 1-4) - SHIPPED 2026-01-01</summary>\n\n\
+            *\t[x] **Phase 1: A** - a\n\
+            text - [x] **Phase 2: B** - b\n\n\
+            </details>\n";
+        let shipped = parse_shipped_phases(roadmap);
+        assert_eq!(shipped.len(), 1);
+        assert_eq!(shipped[0].number, "1");
+        assert!(shipped[0].completed);
+        assert!(parse_roadmap_phases(roadmap).is_empty());
+    }
+
+    #[test]
+    fn entry_grammar_5763_milestone_scope_follows_the_grammar() {
+        let roadmap = "## v2.0 Current\n\n\
+            * [ ] **Phase 9: Nine**\n\
+            -\t[x] __Phase 10: Ten__\n\
+            see - [ ] **Phase 11: Eleven** here\n";
+        let ms = roadmap_milestones(roadmap);
+        let current = ms
+            .iter()
+            .find(|m| m.label.as_raw_for_logic_only() == "v2.0 Current")
+            .expect("the v2.0 Current milestone");
+        assert_eq!(current.scoped_phases, [phase_key("9"), phase_key("10")]);
     }
 
     // ── quick 260923-md1: milestone membership ─────────────────────────────
