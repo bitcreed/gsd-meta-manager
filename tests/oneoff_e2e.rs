@@ -63,6 +63,9 @@ fn prepared(fx: Fixture) -> Fixture {
 /// `gsd-meta-manager task <args...>` under the fixture's hermetic environment.
 fn task(fx: &Fixture, args: &[&str]) -> Command {
     let mut cmd = fx.hermetic_command();
+    // Fake scenarios that end a turn without writing a report must not wait the
+    // production 120 s idle settle (every e2e launch goes through here).
+    cmd.env("GSDMM_ONEOFF_IDLE_SETTLE_SECS", "1");
     cmd.arg("task").args(args);
     cmd
 }
@@ -728,6 +731,70 @@ fn lines_of(path: &Path) -> Vec<Value> {
         .lines()
         .map(|l| serde_json::from_str(l).unwrap_or(Value::Null))
         .collect()
+}
+
+/// One background task outstanding at the first result: the session must stay open
+/// for a message, then end only after the final result with a report (quick 261103-mnr).
+const BACKGROUND_SCENARIO: &str = r#"
+printf '%s\n' '{"type":"system","subtype":"init","model":"fake"}'
+printf '%s\n' '{"type":"system","subtype":"background_tasks_changed","tasks":[{"task_id":"bg1"}]}'
+printf '%s\n' '{"type":"system","subtype":"task_started","task_id":"bg1","is_backgrounded":true}'
+printf '%s\n' '{"type":"result","subtype":"success","total_cost_usd":0.1,"num_turns":1,"queued_turn_count":0,"subagent_stats":{"spawned":1,"completed":0,"failed":0,"killed":{"parent":0,"system":0,"user":0}}}'
+touch "$FAKE_CLAUDE_DIR/started"
+IFS= read -r line
+printf '%s\n' "$line" | sed 's/^{/{"isReplay":true,/'
+printf '%s\n' '{"type":"system","subtype":"task_notification","task_id":"bg1","status":"completed"}'
+printf '%s\n' '{"type":"system","subtype":"background_tasks_changed","tasks":[]}'
+printf '%s\n' '{"type":"system","subtype":"init","model":"fake"}'
+gsd-meta-manager taskctl report --status done --headline "Background work done"
+printf '%s\n' '{"type":"result","subtype":"success","total_cost_usd":0.2,"num_turns":2,"queued_turn_count":0,"subagent_stats":{"spawned":1,"completed":1,"failed":0,"killed":{"parent":0,"system":0,"user":0}}}'
+while IFS= read -r line; do :; done
+touch "$FAKE_CLAUDE_DIR/eof"
+"#;
+
+#[test]
+fn background_work_keeps_the_session_open_for_messages() {
+    let fx = fixture();
+    fx.write_scenario(BACKGROUND_SCENARIO);
+    let out = run(&fx, &["run", ALIAS, "--text", "do the background thing"]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert!(
+        wait_until(Duration::from_secs(30), || fx.scenario_started()),
+        "the scenario never started"
+    );
+    let live = status(&fx);
+    let id = live["record"]["run_id"].as_str().unwrap().to_owned();
+    let dir = run_dir(&fx, &id);
+
+    // Three idle settles (1 s each) with a task outstanding and no report: still open.
+    std::thread::sleep(Duration::from_secs(3));
+    assert!(
+        !fx.rec_dir().join("eof").exists(),
+        "the input was closed while a background task was outstanding"
+    );
+
+    let sent = run(&fx, &["send", ALIAS, "status check"]);
+    assert_eq!(sent.status.code(), Some(0), "{sent:?}");
+    assert!(
+        String::from_utf8_lossy(&sent.stdout).contains("delivered"),
+        "{sent:?}"
+    );
+
+    let done = wait_finished(&fx);
+    assert_eq!(done["record"]["outcome"]["kind"], "finished", "{done}");
+    assert_eq!(done["record"]["report"]["status"], "done", "{done}");
+    assert!(fx.rec_dir().join("eof").exists());
+    let injections = lines_of(&dir.join("injections.jsonl"));
+    let messages: Vec<&Value> = injections
+        .iter()
+        .filter(|r| r["kind"] == "message")
+        .collect();
+    assert_eq!(messages.len(), 1, "{injections:?}");
+    assert_eq!(messages[0]["outcome"], "delivered");
+    assert!(
+        !injections.iter().any(|r| r["outcome"] == "refused"),
+        "{injections:?}"
+    );
 }
 
 #[test]

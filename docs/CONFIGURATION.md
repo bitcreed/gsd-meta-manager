@@ -121,6 +121,7 @@ The binary itself does not require any environment variables to start. It does, 
 | `GSD_MM_ENVELOPE_ROOT` | Optional | `src/envelope/mod.rs` (`envelope_root`) | Overrides the root directory of the per-alias envelope ledger, which otherwise lives under `dirs::data_local_dir()/gsd-meta-manager/`. Intended for tests; it only moves where the ledger is read and written. Unset or empty uses the default. |
 | `GSDMM_ONEOFF_REPORT_DIR` | Never set by users | `src/taskctl_cli.rs` (`taskctl report`) | Set by the one-off launcher inside the sandbox (and pinned by the run's `gsd-meta-manager` shim): the directory `taskctl report` writes `report.json` to. Unset, relative or missing makes `taskctl report` exit 1. |
 | `GSDMM_ONEOFF_SOFT_CAP_GRACE_SECS` | Tests only | `src/oneoff/session.rs` (`grace_from_env`) | Shortens the one-off soft cap's grace (integer 1-600 seconds; default 300). Read once by the launcher daemon at session start. |
+| `GSDMM_ONEOFF_IDLE_SETTLE_SECS` | Tests only | `src/oneoff/session.rs` (`idle_settle_from_env`) | Shortens how long a one-off session may stay quiet, with nothing outstanding and no agent report, before the launcher closes the agent's input (integer 1-600 seconds; default 120). Read once by the launcher daemon at session start. |
 | `GSDMM_ONEOFF_STOP_GRACE_SECS` | Tests only | `src/oneoff/cancel.rs` (`stop_grace_from_env`) | Shortens the one-off hard cut's grace between SIGTERM and SIGKILL (integer 1-600 seconds; default 10). Read by the launcher daemon (and a landing) at session start. |
 | `GSDMM_ONEOFF_PAUSE_GRACE_SECS` | Tests only | `src/oneoff/cancel.rs` (`pause_grace_from_env`) | Shortens how long a one-off pause may take before the launcher cuts the run hard (integer 1-600 seconds; default 300). Read at session start. |
 
@@ -301,9 +302,17 @@ cancels) and Esc or `q` closes the view and stops its tail. A finished run is
 read-only. Every string from the stream is drawn escaped.
 
 The agent reads stream-json on its stdin: the prompt is its first message and each
-message you send is the next one. The session ends by itself when the agent's turn
-ends with no message of yours still pending (the launcher then closes the agent's
-stdin); a message you send mid-turn is read when that turn ends and starts another.
+message you send is the next one. A turn ending is not the end of the session: the
+agent may have background subagents running, and each one's notification starts a
+new turn. The launcher closes the agent's stdin (which ends the session) only when
+a turn has ended since the last turn start, every message you sent was read back,
+no background task is outstanding, no turn is queued, and either the agent's report
+(`report/report.json`) exists (closed at once) or the stream has been quiet for 120
+seconds with no report (closed anyway, recorded as the `run.json` warning `closed
+the agent's input after 120s idle with no report`). Messages, a pause and the soft
+cap's wrap-up are delivered during background work; a message you send mid-turn is
+read when that turn ends and starts another. The wall-clock limit, `--max-budget-usd`,
+the soft-cap grace stop and a stop or kill still end a session at any time.
 `gsd-meta-manager task send <project> <text> [--wait-secs 10]` does the same from
 the CLI and exits non-zero when the run is not live. A message is 1 to 4000
 characters, at most 200 per run, and is put in `<run-dir>/inbox/` (0700, host-only,

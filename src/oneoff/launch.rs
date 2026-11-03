@@ -63,7 +63,7 @@ use super::report::read_validated;
 use super::resolve::{merge_master_into_run, ResumeMergeJob};
 use super::resume::{ResumeFrom, ResumeSpec};
 use super::runtime::{AgentRuntime, HostEnd};
-use super::session::{grace_from_env, Supervisor};
+use super::session::{grace_from_env, idle_settle_from_env, Supervisor};
 use super::store::{
     live_lock_path, mint_run_id, oneoff_root, project_dir_for, project_dir_in, resolve_run,
     rfc3339, run_lock_path, summary_path_from, synthesize, valid_oneoff_run_id, write_record,
@@ -865,7 +865,16 @@ pub(crate) fn run_sandboxed_session(
         })?;
     drop(env);
     // C-05: the prompt is the first message on the agent's stdin.
-    let mut supervisor = Supervisor::new(session_dir, input, spec.budget_usd, grace_from_env());
+    // D-01: the agent's report file says it is done; the idle settle covers one that
+    // never writes it.
+    let mut supervisor = Supervisor::new(
+        session_dir,
+        &spec.report_dir.join(REPORT_FILE),
+        input,
+        spec.budget_usd,
+        grace_from_env(),
+        idle_settle_from_env(),
+    );
     supervisor.send_prompt(spec.prompt, Instant::now());
     let containment = match &unit {
         Some(unit) => Containment::Scope { unit: unit.clone() },

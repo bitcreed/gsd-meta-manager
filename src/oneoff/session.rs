@@ -1,12 +1,14 @@
-//! The session lifecycle of a one-off run (quick 261103-gt1).
+//! The session lifecycle of a one-off run (quick 261103-gt1, 261103-mnr).
 //!
 //! In stream-json input mode the agent stays alive until its stdin reaches EOF, so the
-//! launcher must close stdin to end the session the way a plain `-p` run ends: when
-//! the agent finishes its turn with nothing left to read. [`SessionLifecycle`] is the
-//! pure decision (C-06); [`Supervisor`] is one wait-loop tick of the daemon: follow
-//! the agent's own `stream.jsonl`, take the inbox, write the messages, apply the
-//! lifecycle.
+//! launcher must close stdin to end the session. It must not do so while the agent
+//! still has work: a `result` ends a TURN, not the session, because the agent may have
+//! background subagents running that start a new turn on each of their notifications.
+//! [`SessionLifecycle`] is the pure decision (C-06, D-01); [`Supervisor`] is one
+//! wait-loop tick of the daemon: follow the agent's own `stream.jsonl`, take the inbox,
+//! write the messages, apply the lifecycle.
 
+use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
 use super::stream::StreamEvent;
@@ -15,6 +17,30 @@ use super::stream::StreamEvent;
 /// stdin is closed anyway (C-06). A fixed fallback for an agent that never replays.
 pub const REPLAY_SETTLE: Duration = Duration::from_secs(30);
 
+/// How long the stream may stay quiet after a turn ended with nothing outstanding and
+/// no report written before stdin is closed anyway (D-01). It leaves the operator room
+/// to inject a message and covers an agent that forgets to report.
+pub const IDLE_SETTLE: Duration = Duration::from_secs(120);
+
+/// The environment variable that shortens the idle settle (tests only; 1..=600
+/// seconds). It is read by the host daemon at session start; the sandboxed agent cannot
+/// set it.
+pub const IDLE_SETTLE_ENV: &str = "GSDMM_ONEOFF_IDLE_SETTLE_SECS";
+
+/// The idle settle in force: [`IDLE_SETTLE_ENV`] when it is an integer 1..=600, else
+/// [`IDLE_SETTLE`].
+pub fn idle_settle_from_env() -> Duration {
+    idle_settle_from(std::env::var(IDLE_SETTLE_ENV).ok().as_deref())
+}
+
+/// [`idle_settle_from_env`] with the value given.
+pub fn idle_settle_from(value: Option<&str>) -> Duration {
+    super::cancel::grace_with_default(value, IDLE_SETTLE)
+}
+
+/// The most started-not-ended task ids the lifecycle remembers (T-mnr-01).
+const MAX_TRACKED_TASKS: usize = 1024;
+
 /// What the lifecycle asks the daemon to do with the agent's stdin.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LifecycleStep {
@@ -22,9 +48,17 @@ pub enum LifecycleStep {
     CloseStdin,
     /// Close it, and record that a written message was never seen replayed.
     CloseStdinWithWarning,
+    /// Close it, and record that the agent went quiet without writing its report.
+    CloseStdinIdle,
 }
 
-/// Counts the messages written and replayed, and decides when the turn is over.
+/// Counts the messages written and replayed, tracks the agent's outstanding work and
+/// decides when the session is over.
+///
+/// The session ends when a turn has ended since the last turn start, every written
+/// message was replayed, no background task is outstanding, no turn is queued, and
+/// either the agent's report exists (close at once) or the stream has been idle for the
+/// idle settle (close with a warning).
 ///
 /// Replays are matched to writes by COUNT, in order, never by text: the capture pump
 /// may redact the replayed text (I-2).
@@ -33,8 +67,20 @@ pub struct SessionLifecycle {
     written: u32,
     replayed: u32,
     stdin_open: bool,
-    /// When a `result` was last seen with no replay after it.
+    /// When a `result` was last seen with no turn start after it.
     result_since: Option<Instant>,
+    idle_settle: Duration,
+    /// When the last stream event was seen.
+    last_event: Option<Instant>,
+    /// How many `init` events were seen (every one after the first starts a turn).
+    inits: u32,
+    /// The size of the latest background-task set the agent reported.
+    background: Option<u32>,
+    /// Task ids started and not ended.
+    tasks: BTreeSet<String>,
+    /// The latest result's queued turns and still-running subagents.
+    queued_turns: u32,
+    result_outstanding: u32,
 }
 
 impl Default for SessionLifecycle {
@@ -50,7 +96,20 @@ impl SessionLifecycle {
             replayed: 0,
             stdin_open: true,
             result_since: None,
+            idle_settle: IDLE_SETTLE,
+            last_event: None,
+            inits: 0,
+            background: None,
+            tasks: BTreeSet::new(),
+            queued_turns: 0,
+            result_outstanding: 0,
         }
+    }
+
+    /// The same lifecycle with another idle settle.
+    pub fn with_idle_settle(mut self, idle_settle: Duration) -> Self {
+        self.idle_settle = idle_settle;
+        self
     }
 
     /// A message was queued for the agent. A `result` that is still waiting restarts
@@ -64,32 +123,79 @@ impl SessionLifecycle {
 
     /// Feed one classified stream event.
     pub fn saw(&mut self, event: &StreamEvent, now: Instant) {
+        self.last_event = Some(now);
         match event {
             StreamEvent::UserReplay { .. } => {
                 self.replayed += 1;
                 // A replay after a result is a new turn: wait for the next result.
                 self.result_since = None;
             }
-            StreamEvent::TurnResult { .. } => self.result_since = Some(now),
+            StreamEvent::System { subtype } if subtype == "init" => {
+                self.inits += 1;
+                // The agent starts a new turn on each task notification.
+                if self.inits > 1 {
+                    self.result_since = None;
+                }
+            }
+            StreamEvent::TurnResult {
+                queued_turns,
+                subagents_outstanding,
+                ..
+            } => {
+                self.result_since = Some(now);
+                self.queued_turns = *queued_turns;
+                self.result_outstanding = *subagents_outstanding;
+            }
+            StreamEvent::BackgroundTasks { count } => self.background = Some(*count),
+            StreamEvent::TaskStarted { task_id } => {
+                if self.tasks.len() < MAX_TRACKED_TASKS {
+                    self.tasks.insert(task_id.clone());
+                }
+            }
+            StreamEvent::TaskEnded { task_id } => {
+                self.tasks.remove(task_id);
+            }
             _ => {}
         }
     }
 
-    /// The step for `now`. Returning a close also marks the input closed.
-    pub fn decide(&mut self, now: Instant) -> LifecycleStep {
+    /// The background work the agent still has: the latest background-task set when
+    /// one was ever reported (else the started-not-ended task ids), or what the
+    /// latest result's statistics say, whichever is more.
+    pub fn outstanding(&self) -> u32 {
+        let tracked = self
+            .background
+            .unwrap_or_else(|| u32::try_from(self.tasks.len()).unwrap_or(u32::MAX));
+        tracked.max(self.result_outstanding)
+    }
+
+    /// The step for `now`. `report_present` says whether the agent's report exists.
+    /// Returning a close also marks the input closed.
+    pub fn decide(&mut self, now: Instant, report_present: bool) -> LifecycleStep {
         if !self.stdin_open {
             return LifecycleStep::Keep;
         }
         let Some(since) = self.result_since else {
             return LifecycleStep::Keep;
         };
-        if self.replayed >= self.written {
+        if self.outstanding() > 0 || self.queued_turns > 0 {
+            return LifecycleStep::Keep;
+        }
+        if self.replayed < self.written {
+            if now.saturating_duration_since(since) >= REPLAY_SETTLE {
+                self.stdin_open = false;
+                return LifecycleStep::CloseStdinWithWarning;
+            }
+            return LifecycleStep::Keep;
+        }
+        if report_present {
             self.stdin_open = false;
             return LifecycleStep::CloseStdin;
         }
-        if now.saturating_duration_since(since) >= REPLAY_SETTLE {
+        let quiet_since = self.last_event.map_or(since, |last| last.max(since));
+        if now.saturating_duration_since(quiet_since) >= self.idle_settle {
             self.stdin_open = false;
-            return LifecycleStep::CloseStdinWithWarning;
+            return LifecycleStep::CloseStdinIdle;
         }
         LifecycleStep::Keep
     }
@@ -259,6 +365,9 @@ mod supervisor {
     /// The daemon's per-tick view of its own session.
     pub struct Supervisor {
         run_dir: PathBuf,
+        /// The agent's report file: its presence says the agent is done (D-01).
+        report_file: PathBuf,
+        idle_settle: Duration,
         runtime: AgentRuntime,
         tail: StreamTail,
         lifecycle: SessionLifecycle,
@@ -271,12 +380,21 @@ mod supervisor {
     }
 
     impl Supervisor {
-        pub fn new(run_dir: &Path, input: ChildInput, hard_usd: f64, grace: Duration) -> Self {
+        pub fn new(
+            run_dir: &Path,
+            report_file: &Path,
+            input: ChildInput,
+            hard_usd: f64,
+            grace: Duration,
+            idle_settle: Duration,
+        ) -> Self {
             Supervisor {
                 run_dir: run_dir.to_owned(),
+                report_file: report_file.to_owned(),
+                idle_settle,
                 runtime: AgentRuntime::default(),
                 tail: StreamTail::new(&run_dir.join(STREAM_FILE)),
-                lifecycle: SessionLifecycle::new(),
+                lifecycle: SessionLifecycle::new().with_idle_settle(idle_settle),
                 input,
                 injections: 0,
                 warnings: Vec::new(),
@@ -458,9 +576,18 @@ mod supervisor {
                 self.soft_cap_hit_at = Some(rfc3339(Utc::now()));
                 outcome.persist = true;
             }
-            match self.lifecycle.decide(now) {
+            // Presence only, no symlink follow: the report is re-validated at finalize.
+            let report_present = self.report_file.symlink_metadata().is_ok();
+            match self.lifecycle.decide(now, report_present) {
                 LifecycleStep::Keep => {}
                 LifecycleStep::CloseStdin => self.input.close(),
+                LifecycleStep::CloseStdinIdle => {
+                    self.warnings.push(format!(
+                        "closed the agent's input after {}s idle with no report",
+                        self.idle_settle.as_secs()
+                    ));
+                    self.input.close();
+                }
                 LifecycleStep::CloseStdinWithWarning => {
                     self.warnings.push(
                         "a message was written but never seen replayed; the agent's input was closed anyway"
@@ -513,6 +640,8 @@ mod tests {
             cost_usd: None,
             turns: None,
             is_error: false,
+            queued_turns: 0,
+            subagents_outstanding: 0,
         }
     }
 
@@ -521,12 +650,12 @@ mod tests {
         let t0 = Instant::now();
         let mut l = SessionLifecycle::new();
         l.wrote(t0);
-        assert_eq!(l.decide(t0), LifecycleStep::Keep, "no result yet");
+        assert_eq!(l.decide(t0, true), LifecycleStep::Keep, "no result yet");
         l.saw(&replay(), t0);
         l.saw(&result(), t0);
-        assert_eq!(l.decide(t0), LifecycleStep::CloseStdin);
+        assert_eq!(l.decide(t0, true), LifecycleStep::CloseStdin);
         assert!(!l.can_write());
-        assert_eq!(l.decide(t0), LifecycleStep::Keep, "closed once");
+        assert_eq!(l.decide(t0, true), LifecycleStep::Keep, "closed once");
     }
 
     #[test]
@@ -537,10 +666,10 @@ mod tests {
         l.wrote(t0);
         l.saw(&replay(), t0);
         l.saw(&result(), t0);
-        assert_eq!(l.decide(t0), LifecycleStep::Keep);
+        assert_eq!(l.decide(t0, true), LifecycleStep::Keep);
         l.saw(&replay(), t0);
         l.saw(&result(), t0);
-        assert_eq!(l.decide(t0), LifecycleStep::CloseStdin);
+        assert_eq!(l.decide(t0, true), LifecycleStep::CloseStdin);
     }
 
     #[test]
@@ -549,10 +678,13 @@ mod tests {
         let mut l = SessionLifecycle::new();
         l.wrote(t0);
         l.saw(&result(), t0);
-        assert_eq!(l.decide(t0), LifecycleStep::Keep);
-        assert_eq!(l.decide(t0 + Duration::from_secs(29)), LifecycleStep::Keep);
+        assert_eq!(l.decide(t0, true), LifecycleStep::Keep);
         assert_eq!(
-            l.decide(t0 + Duration::from_secs(30)),
+            l.decide(t0 + Duration::from_secs(29), true),
+            LifecycleStep::Keep
+        );
+        assert_eq!(
+            l.decide(t0 + Duration::from_secs(30), true),
             LifecycleStep::CloseStdinWithWarning
         );
         assert!(!l.can_write());
@@ -568,10 +700,13 @@ mod tests {
         l.saw(&result(), t0);
         l.saw(&replay(), t0);
         // The second turn has not ended: even past the settle window, keep.
-        assert_eq!(l.decide(t0 + Duration::from_secs(120)), LifecycleStep::Keep);
+        assert_eq!(
+            l.decide(t0 + Duration::from_secs(120), true),
+            LifecycleStep::Keep
+        );
         l.saw(&result(), t0 + Duration::from_secs(121));
         assert_eq!(
-            l.decide(t0 + Duration::from_secs(121)),
+            l.decide(t0 + Duration::from_secs(121), true),
             LifecycleStep::CloseStdin
         );
     }
@@ -584,7 +719,11 @@ mod tests {
         l.saw(&replay(), t0);
         l.saw(&result(), t0);
         l.wrote(t0);
-        assert_eq!(l.decide(t0), LifecycleStep::Keep, "the new message is owed");
+        assert_eq!(
+            l.decide(t0, true),
+            LifecycleStep::Keep,
+            "the new message is owed"
+        );
     }
 
     #[test]
@@ -640,5 +779,370 @@ mod tests {
         for bad in [None, Some("0"), Some("601"), Some("x"), Some("")] {
             assert_eq!(grace_from(bad), SOFT_CAP_GRACE, "{bad:?}");
         }
+    }
+
+    fn init() -> StreamEvent {
+        StreamEvent::System {
+            subtype: "init".into(),
+        }
+    }
+
+    fn result_with(queued_turns: u32, subagents_outstanding: u32) -> StreamEvent {
+        StreamEvent::TurnResult {
+            subtype: "success".into(),
+            cost_usd: None,
+            turns: None,
+            is_error: false,
+            queued_turns,
+            subagents_outstanding,
+        }
+    }
+
+    #[test]
+    fn background_work_keeps_stdin_open_past_a_result() {
+        let t0 = Instant::now();
+        let mut l = SessionLifecycle::new();
+        l.wrote(t0);
+        l.saw(&init(), t0);
+        l.saw(&replay(), t0);
+        l.saw(&StreamEvent::BackgroundTasks { count: 2 }, t0);
+        l.saw(&result(), t0);
+        assert_eq!(l.outstanding(), 2);
+        // Even with a report present, two tasks outstanding is not the end.
+        assert_eq!(l.decide(t0, true), LifecycleStep::Keep);
+        assert_eq!(
+            l.decide(t0 + Duration::from_secs(600), true),
+            LifecycleStep::Keep
+        );
+        assert!(l.can_write());
+        // The set drains; the agent starts a turn on the notification and ends it.
+        l.saw(&StreamEvent::BackgroundTasks { count: 0 }, t0);
+        l.saw(&init(), t0);
+        assert_eq!(l.decide(t0, true), LifecycleStep::Keep, "a turn is running");
+        l.saw(&result(), t0);
+        assert_eq!(l.decide(t0, true), LifecycleStep::CloseStdin);
+    }
+
+    #[test]
+    fn task_events_count_when_no_background_event_was_seen() {
+        let t0 = Instant::now();
+        let mut l = SessionLifecycle::new();
+        l.wrote(t0);
+        l.saw(&replay(), t0);
+        for id in ["t1", "t2"] {
+            l.saw(&StreamEvent::TaskStarted { task_id: id.into() }, t0);
+        }
+        l.saw(&result(), t0);
+        assert_eq!(l.outstanding(), 2);
+        assert_eq!(l.decide(t0, true), LifecycleStep::Keep);
+        l.saw(
+            &StreamEvent::TaskEnded {
+                task_id: "t1".into(),
+            },
+            t0,
+        );
+        assert_eq!(l.outstanding(), 1);
+        l.saw(
+            &StreamEvent::TaskEnded {
+                task_id: "t2".into(),
+            },
+            t0,
+        );
+        assert_eq!(l.outstanding(), 0);
+        assert_eq!(l.decide(t0, true), LifecycleStep::CloseStdin);
+    }
+
+    #[test]
+    fn the_task_id_set_is_bounded() {
+        let t0 = Instant::now();
+        let mut l = SessionLifecycle::new();
+        for n in 0..(MAX_TRACKED_TASKS + 50) {
+            l.saw(
+                &StreamEvent::TaskStarted {
+                    task_id: format!("t{n}"),
+                },
+                t0,
+            );
+        }
+        assert_eq!(l.outstanding() as usize, MAX_TRACKED_TASKS);
+    }
+
+    #[test]
+    fn subagent_stats_and_queued_turns_hold_the_session_open() {
+        let t0 = Instant::now();
+        let mut l = SessionLifecycle::new();
+        l.wrote(t0);
+        l.saw(&replay(), t0);
+        l.saw(&result_with(0, 3), t0);
+        assert_eq!(l.outstanding(), 3);
+        assert_eq!(l.decide(t0, true), LifecycleStep::Keep, "subagents running");
+        l.saw(&result_with(1, 0), t0);
+        assert_eq!(l.decide(t0, true), LifecycleStep::Keep, "a turn is queued");
+        l.saw(&result_with(0, 0), t0);
+        assert_eq!(l.decide(t0, true), LifecycleStep::CloseStdin);
+    }
+
+    #[test]
+    fn a_later_init_starts_a_new_turn() {
+        let t0 = Instant::now();
+        let mut l = SessionLifecycle::new();
+        l.wrote(t0);
+        l.saw(&init(), t0);
+        l.saw(&replay(), t0);
+        l.saw(&result(), t0);
+        // A second init (a task notification) restarts the wait for a result.
+        l.saw(&init(), t0);
+        assert_eq!(
+            l.decide(t0 + Duration::from_secs(500), true),
+            LifecycleStep::Keep
+        );
+        l.saw(&result(), t0 + Duration::from_secs(501));
+        assert_eq!(
+            l.decide(t0 + Duration::from_secs(501), true),
+            LifecycleStep::CloseStdin
+        );
+    }
+
+    #[test]
+    fn the_first_init_alone_does_not_start_a_new_turn() {
+        let t0 = Instant::now();
+        let mut l = SessionLifecycle::new();
+        l.wrote(t0);
+        l.saw(&replay(), t0);
+        l.saw(&result(), t0);
+        l.saw(&init(), t0);
+        // That was the first init: the result stands.
+        assert_eq!(l.decide(t0, true), LifecycleStep::CloseStdin);
+    }
+
+    #[test]
+    fn without_a_report_the_session_closes_after_the_idle_settle() {
+        let t0 = Instant::now();
+        let mut l = SessionLifecycle::new();
+        l.wrote(t0);
+        l.saw(&replay(), t0);
+        l.saw(&result(), t0);
+        assert_eq!(l.decide(t0, false), LifecycleStep::Keep);
+        assert_eq!(
+            l.decide(t0 + Duration::from_secs(119), false),
+            LifecycleStep::Keep
+        );
+        assert_eq!(
+            l.decide(t0 + Duration::from_secs(120), false),
+            LifecycleStep::CloseStdinIdle
+        );
+        assert!(!l.can_write());
+
+        // An event at 60 s moves the idle clock.
+        let mut l = SessionLifecycle::new();
+        l.wrote(t0);
+        l.saw(&replay(), t0);
+        l.saw(&result(), t0);
+        l.saw(&StreamEvent::Other, t0 + Duration::from_secs(60));
+        assert_eq!(
+            l.decide(t0 + Duration::from_secs(120), false),
+            LifecycleStep::Keep
+        );
+        assert_eq!(
+            l.decide(t0 + Duration::from_secs(179), false),
+            LifecycleStep::Keep
+        );
+        assert_eq!(
+            l.decide(t0 + Duration::from_secs(180), false),
+            LifecycleStep::CloseStdinIdle
+        );
+
+        // A report that appears closes at once.
+        let mut l = SessionLifecycle::new();
+        l.wrote(t0);
+        l.saw(&replay(), t0);
+        l.saw(&result(), t0);
+        assert_eq!(
+            l.decide(t0 + Duration::from_secs(5), false),
+            LifecycleStep::Keep
+        );
+        assert_eq!(
+            l.decide(t0 + Duration::from_secs(6), true),
+            LifecycleStep::CloseStdin
+        );
+    }
+
+    #[test]
+    fn a_shorter_idle_settle_is_honoured() {
+        let t0 = Instant::now();
+        let mut l = SessionLifecycle::new().with_idle_settle(Duration::from_secs(1));
+        l.wrote(t0);
+        l.saw(&replay(), t0);
+        l.saw(&result(), t0);
+        assert_eq!(l.decide(t0, false), LifecycleStep::Keep);
+        assert_eq!(
+            l.decide(t0 + Duration::from_secs(1), false),
+            LifecycleStep::CloseStdinIdle
+        );
+    }
+
+    #[test]
+    fn the_replay_settle_waits_for_background_work() {
+        let t0 = Instant::now();
+        let mut l = SessionLifecycle::new();
+        l.wrote(t0);
+        l.saw(&result_with(0, 1), t0);
+        // Written but never replayed, and a background task is outstanding: no close.
+        assert_eq!(
+            l.decide(t0 + Duration::from_secs(300), true),
+            LifecycleStep::Keep
+        );
+        l.saw(&StreamEvent::BackgroundTasks { count: 0 }, t0);
+        l.saw(&result_with(0, 0), t0 + Duration::from_secs(300));
+        assert_eq!(
+            l.decide(t0 + Duration::from_secs(330), true),
+            LifecycleStep::CloseStdinWithWarning
+        );
+    }
+
+    #[test]
+    fn the_idle_settle_override_is_bounded() {
+        assert_eq!(idle_settle_from(Some("1")), Duration::from_secs(1));
+        assert_eq!(idle_settle_from(Some(" 600 ")), Duration::from_secs(600));
+        for bad in [None, Some("0"), Some("601"), Some("x"), Some("")] {
+            assert_eq!(idle_settle_from(bad), IDLE_SETTLE, "{bad:?}");
+        }
+    }
+
+    const BG_RUN: &str = include_str!("../../tests/fixtures/oneoff/real-bg-subagents.stream.jsonl");
+    const RESUMED_RUN: &str = include_str!("../../tests/fixtures/oneoff/real-resumed.stream.jsonl");
+
+    /// Feed a recorded stream through the lifecycle, one line per second. Returns, per
+    /// line index, the events and what `decide(.., report)` answered after each result.
+    fn replay_run(
+        run: &str,
+        report: bool,
+    ) -> (SessionLifecycle, Vec<(usize, StreamEvent, LifecycleStep)>) {
+        let t0 = Instant::now();
+        let rt = crate::oneoff::runtime::AgentRuntime::default();
+        let mut l = SessionLifecycle::new();
+        l.wrote(t0);
+        let mut results = Vec::new();
+        for (i, line) in run.lines().enumerate() {
+            let now = t0 + Duration::from_secs(i as u64);
+            for event in rt.classify(line) {
+                l.saw(&event, now);
+                if matches!(event, StreamEvent::TurnResult { .. }) {
+                    let step = l.decide(now, report);
+                    results.push((i, event.clone(), step));
+                    if step != LifecycleStep::Keep {
+                        return (l, results);
+                    }
+                }
+            }
+        }
+        (l, results)
+    }
+
+    #[test]
+    fn the_recorded_background_run_closes_only_at_its_final_result() {
+        let t0 = Instant::now();
+        let rt = crate::oneoff::runtime::AgentRuntime::default();
+        let lines: Vec<&str> = BG_RUN.lines().collect();
+        assert_eq!(lines.len(), 304);
+
+        // The line whose background set first reached 0 after having been non-empty.
+        let mut peak = false;
+        let mut drained_at = None;
+        for (i, line) in lines.iter().enumerate() {
+            for event in rt.classify(line) {
+                if let StreamEvent::BackgroundTasks { count } = event {
+                    if count > 0 {
+                        peak = true;
+                    } else if peak && drained_at.is_none() {
+                        drained_at = Some(i);
+                    }
+                }
+            }
+        }
+        let drained_at = drained_at.expect("the set drains");
+
+        let mut l = SessionLifecycle::new();
+        l.wrote(t0);
+        let mut first_result = None;
+        let mut first_close = None;
+        for (i, line) in lines.iter().enumerate() {
+            let now = t0 + Duration::from_secs(i as u64);
+            for event in rt.classify(line) {
+                l.saw(&event, now);
+                if !matches!(event, StreamEvent::TurnResult { .. }) {
+                    continue;
+                }
+                let step = l.decide(now, true);
+                if first_result.is_none() {
+                    first_result = Some((i, now));
+                    assert_eq!(
+                        step,
+                        LifecycleStep::Keep,
+                        "line {i}: four tasks outstanding"
+                    );
+                    assert_eq!(l.outstanding(), 4);
+                    // Quiet for five minutes and no report: still not the end.
+                    assert_eq!(
+                        l.decide(now + Duration::from_secs(300), false),
+                        LifecycleStep::Keep
+                    );
+                } else if step != LifecycleStep::Keep && first_close.is_none() {
+                    first_close = Some((i, step));
+                }
+            }
+            if first_close.is_some() {
+                break;
+            }
+        }
+        let (first_at, _) = first_result.expect("a first result");
+        assert!(first_at < drained_at, "the first result precedes the drain");
+        let (close_at, step) = first_close.expect("the run closes");
+        assert!(
+            close_at > drained_at,
+            "closed at {close_at}, drained at {drained_at}"
+        );
+        assert_eq!(step, LifecycleStep::CloseStdin);
+        // It is the first result after the drain.
+        let first_after = lines
+            .iter()
+            .enumerate()
+            .skip(drained_at)
+            .find(|(_, line)| {
+                rt.classify(line)
+                    .iter()
+                    .any(|e| matches!(e, StreamEvent::TurnResult { .. }))
+            })
+            .map(|(i, _)| i);
+        assert_eq!(Some(close_at), first_after);
+    }
+
+    #[test]
+    fn the_recorded_resumed_run_closes_at_its_result_once_reported() {
+        let (_, results) = replay_run(RESUMED_RUN, true);
+        let (_, _, step) = results.last().expect("a result");
+        assert_eq!(*step, LifecycleStep::CloseStdin);
+
+        // Without a report it keeps, then closes after the idle settle.
+        let rt = crate::oneoff::runtime::AgentRuntime::default();
+        let t0 = Instant::now();
+        let mut l = SessionLifecycle::new();
+        l.wrote(t0);
+        let mut at = t0;
+        for (i, line) in RESUMED_RUN.lines().enumerate() {
+            at = t0 + Duration::from_secs(i as u64);
+            for event in rt.classify(line) {
+                l.saw(&event, at);
+            }
+        }
+        assert_eq!(l.decide(at, false), LifecycleStep::Keep);
+        assert_eq!(
+            l.decide(at + Duration::from_secs(119), false),
+            LifecycleStep::Keep
+        );
+        assert_eq!(
+            l.decide(at + IDLE_SETTLE, false),
+            LifecycleStep::CloseStdinIdle
+        );
     }
 }

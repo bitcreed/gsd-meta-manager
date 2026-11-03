@@ -356,6 +356,75 @@ impl AgentRuntime {
     }
 }
 
+/// A `u64` count as a `u32`, saturating.
+fn saturate_u32(n: u64) -> u32 {
+    u32::try_from(n).unwrap_or(u32::MAX)
+}
+
+/// Whether a background task status is final (the task will not run again).
+fn terminal_task_status(status: Option<&str>) -> bool {
+    matches!(
+        status,
+        Some("completed" | "failed" | "killed" | "stopped" | "error")
+    )
+}
+
+/// The background subagents a result's `subagent_stats` still counts as running:
+/// spawned minus completed, failed and killed (by parent, system or user). Every field
+/// is optional; absent means 0, and the difference saturates at 0.
+fn subagents_outstanding(stats: Option<&Value>) -> u32 {
+    let Some(stats) = stats.filter(|s| s.is_object()) else {
+        return 0;
+    };
+    let n = |v: Option<&Value>| v.and_then(Value::as_u64).unwrap_or(0);
+    let killed = stats.get("killed");
+    let done = n(stats.get("completed"))
+        .saturating_add(n(stats.get("failed")))
+        .saturating_add(n(killed.and_then(|k| k.get("parent"))))
+        .saturating_add(n(killed.and_then(|k| k.get("system"))))
+        .saturating_add(n(killed.and_then(|k| k.get("user"))));
+    saturate_u32(n(stats.get("spawned")).saturating_sub(done))
+}
+
+/// A `system` line: the background-task events the session lifecycle needs, else a
+/// plain [`StreamEvent::System`].
+fn classify_claude_system(value: &Value) -> StreamEvent {
+    let subtype = lower_word(value.get("subtype")).unwrap_or_else(|| "none".to_owned());
+    let id = |v: &Value| {
+        v.get("task_id")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(|s| one_line(s, 80))
+    };
+    match subtype.as_str() {
+        "background_tasks_changed" => match value.get("tasks").and_then(Value::as_array) {
+            Some(tasks) => StreamEvent::BackgroundTasks {
+                count: saturate_u32(tasks.len() as u64),
+            },
+            None => StreamEvent::System { subtype },
+        },
+        "task_started" => match id(value) {
+            Some(task_id) => StreamEvent::TaskStarted { task_id },
+            None => StreamEvent::System { subtype },
+        },
+        "task_notification" | "task_updated" => {
+            let status = if subtype == "task_updated" {
+                value
+                    .get("patch")
+                    .and_then(|p| p.get("status"))
+                    .and_then(Value::as_str)
+            } else {
+                value.get("status").and_then(Value::as_str)
+            };
+            match (terminal_task_status(status), id(value)) {
+                (true, Some(task_id)) => StreamEvent::TaskEnded { task_id },
+                _ => StreamEvent::System { subtype },
+            }
+        }
+        _ => StreamEvent::System { subtype },
+    }
+}
+
 fn classify_claude(line: &str) -> Vec<StreamEvent> {
     let Ok(value) = serde_json::from_str::<Value>(line) else {
         return vec![StreamEvent::Other];
@@ -469,6 +538,11 @@ fn classify_claude(line: &str) -> Vec<StreamEvent> {
                 .and_then(Value::as_u64)
                 .and_then(|n| u32::try_from(n).ok()),
             is_error: value.get("is_error").and_then(Value::as_bool) == Some(true),
+            queued_turns: value
+                .get("queued_turn_count")
+                .and_then(Value::as_u64)
+                .map_or(0, saturate_u32),
+            subagents_outstanding: subagents_outstanding(value.get("subagent_stats")),
         }],
         "rate_limit_event" => {
             let info = value.get("rate_limit_info").unwrap_or(&Value::Null);
@@ -482,9 +556,7 @@ fn classify_claude(line: &str) -> Vec<StreamEvent> {
                 resets_at: info.get("resetsAt").and_then(Value::as_i64),
             }]
         }
-        "system" => vec![StreamEvent::System {
-            subtype: lower_word(value.get("subtype")).unwrap_or_else(|| "none".to_owned()),
-        }],
+        "system" => vec![classify_claude_system(&value)],
         _ => vec![StreamEvent::Other],
     }
 }
@@ -928,6 +1000,99 @@ mod tests {
     }
 
     #[test]
+    fn system_task_events_and_result_counters_are_classified() {
+        // Real shapes recorded from a run with four background subagents.
+        assert_eq!(
+            classify(
+                r#"{"type":"system","subtype":"background_tasks_changed","tasks":[{"task_id":"t1"},{"task_id":"t2"},{"task_id":"t3"},{"task_id":"t4"}]}"#
+            ),
+            [StreamEvent::BackgroundTasks { count: 4 }]
+        );
+        assert_eq!(
+            classify(r#"{"type":"system","subtype":"background_tasks_changed","tasks":[]}"#),
+            [StreamEvent::BackgroundTasks { count: 0 }]
+        );
+        assert_eq!(
+            classify(
+                r#"{"type":"system","subtype":"task_started","task_id":"t1","is_backgrounded":true}"#
+            ),
+            [StreamEvent::TaskStarted {
+                task_id: "t1".into()
+            }]
+        );
+        assert_eq!(
+            classify(
+                r#"{"type":"system","subtype":"task_updated","task_id":"t1","patch":{"end_time":1,"status":"completed"}}"#
+            ),
+            [StreamEvent::TaskEnded {
+                task_id: "t1".into()
+            }]
+        );
+        assert_eq!(
+            classify(
+                r#"{"type":"system","subtype":"task_notification","task_id":"t2","status":"completed"}"#
+            ),
+            [StreamEvent::TaskEnded {
+                task_id: "t2".into()
+            }]
+        );
+        assert_eq!(
+            classify(
+                r#"{"type":"system","subtype":"task_updated","task_id":"t1","patch":{"status":"running"}}"#
+            ),
+            [StreamEvent::System {
+                subtype: "task_updated".into()
+            }]
+        );
+        assert_eq!(
+            classify(r#"{"type":"system","subtype":"task_started"}"#),
+            [StreamEvent::System {
+                subtype: "task_started".into()
+            }]
+        );
+        assert_eq!(
+            classify(r#"{"type":"system","subtype":"init","model":"m"}"#),
+            [StreamEvent::System {
+                subtype: "init".into()
+            }]
+        );
+        // The first recorded result: 4 spawned, none finished, nothing queued.
+        let [StreamEvent::TurnResult {
+            queued_turns,
+            subagents_outstanding,
+            ..
+        }] = classify(
+            r#"{"type":"result","subtype":"success","queued_turn_count":0,"subagent_stats":{"completed":0,"failed":0,"killed":{"parent":0,"system":0,"user":0},"spawned":4}}"#,
+        )[..]
+        else {
+            panic!("not a result");
+        };
+        assert_eq!((queued_turns, subagents_outstanding), (0, 4));
+        // Killed agents are not outstanding; the difference saturates at 0.
+        let [StreamEvent::TurnResult {
+            queued_turns,
+            subagents_outstanding,
+            ..
+        }] = classify(
+            r#"{"type":"result","subtype":"success","queued_turn_count":2,"subagent_stats":{"completed":1,"killed":{"user":5},"spawned":4}}"#,
+        )[..]
+        else {
+            panic!("not a result");
+        };
+        assert_eq!((queued_turns, subagents_outstanding), (2, 0));
+        // No statistics at all: no evidence of outstanding work.
+        let [StreamEvent::TurnResult {
+            queued_turns,
+            subagents_outstanding,
+            ..
+        }] = classify(r#"{"type":"result","subtype":"success"}"#)[..]
+        else {
+            panic!("not a result");
+        };
+        assert_eq!((queued_turns, subagents_outstanding), (0, 0));
+    }
+
+    #[test]
     fn results_rate_limits_and_system_lines_are_sanitised() {
         assert_eq!(
             classify(
@@ -937,7 +1102,9 @@ mod tests {
                 subtype: "success".into(),
                 cost_usd: Some(0.42),
                 turns: Some(3),
-                is_error: false
+                is_error: false,
+                queued_turns: 0,
+                subagents_outstanding: 0,
             }]
         );
         assert_eq!(
@@ -946,7 +1113,9 @@ mod tests {
                 subtype: "other".into(),
                 cost_usd: None,
                 turns: None,
-                is_error: false
+                is_error: false,
+                queued_turns: 0,
+                subagents_outstanding: 0,
             }]
         );
         assert_eq!(

@@ -52,6 +52,11 @@ pub enum StreamEvent {
         cost_usd: Option<f64>,
         turns: Option<u32>,
         is_error: bool,
+        /// Turns the agent has queued behind this one (0 when the line does not say).
+        queued_turns: u32,
+        /// Background subagents the result's own statistics still count as running
+        /// (0 when the line does not say).
+        subagents_outstanding: u32,
     },
     RateLimit {
         status: String,
@@ -67,6 +72,18 @@ pub enum StreamEvent {
     },
     System {
         subtype: String,
+    },
+    /// The set of outstanding background tasks changed; `count` is its new size.
+    BackgroundTasks {
+        count: u32,
+    },
+    /// A background task started.
+    TaskStarted {
+        task_id: String,
+    },
+    /// A background task reached a terminal status.
+    TaskEnded {
+        task_id: String,
     },
     Other,
 }
@@ -437,6 +454,9 @@ impl Renderer {
             StreamEvent::RateLimit { .. }
             | StreamEvent::Usage { .. }
             | StreamEvent::System { .. }
+            | StreamEvent::BackgroundTasks { .. }
+            | StreamEvent::TaskStarted { .. }
+            | StreamEvent::TaskEnded { .. }
             | StreamEvent::Other => Vec::new(),
         }
     }
@@ -626,6 +646,8 @@ mod tests {
             cost_usd: cost,
             turns: Some(3),
             is_error: false,
+            queued_turns: 0,
+            subagents_outstanding: 0,
         }
     }
 

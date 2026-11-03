@@ -258,6 +258,7 @@ All of the following are committed under `tests/fixtures/`:
 | `roadmaps/` | Sanitised excerpts of real `ROADMAP.md` / `STATE.md` / `HANDOFF.json` files used by the state reader and Roadmap tab tests. The README in the directory lists each file's source and the shape it pins. |
 | `roadmap-shapes/` | Further roadmap layouts for the parser. |
 | `prompt/` | The master prompt and its generated `no-gap-rules` variant (goldens for `driver_prompt.rs`). |
+| `oneoff/` | Trimmed, credential-free structure of two real one-off streams (`real-bg-subagents.stream.jsonl`: background subagents, task events, five results, usage and a rate-limit event; `real-resumed.stream.jsonl`: a resumed run with no background agents). Loaded with `include_str!` by the session-lifecycle and meter tests. Regenerated from the recordings by a whitelist script, never edited by hand; the README in the directory lists the rules and the leak check. |
 | `driverctl/` | Run-store scenarios (`direction/`, `golden/`, `replay/`, `spike003/`). |
 
 ## Coverage Requirements
