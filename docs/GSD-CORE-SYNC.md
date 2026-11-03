@@ -1,18 +1,18 @@
 # gsd-core config sync record
 
-**Config surface synced against gsd-core `v1.19.0`**
-(`9dc57a772195de423ab788e4d0d8734b162db35d`, `package.json` 1.19.0, tagged
-2026-10-26) **on 2026-10-27. Conformance oracle / `GSD_CORE_SYNCED_VERSION`
-pinned at `1.19.0`**, the latest version published on npm.
+**Config surface synced against gsd-core `v1.20.0`**
+(`b14172e38d02aeab483856949453264228886517`, `package.json` 1.20.0, tagged
+2026-11-03) **on 2026-11-03. Conformance oracle / `GSD_CORE_SYNCED_VERSION`
+pinned at `1.20.0`**, the latest version published on npm.
 
 `src/state_reader/config_json.rs` carries the machine-readable copy of those
 values as three constants, which at this sync all name the same release:
 
 | Constant | Value | What it means |
 |---|---|---|
-| `GSD_CORE_SYNCED_VERSION` | `1.19.0` | The **conformance-oracle pin**: the latest gsd-core release published on npm at or below the synced commit. `scripts/install-conformance-oracle.sh` greps this declaration and runs `npm install @opengsd/gsd-core@<version>` — in the publish job (`.github/workflows/release.yml`) and inside `./scripts/pre-tag-check.sh --container`. The floor of the installed-GSD comparison's in-sync range. |
-| `GSD_CORE_SYNCED_COMMIT` | `v1.19.0` | The tree the config surface was diffed against, as `git describe --tags --always` spells it. |
-| `GSD_CORE_SYNCED_TREE_VERSION` | `1.19.0` | The `package.json` version of that tree. The ceiling of the installed-GSD comparison's in-sync range (quick task 260926-j0a). |
+| `GSD_CORE_SYNCED_VERSION` | `1.20.0` | The **conformance-oracle pin**: the latest gsd-core release published on npm at or below the synced commit. `scripts/install-conformance-oracle.sh` greps this declaration and runs `npm install @opengsd/gsd-core@<version>` — in the publish job (`.github/workflows/release.yml`) and inside `./scripts/pre-tag-check.sh --container`. The floor of the installed-GSD comparison's in-sync range. |
+| `GSD_CORE_SYNCED_COMMIT` | `v1.20.0` | The tree the config surface was diffed against, as `git describe --tags --always` spells it. |
+| `GSD_CORE_SYNCED_TREE_VERSION` | `1.20.0` | The `package.json` version of that tree. The ceiling of the installed-GSD comparison's in-sync range (quick task 260926-j0a). |
 
 This file is the human-readable half: the full key inventory, per-key status,
 and the exact commands that produced it, so the *next* sync starts from a
@@ -38,7 +38,12 @@ baseline-only, with no config key, default or loader change — see
 change and a loader refactor that keeps the `GSD_HOME` rule — see
 [The v1.18.0 delta](#the-v1180-delta-quick-task-261019-foc). The v1.19.0 sync
 (quick task 261027-184) modelled one new key, `git.repo_tagging` — see
-[The v1.19.0 delta](#the-v1190-delta-quick-task-261027-184).
+[The v1.19.0 delta](#the-v1190-delta-quick-task-261027-184). The v1.20.0 sync
+was two quick tasks: 261103-em6 re-ported the `.planning` formats (the ROADMAP
+phase-entry grammar, the Progress-table owner and the milestone slice), and
+261103-f5i moved the baseline, promoted the two planner stall knobs to typed
+rows and corrected three help texts — see
+[The v1.20.0 delta](#the-v1200-delta-quick-task-261103-f5i).
 
 > **Keep this file, `config_json.rs`'s three constants and README.md's
 > `**GSD compatibility:**` note in step, in the SAME commit.** A record that
@@ -70,15 +75,15 @@ it, and nothing below checks out a branch there.
 
 **Measure against a REF, never the working tree.** The local checkout's HEAD is
 whatever branch someone last worked on (at the time of writing: `next`, at
-`v1.18.0-119-gbe164db40` with `package.json` 1.19.0, i.e. 119 commits past the
+`v1.18.0-151-g3730c6704` with `package.json` 1.19.0, i.e. 151 commits past the
 last tag it was described from) — not the sync target. A
 plain `cat "$CORE/docs/CONFIGURATION.md"` or `node -p require(package.json)`
 measures the wrong tree.
 
 ```bash
 CORE=~/projects/node/gsd-core
-REF=v1.20.0                          # the sync target: the next release tag
-PREV=v1.19.0                         # the previous GSD_CORE_SYNCED_COMMIT
+REF=v1.21.0                          # the sync target: the next release tag
+PREV=v1.20.0                         # the previous GSD_CORE_SYNCED_COMMIT
 
 # 1. The baseline constants.
 git -C "$CORE" describe --tags --always "$REF"   # -> GSD_CORE_SYNCED_COMMIT
@@ -129,6 +134,105 @@ reproduced verbatim.
 `capabilities/<name>/capability.json` (like `workflow.ui_interaction_capture`)
 shows up in CONFIGURATION.md and in step 4's capability diff, but not in
 `config-schema.manifest.json`'s `validKeys`. Diff both.
+
+---
+
+## The v1.20.0 delta (quick task 261103-f5i)
+
+Measured on 2026-11-03 between `v1.19.0` and `v1.20.0`
+(`b14172e38d02aeab483856949453264228886517`), against the tags, not the
+working tree:
+
+| Measurement | v1.19.0 | v1.20.0 | Change |
+|---|---:|---:|---|
+| CONFIGURATION.md key cells (step 2) | 262 | 263 | **+1 / -0**: `review.context_window_tokens` (object, default `{}`, each slug `-1`; first commit `a032f9fed`, #4559 / PR #5839, 2026-11-01; first tag `v1.20.0`) |
+| `config-schema.manifest.json`, `config-defaults.manifest.json`, `gsd-core/templates/config.json` | — | — | unchanged (no diff) |
+| `src/config.cts`, `src/secrets.cts` | — | — | unchanged (no diff) |
+| `src/config-loader.cts` | — | — | an `env` parameter on `isGitIgnored` only (3 insertions, 3 deletions); no config semantics change |
+| Existing keys whose default changed | | | **none**. The manifest already had `inline_plan_threshold` at `2`; only the DOC default was corrected, from `3` to `2` |
+| `capabilities/*/capability.json` | | | 45 files bump `version` 1.19.0 -> 1.20.0; 10 of them register `review.context_window_tokens.<slug>`: antigravity, claude, codex, cursor, kimi-code, llama_cpp, lm_studio, ollama, opencode, qwen (the capability directories are `llama-cpp` and `lm-studio`; the key slugs use underscores) |
+
+**How this build models the change.**
+
+- **Planner stall knobs promoted (typed rows).** `planner.stall_threshold_minutes`
+  and `planner.stall_detect_interval_minutes` were documented key cells at
+  v1.19.0 already, so they are a promotion, not a key-cell delta; they are
+  pinned by `PROMOTED_PLANNER_KEYS_1_20_0`, and there is no
+  `RESYNCED_KEYS_1_20_0`. gsd-core 1.20.0 (#3923) lists both in
+  `/gsd-config --advanced` (Planning Tuning) as whole minutes, minimum 1,
+  defaults 10 and 5 (`src/config.cts`), which reverses 260926-gtk's
+  pass-through decision (I-3) [inferred — audit]. `since` is `v1.10.0`,
+  MEASURED by step 5: `git log v1.20.0 --reverse -S<dotted key>` gives
+  `067a4d1c6` (#2650, PR #3015, 2026-08-03) for both, and `tag --contains`
+  gives `v1.10.0`. The rows are `Option<u32>` Integer rows, skipped when unset
+  so a clear removes the key instead of writing `null`. A cycle from unset
+  writes 1, steps by 1, and wraps to 1 after 30 (threshold) or 15 (interval)
+  — never to 0, because upstream's minimum is 1. There is no `set_config_value`
+  arm, as for every Integer row in this build. A hand-edited non-integer
+  value is a whole-file parse failure (the accepted divergence of
+  `PlannerConfig`'s I-5), and a hand-edited `0` is shown verbatim. Modelled and
+  `DEFAULTS_OPTION_COUNT` go 136 -> 138. `executor.stall_*` stays pass-through:
+  `settings-advanced.md` does not expose it.
+- **`review.context_window_tokens` stays pass-through.** See the Pass-through
+  table; it joins `review.effort.<slug>` in the templated row.
+- **Doc-only changes to existing keys:**
+  - `workflow.inline_plan_threshold`: the doc default was corrected to `2` and
+    its meaning is now inline execution — plans with that many tasks or fewer
+    execute inline instead of spawning an executor subagent, and `0` always
+    spawns one. The help text was fixed (the pre-1.20 help gave default 3 and
+    "own file" semantics).
+  - `phase_naming`: documented as `"sequential"` | `"custom"`
+    (case-insensitive), default sequential, other values keep numeric
+    allocation. The help text was fixed; the row stays a free-form String
+    (inferred I-7).
+  - `phase_id_convention`: the help gains `bracket`; the row stays a String
+    row (inferred I-7).
+  - `planner.stall_*`: the docs now point at `/gsd-config --advanced`.
+  - `review.max_prompt_tokens*`: the cap now REFUSES an oversized prompt
+    instead of trimming it, and the default is 65% of the lane's context
+    window. These keys are pass-through here, so this is recorded only.
+
+**Areas** (each from a measured command or file):
+
+- **.planning formats.** Re-ported in quick task 261103-em6 (commits
+  `e3b32a1`, `b2af8ac`, `785fae9`): the ROADMAP phase-entry grammar (#5763);
+  the Progress-table owner (#5761), which is fence-aware, uses
+  `## Progress Tracker` and has no fall-through; and the milestone slice
+  (#5165). DEFERRED: custom phase ids and bracket ids (inferred I-8; see
+  "Next sync" item 8). The bracket read paths predate 1.20; the write paths are
+  new in 1.20 (`57942161d`, #5528 / PR #5750; custom directories `3befe44bd`,
+  #5186 / PR #5756; #4304 in `src/smart-entry.cts`). A project that uses custom
+  ids, `.phase-id` markers or bracket ids is not recognised: the readers
+  abstain.
+- **Routing.** The `init.manager` output shape is unchanged;
+  `tests/init-manager.test.cjs` adds convention cases only, and
+  `src/smart-entry.cts` only threads the custom/bracket directory context. The
+  router conformance test `tests/driver_router_conformance.rs` is green
+  against the installed gsd-core 1.20.0 (`~/.claude/gsd-core/VERSION`); see this
+  task's SUMMARY for the run.
+- **The CLI.** `git diff --stat v1.19.0 v1.20.0 -- commands/gsd` shows only
+  `update.md` (`--reapply --interactive`). This app calls no new verbs.
+  [inferred — audit]
+- **Agents/worktrees.** `agents/` changed 5 files (`gsd-code-fixer`,
+  `gsd-code-fixer.compact`, `gsd-code-reviewer`, `gsd-code-reviewer.compact`,
+  `gsd-executor`); the executor now writes ROADMAP progress BEFORE STATE.
+  Branch and worktree naming did not change. The `.compact` variants live under
+  `agents/` in the source tree (29 of them at v1.20.0:
+  `git ls-tree --name-only v1.20.0 agents/ | grep -c compact`) and under
+  `~/.claude/gsd-core/agents/` when installed. This app takes the agent type
+  verbatim from subagent meta `agentType` (`src/agents/adapters/claude.rs`) and
+  enumerates no agent files, so `.compact` stems cannot be misclassified:
+  `grep -rnE 'compact\.md|agents/gsd-' src` hits only the
+  `workflow.compact_content` help string.
+- **Codex.** `capabilities/codex/capability.json` changes only the `version`
+  and the reviewer-lane context-window keys. `tests/fixtures/install-tree/codex.json`
+  adds two references files (`cicd-review-patterns.md`, `necessity-review.md`).
+- **Secret-bearing keys.** `git diff v1.19.0 v1.20.0 -- src/secrets.cts
+  gsd-core/references/gsd-run-resolver.md` is empty: no change.
+
+**Deferred.** Custom and bracket phase identity, which is scope-changing
+(it generalises phase identity beyond the numeric `PhaseNum`). It has an owner
+under "Next sync" item 8.
 
 ---
 
@@ -739,7 +843,7 @@ a name nobody here has seen, is handled by the same mechanism without an edit.
 
 | Family | Why no typed row |
 |---|---|
-| `review.models.<cli>`, `review.effort.<slug>`, `review.reviewer_instances.<name>.*` | Templated by CLI / reviewer-lane slug / instance name; a typed field per unknown name is not expressible. The effort family is owned by each lane's capability manifest (`effortConfigKey`). |
+| `review.models.<cli>`, `review.effort.<slug>`, `review.context_window_tokens.<slug>`, `review.reviewer_instances.<name>.*` | Templated by CLI / reviewer-lane slug / instance name; a typed field per unknown name is not expressible. The effort family is owned by each lane's capability manifest (`effortConfigKey`). `review.context_window_tokens` (gsd-core 1.20.0, #4559) is a per-reviewer-slug object (10 capability-registered slugs at v1.20.0) that derives the default cap of `review.max_prompt_tokens*`; it round-trips losslessly through `ReviewConfig`'s flatten `extra`. |
 | `review.default_reviewers`, `review.*_host`, `review.max_prompt_tokens*`, `review.parallel_lanes` | Would be typeable; deferred because the whole `review.*` block is one editing surface and splitting it half-and-half reads worse than leaving it whole. |
 | `model_policy.*`, `model_profile_overrides.<runtime>.<tier>` | Keyed by runtime and tier; templated. |
 | `effort.*`, `fast_mode.*` | Both carry `agent_overrides.<agent-id>` and `routing_tier_defaults.*`; templated. |
@@ -786,7 +890,7 @@ warning.
 Then, in priority order:
 
 1. **Re-measure the baseline trio** with step 1 against the next release tag
-   (`REF=v1.20.0`, `PREV=v1.19.0`). If `GSD_CORE_SYNCED_COMMIT` already
+   (`REF=v1.21.0`, `PREV=v1.20.0`). If `GSD_CORE_SYNCED_COMMIT` already
    matches the new REF, there is nothing else to do. If the target is an
    untagged tree past the last npm release, see "When the three disagree"
    above. After moving the oracle pin, re-run
@@ -807,8 +911,14 @@ Then, in priority order:
 3. **Promote the flat `review.*` keys** (`default_reviewers`, the three `*_host`
    keys, `max_prompt_tokens`, `max_prompt_tokens_per_reviewer`,
    `parallel_lanes`). All are scalars; only the `models.<cli>`,
-   `effort.<slug>` and `reviewer_instances.<name>.*` families have to stay
-   pass-through.
+   `effort.<slug>`, `context_window_tokens.<slug>` and
+   `reviewer_instances.<name>.*` families have to stay pass-through.
+   `review.max_prompt_tokens*` now REFUSES an oversized prompt instead of
+   trimming it (gsd-core 1.20.0), and its default is 65% of
+   `review.context_window_tokens.<slug>` or of the lane's declared window. A
+   promotion should therefore show that derived default.
+   `review.context_window_tokens.<slug>` itself stays templated, like
+   `effort.<slug>`.
 4. **Then `refactor.*` and `safety.*`**, which are small and fully scalar.
 5. **Retro-measure `since` for the 73 rows that have none**, using step 5's
    command, if a reader ever needs the full history rather than the delta.
@@ -818,3 +928,14 @@ Then, in priority order:
    per-repository release map (`milestones/<ver>-RELEASE-MAP.json`, written
    when `git.repo_tagging` is `per_repo`) as a badge. This build reads no
    release map today.
+8. **Custom and bracket phase identity (deferred at 261103-f5i).** gsd-core
+   1.20.0 names a plurality in phase identity: custom ids
+   (`phase_naming: "custom"`, `.phase-id` marker files, directories such as
+   `CCM-PRODUCT-BOUNDARY-slug`, ROADMAP headings such as
+   `### Phase PRODUCT-BOUNDARY:`) and bracket ids (`### [GSD.02] 05:` headings,
+   `GSD.02-05-slug` directories). This build's phase identity is the numeric
+   `PhaseNum`, so a project that uses either has its phases NOT recognised: the
+   readers abstain rather than guess. The work is scope-changing — it
+   generalises phase identity beyond `PhaseNum` — and so is not a sync task.
+   **Owner:** next-milestone planning, as a dedicated phase. A sync task must
+   not attempt it.
