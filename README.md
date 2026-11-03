@@ -73,7 +73,11 @@ What it writes:
   the GSD commands it launches write.
 - Experimental one-off tasks: one run directory per task under its data
   directory (`gsd-meta-manager/oneoff/`), holding a private clone the agent
-  commits in ([docs/CONFIGURATION.md](docs/CONFIGURATION.md#one-off-tasks)).
+  commits in ([docs/CONFIGURATION.md](docs/CONFIGURATION.md#one-off-tasks)). A
+  run, or its conflict resolver, can be stopped, killed or paused (`task stop`,
+  or `x` / `X` / `z` in the TUI), and a paused or stopped run resumed from its
+  branch or from master (`task resume`, or `u`); a run's `run.json` records
+  the stop and the resume links, and its merge diff is bounded and exportable.
 
 What it never touches:
 

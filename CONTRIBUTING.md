@@ -40,6 +40,24 @@ cargo clippy -- -D warnings
 Clippy warnings are treated as errors in this project, so please fix them
 locally before opening a PR.
 
+Notes on the test suite:
+
+- `tests/driver_router_conformance.rs` compares the crate's router rule table
+  against GSD's own router and fails by design when that oracle is absent. If
+  it fails on a machine without GSD installed, run
+  `./scripts/install-conformance-oracle.sh` (needs Node). It never touches an
+  existing `~/.claude/gsd-core`.
+- Use `cargo test --no-fail-fast` to see every failing suite in one run, as the
+  release workflow does.
+- Format with `cargo fmt` (rustfmt defaults; there is no `rustfmt.toml`).
+
+Pushing a `v*` tag runs `.github/workflows/release.yml`, which checks the MSRV
+floor (`rust-version` in `Cargo.toml`), compiles and lints the macOS and Windows
+targets, then builds, tests and runs clippy before publishing. Maintainers can
+rehearse it locally with `./scripts/pre-tag-check.sh`. Code that is
+platform-specific must stay behind the matching `cfg` so those targets keep
+compiling.
+
 ## Commit Message Style
 
 Commits follow [Conventional Commits](https://www.conventionalcommits.org/).

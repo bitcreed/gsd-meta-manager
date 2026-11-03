@@ -32,10 +32,9 @@ A TUI command center for managing multiple GSD-run projects from a single interf
 | notify | 8.0.0 | Filesystem watching | Watch `.planning/` directories for live state updates; use 8.x (stable), not 9.0 rc |
 | serde | 1.0.228 | Serialization | Deserialize `config.json`, `STATE.md` (JSON sections), any structured files |
 | serde_json | 1.0.149 | JSON parsing | Parse GSD's `config.json` and JSON-structured state files |
-| toml | 1.1.0 | TOML parsing | User config (`~/.config/gsd-meta-manager/config.toml`) for registered project paths |
 | anyhow | 1.0.102 | Error handling | Ergonomic error propagation through TUI event/render loops; avoids boilerplate |
 | color-eyre | 0.6.5 | Error reporting | Rich terminal error reports with context; install as the panic/error handler at startup |
-| clap | 4.6.0 | CLI argument parsing | Handle `--config`, `--projects-dir`, `--version` flags on launch |
+| clap | 4.6.0 | CLI argument parsing | Handle the global `--config` flag, `--version`, subcommands and the positional project target |
 | tracing | 0.1.44 | Structured logging | Log to a file (not stdout, which ratatui owns); critical for debugging render/state issues |
 | tracing-subscriber | 0.3.x | Log output routing | Route logs to `~/.local/share/gsd-meta-manager/gsd-meta-manager.log` instead of terminal |
 ### Development Tools

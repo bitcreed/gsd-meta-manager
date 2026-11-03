@@ -23,7 +23,7 @@ The resolution logic lives in `src/config.rs` (`Config::default_path`). If `dirs
 
 The file is created on first write (e.g., the first `gsd-meta-manager add <path>` invocation). If the file does not exist, the binary loads an empty default config instead of erroring (see `load_config` in `src/config.rs`).
 
-> Note: the project `README.md` mentions `config.toml`, but the implementation uses **JSON** (`config.json`). This document reflects the actual on-disk format.
+> Note: the config file is **JSON** (`config.json`), not TOML.
 
 ## Config file format
 
@@ -81,7 +81,7 @@ The default for `driver.egress` is **empty, which means no CONNECT egress at all
 | `gsd_integration` | boolean | `false` | When true, the detail view renders extra verified/inferred badges for GSD-integrated projects (see `src/ui/screens/detail.rs`). |
 | `mouse` | boolean | `true` | Whether the TUI starts with terminal mouse capture on (click tabs, sub-tabs and rows, double-click to open, wheel to scroll). An absent key means `true`. `M` toggles capture at runtime on the dashboard and in the detail view; the toggle is not saved back here. While capture is on, most terminals select text with Shift+drag. |
 
-Older configs may also carry `preferences.default_runtime`, `preferences.driver_max_concurrent` and a per-project `runtime` key. They are kept and written back unchanged, so an old `config.json` loads, but since Phase 31 they select no agent and cap nothing: the Preferences screen (`G`) no longer offers them.
+Older configs may also carry `preferences.default_runtime`, `preferences.driver_max_concurrent` and a per-project `runtime` key. They are kept and written back unchanged, so an old `config.json` loads, but they now select no agent and cap nothing: the Preferences screen (`G`) no longer offers them.
 
 Hook commands are non-fatal in the sense that the surrounding logic only proceeds when they exit `0` — see `execute_hook` in `src/project_creator.rs`.
 
@@ -93,7 +93,7 @@ CLI flag definitions live in `src/cli.rs`.
 |-----------------|-------|---------|-------------|
 | `--config <PATH>` | Global (works with all subcommands and TUI mode) | Result of `Config::default_path()` | Override the config file location. Useful for testing or sandboxing multiple registries. |
 | `--help` / `-h` | Global | — | Print clap-generated help. |
-| `--version` / `-V` | Global | — | Print the crate version from `Cargo.toml` (`version = "1.4.0"` at the time of writing). |
+| `--version` / `-V` | Global | — | Print the crate version from `Cargo.toml` (`version = "2.1.0"` at the time of writing). |
 
 ### Subcommands
 
@@ -102,7 +102,8 @@ CLI flag definitions live in `src/cli.rs`.
 | `add <path> [alias]` | `path` required, `alias` optional | Canonicalize the path, derive an alias from the directory basename if not provided, and write the entry into `projects`. Fails (exit 1) if the alias already exists. |
 | `remove <alias>` | `alias` required | Remove a registered project by alias. |
 | `list` | (none) | Print the registered projects table to stdout. |
-| _(no subcommand)_ | — | Launch the TUI. |
+| `task ...` | See "One-off tasks" below | Run, inspect, stop, resume and land one-off agent sessions. |
+| _(no subcommand)_ `[target]` | optional alias or path of a registered project | Launch the TUI, opening the given project directly. A target cannot be combined with a subcommand; to open a project whose alias is a subcommand name (for example `list`), pass its path (`./list`). |
 
 ## Environment variables
 
@@ -112,11 +113,12 @@ The binary itself does not require any environment variables to start. It does, 
 |----------|----------|----------|---------|
 | `VISUAL` | Optional | `src/main.rs` (TUI editor launch) | Preferred editor command when opening a file from the TUI. Checked first. |
 | `EDITOR` | Optional | `src/main.rs` (TUI editor launch) | Fallback editor if `$VISUAL` is unset. |
-| `TERMINAL` | Optional | `src/ui/screens/detail.rs` (`find_terminal`) | Preferred terminal emulator for launching new Claude sessions. Probed before falling back to `kitty`, `alacritty`, `gnome-terminal`, then `xterm`. |
+| `TERMINAL` | Optional | `src/terminal_switch.rs` (`plan_launch`) | Preferred GUI terminal emulator for launching Claude sessions. Inside tmux (`$TMUX` set and a server reachable) a new tmux window is tried first; otherwise `$TERMINAL` is used, then `xdg-terminal-exec`, `x-terminal-emulator`, and finally the first installed of `kitty`, `alacritty`, `ptyxis`, `gnome-terminal`, `xterm` (`FALLBACK_TERMINAL_CANDIDATES` in `src/ui/screens/detail.rs`). |
 | `TMUX` | Optional | `src/terminal_switch.rs` | Presence of `$TMUX` indicates the binary is running inside tmux; required for the "switch to existing Claude session" feature. Absent → tab-switching returns a clear error. |
 | `GSD_HOME` | Optional | `src/state_reader/config_json.rs` (`user_defaults_path`) | Root of the GSD-owned store. GSD user defaults are read from, and the Config tab's global scope writes to, `$GSD_HOME/.gsd/defaults.json`. Unset or empty falls back to `$HOME`, matching gsd-core's own `GSD_HOME \|\| homedir()` rule. Any other value is used as given. |
 | `HOME` | Optional | `src/state_reader/config_json.rs` (`user_defaults_path`) | Fallback root for `$GSD_HOME/.gsd/defaults.json` (the GSD user defaults overlay) when `GSD_HOME` is unset or empty. If neither is set, the defaults file is simply not loaded. |
 | `GSDMM_EXPERIMENTAL_FEATURES` | Optional | `src/experimental.rs` (read once at startup by `App::from_config`) | Turns on the experimental surfaces, which today means the **Driver** tab and everything that leads to it, one-off tasks (`t` / `T`) included. **Default is OFF.** Accepted truthy values are `1`, `true`, `yes` and `on`, ASCII-case-insensitive with surrounding whitespace trimmed; unset, empty, `0`, `false`, `no`, `off` and any unrecognised value are OFF. |
+| `GSD_MM_ENVELOPE_ROOT` | Optional | `src/envelope/mod.rs` (`envelope_root`) | Overrides the root directory of the per-alias envelope ledger, which otherwise lives under `dirs::data_local_dir()/gsd-meta-manager/`. Intended for tests; it only moves where the ledger is read and written. Unset or empty uses the default. |
 | `GSDMM_ONEOFF_REPORT_DIR` | Never set by users | `src/taskctl_cli.rs` (`taskctl report`) | Set by the one-off launcher inside the sandbox (and pinned by the run's `gsd-meta-manager` shim): the directory `taskctl report` writes `report.json` to. Unset, relative or missing makes `taskctl report` exit 1. |
 | `GSDMM_ONEOFF_SOFT_CAP_GRACE_SECS` | Tests only | `src/oneoff/session.rs` (`grace_from_env`) | Shortens the one-off soft cap's grace (integer 1-600 seconds; default 300). Read once by the launcher daemon at session start. |
 | `GSDMM_ONEOFF_STOP_GRACE_SECS` | Tests only | `src/oneoff/cancel.rs` (`stop_grace_from_env`) | Shortens the one-off hard cut's grace between SIGTERM and SIGKILL (integer 1-600 seconds; default 10). Read by the launcher daemon (and a landing) at session start. |
@@ -152,7 +154,7 @@ Two things are deliberately **not** affected by it:
   for lacking it. There is no manager-wide concurrency cap either.
 
 The legacy `drive` subcommand and the dashboard's `r` / `x` / `o` keys that
-started and stopped it were removed in Phase 31, together with the startup
+started and stopped it were removed, together with the startup
 reconciliation of its run records. Run directories it left under
 `.planning/meta-manager/runs/` are still on disk but are never read.
 
@@ -429,7 +431,7 @@ and, for a merge or resolved landing, the exact command to see what the merge br
 merge's first parent without ever holding all of git's output: the TUI reads the totals
 (`git diff --shortstat`), a per-file summary (`--numstat`, at most 2000 files, then
 `... N more files`) and the hunks (at most 5000 lines and 512 KiB, after which git is
-killed). The view is the `conflicted:` header, the summary, the hunks and, when the
+killed; a drawn line is cut at 1000 characters). The view is the `conflicted:` header, the summary, the hunks and, when the
 hunks were cut, a last line `truncated — N more file(s), ~M more line(s)` counted from
 the totals. `o` streams the complete diff straight from git into
 `<run-dir>/land/merge-<sha12>.diff` (mode 0600, a symlink at that path is refused) and
@@ -464,9 +466,7 @@ branch and a `tracking_note` saying why. A tracking failure never fails the run.
 `task status` prints `branch: gsd-oneoff/<run-id> @ <sha12>` while the branch is
 tracked, and `branch: none (<why>)` once a landing or a discard removed it.
 
-The binary additionally reads `dirs::data_local_dir()` (typically `~/.local/share` on Linux) to choose the log directory `gsd-meta-manager/`. If `dirs::data_local_dir()` returns `None`, logs are written to `/tmp` (see `src/main.rs`). Logs themselves are configured by `tracing-subscriber`, but no environment variable currently feeds the subscriber (the `env-filter` feature is compiled in, so `RUST_LOG`-style filtering may be added later but is not currently wired into `tracing_subscriber::fmt().init()`).
-
-<!-- VERIFY: Whether RUST_LOG is honored — the env-filter feature is enabled on tracing-subscriber but the current `tracing_subscriber::fmt()` builder in src/main.rs does not call `.with_env_filter(...)`, so RUST_LOG should have no effect today. -->
+The binary additionally reads `dirs::data_local_dir()` (typically `~/.local/share` on Linux) to choose the log directory `gsd-meta-manager/`. If `dirs::data_local_dir()` returns `None`, logs are written to `/tmp` (see `src/main.rs`). Logs themselves are configured by `tracing-subscriber` with `.with_env_filter(EnvFilter::from_default_env())`, so `RUST_LOG` controls the log filter (see `src/main.rs`).
 
 ## Required vs optional settings
 
@@ -502,7 +502,7 @@ The defaults declared in source (`src/config.rs`):
 | Session poll interval (TUI) | ~5s (auto-registration of Claude sessions) | `src/main.rs` / README |
 | Render tick interval | 250 ms | `event_bus.spawn_tick(250)` in `src/main.rs` |
 | Editor fallback chain | `$VISUAL` → `$EDITOR` → `vi` | `src/main.rs` |
-| Terminal fallback chain | `$TERMINAL` → `kitty` → `alacritty` → `gnome-terminal` → `xterm` | `src/ui/screens/detail.rs` (`find_terminal`) |
+| Terminal fallback chain | tmux window (if inside tmux) → `$TERMINAL` → `xdg-terminal-exec` → `x-terminal-emulator` → `kitty` → `alacritty` → `ptyxis` → `gnome-terminal` → `xterm` | `src/terminal_switch.rs` (`plan_launch`), `src/ui/screens/detail.rs` (`FALLBACK_TERMINAL_CANDIDATES`) |
 
 ## Per-environment overrides
 

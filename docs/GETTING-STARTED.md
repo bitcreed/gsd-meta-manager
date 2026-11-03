@@ -10,7 +10,8 @@ see [CONFIGURATION.md](CONFIGURATION.md); for system internals see
 
 | Requirement | Version | Notes |
 |-------------|---------|-------|
-| Rust toolchain | `>=1.88` (stable) | Required to build the binary. Includes `cargo`. Install via [rustup](https://rustup.rs). The crate declares `rust-version = "1.88"`, which is the highest `rust-version` across the resolved dependency graph (1.88.0 — the `ratatui` 0.30.x family, `time`, `darling`, the `icu_*` 2.3.x crates); an ordinary `cargo update` can raise it with no manifest edit, so CI's `msrv` job re-checks it before publishing. |
+| Rust toolchain | `>=1.89` (stable) | Required to build the binary. Includes `cargo`. Install via [rustup](https://rustup.rs). The crate declares `rust-version = "1.89"`, which is the highest `rust-version` across the resolved dependency graph (1.89.0, set by `uuid` 1.28 alone; the `ratatui` 0.30.x family, `time`, `darling` and the `icu_*` 2.3.x crates sit one step below at 1.88.0); an ordinary `cargo update` can raise it with no manifest edit, so CI's `msrv` job re-checks it before publishing. |
+| (Linux only) A C compiler | any | The Linux-only TLS egress dependency (`rustls` with the `ring` provider) compiles a C/asm component. macOS and Windows builds need no C compiler. |
 | Git | any recent | Needed to clone the repository. |
 | A terminal | any | crossterm targets Linux, macOS, and Windows. A truecolor terminal is recommended for the dashboard colors. |
 | (Optional) `tmux` | any | Required only for the "switch to existing Claude session" feature in the TUI. |
@@ -135,6 +136,11 @@ Relaunch the TUI:
 gsd-meta-manager
 ```
 
+To open a registered project directly, pass its alias or path as the optional
+launch target (`gsd-meta-manager my-app`). A target cannot be combined with a
+subcommand; to open a project whose alias is a subcommand name (for example
+`list`), pass its path (`./list`).
+
 You should see your registered project in the dashboard. Useful first
 keystrokes:
 
@@ -202,13 +208,13 @@ is not on your `$PATH`, either add it (e.g., `export PATH="$HOME/.cargo/bin:$PAT
 in your shell profile) or invoke the binary by its full path
 (`target/release/gsd-meta-manager` after `cargo build --release`).
 
-### "error: package requires rustc 1.88 or newer"
+### "error: package requires rustc 1.89 or newer"
 
 Your Rust toolchain is too old. Update with `rustup update stable` and confirm
 with `rustc --version`. Nothing in this project picks that number by hand: the
 MSRV is simply the highest `rust-version` declared across the resolved
-dependency graph, currently 1.88.0 from the `ratatui` 0.30.x family, `time`,
-`darling` and the `icu_*` 2.3.x crates. Because an ordinary `cargo update` can
+dependency graph, currently 1.89.0 from `uuid` 1.28 (the `ratatui` 0.30.x
+family, `time`, `darling` and the `icu_*` 2.3.x crates sit at 1.88.0). Because an ordinary `cargo update` can
 raise it without any manifest edit, CI's `msrv` job compiles every target on the
 declared floor before a release is published. To see the current value yourself:
 
