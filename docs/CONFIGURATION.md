@@ -472,7 +472,15 @@ the render thread. Changed paths under `.claude/`, `.github/`, `.husky/` or name
 `.gitattributes`, `.gitmodules`, `.envrc` are listed as a warning. `push` sends the head
 only to `refs/heads/gsd-auto/<alias>/<run-id>` from the launcher's pinned mirror after
 the credential scan; no pull request is opened, and a planted file refuses it too.
-`discard` deletes the run dir once the run is not live, and the run's tracked branch
+After a push the run's clone is removed when `gsd-oneoff/<run-id>` (or any branch of the
+project) holds its head, since the commits then live in that branch and on the remote;
+a push-only run with no such branch keeps its clone and the output says so. A slimmed
+run still lands and pushes: with its clone gone, `merge` (the fast-forward and the
+resolver path alike) and a repeated `push` take the work from `gsd-oneoff/<run-id>` in
+the project once it points at the recorded head, with no planted-file gate (it ran
+before that branch was made). A `push` of a run that a merge landing already slimmed is
+refused with "the run's clone was removed after it landed in <branch>; its work is in
+<branch>". `discard` deletes the run dir once the run is not live, and the run's tracked branch
 (see below) while it still points at the run's recorded head. A landing that succeeds
 deletes the tracked branch with a safe `git branch -d`, because the work is then
 reachable from the branch you merged into.
@@ -512,8 +520,8 @@ the newest run when it is omitted, except that when more than one run may be liv
 they refuse (exit 1) and list the live ids instead of guessing; exactly one live run
 is picked even when a newer run has finished. `task land` always names its run.
 `task list <project> [--json]` prints every run, newest first: its id, live state,
-mode, report status, commit count, whether a tracked branch exists and its last
-landing. Parallel `/gsd-quick` runs can mint the same quick id; nothing prevents
+mode, report status, commit count, the land target (`→ <branch>`), whether a tracked
+branch exists, its last landing and `clone removed` once it was slimmed. Parallel `/gsd-quick` runs can mint the same quick id; nothing prevents
 that, and a later merge of their STATE.md rows is yours to resolve.
 
 **Tracked branches.** When a run finishes with commits and the planted-file gate

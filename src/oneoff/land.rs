@@ -1036,20 +1036,29 @@ pub fn push(
         }
     }
     check_destination(&dest, alias).map_err(|reason| format!("{dest} is refused: {reason}"))?;
-    let planted = planted_count(&view);
-    if planted > 0 {
-        return Err(format!(
-            "{planted} git-relevant planted finding(s) in the run's clone; nothing was pushed (discard it)"
-        ));
-    }
-    let work = view.run_dir.join(WORK_DIR);
+    // o2r D-A: the run's clone, or, once it was removed, the project's tracked branch
+    // (the same branch name; the work was gated before that branch was made).
+    let head = record.head.clone().unwrap_or_default();
+    let source = run_source(&project, &view, &head)?;
+    let work = match &source {
+        RunSource::Clone(path) => {
+            let planted = planted_count(&view);
+            if planted > 0 {
+                return Err(format!(
+                    "{planted} git-relevant planted finding(s) in the run's clone; nothing was pushed (discard it)"
+                ));
+            }
+            path.clone()
+        }
+        RunSource::Tracked => project.clone(),
+    };
     let branch = format!("{BRANCH_PREFIX}{run_id}");
     let prior = record.last_pushed_sha();
     let scan_dir = mirror
         .parent()
         .unwrap_or(driver_root)
         .join(format!("scan-{run_id}"));
-    match push_tip(&TipPush {
+    let pushed = push_tip(&TipPush {
         mirror: &mirror,
         url: &url,
         checkout: &work,
@@ -1059,7 +1068,13 @@ pub fn push(
         start_sha: record.base.as_deref(),
         prior_pushed_sha: prior.as_deref(),
         scan_dir: &scan_dir,
-    }) {
+    });
+    let slim = |dest: &str| {
+        // o2r D-A: the work is on the remote and in `gsd-oneoff/<id>`; the clone goes
+        // when the preservation rule agrees, otherwise it stays and the line says why.
+        super::recycle::slim_run(&project, run_id, &format!("removed after push to {dest}")).line()
+    };
+    match pushed {
         TipPushed::Pushed { sha } => {
             record_landing(
                 &view,
@@ -1069,9 +1084,16 @@ pub fn push(
                     format!("{dest} {sha}"),
                 ),
             );
-            Ok(format!("pushed {} to {dest}", &sha[..sha.len().min(12)]))
+            Ok(format!(
+                "pushed {} to {dest}\n{}",
+                &sha[..sha.len().min(12)],
+                slim(&dest)
+            ))
         }
-        TipPushed::AlreadyPushed => Ok(format!("already pushed: {dest} has this run's head")),
+        TipPushed::AlreadyPushed => Ok(format!(
+            "already pushed: {dest} has this run's head\n{}",
+            slim(&dest)
+        )),
         TipPushed::NothingToPush => Ok("nothing to push: the branch is at its start".to_owned()),
         TipPushed::SecretFound { findings, rendered } => {
             eprintln!("{rendered}");

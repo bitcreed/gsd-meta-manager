@@ -2288,6 +2288,13 @@ fn fixture_for(type_name: &str) -> Option<Fixture> {
                 // names and the land-failure reason; and a second, live one.
                 let mut view = super::oneoff::tests::finished_view(identity);
                 view.record.run_id = identity.to_string();
+                // o2r: the recorded dispatch branch and the prune note are run-derived.
+                view.record.dispatch_branch = Some(identity.to_string());
+                view.record.dispatch_tip = Some("a".repeat(40));
+                view.record.pruned = Some(crate::oneoff::store::Pruned {
+                    at: identity.to_string(),
+                    note: identity.to_string(),
+                });
                 view.land_attempts = vec![1];
                 view.record.landed.push(crate::oneoff::store::Landing {
                     kind: crate::oneoff::store::LandingKind::Merged,
@@ -2384,6 +2391,24 @@ fn fixture_for(type_name: &str) -> Option<Fixture> {
             resume.handle_key(KeyCode::Char('j'), KeyModifiers::NONE, &mut resume_ctx);
             resume.handle_key(KeyCode::Char('u'), KeyModifiers::NONE, &mut resume_ctx);
             states.push(one_state("resume ask", resume_ctx, Box::new(resume)));
+            // o2r: the merge question names the hostile dispatch branch.
+            let mut merge_ctx = probe_ctx(identity);
+            seed(identity, &mut merge_ctx);
+            {
+                let cache = merge_ctx
+                    .view_cache
+                    .entry(identity.to_string())
+                    .or_default();
+                if let Some(view) = cache.oneoff_runs.get_mut(1) {
+                    view.record.landed.clear();
+                    view.record.land_failure = None;
+                    view.record.resumed_by = None;
+                }
+            }
+            let mut merge_ask = OneoffScreen::list(identity.to_string());
+            merge_ask.handle_key(KeyCode::Char('j'), KeyModifiers::NONE, &mut merge_ctx);
+            merge_ask.handle_key(KeyCode::Char('m'), KeyModifiers::NONE, &mut merge_ctx);
+            states.push(one_state("merge ask", merge_ctx, Box::new(merge_ask)));
             // klf: the stop / kill / pause confirmations name the hostile run id.
             for (key, name) in [('x', "ask stop"), ('X', "ask kill"), ('z', "ask pause")] {
                 let mut ask_ctx = probe_ctx(identity);

@@ -23,7 +23,8 @@ use crate::oneoff::cancel::StopKind;
 use crate::oneoff::resume::{self, KeyPlan, ResumeFrom};
 use crate::oneoff::runtime::AgentRuntime;
 use crate::oneoff::store::{
-    run_counts, BranchState, Landing, LandingKind, LiveState, MergeHow, OneoffView, ReportSource,
+    run_counts, BranchState, LandTarget, Landing, LandingKind, LiveState, MergeHow, OneoffView,
+    ReportSource,
 };
 use crate::oneoff::{prompt, Mode, OneoffCommand, TaskSpec};
 use crate::text::render_for_terminal;
@@ -499,11 +500,11 @@ impl OneoffScreen {
                 if view.landing {
                     return message(ctx, format!("A landing of {id} is already in progress"));
                 }
-                let mut prompt = vec![format!(
-                    "Merge {id} into your checkout? It fast-forwards when it can; otherwise it \
-                     makes a merge commit in a private clone, and conflicts are resolved by a \
-                     sandboxed agent. Only a clean checkout changes, at the very end."
-                )];
+                let question = match merge_question(&view, &id) {
+                    Ok(question) => question,
+                    Err(refusal) => return message(ctx, refusal),
+                };
+                let mut prompt = vec![question];
                 prompt.extend(merge_warning(&view));
                 self.mode = ask(OneoffCommand::Merge, prompt);
                 ScreenAction::None
@@ -1062,6 +1063,32 @@ fn landing_lines(landing: &Landing) -> Vec<Line<'static>> {
     lines
 }
 
+/// The question `m` asks, or why it asks nothing (quick 261103-o2r, D-C, I-16): the
+/// merge names the branch it lands into. A run dispatched on a detached HEAD cannot be
+/// landed from the TUI (it has no `--into` input).
+pub(crate) fn merge_question(view: &OneoffView, id: &str) -> Result<String, String> {
+    let how = "It fast-forwards when it can; otherwise it makes a merge commit in a private \
+               clone, and conflicts are resolved by a sandboxed agent.";
+    match view.record.land_target() {
+        LandTarget::Branch(branch) => {
+            let branch = shown(&branch);
+            Ok(format!(
+                "Merge {id} into {branch} (the branch HEAD pointed at when it was dispatched)? \
+                 {how} If {branch} is checked out, only a clean checkout changes, at the very \
+                 end; otherwise your working tree is not touched."
+            ))
+        }
+        LandTarget::Legacy => Ok(format!(
+            "Merge {id} into your checked-out branch? {how} Only a clean checkout changes, at \
+             the very end."
+        )),
+        LandTarget::Detached { .. } => Err(format!(
+            "{id} was dispatched on a detached HEAD; land it with `task land merge <project> \
+             {id} --into <branch>`"
+        )),
+    }
+}
+
 /// The ~6 lines of a run's summary (C-25), the agent's report and the host's facts
 /// labelled apart (I-18), then how it landed or why it did not.
 pub fn result_lines(view: &OneoffView) -> Vec<Line<'static>> {
@@ -1186,6 +1213,11 @@ pub fn result_lines(view: &OneoffView) -> Vec<Line<'static>> {
             record.max_budget_usd
         )));
     }
+    // o2r D-C: where the run lands.
+    lines.push(Line::from(format!(
+        "Target:    {}",
+        shown(&record.land_target_text())
+    )));
     // klf C-17, C-18: only what the record normalises to; an old record whose merge
     // landing deleted the branch reads as gone.
     match record.branch_state() {
@@ -1206,6 +1238,13 @@ pub fn result_lines(view: &OneoffView) -> Vec<Line<'static>> {
             lines.push(Line::from(format!("Branch:    none ({})", shown(&note))));
         }
         BranchState::Untracked { .. } => {}
+    }
+    if let Some(pruned) = &record.pruned {
+        lines.push(Line::from(format!(
+            "Clone:     {} ({})",
+            shown(&pruned.note),
+            shown(&pruned.at)
+        )));
     }
     for landing in &record.landed {
         lines.extend(landing_lines(landing));
@@ -1914,6 +1953,78 @@ pub(crate) mod tests {
             .as_ref()
             .is_some_and(|(m, _)| m.contains("already in progress")));
         assert!(render_text(&screen, &ctx).contains("landing"));
+    }
+
+    #[test]
+    fn the_summary_shows_the_target_and_a_pruned_clone() {
+        let tip = "0123456789abcdef0123456789abcdef01234567".to_owned();
+        let mut runs = three_runs();
+        runs[1].record.dispatch_tip = Some(tip.clone());
+        runs[1].record.dispatch_branch = Some("main".to_owned());
+        runs[1].record.pruned = Some(crate::oneoff::store::Pruned {
+            at: "2026-11-03T12:00:00Z".to_owned(),
+            note: "removed after landing in main".to_owned(),
+        });
+        let (mut ctx, mut screen) = list_over(runs);
+        key(&mut screen, &mut ctx, KeyCode::Char('j'));
+        key(&mut screen, &mut ctx, KeyCode::Enter);
+        let text = render_text(&screen, &ctx);
+        assert!(text.contains("Target:    main"), "{text}");
+        assert!(
+            text.contains("Clone:     removed after landing in main (2026-11-03T12:00:00Z)"),
+            "{text}"
+        );
+        // The other two shapes.
+        let mut runs = three_runs();
+        runs[1].record.dispatch_tip = Some(tip);
+        runs[1].record.dispatch_detached = true;
+        set_runs(&mut ctx, runs);
+        let mut screen = OneoffScreen::list(ALIAS.to_owned());
+        key(&mut screen, &mut ctx, KeyCode::Char('j'));
+        key(&mut screen, &mut ctx, KeyCode::Enter);
+        assert!(render_text(&screen, &ctx).contains("Target:    detached @0123456"));
+        set_runs(&mut ctx, three_runs());
+        let mut screen = OneoffScreen::list(ALIAS.to_owned());
+        key(&mut screen, &mut ctx, KeyCode::Char('j'));
+        key(&mut screen, &mut ctx, KeyCode::Enter);
+        let text = render_text(&screen, &ctx);
+        assert!(
+            text.contains("Target:    checked-out branch (legacy)"),
+            "{text}"
+        );
+        assert!(!text.contains("Clone:"), "{text}");
+    }
+
+    #[test]
+    fn the_merge_question_names_the_target_and_a_detached_one_asks_nothing() {
+        let mut runs = three_runs();
+        runs[1].record.dispatch_tip = Some("a".repeat(40));
+        runs[1].record.dispatch_branch = Some("release".to_owned());
+        let (mut ctx, mut screen) = list_over(runs.clone());
+        key(&mut screen, &mut ctx, KeyCode::Char('j'));
+        key(&mut screen, &mut ctx, KeyCode::Char('m'));
+        let text = render_text(&screen, &ctx);
+        assert!(text.contains("into release"), "{text}");
+        assert!(text.contains("working tree is not touched"), "{text}");
+        assert!(matches!(screen.mode, OneoffMode::Ask { .. }));
+
+        runs[1].record.dispatch_branch = None;
+        runs[1].record.dispatch_detached = true;
+        set_runs(&mut ctx, runs);
+        let mut screen = OneoffScreen::list(ALIAS.to_owned());
+        key(&mut screen, &mut ctx, KeyCode::Char('j'));
+        key(&mut screen, &mut ctx, KeyCode::Char('m'));
+        assert_eq!(screen.mode, OneoffMode::List, "nothing is asked");
+        let refusal = ctx.status_message.as_ref().map(|(m, _)| m.clone());
+        assert!(
+            refusal.is_some_and(|m| m.contains("task land merge") && m.contains("--into")),
+            "the refusal names the CLI"
+        );
+
+        let (mut ctx, mut screen) = list_over(three_runs());
+        key(&mut screen, &mut ctx, KeyCode::Char('j'));
+        key(&mut screen, &mut ctx, KeyCode::Char('m'));
+        assert!(render_text(&screen, &ctx).contains("checked-out branch"));
     }
 
     #[test]

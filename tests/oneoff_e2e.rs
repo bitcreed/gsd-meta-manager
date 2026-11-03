@@ -2653,3 +2653,142 @@ fn a_detached_dispatch_needs_into_and_a_deleted_branch_is_refused() {
     let over = run(&fx, &["land", "merge", ALIAS, &second, "--into", "side"]);
     assert_eq!(over.status.code(), Some(0), "{over:?}");
 }
+
+/// Give the project a bare `origin` the push verbs can reach (before any run starts: the
+/// mirror pins the remote when the run is made).
+fn with_origin(fx: &Fixture) -> PathBuf {
+    let origin = fx.scratch.path().join("origin.git");
+    git(fx.scratch.path(), &["init", "-q", "--bare", "origin.git"]);
+    git(
+        fx.project(),
+        &["remote", "add", "origin", &origin.display().to_string()],
+    );
+    origin
+}
+
+#[test]
+fn slimmed_after_push_and_merged_later_from_the_tracked_branch() {
+    let fx = fixture();
+    let origin = with_origin(&fx);
+    let (id, status) = quick_run(&fx);
+    let head = status["record"]["head"].as_str().unwrap().to_owned();
+
+    let pushed = run(&fx, &["land", "push", ALIAS, &id]);
+    assert_eq!(pushed.status.code(), Some(0), "{pushed:?}");
+    let dest = format!("refs/heads/gsd-auto/{ALIAS}/{id}");
+    assert_eq!(git_text(&origin, &["rev-parse", &dest]), head);
+    let out = String::from_utf8_lossy(&pushed.stdout);
+    assert!(out.contains("removed the run's clone"), "{out}");
+    let dir = run_dir(&fx, &id);
+    assert!(!dir.join("work").exists(), "the clone is gone");
+    assert_eq!(
+        branch_head(fx.project(), &id).as_deref(),
+        Some(head.as_str())
+    );
+    let after = status_of_run(&fx, &id);
+    assert!(
+        after["record"]["pruned"]["note"]
+            .as_str()
+            .unwrap()
+            .starts_with("removed after push to"),
+        "{after}"
+    );
+    assert_eq!(after["record"]["landed"][0]["kind"], "pushed", "{after}");
+    assert!(dir_size(&dir) < 1_000_000);
+
+    let again = run(&fx, &["land", "push", ALIAS, &id]);
+    assert_eq!(again.status.code(), Some(0), "{again:?}");
+    assert!(
+        String::from_utf8_lossy(&again.stdout).contains("already pushed"),
+        "{again:?}"
+    );
+
+    // The slimmed run still lands, from the tracked branch.
+    let merged = run(&fx, &["land", "merge", ALIAS, &id]);
+    assert_eq!(merged.status.code(), Some(0), "{merged:?}");
+    assert_eq!(git_text(fx.project(), &["rev-parse", "main"]), head);
+    assert_eq!(
+        branch_head(fx.project(), &id),
+        None,
+        "the branch is deleted"
+    );
+    let landed = status_of_run(&fx, &id);
+    assert_eq!(landed["record"]["landed"][1]["how"], "ff", "{landed}");
+    assert!(landed["record"]["pruned"].is_object());
+}
+
+#[test]
+fn slimmed_run_lands_a_conflict_through_the_resolver_from_the_tracked_branch() {
+    let fx = conflict_fixture();
+    with_origin(&fx);
+    let (id, status, tip) = conflicting_run(&fx, &merge_scenario(RESOLVES));
+    let head = status["record"]["head"].as_str().unwrap().to_owned();
+
+    let pushed = run(&fx, &["land", "push", ALIAS, &id]);
+    assert_eq!(pushed.status.code(), Some(0), "{pushed:?}");
+    assert!(!run_dir(&fx, &id).join("work").exists());
+
+    let merged = run(&fx, &["land", "merge", ALIAS, &id]);
+    assert_eq!(merged.status.code(), Some(0), "{merged:?}");
+    let parents = head_parents(fx.project());
+    assert_eq!(parents[1..], [tip, head], "{parents:?}");
+    assert_eq!(
+        fs::read_to_string(fx.project().join("shared.txt")).unwrap(),
+        "merged\n"
+    );
+    let after = status_of_run(&fx, &id);
+    let landing = after["record"]["landed"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap();
+    assert_eq!(landing["how"], "resolved", "{after}");
+    // The resolver attempt that landed keeps its small files, and nothing bulky.
+    let attempt = run_dir(&fx, &id).join("land/1");
+    assert!(attempt.join("stream.jsonl").is_file());
+    assert!(attempt.join("report/report.json").is_file());
+    assert!(!attempt.join("work").exists(), "the land clone is gone");
+    assert!(dir_size(&run_dir(&fx, &id)) < 1_000_000);
+}
+
+#[test]
+fn slimmed_push_keeps_the_clone_without_a_tracked_branch() {
+    let fx = fixture();
+    let origin = with_origin(&fx);
+    let (id, status) = quick_run(&fx);
+    let head = status["record"]["head"].as_str().unwrap().to_owned();
+    git(
+        fx.project(),
+        &["branch", "-q", "-D", &format!("gsd-oneoff/{id}")],
+    );
+
+    let pushed = run(&fx, &["land", "push", ALIAS, &id]);
+    assert_eq!(pushed.status.code(), Some(0), "{pushed:?}");
+    let dest = format!("refs/heads/gsd-auto/{ALIAS}/{id}");
+    assert_eq!(git_text(&origin, &["rev-parse", &dest]), head);
+    let out = String::from_utf8_lossy(&pushed.stdout);
+    assert!(out.contains("kept the run's clone"), "{out}");
+    assert!(
+        run_dir(&fx, &id).join("work").is_dir(),
+        "the only copy of the work stays"
+    );
+    assert!(status_of_run(&fx, &id)["record"]["pruned"].is_null());
+}
+
+#[test]
+fn slimmed_merge_then_push_is_refused_with_where_the_work_is() {
+    let fx = fixture();
+    with_origin(&fx);
+    let (id, _) = quick_run(&fx);
+    let merged = run(&fx, &["land", "merge", ALIAS, &id]);
+    assert_eq!(merged.status.code(), Some(0), "{merged:?}");
+    assert!(!run_dir(&fx, &id).join("work").exists());
+
+    let pushed = run(&fx, &["land", "push", ALIAS, &id]);
+    assert_eq!(pushed.status.code(), Some(1), "{pushed:?}");
+    let err = String::from_utf8_lossy(&pushed.stderr);
+    assert!(err.contains("its work is in main"), "{err}");
+    // And a second merge says the same instead of failing obscurely.
+    let again = run(&fx, &["land", "merge", ALIAS, &id]);
+    assert_eq!(again.status.code(), Some(1), "{again:?}");
+}
