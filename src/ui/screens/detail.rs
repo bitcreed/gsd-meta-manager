@@ -12070,7 +12070,7 @@ fn build_defaults_entries(
     ).since("v1.01.0"));
     let (v, k) = opt_u32(pwf.and_then(|w| w.inline_plan_threshold));
     push(cat, "workflow.inline_plan_threshold", v, k, false, ConfigHelp::new(
-        "Task count above which a phase gets its own file rather than having its tasks written into the prompt; default 3.",
+        "Plans with this many tasks or fewer execute inline instead of spawning an executor subagent; 0 always spawns one; default 2.",
     ).since("v1.01.0"));
     let (v, k) = opt_u32(pwf.and_then(|w| w.max_discuss_passes));
     push(cat, "workflow.max_discuss_passes", v, k, false, ConfigHelp::new(
@@ -12636,11 +12636,11 @@ fn build_defaults_entries(
     ));
     let (v, k) = opt_str(config.phase_naming.as_deref());
     push(cat, "phase_naming", v, k, false, ConfigHelp::new(
-        "Phase numbering: sequential auto-increments, while custom lets each phase carry an arbitrary string id.",
+        "Directory naming: sequential (the default) allocates numeric ids, custom (any letter case) enables explicit ids; any other value keeps numeric allocation.",
     ));
     let (v, k) = opt_str(config.phase_id_convention.as_deref());
     push(cat, "phase_id_convention", v, k, false, ConfigHelp::new(
-        "How ids are written in ROADMAP.md: sequential gives Phase 1, milestone-prefixed gives Phase 1-01.",
+        "How ids are written in ROADMAP.md: sequential (also unset) gives Phase 1, milestone-prefixed Phase 1-01, bracket leads with the milestone, as [GSD.02] 05.",
     ));
     let (v, k) = opt_str(config.claude_md_path.as_deref());
     push(cat, "claude_md_path", v, k, false, ConfigHelp::new(
@@ -16964,6 +16964,66 @@ mod tests {
             value.pointer("/planner/stall_threshold_minutes"),
             Some(&serde_json::json!(10))
         );
+    }
+
+    /// Quick task 261103-f5i (gsd-core v1.20.0 doc corrections): three help
+    /// texts that were wrong or incomplete now state upstream's semantics, and
+    /// none of their row kinds, `since` markers or defaults moved. Both phase
+    /// rows stay free-form String rows (I-7): upstream's `phase_naming` type
+    /// column is `string` and any value but `custom` keeps numeric allocation.
+    #[test]
+    fn the_v1_20_0_doc_corrections_reach_the_help_text() {
+        let entries = all_config_entries();
+        let row = |key: &str| {
+            entries
+                .iter()
+                .find(|entry| entry.key.as_ref() == key)
+                .unwrap_or_else(|| panic!("`{key}` has no row"))
+        };
+
+        let inline = row("workflow.inline_plan_threshold");
+        assert!(matches!(inline.kind, ConfigValueKind::Integer));
+        assert_eq!(inline.help.since, "v1.01.0");
+        for needle in ["execute inline", "default 2", "0"] {
+            assert!(
+                inline.help.summary.contains(needle),
+                "inline_plan_threshold help lacks {needle:?}: {}",
+                inline.help.summary
+            );
+        }
+        assert!(
+            !inline.help.summary.contains("own file"),
+            "the pre-1.20 wording survived: {}",
+            inline.help.summary
+        );
+        let unset_rows = build_defaults_entries(
+            &crate::state_reader::config_json::parse_gsd_config("{}").unwrap(),
+        );
+        let unset = unset_rows
+            .iter()
+            .find(|e| e.key.as_ref() == "workflow.inline_plan_threshold")
+            .unwrap();
+        assert_eq!(unset.builtin_default, Some("2"));
+
+        let naming = row("phase_naming");
+        assert!(matches!(naming.kind, ConfigValueKind::String));
+        for needle in ["sequential", "custom", "any other value"] {
+            assert!(
+                naming.help.summary.contains(needle),
+                "phase_naming help lacks {needle:?}: {}",
+                naming.help.summary
+            );
+        }
+
+        let convention = row("phase_id_convention");
+        assert!(matches!(convention.kind, ConfigValueKind::String));
+        for needle in ["sequential", "milestone-prefixed", "bracket"] {
+            assert!(
+                convention.help.summary.contains(needle),
+                "phase_id_convention help lacks {needle:?}: {}",
+                convention.help.summary
+            );
+        }
     }
 
     /// Where the two gsd-core v1.16.0 rows sit, and which built-in default an
