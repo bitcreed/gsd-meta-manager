@@ -553,3 +553,136 @@ fn no_sandbox_bind_covers_the_inbox() {
         "the read-only root must be masked by a tmpfs over the run dir: {line}"
     );
 }
+
+// ---- quick 261103-gt1 Task 3: the soft cap, task budget and task attach ----
+
+/// One assistant line that prices at $4 (1M opus-5-5 input tokens), then replays every
+/// stdin line forever and never ends its turn.
+const SOFT_CAP_SCENARIO: &str = r#"
+touch "$FAKE_CLAUDE_DIR/started"
+printf '%s\n' '{"type":"assistant","message":{"id":"m1","model":"claude-opus-5-5","content":[{"type":"text","text":"working"}],"usage":{"input_tokens":1000000,"output_tokens":0}},"parent_tool_use_id":null}'
+while IFS= read -r line; do
+  printf '%s\n' "$line" | sed 's/^{/{"isReplay":true,/'
+done
+"#;
+
+#[test]
+fn a_soft_cap_wraps_up_once_then_stops_the_run_as_over_budget() {
+    let fx = fixture();
+    fx.write_scenario(SOFT_CAP_SCENARIO);
+    let out = task(&fx, &["run", ALIAS, "--text", "spend"])
+        .env("GSDMM_ONEOFF_SOFT_CAP_GRACE_SECS", "1")
+        .output()
+        .expect("the binary runs");
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert!(
+        wait_until(Duration::from_secs(30), || fx.scenario_started()),
+        "the scenario never started"
+    );
+    let id = status(&fx)["record"]["run_id"].as_str().unwrap().to_owned();
+    let dir = run_dir(&fx, &id);
+
+    let too_high = run(&fx, &["budget", ALIAS, "--soft", "20"]);
+    assert_eq!(too_high.status.code(), Some(1), "{too_high:?}");
+    assert!(
+        String::from_utf8_lossy(&too_high.stderr).contains("hard ceiling"),
+        "{too_high:?}"
+    );
+
+    let set = run(&fx, &["budget", ALIAS, "--soft", "1"]);
+    assert_eq!(set.status.code(), Some(0), "{set:?}");
+    assert!(
+        String::from_utf8_lossy(&set.stdout).contains("delivered"),
+        "{set:?}"
+    );
+
+    let done = wait_finished(&fx);
+    let record = &done["record"];
+    assert_eq!(record["outcome"]["kind"], "over_budget", "{done}");
+    assert_eq!(record["soft_cap_usd"], 1.0, "{record}");
+    assert!(record["soft_cap_hit_at"].is_string(), "{record}");
+
+    let injections = lines_of(&dir.join("injections.jsonl"));
+    let kinds: Vec<&str> = injections
+        .iter()
+        .map(|i| i["kind"].as_str().unwrap_or(""))
+        .collect();
+    assert_eq!(
+        kinds.iter().filter(|k| **k == "wrap_up").count(),
+        1,
+        "{injections:?}"
+    );
+    assert!(kinds.contains(&"soft_cap"), "{injections:?}");
+    let wrap = injections.iter().find(|i| i["kind"] == "wrap_up").unwrap();
+    assert_eq!(wrap["outcome"], "delivered");
+    assert!(wrap["text"].as_str().unwrap().starts_with("Budget reached"));
+    let stream = fs::read_to_string(dir.join("stream.jsonl")).unwrap();
+    assert!(
+        stream
+            .lines()
+            .any(|l| l.contains("isReplay") && l.contains("Budget reached")),
+        "{stream}"
+    );
+}
+
+#[test]
+fn attach_prints_a_finished_run() {
+    let fx = fixture();
+    fx.write_scenario(STREAM_TURN_SCENARIO);
+    let out = run(&fx, &["run", ALIAS, "--text", "quick one", "--foreground"]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let finished = run(&fx, &["attach", ALIAS, "--no-input"]);
+    assert_eq!(finished.status.code(), Some(0), "{finished:?}");
+    let text = String::from_utf8_lossy(&finished.stdout);
+    assert!(text.contains("prompt: "), "{text}");
+    assert!(text.contains("turn done"), "{text}");
+    assert!(
+        String::from_utf8_lossy(&run(&fx, &["attach", "nope", "--no-input"]).stderr)
+            .contains("task attach"),
+    );
+}
+
+#[test]
+fn attach_turns_stdin_lines_into_injected_messages() {
+    use std::io::Write;
+    let fx = fixture();
+    fx.write_scenario(INJECT_SCENARIO);
+    let out = run(&fx, &["run", ALIAS, "--text", "wait for me"]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert!(
+        wait_until(Duration::from_secs(30), || fx.scenario_started()),
+        "the scenario never started"
+    );
+    let id = status(&fx)["record"]["run_id"].as_str().unwrap().to_owned();
+    let mut child = task(&fx, &["attach", ALIAS])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    {
+        let stdin = child.stdin.as_mut().unwrap();
+        stdin.write_all(b"hi\n").unwrap();
+        stdin.flush().unwrap();
+    }
+    let exited = wait_until(Duration::from_secs(40), || {
+        matches!(child.try_wait(), Ok(Some(_)))
+    });
+    if !exited {
+        let _ = child.kill();
+    }
+    assert!(exited, "attach never exited after the run finished");
+    let output = child.wait_with_output().unwrap();
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("you: hi"),
+        "{output:?}"
+    );
+    let injections = lines_of(&run_dir(&fx, &id).join("injections.jsonl"));
+    assert!(
+        injections
+            .iter()
+            .any(|i| i["text"] == "hi" && i["outcome"] == "delivered"),
+        "{injections:?}"
+    );
+}

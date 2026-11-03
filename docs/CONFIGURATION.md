@@ -118,6 +118,7 @@ The binary itself does not require any environment variables to start. It does, 
 | `HOME` | Optional | `src/state_reader/config_json.rs` (`user_defaults_path`) | Fallback root for `$GSD_HOME/.gsd/defaults.json` (the GSD user defaults overlay) when `GSD_HOME` is unset or empty. If neither is set, the defaults file is simply not loaded. |
 | `GSDMM_EXPERIMENTAL_FEATURES` | Optional | `src/experimental.rs` (read once at startup by `App::from_config`) | Turns on the experimental surfaces, which today means the **Driver** tab and everything that leads to it, one-off tasks (`t` / `T`) included. **Default is OFF.** Accepted truthy values are `1`, `true`, `yes` and `on`, ASCII-case-insensitive with surrounding whitespace trimmed; unset, empty, `0`, `false`, `no`, `off` and any unrecognised value are OFF. |
 | `GSDMM_ONEOFF_REPORT_DIR` | Never set by users | `src/taskctl_cli.rs` (`taskctl report`) | Set by the one-off launcher inside the sandbox (and pinned by the run's `gsd-meta-manager` shim): the directory `taskctl report` writes `report.json` to. Unset, relative or missing makes `taskctl report` exit 1. |
+| `GSDMM_ONEOFF_SOFT_CAP_GRACE_SECS` | Tests only | `src/oneoff/session.rs` (`grace_from_env`) | Shortens the one-off soft cap's grace (integer 1-600 seconds; default 300). Read once by the launcher daemon at session start. |
 
 Editor fallback chain: `$VISUAL` → `$EDITOR` → `vi`.
 
@@ -175,7 +176,12 @@ discard and `x` kill (a live run); each of those asks first.
 **CLI.** `gsd-meta-manager task run <alias|path> (--todo <file> | --text <task>)
 [--mode quick|fast] [--model opus] [--max-budget-usd 10] [--cap-minutes 60]
 [--unsandboxed] [--foreground]`; `task status <project> [--json]`; `task stop
-<project> [--wait-secs 60]`; `task land merge|push|discard <project> <run-id>`.
+<project> [--wait-secs 60]`; `task send <project> <text> [--wait-secs 10]`;
+`task budget <project> (--soft <usd> | --clear) [--wait-secs 10]`; `task attach
+<project> [--run-id <id>] [--no-input]` (prints the same rendered lines as the live
+view, follows until the run is finished and drained, and turns each line you type
+into a message; `--no-input` only follows); `task land merge|push|discard <project>
+<run-id>`.
 The defaults are the ones shown above (the same as `driver launch`). `task` is not
 gated by this variable: the flag is a discovery gate, as it is for `driver`.
 
@@ -208,6 +214,18 @@ invoice: subscription tokens are not billed per token, and subagent usage is onl
 partly visible, so it can undercount. `--max-budget-usd` stays the real hard
 ceiling, fixed at launch. The latest rate-limit event of the stream is shown next
 to it (status, window, utilization and the reset time in local time).
+
+**Soft cap.** Off by default. `b` in the live view (while the run is live) or `task
+budget <project> --soft <usd>` sets or changes it, `--clear` (or an empty `b` input)
+removes it; it must be above 0 and below `--max-budget-usd`. When the estimate
+reaches it the launcher sends ONE wrap-up message ("Budget reached: commit your work
+now, call `gsd-meta-manager taskctl report` with your status, then stop."), recorded
+in `injections.jsonl` as `wrap_up`, and starts a 5-minute grace. If the session is
+still alive when the grace ends it is stopped and recorded as `over_budget`. Raising
+or clearing the cap during the grace cancels the stop (the wrap-up stays sent), and a
+second crossing restarts the grace without a second message. `run.json` records
+`soft_cap_usd` and `soft_cap_hit_at`. The estimate is notional and can undercount
+subagents, so the cap can fire late: the hard ceiling stays the real limit.
 
 **Where runs live.** `<data dir>/gsd-meta-manager/oneoff/<hash8 of the
 project path>/<run-id>/` (`~/.local/share/...` on Linux): `run.json` (the host's

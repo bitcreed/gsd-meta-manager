@@ -275,10 +275,33 @@ pub fn rate_text(rate: &RateLimitSeen) -> String {
     text
 }
 
-/// The meter line: `spend ≈ $1.23 / hard $10.00 (notional) | rate: ...`.
-pub fn meter_text(meter: &Meter, hard_usd: f64) -> String {
+/// An RFC 3339 time as local `HH:MM`.
+fn local_hhmm(rfc3339: &str) -> Option<String> {
+    chrono::DateTime::parse_from_rfc3339(rfc3339)
+        .ok()
+        .map(|t| t.with_timezone(&chrono::Local).format("%H:%M").to_string())
+}
+
+/// The meter line: `spend ≈ $1.23 / soft $5.00 (hit 14:05) / hard $10.00 (notional) |
+/// rate: ...`. `soft` is `off` without a cap.
+pub fn meter_text(
+    meter: &Meter,
+    hard_usd: f64,
+    soft_usd: Option<f64>,
+    soft_hit_at: Option<&str>,
+) -> String {
+    let soft = match soft_usd {
+        Some(usd) => {
+            let mut text = format!("soft ${usd:.2}");
+            if let Some(at) = soft_hit_at.and_then(local_hhmm) {
+                text.push_str(&format!(" (hit {at})"));
+            }
+            text
+        }
+        None => "soft off".to_owned(),
+    };
     let mut text = format!(
-        "spend ≈ ${:.2} / hard ${hard_usd:.2} (notional)",
+        "spend ≈ ${:.2} / {soft} / hard ${hard_usd:.2} (notional)",
         meter.estimate
     );
     if let Some(rate) = &meter.rate {
@@ -644,16 +667,19 @@ mod tests {
                 resets_at: Some(reset),
             }),
         };
-        let text = meter_text(&meter, 10.0);
+        let text = meter_text(&meter, 10.0, None, None);
         assert!(
-            text.contains("spend ≈ $1.23 / hard $10.00 (notional)"),
+            text.contains("spend ≈ $1.23 / soft off / hard $10.00 (notional)"),
             "{text}"
         );
         for part in ["allowed_warning", "five_hour", "85%"] {
             assert!(text.contains(part), "{part} in {text}");
         }
         assert!(text.contains(&local_time(reset).unwrap()), "{text}");
-        assert!(!meter_text(&Meter::default(), 10.0).contains("rate:"));
+        assert!(!meter_text(&Meter::default(), 10.0, None, None).contains("rate:"));
+        let capped = meter_text(&meter, 10.0, Some(5.0), Some("2026-11-03T10:00:00Z"));
+        assert!(capped.contains("soft $5.00 (hit "), "{capped}");
+        assert!(!meter_text(&meter, 10.0, Some(5.0), None).contains("(hit"));
     }
 
     fn rendered(events: &[StreamEvent]) -> Vec<String> {

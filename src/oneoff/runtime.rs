@@ -41,6 +41,8 @@ pub enum HostEnd {
     UserStop,
     /// The host's wall clock stopped it.
     WallClock,
+    /// The soft spend cap's grace ran out while the session was still alive.
+    SoftCap,
 }
 
 /// The models the TUI cycles through, first is the default.
@@ -531,6 +533,7 @@ mod host_side {
             match end {
                 HostEnd::UserStop => return AgentOutcome::Stopped,
                 HostEnd::WallClock => return AgentOutcome::TimedOut,
+                HostEnd::SoftCap => return AgentOutcome::OverBudget,
                 HostEnd::Exited => {}
             }
             let summary = summarize_stream_file(stream_path, now);
@@ -731,6 +734,18 @@ mod host_side {
             assert_eq!(
                 outcome_of(&success, Some(0), HostEnd::UserStop),
                 AgentOutcome::Stopped
+            );
+        }
+
+        #[test]
+        fn the_soft_cap_end_is_over_budget_whatever_the_stream_says() {
+            assert_eq!(
+                outcome_of(
+                    &[r#"{"type":"result","subtype":"success"}"#],
+                    Some(0),
+                    HostEnd::SoftCap
+                ),
+                AgentOutcome::OverBudget
             );
         }
 

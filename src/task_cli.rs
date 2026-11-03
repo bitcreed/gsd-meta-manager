@@ -32,13 +32,16 @@ mod unix {
     use gsd_meta_manager::cli::{LandAction, TaskAction, TaskRunArgs};
     use gsd_meta_manager::launcher::LauncherError;
     use gsd_meta_manager::oneoff::inbox::{
-        send_message, wait_outcome, InboxError, InjectionOutcome,
+        send_message, set_soft_cap, wait_outcome, InboxError, InjectionOutcome,
     };
     use gsd_meta_manager::oneoff::land;
     use gsd_meta_manager::oneoff::launch::{
         run_detached, run_foreground, stop, OneoffOptions, StopOutcome,
     };
+    use gsd_meta_manager::oneoff::session::validate_soft_cap;
+    use gsd_meta_manager::oneoff::store::{project_dir_for, read_view};
     use gsd_meta_manager::oneoff::store::{read_latest, LiveState, OneoffView, ReportSource};
+    use gsd_meta_manager::oneoff::stream::{meter_text, Follower};
     use gsd_meta_manager::oneoff::todos::{title_from, valid_todo_file_name, PENDING_REL};
     use gsd_meta_manager::oneoff::TaskSpec;
     use gsd_meta_manager::text::render_for_terminal;
@@ -73,6 +76,17 @@ mod unix {
                 text,
                 wait_secs,
             } => send_main(&project, &text, wait_secs, config),
+            TaskAction::Budget {
+                project,
+                soft,
+                clear,
+                wait_secs,
+            } => budget_main(&project, soft.filter(|_| !clear), wait_secs, config),
+            TaskAction::Attach {
+                project,
+                run_id,
+                no_input,
+            } => attach_main(&project, run_id.as_deref(), no_input, config),
             TaskAction::Land { action } => land_main(action, config),
         }
     }
@@ -364,6 +378,130 @@ mod unix {
                 1
             }
         }
+    }
+
+    fn budget_main(
+        target: &str,
+        soft: Option<f64>,
+        wait_secs: u64,
+        config: Option<PathBuf>,
+    ) -> i32 {
+        let (alias, project, _) = match resolve_project(target, config) {
+            Ok(resolved) => resolved,
+            Err(message) => {
+                err_line(&format!("task budget: {message}"));
+                return 1;
+            }
+        };
+        let not_live = || {
+            err_line(&format!(
+                "task budget: {}'s one-off is not live",
+                shown(&alias)
+            ));
+            1
+        };
+        let Some(view) = read_latest(&project) else {
+            return not_live();
+        };
+        if view.live != LiveState::Running {
+            return not_live();
+        }
+        if let Err(why) = validate_soft_cap(soft, view.record.max_budget_usd) {
+            err_line(&format!("task budget: {why}"));
+            return 1;
+        }
+        match set_soft_cap(&view.run_dir, soft) {
+            Ok(id) => report_request("budget", &view.run_dir, &id, wait_secs),
+            Err(InboxError::NotLive) => not_live(),
+            Err(e) => {
+                err_line(&format!("task budget: {}", shown(&e.to_string())));
+                1
+            }
+        }
+    }
+
+    /// Follow a run's stream as plain text; each stdin line is an injected message.
+    fn attach_main(
+        target: &str,
+        run_id: Option<&str>,
+        no_input: bool,
+        config: Option<PathBuf>,
+    ) -> i32 {
+        let (alias, project, _) = match resolve_project(target, config) {
+            Ok(resolved) => resolved,
+            Err(message) => {
+                err_line(&format!("task attach: {message}"));
+                return 1;
+            }
+        };
+        let read = || match run_id {
+            Some(id) => project_dir_for(&project).and_then(|dir| read_view(&dir, id)),
+            None => read_latest(&project),
+        };
+        let Some(mut view) = read() else {
+            err_line(&format!(
+                "task attach: no one-off run for {}",
+                shown(&alias)
+            ));
+            return 1;
+        };
+        let run_dir = view.run_dir.clone();
+        if !no_input {
+            let dir = run_dir.clone();
+            std::thread::spawn(move || {
+                use std::io::BufRead;
+                for line in std::io::stdin().lock().lines() {
+                    let Ok(line) = line else { break };
+                    let text = line.trim();
+                    if text.is_empty() {
+                        continue;
+                    }
+                    if let Err(e) = send_message(&dir, text) {
+                        err_line(&format!("task attach: not sent: {}", shown(&e.to_string())));
+                    }
+                }
+            });
+        }
+        let mut follower = Follower::new(&run_dir);
+        let mut tick: u64 = 0;
+        let meter = loop {
+            let finished_before = !view.live.may_be_live();
+            let batch = match follower.poll() {
+                Ok(batch) => batch,
+                Err(e) => {
+                    err_line(&format!("task attach: {}", shown(&e.to_string())));
+                    return 1;
+                }
+            };
+            let drained = batch.lines.is_empty();
+            for line in &batch.lines {
+                out_line(&shown(line));
+            }
+            if finished_before && drained {
+                break batch.meter;
+            }
+            tick += 1;
+            if tick & 3 == 0 || !drained {
+                if let Some(fresh) = read() {
+                    view = fresh;
+                }
+            }
+            if drained {
+                std::thread::sleep(Duration::from_millis(250));
+            }
+        };
+        out_line(&shown(&format!(
+            "attach: {} {} - {}",
+            view.record.run_id,
+            view.live.as_str(),
+            meter_text(
+                &meter,
+                view.record.max_budget_usd,
+                view.record.soft_cap_usd,
+                view.record.soft_cap_hit_at.as_deref()
+            )
+        )));
+        0
     }
 
     fn land_main(action: LandAction, config: Option<PathBuf>) -> i32 {

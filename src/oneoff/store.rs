@@ -112,6 +112,12 @@ pub struct RunRecord {
     pub warnings: Vec<String>,
     #[serde(default)]
     pub landed: Vec<Landing>,
+    /// The soft spend cap in force when the run ended or as last set (quick 261103-gt1).
+    #[serde(default)]
+    pub soft_cap_usd: Option<f64>,
+    /// When the spend estimate first reached the soft cap.
+    #[serde(default)]
+    pub soft_cap_hit_at: Option<String>,
 }
 
 impl RunRecord {
@@ -157,6 +163,8 @@ impl RunRecord {
             summary_path: None,
             warnings: Vec::new(),
             landed: Vec::new(),
+            soft_cap_usd: None,
+            soft_cap_hit_at: None,
         }
     }
 
@@ -690,5 +698,22 @@ pub(crate) mod tests {
         let back: RunRecord = serde_json::from_str(&text).unwrap();
         assert_eq!(back, record);
         assert_eq!(back.last_pushed_sha().as_deref(), Some("abc123"));
+    }
+
+    #[test]
+    fn the_soft_cap_fields_are_optional_on_read_and_round_trip() {
+        let mut value = serde_json::to_value(record()).unwrap();
+        let object = value.as_object_mut().unwrap();
+        object.remove("soft_cap_usd");
+        object.remove("soft_cap_hit_at");
+        let old: RunRecord = serde_json::from_value(value).unwrap();
+        assert_eq!(old.soft_cap_usd, None);
+        assert_eq!(old.soft_cap_hit_at, None);
+        let mut capped = record();
+        capped.soft_cap_usd = Some(1.5);
+        capped.soft_cap_hit_at = Some("2026-11-03T10:00:00Z".to_owned());
+        let back: RunRecord =
+            serde_json::from_str(&serde_json::to_string(&capped).unwrap()).unwrap();
+        assert_eq!(back, capped);
     }
 }

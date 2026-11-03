@@ -733,6 +733,8 @@ fn oneoff_tail_loop(
             {
                 info.live = view.live;
                 info.ended_at = view.record.ended_at.clone();
+                info.soft_cap_usd = view.record.soft_cap_usd;
+                info.soft_cap_hit_at = view.record.soft_cap_hit_at.clone();
             }
         }
         tick += 1;
@@ -1261,6 +1263,8 @@ impl App {
             hard_usd: view.record.max_budget_usd,
             started_at: view.record.started_at.clone(),
             ended_at: view.record.ended_at.clone(),
+            soft_cap_usd: view.record.soft_cap_usd,
+            soft_cap_hit_at: view.record.soft_cap_hit_at.clone(),
         };
         let epoch = EPOCH.fetch_add(1, Ordering::SeqCst) + 1;
         let run_id = view.record.run_id.clone();

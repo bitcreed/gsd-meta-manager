@@ -515,6 +515,33 @@ pub enum TaskAction {
         #[arg(long, default_value_t = 10)]
         wait_secs: u64,
     },
+    /// Set or clear the soft spend cap of the project's running one-off (experimental)
+    #[command(group(clap::ArgGroup::new("cap").required(true).args(["soft", "clear"])))]
+    Budget {
+        /// Alias or path of a registered project
+        project: String,
+        /// The soft cap in US dollars; must be above 0 and below the run's hard ceiling
+        #[arg(long)]
+        soft: Option<f64>,
+        /// Remove the soft cap
+        #[arg(long)]
+        clear: bool,
+        /// How long to wait for the launcher to pick the request up, in seconds
+        #[arg(long, default_value_t = 10)]
+        wait_secs: u64,
+    },
+    /// Follow a one-off's stream as plain text, and send each line you type to the
+    /// agent (experimental)
+    Attach {
+        /// Alias or path of a registered project
+        project: String,
+        /// A run id (default: the project's latest run)
+        #[arg(long)]
+        run_id: Option<String>,
+        /// Only follow; do not read messages from stdin
+        #[arg(long)]
+        no_input: bool,
+    },
     /// Land a finished run's work: merge, push or discard
     Land {
         #[command(subcommand)]

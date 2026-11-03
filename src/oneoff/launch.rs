@@ -53,7 +53,7 @@ use crate::launcher::LauncherError;
 use super::inbox::ensure_inbox;
 use super::report::read_validated;
 use super::runtime::{AgentRuntime, HostEnd};
-use super::session::Supervisor;
+use super::session::{grace_from_env, Supervisor};
 use super::store::{
     lock_path, mint_run_id, oneoff_root, probe, project_dir_for, project_dir_in, rfc3339,
     summary_path_from, synthesize, valid_oneoff_run_id, write_record, LockSeen, RecordStatus,
@@ -463,7 +463,7 @@ fn run_session(ctx: &Ctx<'_>, record: &mut RunRecord) -> Result<(), LauncherErro
         })?;
     drop(env);
     // C-05: the prompt is the first message on the agent's stdin.
-    let mut supervisor = Supervisor::new(run_dir, input);
+    let mut supervisor = Supervisor::new(run_dir, input, opts.max_budget_usd, grace_from_env());
     supervisor.send_prompt(&prompt, Instant::now());
     let containment = match &unit {
         Some(unit) => Containment::Scope { unit: unit.clone() },
@@ -488,7 +488,19 @@ fn run_session(ctx: &Ctx<'_>, record: &mut RunRecord) -> Result<(), LauncherErro
             supervisor.close_input();
             break (child.wait(), HostEnd::WallClock);
         }
-        supervisor.tick(Instant::now());
+        let tick = supervisor.tick(Instant::now());
+        if tick.persist {
+            record.soft_cap_usd = supervisor.soft_cap_usd();
+            record.soft_cap_hit_at = supervisor.soft_cap_hit_at().map(str::to_owned);
+            if let Err(e) = write_record(run_dir, record) {
+                eprintln!("task run: could not record the soft cap: {e}");
+            }
+        }
+        if tick.stop_soft_cap {
+            containment.stop(&mut child);
+            supervisor.close_input();
+            break (child.wait(), HostEnd::SoftCap);
+        }
         match child.try_wait() {
             Ok(Some(status)) => break (Ok(status), HostEnd::Exited),
             Ok(None) => {}
@@ -506,7 +518,10 @@ fn run_session(ctx: &Ctx<'_>, record: &mut RunRecord) -> Result<(), LauncherErro
     if let Some(guard) = egress_guard {
         guard.finish();
     }
-    record.warnings.extend(supervisor.finish());
+    let end_of_session = supervisor.finish();
+    record.warnings.extend(end_of_session.warnings);
+    record.soft_cap_usd = end_of_session.soft_cap_usd;
+    record.soft_cap_hit_at = end_of_session.soft_cap_hit_at;
     capture.finish(CAPTURE_FINISH_BUDGET);
     let rc = status
         .ok()

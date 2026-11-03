@@ -17,6 +17,7 @@ use std::sync::Arc;
 use super::{AppContext, Screen, ScreenAction};
 use crate::action::Action;
 use crate::oneoff::inbox::{validate_message, InboxRequest};
+use crate::oneoff::session::validate_soft_cap;
 use crate::oneoff::store::LiveState;
 use crate::oneoff::stream::{meter_text, Meter};
 use crate::oneoff::MAX_MESSAGE_CHARS;
@@ -38,6 +39,8 @@ pub struct RunInfo {
     pub hard_usd: f64,
     pub started_at: String,
     pub ended_at: Option<String>,
+    pub soft_cap_usd: Option<f64>,
+    pub soft_cap_hit_at: Option<String>,
 }
 
 /// The bounded buffer of one viewed run, kept in the project's view cache.
@@ -93,6 +96,9 @@ pub struct OneoffViewerScreen {
     top: u64,
     follow: bool,
     composer: Option<String>,
+    /// The soft-cap USD input (`b`), and what is wrong with what was typed.
+    soft_input: Option<String>,
+    soft_error: Option<String>,
     notice: Option<String>,
     /// The body's height as last drawn, for paging and for the follow anchor.
     height: Cell<usize>,
@@ -108,6 +114,8 @@ impl OneoffViewerScreen {
             top: 0,
             follow: true,
             composer: None,
+            soft_input: None,
+            soft_error: None,
             notice: None,
             height: Cell::new(20),
             cancel,
@@ -147,6 +155,54 @@ impl OneoffViewerScreen {
     fn live(&self, ctx: &AppContext) -> bool {
         self.stream(ctx)
             .is_some_and(|s| s.info.live == LiveState::Running)
+    }
+
+    fn soft_key(&mut self, code: KeyCode, ctx: &mut AppContext) -> ScreenAction {
+        let Some(buffer) = self.soft_input.as_mut() else {
+            return ScreenAction::None;
+        };
+        match code {
+            KeyCode::Esc => {
+                self.soft_input = None;
+                self.soft_error = None;
+            }
+            KeyCode::Backspace => {
+                buffer.pop();
+                self.soft_error = None;
+            }
+            KeyCode::Char(c) if (c.is_ascii_digit() || c == '.') && buffer.len() < 12 => {
+                buffer.push(c);
+                self.soft_error = None;
+            }
+            KeyCode::Enter => {
+                let typed = buffer.trim().to_owned();
+                let usd = if typed.is_empty() {
+                    None
+                } else if let Ok(v) = typed.parse::<f64>() {
+                    Some(v)
+                } else {
+                    self.soft_error = Some("not a number".to_owned());
+                    return ScreenAction::None;
+                };
+                let Some(stream) = self.stream(ctx) else {
+                    return ScreenAction::None;
+                };
+                if let Err(why) = validate_soft_cap(usd, stream.info.hard_usd) {
+                    self.soft_error = Some(why);
+                    return ScreenAction::None;
+                }
+                let action = Action::OneoffInjectRequested {
+                    alias: self.alias.clone(),
+                    run_dir: stream.run_dir.clone(),
+                    request: InboxRequest::SoftCap { usd },
+                };
+                self.soft_input = None;
+                self.soft_error = None;
+                return ScreenAction::DispatchAction(Box::new(action));
+            }
+            _ => {}
+        }
+        ScreenAction::None
     }
 
     fn composer_key(
@@ -242,6 +298,9 @@ impl Screen for OneoffViewerScreen {
         if self.composer.is_some() {
             return self.composer_key(code, modifiers, ctx);
         }
+        if self.soft_input.is_some() {
+            return self.soft_key(code, ctx);
+        }
         self.notice = None;
         let page = self.height.get().max(2) as u64 - 1;
         let Some(stream) = self.stream(ctx).cloned() else {
@@ -268,6 +327,13 @@ impl Screen for OneoffViewerScreen {
             KeyCode::Char('i') => {
                 if self.live(ctx) {
                     self.composer = Some(String::new());
+                } else {
+                    self.notice = Some("run is not live".to_owned());
+                }
+            }
+            KeyCode::Char('b') => {
+                if self.live(ctx) {
+                    self.soft_input = Some(String::new());
                 } else {
                     self.notice = Some("run is not live".to_owned());
                 }
@@ -304,6 +370,8 @@ impl Screen for OneoffViewerScreen {
             Line::from(Span::raw(shown(&meter_text(
                 &stream.meter,
                 stream.info.hard_usd,
+                stream.info.soft_cap_usd,
+                stream.info.soft_cap_hit_at.as_deref(),
             )))),
         ];
         let footer_rows = 1_u16;
@@ -334,6 +402,21 @@ impl Screen for OneoffViewerScreen {
         }
 
         let hint = match (&self.composer, &self.notice) {
+            _ if self.soft_input.is_some() => Line::from(vec![
+                Span::styled(
+                    "soft cap USD (empty clears)> ",
+                    Style::default().fg(Color::Yellow),
+                ),
+                Span::raw(shown(self.soft_input.as_deref().unwrap_or(""))),
+                Span::raw("_"),
+                Span::styled(
+                    self.soft_error.as_deref().map_or_else(
+                        || "   Enter set   Esc cancel".to_owned(),
+                        |e| format!("   {}", shown(e)),
+                    ),
+                    dim,
+                ),
+            ]),
             (Some(buffer), _) => Line::from(vec![
                 Span::styled("message> ", Style::default().fg(Color::Yellow)),
                 Span::raw(shown(buffer)),
@@ -348,7 +431,7 @@ impl Screen for OneoffViewerScreen {
                 let follow = if self.follow { " [following]" } else { "" };
                 Line::from(Span::styled(
                     format!(
-                        "PgUp/PgDn j/k scroll · f follow · G end · i message · Esc close{follow}"
+                        "PgUp/PgDn j/k scroll · f follow · G end · i message · b soft cap · Esc close{follow}"
                     ),
                     dim,
                 ))
@@ -390,6 +473,8 @@ pub(crate) mod tests {
             hard_usd: 10.0,
             started_at: "2026-11-03T10:00:00Z".to_owned(),
             ended_at: Some("2026-11-03T10:05:00Z".to_owned()),
+            soft_cap_usd: None,
+            soft_cap_hit_at: None,
         }
     }
 
@@ -460,7 +545,7 @@ pub(crate) mod tests {
         assert!(drawn.contains("live"), "{drawn}");
         assert!(drawn.contains("elapsed"), "{drawn}");
         assert!(
-            drawn.contains("spend ≈ $1.50 / hard $10.00 (notional)"),
+            drawn.contains("spend ≈ $1.50 / soft off / hard $10.00 (notional)"),
             "{drawn}"
         );
         assert!(drawn.contains("line 99"), "{drawn}");
@@ -603,5 +688,77 @@ pub(crate) mod tests {
             .unwrap()
             .epoch = 8;
         assert!(text(&screen, &ctx, 100, 20).contains("Loading"));
+    }
+
+    #[test]
+    fn b_sets_or_clears_the_soft_cap_and_a_bad_number_stays_inline() {
+        let (mut ctx, mut screen) = viewer_over("oneoff-x", numbered(3), LiveState::Running);
+        key(&mut screen, &mut ctx, KeyCode::Char('b'));
+        assert!(screen.soft_input.is_some());
+        for c in "20".chars() {
+            key(&mut screen, &mut ctx, KeyCode::Char(c));
+        }
+        // 20 is above the 10.00 hard ceiling: inline error, nothing dispatched.
+        assert!(matches!(
+            key(&mut screen, &mut ctx, KeyCode::Enter),
+            ScreenAction::None
+        ));
+        assert!(screen.soft_input.is_some());
+        assert!(text(&screen, &ctx, 110, 20).contains("hard ceiling $10.00"));
+        key(&mut screen, &mut ctx, KeyCode::Backspace);
+        key(&mut screen, &mut ctx, KeyCode::Backspace);
+        for c in "2.5".chars() {
+            key(&mut screen, &mut ctx, KeyCode::Char(c));
+        }
+        match key(&mut screen, &mut ctx, KeyCode::Enter) {
+            ScreenAction::DispatchAction(action) => match *action {
+                Action::OneoffInjectRequested { request, .. } => {
+                    assert_eq!(request, InboxRequest::SoftCap { usd: Some(2.5) });
+                }
+                other => panic!("{other:?}"),
+            },
+            _ => panic!("expected a dispatch"),
+        }
+        // Empty clears.
+        key(&mut screen, &mut ctx, KeyCode::Char('b'));
+        match key(&mut screen, &mut ctx, KeyCode::Enter) {
+            ScreenAction::DispatchAction(action) => match *action {
+                Action::OneoffInjectRequested { request, .. } => {
+                    assert_eq!(request, InboxRequest::SoftCap { usd: None });
+                }
+                other => panic!("{other:?}"),
+            },
+            _ => panic!("expected a dispatch"),
+        }
+        key(&mut screen, &mut ctx, KeyCode::Char('b'));
+        key(&mut screen, &mut ctx, KeyCode::Esc);
+        assert!(screen.soft_input.is_none());
+    }
+
+    #[test]
+    fn b_needs_a_live_run_and_the_meter_shows_the_cap() {
+        let (mut ctx, mut screen) = viewer_over("oneoff-x", numbered(3), LiveState::Finished);
+        key(&mut screen, &mut ctx, KeyCode::Char('b'));
+        assert!(screen.soft_input.is_none());
+        assert!(text(&screen, &ctx, 110, 20).contains("run is not live"));
+        let stream = ctx
+            .view_cache
+            .get_mut(ALIAS)
+            .and_then(|c| c.oneoff_stream.as_mut())
+            .unwrap();
+        stream.info.soft_cap_usd = Some(3.0);
+        stream.info.soft_cap_hit_at = Some("2026-11-03T10:02:00Z".to_owned());
+        let drawn = text(&screen, &ctx, 130, 20);
+        assert!(drawn.contains("soft $3.00 (hit "), "{drawn}");
+    }
+
+    #[test]
+    fn the_launchers_wrap_up_renders_as_launcher_not_you() {
+        let wrap = crate::oneoff::runtime::AgentRuntime::default().wrap_up_message();
+        let mut r = crate::oneoff::stream::Renderer::default();
+        let first = crate::oneoff::stream::StreamEvent::UserReplay { text: "go".into() };
+        let wrapped = crate::oneoff::stream::StreamEvent::UserReplay { text: wrap.into() };
+        r.render(&first);
+        assert!(r.render(&wrapped)[0].starts_with("launcher: Budget reached"));
     }
 }

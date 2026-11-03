@@ -105,25 +105,156 @@ impl SessionLifecycle {
     }
 }
 
+/// How long the session may stay alive after the soft cap's wrap-up message (C-18).
+pub const SOFT_CAP_GRACE: Duration = Duration::from_secs(300);
+
+/// The environment variable that shortens the grace (tests only; 1..=600 seconds). It
+/// is read by the host daemon at session start; the sandboxed agent cannot set it.
+pub const SOFT_CAP_GRACE_ENV: &str = "GSDMM_ONEOFF_SOFT_CAP_GRACE_SECS";
+
+/// The grace in force: [`SOFT_CAP_GRACE_ENV`] when it is an integer 1..=600, else
+/// [`SOFT_CAP_GRACE`].
+pub fn grace_from_env() -> Duration {
+    grace_from(std::env::var(SOFT_CAP_GRACE_ENV).ok().as_deref())
+}
+
+/// [`grace_from_env`] with the value given.
+pub fn grace_from(value: Option<&str>) -> Duration {
+    value
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|secs| (1..=600).contains(secs))
+        .map_or(SOFT_CAP_GRACE, Duration::from_secs)
+}
+
+/// Judge a soft cap against the hard ceiling: `None` clears; a value must be finite,
+/// above 0 and below `hard_usd`.
+pub fn validate_soft_cap(usd: Option<f64>, hard_usd: f64) -> Result<(), String> {
+    match usd {
+        None => Ok(()),
+        Some(v) if v.is_finite() && v > 0.0 && v < hard_usd => Ok(()),
+        Some(_) => Err(format!(
+            "the soft cap must be above $0 and below the hard ceiling ${hard_usd:.2}"
+        )),
+    }
+}
+
+/// What the soft cap asks of the daemon this tick.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SoftCapStep {
+    None,
+    /// The estimate just reached the cap: send the one wrap-up message.
+    WrapUp,
+    /// In the grace.
+    Wait,
+    /// The grace is over and the session is still alive: stop it.
+    Stop,
+}
+
+/// The soft spend cap: off by default, set and cleared live (C-17, C-18, I-11).
+#[derive(Debug, Clone)]
+pub struct SoftCap {
+    cap: Option<f64>,
+    hard: f64,
+    wrapped_up: bool,
+    hit: bool,
+    deadline: Option<Instant>,
+    grace: Duration,
+}
+
+impl SoftCap {
+    pub fn new(hard: f64, grace: Duration) -> Self {
+        SoftCap {
+            cap: None,
+            hard,
+            wrapped_up: false,
+            hit: false,
+            deadline: None,
+            grace,
+        }
+    }
+
+    /// The cap in force.
+    pub fn cap(&self) -> Option<f64> {
+        self.cap
+    }
+
+    /// Whether the estimate ever reached the cap.
+    pub fn hit(&self) -> bool {
+        self.hit
+    }
+
+    /// Set (`Some`) or clear (`None`) the cap. Raising or clearing it above the
+    /// estimate cancels a pending stop; the wrap-up message that was sent stays sent.
+    pub fn set(&mut self, usd: Option<f64>, estimate: f64) -> Result<(), String> {
+        validate_soft_cap(usd, self.hard)?;
+        self.cap = usd;
+        if self.deadline.is_some() && usd.is_none_or(|cap| estimate < cap) {
+            self.deadline = None;
+        }
+        Ok(())
+    }
+
+    /// One tick at `estimate` and `now`.
+    pub fn tick(&mut self, estimate: f64, now: Instant) -> SoftCapStep {
+        let Some(cap) = self.cap else {
+            return SoftCapStep::None;
+        };
+        if estimate < cap {
+            return SoftCapStep::None;
+        }
+        self.hit = true;
+        match self.deadline {
+            None => {
+                self.deadline = Some(now + self.grace);
+                if self.wrapped_up {
+                    SoftCapStep::Wait
+                } else {
+                    self.wrapped_up = true;
+                    SoftCapStep::WrapUp
+                }
+            }
+            Some(deadline) if now >= deadline => SoftCapStep::Stop,
+            Some(_) => SoftCapStep::Wait,
+        }
+    }
+}
+
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub use self::supervisor::*;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod supervisor {
     use std::path::{Path, PathBuf};
-    use std::time::Instant;
+    use std::time::{Duration, Instant};
 
     use chrono::Utc;
 
-    use super::{LifecycleStep, SessionLifecycle};
+    use super::{LifecycleStep, SessionLifecycle, SoftCap, SoftCapStep};
     use crate::launcher::process::ChildInput;
     use crate::oneoff::inbox::{
         self, InboxRequest, InjectionKind, InjectionOutcome, InjectionRecord, Taken,
     };
     use crate::oneoff::runtime::AgentRuntime;
     use crate::oneoff::store::rfc3339;
-    use crate::oneoff::stream::StreamTail;
+    use crate::oneoff::stream::{SpendEstimate, StreamTail};
     use crate::oneoff::{MAX_INJECTIONS, STREAM_FILE};
+
+    /// What one tick asks of the wait loop.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    pub struct TickOutcome {
+        /// Stop the session: the soft cap's grace ran out.
+        pub stop_soft_cap: bool,
+        /// The soft cap or its hit time changed: write `run.json`.
+        pub persist: bool,
+    }
+
+    /// What the supervisor hands back when the session ends.
+    #[derive(Debug, Clone, PartialEq)]
+    pub struct SessionEnd {
+        pub warnings: Vec<String>,
+        pub soft_cap_usd: Option<f64>,
+        pub soft_cap_hit_at: Option<String>,
+    }
 
     /// The daemon's per-tick view of its own session.
     pub struct Supervisor {
@@ -134,10 +265,13 @@ mod supervisor {
         input: ChildInput,
         injections: usize,
         warnings: Vec<String>,
+        estimate: SpendEstimate,
+        soft_cap: SoftCap,
+        soft_cap_hit_at: Option<String>,
     }
 
     impl Supervisor {
-        pub fn new(run_dir: &Path, input: ChildInput) -> Self {
+        pub fn new(run_dir: &Path, input: ChildInput, hard_usd: f64, grace: Duration) -> Self {
             Supervisor {
                 run_dir: run_dir.to_owned(),
                 runtime: AgentRuntime::default(),
@@ -146,7 +280,20 @@ mod supervisor {
                 input,
                 injections: 0,
                 warnings: Vec::new(),
+                estimate: SpendEstimate::default(),
+                soft_cap: SoftCap::new(hard_usd, grace),
+                soft_cap_hit_at: None,
             }
+        }
+
+        /// The soft cap in force.
+        pub fn soft_cap_usd(&self) -> Option<f64> {
+            self.soft_cap.cap()
+        }
+
+        /// When the estimate first reached the soft cap.
+        pub fn soft_cap_hit_at(&self) -> Option<&str> {
+            self.soft_cap_hit_at.as_deref()
         }
 
         /// Write the initial prompt as the first message. It is not an injection and is
@@ -164,24 +311,78 @@ mod supervisor {
             let _ = inbox::append_injection(&self.run_dir, &record);
         }
 
-        fn refused(&self, id: &str, kind: InjectionKind, text: Option<String>, reason: &str) {
-            self.record(InjectionRecord {
+        fn record_of(
+            id: &str,
+            kind: InjectionKind,
+            text: Option<String>,
+            usd: Option<f64>,
+            outcome: InjectionOutcome,
+            reason: Option<&str>,
+        ) -> InjectionRecord {
+            InjectionRecord {
                 at: rfc3339(Utc::now()),
                 id: id.to_owned(),
                 kind,
                 text,
-                usd: None,
-                outcome: InjectionOutcome::Refused,
-                reason: Some(reason.to_owned()),
-            });
+                usd,
+                outcome,
+                reason: reason.map(str::to_owned),
+            }
         }
 
-        fn handle(&mut self, taken: Taken, now: Instant) {
+        fn refused(&self, id: &str, kind: InjectionKind, text: Option<String>, reason: &str) {
+            self.record(Self::record_of(
+                id,
+                kind,
+                text,
+                None,
+                InjectionOutcome::Refused,
+                Some(reason),
+            ));
+        }
+
+        /// Write `text` to the agent as a user message, recorded BEFORE the write.
+        /// `count` says whether it counts against the injection limit.
+        fn deliver(&mut self, id: &str, kind: InjectionKind, text: &str, now: Instant) -> bool {
+            self.record(Self::record_of(
+                id,
+                kind,
+                Some(text.to_owned()),
+                None,
+                InjectionOutcome::Delivered,
+                None,
+            ));
+            self.lifecycle.wrote(now);
+            let sent = self
+                .input
+                .send(self.runtime.user_message_line(text).into_bytes())
+                .is_ok();
+            if !sent {
+                self.warnings
+                    .push(format!("message {id} was recorded but not written"));
+            }
+            sent
+        }
+
+        fn handle(&mut self, taken: Taken, now: Instant, outcome: &mut TickOutcome) {
             let Taken { id, request } = taken;
             match request {
                 Err(reason) => self.refused(&id, InjectionKind::Message, None, &reason),
-                Ok(InboxRequest::SoftCap { .. }) => {
-                    self.refused(&id, InjectionKind::SoftCap, None, "not supported yet");
+                Ok(InboxRequest::SoftCap { usd }) => {
+                    match self.soft_cap.set(usd, self.estimate.usd()) {
+                        Ok(()) => {
+                            self.record(Self::record_of(
+                                &id,
+                                InjectionKind::SoftCap,
+                                None,
+                                usd,
+                                InjectionOutcome::Delivered,
+                                None,
+                            ));
+                            outcome.persist = true;
+                        }
+                        Err(reason) => self.refused(&id, InjectionKind::SoftCap, None, &reason),
+                    }
                 }
                 Ok(InboxRequest::Message { text }) => {
                     let reason = if !self.lifecycle.can_write() {
@@ -197,41 +398,52 @@ mod supervisor {
                         self.refused(&id, InjectionKind::Message, Some(text), reason);
                         return;
                     }
-                    // Recorded BEFORE the write (C-11).
-                    self.record(InjectionRecord {
-                        at: rfc3339(Utc::now()),
-                        id: id.clone(),
-                        kind: InjectionKind::Message,
-                        text: Some(text.clone()),
-                        usd: None,
-                        outcome: InjectionOutcome::Delivered,
-                        reason: None,
-                    });
                     self.injections += 1;
-                    self.lifecycle.wrote(now);
-                    if self
-                        .input
-                        .send(self.runtime.user_message_line(&text).into_bytes())
-                        .is_err()
-                    {
-                        self.warnings
-                            .push(format!("message {id} was recorded but not written"));
-                    }
+                    self.deliver(&id, InjectionKind::Message, &text, now);
                 }
             }
         }
 
-        /// One wait-loop tick: follow the stream, take the inbox, apply the lifecycle.
-        pub fn tick(&mut self, now: Instant) {
+        /// One wait-loop tick: follow the stream, take the inbox, apply the soft cap
+        /// and the lifecycle.
+        pub fn tick(&mut self, now: Instant) -> TickOutcome {
+            let mut outcome = TickOutcome::default();
             if let Ok(lines) = self.tail.poll() {
                 for line in lines {
                     for event in self.runtime.classify(&line) {
+                        self.estimate.apply(&event);
                         self.lifecycle.saw(&event, now);
                     }
                 }
             }
             for taken in inbox::take(&self.run_dir) {
-                self.handle(taken, now);
+                self.handle(taken, now, &mut outcome);
+            }
+            match self.soft_cap.tick(self.estimate.usd(), now) {
+                SoftCapStep::None | SoftCapStep::Wait => {}
+                SoftCapStep::WrapUp => {
+                    if self.soft_cap_hit_at.is_none() {
+                        self.soft_cap_hit_at = Some(rfc3339(Utc::now()));
+                        outcome.persist = true;
+                    }
+                    let id = format!("wrap-up-{}", Utc::now().timestamp_millis());
+                    let message = self.runtime.wrap_up_message();
+                    if self.lifecycle.can_write() && self.input.is_open() {
+                        self.deliver(&id, InjectionKind::WrapUp, message, now);
+                    } else {
+                        self.refused(
+                            &id,
+                            InjectionKind::WrapUp,
+                            Some(message.to_owned()),
+                            "the session is ending",
+                        );
+                    }
+                }
+                SoftCapStep::Stop => outcome.stop_soft_cap = true,
+            }
+            if self.soft_cap.hit() && self.soft_cap_hit_at.is_none() {
+                self.soft_cap_hit_at = Some(rfc3339(Utc::now()));
+                outcome.persist = true;
             }
             match self.lifecycle.decide(now) {
                 LifecycleStep::Keep => {}
@@ -244,6 +456,7 @@ mod supervisor {
                     self.input.close();
                 }
             }
+            outcome
         }
 
         /// The input is closed (a stop path); nothing more is written.
@@ -253,8 +466,8 @@ mod supervisor {
         }
 
         /// The session ended: refuse whatever is still in the inbox and hand back the
-        /// warnings for `run.json`.
-        pub fn finish(mut self) -> Vec<String> {
+        /// warnings and the soft-cap facts for `run.json`.
+        pub fn finish(mut self) -> SessionEnd {
             self.close_input();
             for taken in inbox::take(&self.run_dir) {
                 let kind = match taken.request {
@@ -263,7 +476,11 @@ mod supervisor {
                 };
                 self.refused(&taken.id, kind, None, "the session ended");
             }
-            self.warnings
+            SessionEnd {
+                warnings: self.warnings,
+                soft_cap_usd: self.soft_cap.cap(),
+                soft_cap_hit_at: self.soft_cap_hit_at,
+            }
         }
     }
 }
@@ -354,5 +571,60 @@ mod tests {
         l.saw(&result(), t0);
         l.wrote(t0);
         assert_eq!(l.decide(t0), LifecycleStep::Keep, "the new message is owed");
+    }
+
+    #[test]
+    fn a_soft_cap_is_judged_against_the_hard_ceiling() {
+        let g = Duration::from_secs(300);
+        let mut cap = SoftCap::new(10.0, g);
+        for bad in [0.0, -1.0, f64::NAN, f64::INFINITY, 10.0, 11.0] {
+            assert!(cap.set(Some(bad), 0.0).is_err(), "{bad}");
+        }
+        assert!(cap.set(Some(9.99), 0.0).is_ok());
+        assert_eq!(cap.cap(), Some(9.99));
+        assert!(cap.set(None, 0.0).is_ok());
+        assert_eq!(cap.cap(), None);
+    }
+
+    #[test]
+    fn crossing_the_cap_wraps_up_once_then_waits_then_stops() {
+        let t0 = Instant::now();
+        let g = Duration::from_secs(300);
+        let mut cap = SoftCap::new(10.0, g);
+        assert_eq!(cap.tick(2.0, t0), SoftCapStep::None, "off by default");
+        cap.set(Some(1.0), 2.0).unwrap();
+        assert_eq!(cap.tick(2.0, t0), SoftCapStep::WrapUp);
+        assert!(cap.hit());
+        assert_eq!(
+            cap.tick(2.0, t0 + Duration::from_secs(299)),
+            SoftCapStep::Wait
+        );
+        assert_eq!(cap.tick(2.0, t0 + g), SoftCapStep::Stop);
+    }
+
+    #[test]
+    fn raising_or_clearing_the_cap_cancels_the_stop_and_never_wraps_up_twice() {
+        let t0 = Instant::now();
+        let g = Duration::from_secs(300);
+        let mut cap = SoftCap::new(10.0, g);
+        cap.set(Some(1.0), 2.0).unwrap();
+        assert_eq!(cap.tick(2.0, t0), SoftCapStep::WrapUp);
+        cap.set(Some(5.0), 2.0).unwrap();
+        assert_eq!(cap.tick(2.0, t0 + g), SoftCapStep::None, "cancelled");
+        // Crossing the raised cap restarts the grace, with no second message.
+        let t1 = t0 + Duration::from_secs(400);
+        assert_eq!(cap.tick(6.0, t1), SoftCapStep::Wait);
+        assert_eq!(cap.tick(6.0, t1 + g), SoftCapStep::Stop);
+        cap.set(None, 6.0).unwrap();
+        assert_eq!(cap.tick(6.0, t1 + g), SoftCapStep::None, "cleared");
+    }
+
+    #[test]
+    fn the_grace_override_is_bounded() {
+        assert_eq!(grace_from(Some("1")), Duration::from_secs(1));
+        assert_eq!(grace_from(Some(" 600 ")), Duration::from_secs(600));
+        for bad in [None, Some("0"), Some("601"), Some("x"), Some("")] {
+            assert_eq!(grace_from(bad), SOFT_CAP_GRACE, "{bad:?}");
+        }
     }
 }
