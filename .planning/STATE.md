@@ -4,10 +4,10 @@ milestone: v2.1.0
 current_phase_name: Sandbox Egress & Agent-Channel Isolation
 status: shipped
 stopped_at: v2.1.0 released locally (tag v2.1.0, not pushed) — interim gsd-core 1.20.0 Sync release between milestones
-last_updated: "2026-11-03T20:06:01.740Z"
+last_updated: "2026-11-03T22:05:57.134Z"
 last_activity: 2026-11-03
 last_activity_desc: v2.1.0 released — gsd-core 1.20.0 Sync
-state_head: 01846deb27d9e7093de7133627736ece895739a8
+state_head: ccf48c0ed59cd5970fdb159805682167120c4a1a
 progress:
   total_phases: 16
   completed_phases: 16
@@ -46,7 +46,7 @@ Milestone: v2.0 Autonomous Orchestration — SHIPPED 2026-10-29 as v2.0.0
 Phase: — (between milestones; Phases 14-31 archived to `.planning/milestones/v2.0-phases/`)
 Plan: —
 Status: shipped
-Last activity: 2026-11-03 - Completed quick task 261103-hx7: Parallel one-offs per project, tracked branches, LLM-resolved merges
+Last activity: 2026-11-03 - Completed quick task 261103-klf: Cancel/pause one-off runs and resolvers, accurate run.json git refs, bounded merge diff
 
 Archive: `.planning/milestones/v2.0-ROADMAP.md`, `v2.0-REQUIREMENTS.md`, `v2.0-MILESTONE-AUDIT.md`.
 Carried forward: five security-adjacent review clusters as todos `2026-10-29-v2-carry-*`;
@@ -527,6 +527,7 @@ Older entries (Phase 19 T-19-* rows, Phase 21 round-13 gaps, Phase 26 risks, 31-
 | 261103-f5y | One-off sandboxed task dispatch from the TUI (experimental): taskctl report, task run/status/stop/land, runtime seam, Driver-tab t/T popups | 2026-11-03 | 41eb15e | [261103-f5y-one-off-sandboxed-task-dispatch-from-the](./quick/261103-f5y-one-off-sandboxed-task-dispatch-from-the/) |
 | 261103-gt1 | Live viewer with message injection and spend meter for one-off runs | 2026-11-03 | a65de2d | [261103-gt1-live-viewer-with-message-injection-and-s](./quick/261103-gt1-live-viewer-with-message-injection-and-s/) |
 | 261103-hx7 | Parallel one-offs per project, tracked branches, LLM-resolved merges | 2026-11-03 | 01846de | [261103-hx7-parallel-one-offs-per-project-tracked-br](./quick/261103-hx7-parallel-one-offs-per-project-tracked-br/) |
+| 261103-klf | Cancel/pause one-off runs and resolvers, accurate run.json git refs, bounded merge diff | 2026-11-03 | ccf48c0 | [261103-klf-cancel-pause-one-off-runs-and-resolvers-](./quick/261103-klf-cancel-pause-one-off-runs-and-resolvers-/) |
 
 ## Deferred Items
 
