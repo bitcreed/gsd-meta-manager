@@ -1869,7 +1869,7 @@ fn skip_line(reader: &mut impl BufRead) {
 /// Reads line by line with a bound per line: the file is written by the model's
 /// process, so a single enormous line must not become a single enormous
 /// allocation. A line over [`MAX_STREAM_LINE`] is skipped.
-fn summarize_stream_file(path: &Path, now: chrono::DateTime<Utc>) -> StreamSummary {
+pub(crate) fn summarize_stream_file(path: &Path, now: chrono::DateTime<Utc>) -> StreamSummary {
     let mut acc = StreamAccumulator::default();
     let Ok(file) = fs::File::open(path) else {
         return acc.into_summary(now);

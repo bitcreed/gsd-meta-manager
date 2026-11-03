@@ -54,6 +54,11 @@
 //! [`bridged_command`]), which listens on `127.0.0.1:`[`BRIDGE_PORT`]. Claude Code
 //! is pointed at that port by [`egress_env_sets`] and holds only
 //! [`DUMMY_OAUTH_TOKEN`]; the real token lives in the launcher-side egress server.
+//!
+//! Quick task 261103-f5y adds a second run-dir profile, [`RunDirMode::ReportWritable`],
+//! for one-off runs (`crate::oneoff`): the "run dir" bound there is the run's `report/`
+//! directory, bound read-write, with no lock masks and no driverctl socket. Everything
+//! else is the driver profile, in the same order ([`bwrap_argv_with`]).
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -504,6 +509,28 @@ fn push_home_entries(argv: &mut Vec<OsString>, spec: &SandboxSpec, select: impl 
 /// sibling runs are hidden; the run's own ro-bind and lock masks follow it and are
 /// re-established on top.
 pub fn bwrap_argv(spec: &SandboxSpec, command: &[OsString]) -> Vec<OsString> {
+    bwrap_argv_with(spec, RunDirMode::DriverReadOnly, command)
+}
+
+/// How [`bwrap_argv_with`] binds [`LaunchPaths::run_dir`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunDirMode {
+    /// The driver profile: the run dir read-only, its two lock files masked with
+    /// `/dev/null`, the driverctl socket re-bound into the runtime-dir tmpfs.
+    DriverReadOnly,
+    /// The one-off profile (quick 261103-f5y): the run dir (the run's `report/`
+    /// directory) read-write, no lock masks, no driverctl socket. The egress socket
+    /// is still re-bound.
+    ReportWritable,
+}
+
+/// [`bwrap_argv`] with the run-dir profile chosen by `mode`. Every other entry is the
+/// same, in the same order.
+pub fn bwrap_argv_with(
+    spec: &SandboxSpec,
+    mode: RunDirMode,
+    command: &[OsString],
+) -> Vec<OsString> {
     let paths = &spec.paths;
     let mut argv: Vec<OsString> = ["bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "--proc"]
         .iter()
@@ -584,11 +611,16 @@ pub fn bwrap_argv(spec: &SandboxSpec, command: &[OsString]) -> Vec<OsString> {
         argv.push(os("--tmpfs"));
         argv.push(drivers.into_os_string());
     }
-    bind(&mut argv, "--ro-bind", &paths.run_dir);
-    for lock in ["launcher.lock", "DIRECTION.lock"] {
-        argv.push(os("--ro-bind"));
-        argv.push(os("/dev/null"));
-        argv.push(paths.run_dir.join(lock).into_os_string());
+    match mode {
+        RunDirMode::DriverReadOnly => {
+            bind(&mut argv, "--ro-bind", &paths.run_dir);
+            for lock in ["launcher.lock", "DIRECTION.lock"] {
+                argv.push(os("--ro-bind"));
+                argv.push(os("/dev/null"));
+                argv.push(paths.run_dir.join(lock).into_os_string());
+            }
+        }
+        RunDirMode::ReportWritable => bind(&mut argv, "--bind", &paths.run_dir),
     }
     bind(&mut argv, "--bind", &paths.config_dir);
     // The gate's settings and the shim its hooks call stay unwritable for the driver.
@@ -605,7 +637,7 @@ pub fn bwrap_argv(spec: &SandboxSpec, command: &[OsString]) -> Vec<OsString> {
     if let Some(runtime) = &spec.runtime_dir {
         argv.push(os("--tmpfs"));
         argv.push(runtime.as_os_str().to_owned());
-        if paths.socket.starts_with(runtime) {
+        if mode == RunDirMode::DriverReadOnly && paths.socket.starts_with(runtime) {
             bind(&mut argv, "--bind", &paths.socket);
         }
         if paths.egress_socket.starts_with(runtime) {
@@ -819,6 +851,59 @@ mod tests {
         argv.iter()
             .map(|a| a.to_string_lossy().into_owned())
             .collect()
+    }
+
+    #[test]
+    fn the_report_writable_profile_differs_from_the_driver_profile_in_three_places_only() {
+        let spec = spec();
+        let command = vec![os("claude"), os("-p")];
+        let driver = strings(&bwrap_argv(&spec, &command));
+        assert_eq!(
+            driver,
+            strings(&bwrap_argv_with(
+                &spec,
+                RunDirMode::DriverReadOnly,
+                &command
+            ))
+        );
+        let oneoff = strings(&bwrap_argv_with(
+            &spec,
+            RunDirMode::ReportWritable,
+            &command,
+        ));
+        let run_dir = spec.paths.run_dir.display().to_string();
+        let socket = spec.paths.socket.display().to_string();
+        // Rebuild the expected one-off argv from the driver one by applying exactly the
+        // three documented differences.
+        let mut expected: Vec<String> = Vec::new();
+        let mut i = 0;
+        while i < driver.len() {
+            let triple = &driver[i..(i + 3).min(driver.len())];
+            if triple.len() == 3 && triple[0] == "--ro-bind" && triple[1] == run_dir {
+                expected.extend(["--bind".to_owned(), run_dir.clone(), run_dir.clone()]);
+                i += 3;
+            } else if triple.len() == 3
+                && ((triple[0] == "--ro-bind"
+                    && triple[1] == "/dev/null"
+                    && (triple[2].ends_with("launcher.lock")
+                        || triple[2].ends_with("DIRECTION.lock")))
+                    || (triple[0] == "--bind" && triple[1] == socket))
+            {
+                i += 3;
+            } else {
+                expected.push(driver[i].clone());
+                i += 1;
+            }
+        }
+        assert_eq!(oneoff, expected);
+        assert_eq!(
+            driver.len() - oneoff.len(),
+            9,
+            "two masks and one socket bind"
+        );
+        let egress = spec.paths.egress_socket.display().to_string();
+        assert!(oneoff.contains(&egress), "the egress socket is still bound");
+        assert!(!oneoff.iter().any(|a| a.ends_with("launcher.lock")));
     }
 
     #[test]

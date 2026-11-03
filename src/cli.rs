@@ -152,6 +152,20 @@ pub enum Commands {
         #[command(subcommand)]
         action: DriverctlAction,
     },
+    // The sandbox-side half of a one-off run (quick 261103-f5y, C-12): the agent
+    // calls `taskctl report` once it is finished, and the shim in the run's config
+    // dir pins the report directory.
+    //
+    // **Hidden, because users never type it**, for the reason `Driverctl` is, and
+    // **deliberately NOT `#[cfg]`-gated** for the same reason: a refusal is a typed
+    // error from the handler, never "unknown subcommand". `main` dispatches it
+    // before `init_tracing`: it runs inside the sandbox and creates no log file.
+    /// Internal: the one-off agent's strict report CLI
+    #[command(hide = true)]
+    Taskctl {
+        #[command(subcommand)]
+        action: TaskctlAction,
+    },
     // The sandbox's one way out (Phase 28.1, D-08). bwrap runs this as its
     // command inside the network-isolated profile: it binds `127.0.0.1:<port>`,
     // relays every connection to the bound-in egress socket, runs the driver
@@ -457,6 +471,34 @@ pub struct DriverctlLog {
     pub loop_mode: Option<String>,
     #[arg(long)]
     pub session: Option<String>,
+}
+
+/// The sandbox-side verbs of `taskctl` (quick 261103-f5y).
+#[derive(Subcommand)]
+pub enum TaskctlAction {
+    /// Record the one-off run's report (validated; exit 2 on a problem)
+    Report(Box<TaskctlReport>),
+}
+
+/// Arguments of `taskctl report`. Every value is judged by
+/// `oneoff::report::Report::validate`, the one validator the host uses too.
+#[derive(Args, Debug, Clone, PartialEq, Eq)]
+pub struct TaskctlReport {
+    /// done, partial, blocked or failed
+    #[arg(long, value_enum)]
+    pub status: crate::oneoff::report::ReportStatus,
+    /// One line of at most 120 characters
+    #[arg(long, allow_hyphen_values = true)]
+    pub headline: String,
+    /// What changed (repeatable, at most 5)
+    #[arg(long, allow_hyphen_values = true)]
+    pub changed: Vec<String>,
+    /// `<command>: <result>` (repeatable, at most 5)
+    #[arg(long, allow_hyphen_values = true)]
+    pub verified: Vec<String>,
+    /// A follow-up for a human (repeatable, at most 5)
+    #[arg(long, allow_hyphen_values = true)]
+    pub followup: Vec<String>,
 }
 
 /// The one `envelope` subcommand that survives Phase 31.
@@ -1023,6 +1065,58 @@ mod tests {
             driver_action(&["check", "p"]).is_err(),
             "the run id is required"
         );
+    }
+
+    #[test]
+    fn taskctl_is_absent_from_rendered_help() {
+        let mut cmd = Cli::command();
+        for (form, rendered) in [
+            ("render_help", cmd.render_help().to_string()),
+            ("render_long_help", cmd.render_long_help().to_string()),
+        ] {
+            assert!(
+                rendered
+                    .lines()
+                    .any(|line| is_subcommand_entry(line, "list")),
+                "{form}: positive control missing, the absence check certifies nothing"
+            );
+            assert!(
+                !rendered
+                    .lines()
+                    .any(|line| is_subcommand_entry(line, "taskctl")),
+                "{form} advertises `taskctl`, which users never type"
+            );
+        }
+    }
+
+    #[test]
+    fn taskctl_report_parses_repeatable_flags() {
+        let cli = Cli::try_parse_checked_from([
+            "gsd-meta-manager",
+            "taskctl",
+            "report",
+            "--status",
+            "done",
+            "--headline",
+            "-starts with a dash",
+            "--changed",
+            "a",
+            "--changed",
+            "b",
+            "--verified",
+            "cargo test: ok",
+        ])
+        .unwrap();
+        let Some(Commands::Taskctl {
+            action: TaskctlAction::Report(report),
+        }) = cli.command
+        else {
+            panic!("not taskctl report");
+        };
+        assert_eq!(report.status, crate::oneoff::report::ReportStatus::Done);
+        assert_eq!(report.headline, "-starts with a dash");
+        assert_eq!(report.changed, ["a", "b"]);
+        assert!(report.followup.is_empty());
     }
 
     #[test]

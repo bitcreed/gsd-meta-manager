@@ -50,7 +50,7 @@ const OVERLONG_STREAM_NOTE: &str =
 /// How long the launcher waits, after the scope or group is stopped, for the capture
 /// pump to see EOF. `[inferred — 2026-10-29]`: a leftover process that still holds the
 /// pipe must not hang the launcher; on timeout it proceeds with what is on disk.
-pub(super) const CAPTURE_FINISH_BUDGET: Duration = Duration::from_secs(5);
+pub(crate) const CAPTURE_FINISH_BUDGET: Duration = Duration::from_secs(5);
 
 /// The launch child's capture pump (SAFE-04): lets the launcher wait until every byte
 /// the child wrote has been redacted and written.

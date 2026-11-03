@@ -2,6 +2,7 @@ mod driver_cli;
 mod driverctl_cli;
 mod event;
 mod next_cli;
+mod taskctl_cli;
 mod tui;
 
 use event::EventBus;
@@ -54,6 +55,10 @@ fn main() -> anyhow::Result<()> {
     let mut cli = Cli::parse_checked();
     match cli.command.take() {
         Some(Commands::Driverctl { action }) => std::process::exit(driverctl_cli::run(action)),
+        // The one-off agent's report CLI (quick 261103-f5y): before `init_tracing`
+        // for the reason `driverctl` is, it runs inside the sandbox and must create
+        // no log file.
+        Some(Commands::Taskctl { action }) => std::process::exit(taskctl_cli::run(action)),
         // The in-sandbox bridge (28.1-05, D-08): before `init_tracing` for the
         // same reason as `driverctl`, it creates no file and writes no stdout.
         // Its exit code is the driver's, handed back to bwrap.
@@ -336,6 +341,13 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
         Some(Commands::Driverctl { .. }) => {
             return Err(anyhow::anyhow!(
                 "driverctl is dispatched in `main` before the async runtime exists"
+            ));
+        }
+        // Never reached: `main` dispatches `taskctl` before tracing and this
+        // runtime exist (quick 261103-f5y).
+        Some(Commands::Taskctl { .. }) => {
+            return Err(anyhow::anyhow!(
+                "taskctl is dispatched in `main` before the async runtime exists"
             ));
         }
         // Never reached: `main` dispatches `bridge` before tracing and this

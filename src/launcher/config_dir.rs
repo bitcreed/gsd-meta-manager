@@ -663,6 +663,17 @@ pub fn settings_transform(
 pub fn managed_settings(gate: &GateCommands, host: &[Value]) -> Value {
     let mut hooks = Map::new();
     insert_gate_hooks(&mut hooks, gate);
+    managed_settings_with(hooks, host)
+}
+
+/// [`managed_settings`] without the gate (quick 261103-f5y one-off runs): the deny
+/// list, the five locks and the host policy, and no launcher hook at all.
+pub fn managed_settings_without_gate(host: &[Value]) -> Value {
+    managed_settings_with(Map::new(), host)
+}
+
+/// The managed settings with `hooks` as the launcher's own hook block.
+fn managed_settings_with(hooks: Map<String, Value>, host: &[Value]) -> Value {
     let mut settings = Map::new();
     settings.insert("hooks".to_owned(), Value::Object(hooks));
     settings.insert("permissions".to_owned(), json!({"deny": DENY_TOOLS}));
@@ -856,10 +867,190 @@ pub fn seed(spec: &SeedSpec) -> io::Result<()> {
     Ok(())
 }
 
+/// What [`seed_oneoff`] needs to know (quick 261103-f5y).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OneoffSeedSpec {
+    /// The per-run config directory to create and fill.
+    pub config_dir: PathBuf,
+    /// The host's agent config dir: read for the links and the settings, never written.
+    pub host_claude_dir: PathBuf,
+    /// The binary the `bin/gsd-meta-manager` shim execs.
+    pub binary: PathBuf,
+    /// The run's report directory, pinned in the shim as `GSDMM_ONEOFF_REPORT_DIR`.
+    pub report_dir: PathBuf,
+    /// True for a bwrap-scope run: the deny list goes to `<cfg>/managed`.
+    pub managed: bool,
+    /// The host's managed-settings directory, merged into the per-run managed file.
+    pub host_managed_dir: PathBuf,
+    /// The `$HOME` entries the sandbox re-binds; empty keeps no user hook.
+    pub keep_roots: Vec<PathBuf>,
+}
+
+/// The environment variable the one-off shim pins (`crate::oneoff::REPORT_DIR_ENV`).
+const ONEOFF_REPORT_DIR_ENV: &str = "GSDMM_ONEOFF_REPORT_DIR";
+
+/// Create and fill a one-off run's config directory (quick 261103-f5y): the host
+/// links, the transformed settings and the onboarding file as [`seed`] writes them,
+/// the managed deny list and locks with **no gate hook, no Stop-guard and no
+/// `bin/driverctl`**, and a `bin/gsd-meta-manager` shim that runs only `taskctl`,
+/// with the report directory pinned.
+pub fn seed_oneoff(spec: &OneoffSeedSpec) -> io::Result<()> {
+    let host_managed = if spec.managed {
+        read_host_managed(&spec.host_managed_dir)?
+    } else {
+        Vec::new()
+    };
+
+    let bin = spec.config_dir.join("bin");
+    create_private_dir(&bin)?;
+
+    for name in LINK_FROM_HOST {
+        let src = spec.host_claude_dir.join(name);
+        let dst = spec.config_dir.join(name);
+        if src.exists() && fs::symlink_metadata(&dst).is_err() {
+            std::os::unix::fs::symlink(&src, &dst)?;
+        }
+    }
+
+    let host_settings = Value::Object(read_host_settings(&spec.host_claude_dir));
+    let home = spec.host_claude_dir.parent().unwrap_or(Path::new("/"));
+    let mut settings = settings_transform(host_settings, None, home, &spec.keep_roots);
+    if spec.managed {
+        let managed_dir = spec.config_dir.join(MANAGED_SUBDIR);
+        create_private_dir(&managed_dir)?;
+        let managed = managed_settings_without_gate(&host_managed);
+        let rendered = serde_json::to_vec_pretty(&managed)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        write_atomic(&managed_dir.join(MANAGED_FILE), &rendered, 0o600)?;
+    } else if let Value::Object(map) = &mut settings {
+        // Degraded: no managed tier exists to carry the deny list.
+        let permissions = map
+            .entry("permissions".to_owned())
+            .or_insert_with(|| json!({}));
+        if !permissions.is_object() {
+            *permissions = json!({});
+        }
+        if let Value::Object(permissions) = permissions {
+            let deny: Vec<Value> = DENY_TOOLS.iter().map(|t| json!(t)).collect();
+            append_unique(permissions, "deny", &deny);
+        }
+    }
+    let rendered = serde_json::to_vec_pretty(&settings)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    write_atomic(&spec.config_dir.join("settings.json"), &rendered, 0o600)?;
+
+    let onboarding = spec.config_dir.join(".claude.json");
+    if fs::symlink_metadata(&onboarding).is_err() {
+        write_atomic(&onboarding, br#"{"hasCompletedOnboarding": true}"#, 0o600)?;
+    }
+
+    // The report dir is pinned in the read-only shim; like the driver's `next` shim it
+    // is a convenience, not a boundary (the sandbox's writable binds are).
+    let shim = bin.join("gsd-meta-manager");
+    let script = format!(
+        "#!/bin/sh\ncase \"$1\" in\n  taskctl) {ONEOFF_REPORT_DIR_ENV}={}; export {ONEOFF_REPORT_DIR_ENV}; exec {} \"$@\" ;;\n  *) echo \"gsd-meta-manager: only 'taskctl' is available inside the one-off sandbox\" >&2; exit 2 ;;\nesac\n",
+        shell_quote(spec.report_dir.as_os_str()),
+        shell_quote(spec.binary.as_os_str())
+    );
+    write_atomic(&shim, script.as_bytes(), 0o755)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    fn oneoff_spec(root: &TempDir, managed: bool) -> OneoffSeedSpec {
+        OneoffSeedSpec {
+            config_dir: root.path().join("cfg"),
+            host_claude_dir: root.path().join("host"),
+            binary: PathBuf::from("/opt/gsd mm/gsd-meta-manager"),
+            report_dir: root.path().join("run/report"),
+            managed,
+            host_managed_dir: root.path().join("no-host-managed"),
+            keep_roots: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn seed_oneoff_managed_writes_the_links_a_gate_free_managed_file_and_a_taskctl_shim() {
+        let root = TempDir::new().unwrap();
+        let host = root.path().join("host");
+        fs::create_dir_all(host.join("skills")).unwrap();
+        fs::create_dir_all(host.join("gsd-core")).unwrap();
+        let spec = oneoff_spec(&root, true);
+        seed_oneoff(&spec).unwrap();
+        let cfg = &spec.config_dir;
+        assert!(fs::symlink_metadata(cfg.join("skills"))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert!(fs::symlink_metadata(cfg.join("gsd-core"))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        let settings = fs::read_to_string(cfg.join("settings.json")).unwrap();
+        assert!(!settings.contains("driverctl"), "{settings}");
+        let managed: Value =
+            serde_json::from_slice(&fs::read(cfg.join(MANAGED_SUBDIR).join(MANAGED_FILE)).unwrap())
+                .unwrap();
+        assert_eq!(managed["hooks"], json!({}));
+        assert_eq!(managed["permissions"]["deny"], json!(DENY_TOOLS));
+        for key in LOCK_KEYS {
+            assert!(managed.get(*key).is_some(), "lock {key}");
+        }
+        assert!(!managed.to_string().contains("driverctl"));
+        assert!(fs::symlink_metadata(cfg.join("bin/driverctl")).is_err());
+        let shim = fs::read_to_string(cfg.join("bin/gsd-meta-manager")).unwrap();
+        assert!(shim.contains("taskctl)"), "{shim}");
+        assert!(shim.contains(&format!(
+            "GSDMM_ONEOFF_REPORT_DIR='{}'",
+            spec.report_dir.display()
+        )));
+        assert!(
+            shim.contains("exec '/opt/gsd mm/gsd-meta-manager' \"$@\""),
+            "{shim}"
+        );
+        assert!(shim.contains("exit 2"));
+        assert!(!shim.contains("next"));
+    }
+
+    #[test]
+    fn seed_oneoff_shim_runs_taskctl_only() {
+        let root = TempDir::new().unwrap();
+        let spec = oneoff_spec(&root, false);
+        seed_oneoff(&spec).unwrap();
+        let shim = spec.config_dir.join("bin/gsd-meta-manager");
+        let script = fs::read_to_string(&shim).unwrap();
+        // Parsed rather than executed (spawning is reserved to the launcher's process
+        // seam): the case arms are exactly `taskctl)` and `*)`.
+        let arms: Vec<&str> = script
+            .lines()
+            .map(str::trim_start)
+            .filter(|l| l.contains(") "))
+            .map(|l| l.split(')').next().unwrap())
+            .collect();
+        assert_eq!(arms, ["taskctl", "*"]);
+    }
+
+    #[test]
+    fn seed_oneoff_degraded_puts_the_deny_list_in_settings_and_writes_no_managed_dir() {
+        let root = TempDir::new().unwrap();
+        let spec = oneoff_spec(&root, false);
+        seed_oneoff(&spec).unwrap();
+        let settings: Value =
+            serde_json::from_slice(&fs::read(spec.config_dir.join("settings.json")).unwrap())
+                .unwrap();
+        let deny = settings["permissions"]["deny"].as_array().unwrap();
+        for tool in DENY_TOOLS {
+            assert!(deny.contains(&json!(tool)), "{tool}");
+        }
+        assert!(settings.get("hooks").is_none_or(|h| h == &json!({})));
+        assert!(!settings.to_string().contains("driverctl"));
+        assert!(fs::symlink_metadata(spec.config_dir.join(MANAGED_SUBDIR)).is_err());
+        assert!(fs::symlink_metadata(spec.config_dir.join("bin/driverctl")).is_err());
+    }
 
     fn spec(root: &TempDir) -> SeedSpec {
         SeedSpec {
