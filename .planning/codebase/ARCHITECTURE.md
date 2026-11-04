@@ -1,5 +1,5 @@
 ---
-last_mapped_commit: 5146cf11780714b72ed3b2e6224e849a93e10a08
+last_mapped_commit: d7381ab615e5181d33f3b6a5e02cf4d2a42594af
 last_mapped_at: 2026-11-03
 ---
 <!-- refreshed: 2026-11-03 -->
@@ -143,7 +143,7 @@ but never touch TUI state.
   project, in a private clone, reporting through `taskctl report`.
 - Location: `src/oneoff/` (`launch.rs`, `session.rs`, `stream.rs`, `runtime.rs` the single
   agent-specific seam, `prompt.rs`, `report.rs`, `store.rs`, `inbox.rs`, `merge.rs`,
-  `land.rs`, `resolve.rs`, `resume.rs`, `cancel.rs`, `todos.rs`); CLI in `src/task_cli.rs`
+  `land.rs`, `resolve.rs`, `resume.rs`, `cancel.rs`, `recycle.rs`, `todos.rs`); CLI in `src/task_cli.rs`
   and `src/taskctl_cli.rs`.
 - Depends on: `launcher` (sandbox argv, token, egress, process seam, stop, push); does NOT call
   `launcher::run::launch`.
@@ -214,7 +214,21 @@ but never touch TUI state.
 3. The agent calls `taskctl report`, writing `report/report.json`. The host re-reads it capped,
    refuses symlinks, and re-validates it (`oneoff::report::read_validated`). Commit range and
    SUMMARY path are derived from git on the host.
-4. Merge and land steps (`oneoff::merge`, `oneoff::land`) are host-side and bounded.
+4. Merge and land steps (`oneoff::merge`, `oneoff::land`) are host-side and bounded. A per-run
+   `land.lock` admits one landing at a time; conflicts are resolved by a sandboxed agent session
+   (`oneoff::resolve`) in a private clone, and the checkout changes only at the final fast-forward.
+5. Stop, kill and pause: the CLI (`task stop`) or TUI writes `<run-dir>/stop.request` (or
+   `land/stop.request`); only the run's launcher daemon acts on it, driving the pure `Cancel`
+   state machine (`src/oneoff/cancel.rs`). Operator messages go through `inbox/` and are logged to
+   `injections.jsonl` before acting (`src/oneoff/inbox.rs`, supervised by `Supervisor` in
+   `src/oneoff/session.rs`).
+6. Recycle: after a merge or push, `land::merge`/`land::push` call `recycle::slim_run`
+   (`src/oneoff/recycle.rs`), which deletes the clone and keeps an allowlisted record (`run.json`
+   with `pruned`, `summary.md`, stream/launch log tails). `recycle::recycle_project` runs at TUI
+   startup (`App::start_oneoff_recycle` in `src/app.rs`, only with the experimental flag, answered
+   by `Action::OneoffRecycled`) and at the start of `task run` (`src/task_cli.rs`, parent only).
+   It marks dead runs `AgentOutcome::Crashed`, slims landed runs, and removes aged or orphaned runs
+   (`RETENTION_DAYS`, `RETENTION_MAX_FINISHED`, `ORPHAN_MIN_AGE`).
 
 ## Key Abstractions
 

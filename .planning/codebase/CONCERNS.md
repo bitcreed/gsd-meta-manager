@@ -1,5 +1,5 @@
 ---
-last_mapped_commit: 5146cf11780714b72ed3b2e6224e849a93e10a08
+last_mapped_commit: d7381ab615e5181d33f3b6a5e02cf4d2a42594af
 last_mapped_at: 2026-11-03
 ---
 <!-- refreshed: 2026-11-03 -->
@@ -34,10 +34,20 @@ last_mapped_at: 2026-11-03
 - Fix approach: Replace artifact polling with channel or condition-variable signals where the code under test can emit them.
 
 **Large number of `unwrap`/`expect` calls:**
-- Issue: About 3,370 `.unwrap()` or `.expect(` occurrences exist under `src/`. Most are in `#[cfg(test)]` modules, but the count is high enough that non-test paths need auditing.
-- Files: `src/oneoff/mod.rs`, `src/oneoff/merge.rs`, `src/driverctl/serve.rs`, `src/driverctl_cli.rs`
+- Issue: About 3,370 `.unwrap()` or `.expect(` occurrences exist under `src/`, mostly in `#[cfg(test)]` modules. The one-off modules are clean outside tests: `src/oneoff/{recycle,land,session,runtime,stream}.rs` have no non-test unwrap/expect (test modules begin at `recycle.rs:1112`, `land.rs:1310`, `session.rs:638`, `runtime.rs:804`, `stream.rs:672`); `src/oneoff/launch.rs:95` has one `expect("static regex")`. Hits in `src/oneoff/mod.rs` and `merge.rs` are test-only.
+- Files: `src/driverctl/serve.rs`, `src/driverctl_cli.rs`, `src/ui/screens/detail.rs`, `src/app.rs`
 - Impact: A malformed file or unexpected state in a production path can panic the TUI or a driver process instead of returning a recoverable error.
 - Fix approach: Run `cargo clippy` with `unwrap_used` and `expect_used` enabled for non-test targets, and convert production call sites to `?` with contextual errors.
+
+**Large one-off lifecycle modules:**
+- Issue: The one-off lifecycle code grew by about 7,000 lines since the last map. Non-test bulk sits beside inline test blocks in single files: `src/oneoff/launch.rs` (1,881 lines), `src/oneoff/store.rs` (1,657), `src/oneoff/land.rs` (1,649), `src/oneoff/recycle.rs` (1,585), `src/oneoff/runtime.rs` (1,351), `src/oneoff/resolve.rs` (1,236), `src/oneoff/session.rs` (1,157), `src/oneoff/stream.rs` (1,078). `tests/oneoff_e2e.rs` adds 1,087 lines.
+- Impact: Landing, recycling, crash recovery and session control interact through run directories and lock files; changes need the whole context.
+- Fix approach: Split `recycle.rs` (slimming at `slim_locked`, liveness at `probe_scope`, tending at `tend_run`/`recover_dead`) and `land.rs` into submodules when next touched.
+
+**Unknown stream events are dropped silently:**
+- Issue: `src/oneoff/stream.rs:295` has a `_ => {}` arm, and the event renderer yields no lines for unknown events (`src/oneoff/stream.rs:458`). A schema change in `claude` stream-json shows as missing output with no diagnostic.
+- Files: `src/oneoff/stream.rs`, `tests/fixtures/oneoff/*.stream.jsonl`
+- Fix approach: Count and surface unknown event types in the run report.
 
 ## Known Bugs
 
@@ -48,8 +58,8 @@ last_mapped_at: 2026-11-03
 - Workaround: None. README states the feature is Linux only (`README.md` lines 35 and 414-420).
 
 **Environment-pinned test failure:**
-- Symptoms: One git-version-constants test fails on any machine whose installed git differs from the version the constants were derived against (git 2.53.0 locally against 2.55.0 expected).
-- Files: `scripts/pre-tag-check.sh` (gate 4), the git-version constants test
+- Symptoms: One git-version-constants test fails on any machine whose installed git differs from the version the constants were derived against (git 2.55.0 is the expected version, see `scripts/pre-tag-check.Dockerfile:22`). Not re-verified in this refresh.
+- Files: `scripts/pre-tag-check.sh` (gate 4), `scripts/pre-tag-check.Dockerfile`
 - Trigger: Run `cargo test` on a machine with a different git version.
 - Workaround: Accept the single known failure locally, or re-derive the constants on the target git version.
 
@@ -119,6 +129,12 @@ last_mapped_at: 2026-11-03
 - Safe modification: Keep the staging-then-rename sequence. Do not replace it with a `umask` change.
 - Test coverage: `tests/driverctl_serve.rs` and `tests/driverctl_race.rs` cover the main cases.
 
+**One-off land lock and recycle liveness:**
+- Files: `src/oneoff/land.rs` (`land_lock_path:95`, `take_land_lock:134`), `src/oneoff/recycle.rs` (`is_dead:517`, `lock_is_free:684`, `already_landed_candidate:763`, `recover_dead:910`)
+- Why fragile: Recycling decides a run is dead from process liveness, scope state and whether the land lock is free. A wrong verdict removes a run directory (`remove_run_dir:663`) that a concurrent landing still uses. Earlier defects (leftover `land.lock` files, runs whose head was already in the target) were fixed in quick-261103-pd7; the lock now unlinks on release (`land.rs:107`).
+- Safe modification: Take the land lock before any destructive step and keep `is_dead` the single liveness predicate.
+- Test coverage: Unit tests in both files and `tests/oneoff_e2e.rs`.
+
 **Cancel and stop request state machine:**
 - Files: `src/oneoff/cancel.rs` (`tick`, `outranks`, `merge_request`, `read_request`, `write_request`)
 - Why fragile: Stop, kill and pause requests are persisted to disk and merged by rank. A request written during an escalation can be lost or downgraded if the ordering rules change.
@@ -164,9 +180,9 @@ last_mapped_at: 2026-11-03
 ## Test Coverage Gaps
 
 **Real Claude process behaviour:**
-- What's not tested: Live `claude` runs are gated behind `tests/launcher_live_*.rs`, which need credentials and are not part of the default suite.
+- What's not tested: Recorded real streams now exist in `tests/fixtures/oneoff/` (`real-bg-subagents.stream.jsonl`, `real-resumed.stream.jsonl`), but live `claude` runs are gated behind `tests/launcher_live_*.rs`, which need credentials and are not part of the default suite.
 - Files: `tests/launcher_live_egress.rs`, `tests/launcher_live_isolation.rs`, `tests/launcher_live_managed.rs`, `tests/launcher_live_scope.rs`, `tests/launcher_live_token_reach.rs`
-- Risk: Changes to the real CLI behaviour (stream-json, rate limits, interrupts) can pass the suite and fail in use. Fixtures in `tests/fixtures/transcripts/` may drift from the real format.
+- Risk: Changes to the real CLI behaviour (stream-json, rate limits, interrupts) can pass the suite and fail in use. Fixtures in `tests/fixtures/transcripts/` and `tests/fixtures/oneoff/` may drift from the real format.
 - Priority: High
 
 **Windows and macOS code paths:**

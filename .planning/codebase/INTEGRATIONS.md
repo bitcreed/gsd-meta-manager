@@ -1,5 +1,5 @@
 ---
-last_mapped_commit: 5146cf11780714b72ed3b2e6224e849a93e10a08
+last_mapped_commit: d7381ab615e5181d33f3b6a5e02cf4d2a42594af
 last_mapped_at: 2026-11-03
 ---
 # External Integrations
@@ -47,7 +47,8 @@ last_mapped_at: 2026-11-03
 - App config: `~/.config/gsd-meta-manager/config.json` (`src/config.rs`); schema-versioned, with read-side migration in memory.
 - App data: `dirs::data_local_dir()/gsd-meta-manager/` - logs, envelope ledger (`src/envelope/mod.rs`), one-off run store (`src/oneoff/store.rs`) keyed by `hash8(canonical project path)`, and driver run directories with `launcher.lock`, `state.json`, and `LOG.md` (`src/launcher/`, `src/driverctl/store.rs`).
 - Project state: each registered project's `.planning/` directory is read-only from the app's view except for the driver and one-off flows, which write run artifacts.
-- Advisory locks: `flock` via `rustix` on run and store lock files (`src/driver/lock.rs`, `src/oneoff/store.rs` `oneoff.lock`).
+- Advisory locks: `flock` via `rustix` on run and store lock files (`src/driver/lock.rs`, `src/oneoff/store.rs` `oneoff.lock`, `src/oneoff/land.rs` `land.lock`, unlinked on every release).
+- One-off run directory files: `stream.jsonl`, `launch.log`, `run.json`, `injections.jsonl`, a copy of `SUMMARY.md`, and an `inbox/` directory of `<nanos>-<pid>.json` injection requests (`src/oneoff/inbox.rs`, `src/oneoff/session.rs`). Slimmed (recycled) runs keep only tails of `stream.jsonl`/`launch.log` (`src/oneoff/recycle.rs`).
 
 **File Storage:**
 - Local filesystem only. No cloud object storage.
@@ -110,6 +111,7 @@ last_mapped_at: 2026-11-03
 - `gitleaks` on `PATH` for external-output scanning.
 - `tmux` for session focus.
 - `CLAUDE_CONFIG_DIR`, `CODEX_HOME` to point at non-default agent config locations.
+- `GSDMM_ONEOFF_IDLE_SETTLE_SECS` optionally overrides the one-off idle-settle wait (`IDLE_SETTLE_ENV` in `src/oneoff/runtime.rs`).
 
 **Secrets location:**
 - Driver OAuth token: app config directory, file `driver-oauth-token` (mode 0600, owner-checked). Host Claude credentials are read in place and never copied.

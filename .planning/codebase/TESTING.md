@@ -1,5 +1,5 @@
 ---
-last_mapped_commit: 5146cf11780714b72ed3b2e6224e849a93e10a08
+last_mapped_commit: d7381ab615e5181d33f3b6a5e02cf4d2a42594af
 last_mapped_at: 2026-11-03
 ---
 # Testing Patterns
@@ -141,6 +141,7 @@ fn a_valid_report_validates() {
 - `tests/fixtures/transcripts/*.ndjson`: recorded agent stream-JSON sessions covering success, budget exhaustion, interrupts, rate limits, and tool use. Each file is named by scenario.
 - `tests/fixtures/roadmaps/` and `tests/fixtures/roadmap-shapes/`: real and synthetic `ROADMAP.md` and `STATE.md` for parser tests (`daily-vow`, `sentriq`, `ttbook`, `ttbook-phase13`, `v1-era`).
 - `tests/fixtures/driverctl/`: direction files, golden `.md` outputs, replay logs, and spike-003 run artifacts. Golden files are regenerated only by the `#[ignore]` test noted below.
+- `tests/fixtures/oneoff/`: two trimmed recordings of real one-off runs (`real-bg-subagents.stream.jsonl`, 304 lines; `real-resumed.stream.jsonl`, 44 lines), `include_str!`-ed by the `#[cfg(test)]` modules in `src/oneoff/session.rs` and read by `src/oneoff/stream.rs`. They are produced by a whitelist script kept outside the repo and are regenerated from the recordings, never hand-edited. After any regeneration run the leak check in `tests/fixtures/oneoff/README.md` (both greps must print nothing).
 - `tests/fixtures/prompt/MASTER-PROMPT.no-gap-rules.md`: prompt variant for prompt-acceptance tests.
 
 **Shared constants (`src/test_support.rs`):**
@@ -161,13 +162,24 @@ cargo install cargo-llvm-cov --locked
 cargo llvm-cov --all-targets
 ```
 
+## Running Inside the One-Off Sandbox
+
+The suite must pass inside the one-off sandbox: a conflict-resolver session runs it there as its verification step, and a sandbox-only failure blocks landing (quick 261103-pd7; full write-up in `docs/TESTING.md`, "Running inside the one-off sandbox"). Differences (`src/launcher/sandbox.rs`): hostname `gsdmm-sandbox`; PID/net/IPC/UTS namespaces unshared (loopback only, proxy vars point at the egress bridge); read-only root with tmpfs `/tmp`, `/run`, `/etc`, `$HOME`; no controlling terminal; credential variables stripped; git identity and `init.defaultBranch` only from the gitconfig the one-off writes.
+
+Rules that follow:
+- Assert keys and fields, never a substring a hostname, user name or path can contain (`tests/driverctl_store.rs` asserts frontmatter keys; `tests/launcher_degraded.rs` sandbox_missing absence checks match the key line, not the bare word `sandbox`).
+- Set the git identity (`-c user.name=... -c user.email=...`) and the branch (`init -b <branch>`) explicitly, or use `GIT_CONFIG_GLOBAL=/dev/null`.
+- Never skip a test because it runs in the sandbox.
+- To check locally, use the `bwrap` approximation command in `docs/TESTING.md` (stricter than the real sandbox about git identity; no CI job runs it).
+
 ## Guard Tests (Source-Tree Audits)
 
 These integration tests read `src/` as text and fail on violations. They are the enforcement for conventions that comments alone cannot hold.
 
 - `tests/async_blocking_guard.rs`: no named blocking call (`flock`, blocking `std::fs`, `std::process` wait) inside an `async fn` body without a hand-off to `spawn_blocking`. It is a lexical lint, not a proof.
 - `tests/spawn_seam_guard.rs` (Unix only, `#![cfg(unix)]`): every process-spawn site in `src/` appears in an allowlist. Walks `src/` only, never `tests/`.
-- `tests/oneoff_runtime_seam_guard.rs`: the one-off runtime seam, checked the same way.
+- `tests/oneoff_runtime_seam_guard.rs`: the one-off runtime seam, checked the same way. Its file list includes `src/oneoff/recycle.rs`; add a new one-off module that touches the runtime seam to that list.
+- `src/ui/screens/render_escape_guard.rs` (in-crate: declared `#[cfg(test)] mod render_escape_guard;` in `src/ui/screens/mod.rs`, not under `tests/`): the TUI render surface. `RenderAdjudicated` is a sealed supertrait of `Screen`, so a screen without an escape adjudication fails to compile (E0277); the module's tests cover what the type system cannot.
 - `tests/driver_router_conformance.rs`: fails by design when the GSD conformance oracle is absent. It is why bare `cargo test` can pass on a developer machine while CI fails. Install the oracle with `scripts/install-conformance-oracle.sh` before trusting a green run.
 
 When you add a guarded rule, add a guard test in this style rather than a comment.
@@ -203,7 +215,8 @@ Always give an `#[ignore]` a reason string. Do not add a bare `#[ignore]`.
 
 **End-to-end tests:**
 - `tests/registry_test.rs` includes one test that invokes the compiled binary via `cargo run`.
-- `tests/oneoff_e2e.rs`, `tests/driver_tab_launch_e2e.rs`, `tests/launcher_e2e.rs` run whole flows. Some need `bwrap` or tmux and are `#[ignore]`d.
+- `tests/oneoff_e2e.rs` (about 3,260 lines, 61 `#[test]`, none ignored) drives `gsd-meta-manager task run|status|stop|land` through the compiled binary on the fake `systemd-run` / `bwrap` / `systemctl` / `claude` harness in `tests/launcher_support/` (`Fixture`, `wait_until`, `ALIAS`). The fake agent runs a scenario script written with `fx.write_scenario`; no real agent or network. Helpers: `fixture()`/`prepared()` (git repo with one committed pending todo), `task(fx, args)` (sets `GSDMM_ONEOFF_IDLE_SETTLE_SECS=1` so no test waits the 120 s production settle), `run`, `status`, `wait_finished`, `quick_run`. Its local `git` helper pins `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1` and `-c user.name/user.email`. Whole file is `#![cfg(unix)]`.
+- `tests/driver_tab_launch_e2e.rs`, `tests/launcher_e2e.rs` run whole flows; some need `bwrap` or tmux and are `#[ignore]`d.
 - TUI rendering is tested with ratatui's `TestBackend` in `src/ui/screens/` (for example `src/ui/screens/normal.rs`, `src/ui/screens/driver_run.rs`) and in `src/ui/roadmap_view.rs` (for example `mockup_a_side_by_side_at_120_columns`). No screenshot or PTY harness is used in the default run.
 
 ## Common Patterns

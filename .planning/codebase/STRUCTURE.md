@@ -1,5 +1,5 @@
 ---
-last_mapped_commit: 5146cf11780714b72ed3b2e6224e849a93e10a08
+last_mapped_commit: d7381ab615e5181d33f3b6a5e02cf4d2a42594af
 last_mapped_at: 2026-11-03
 ---
 <!-- refreshed: 2026-11-03 -->
@@ -88,7 +88,8 @@ last_mapped_at: 2026-11-03
 - Purpose: Experimental one-off task runner.
 - Contains: `runtime.rs` (only agent-specific seam), `launch.rs`, `session.rs`, `stream.rs`,
   `prompt.rs`, `report.rs`, `store.rs`, `inbox.rs`, `merge.rs`, `land.rs`, `resolve.rs`,
-  `resume.rs`, `cancel.rs`, `todos.rs`, `mod.rs` (module docs and the trust split).
+  `resume.rs`, `cancel.rs` (stop/kill/pause requests and state machine), `recycle.rs` (slim landed
+  runs, recover dead ones, prune orphans), `todos.rs`, `mod.rs` (module docs and the trust split).
 
 **`src/driver/` and `src/driverctl/`:**
 - Purpose: `driver/` holds pure readers and classifiers; `driverctl/` holds the stateful run
@@ -113,7 +114,8 @@ last_mapped_at: 2026-11-03
 - Purpose: Integration tests. Most build `assert_fs` trees mimicking `.planning/`.
 - Contains: `*_guard.rs` architecture guards (`async_blocking_guard.rs`,
   `spawn_seam_guard.rs`, `oneoff_runtime_seam_guard.rs`), `*_e2e.rs` end-to-end tests,
-  `launcher_live_*.rs` (live-environment tests), and `fixtures/`.
+  `launcher_live_*.rs` (live-environment tests), `oneoff_e2e.rs` / `oneoff_taskctl.rs` (one-off runs),
+  and `fixtures/` (including `fixtures/oneoff/` recorded stream-json runs, see its `README.md`).
 - Key files: `tests/common/mod.rs`, `tests/launcher_support/mod.rs`.
 
 **`tests/fixtures/`:**

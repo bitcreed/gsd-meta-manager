@@ -1,5 +1,5 @@
 ---
-last_mapped_commit: 5146cf11780714b72ed3b2e6224e849a93e10a08
+last_mapped_commit: d7381ab615e5181d33f3b6a5e02cf4d2a42594af
 last_mapped_at: 2026-11-03
 ---
 # Coding Conventions
@@ -82,6 +82,8 @@ Banners appear at roughly 60 places across `src/` and `tests/`, mostly in guard 
 **Decision and requirement IDs are part of the convention.** The codebase tags design choices with IDs in comments, roughly 1,600 occurrences of patterns like `D-19`, `C-06`, `CTRL-05`, `T-28-04`, `I-09`, and quick-task IDs such as `quick 261103-klf`. Keep this convention when you change a guarded behavior: cite the ID that governs it, and do not invent new IDs.
 
 **Doc comments on items** are `///` and usually state the invariant, not the mechanism. Example: `/// The request file inside a run dir ...` in `src/oneoff/cancel.rs`.
+
+**Tests must be sandbox-neutral.** The suite runs inside the one-off sandbox (hostname `gsdmm-sandbox`, no network, no ambient git identity). Assert keys and fields (`"\nsandbox_missing:"` in `tests/launcher_degraded.rs`), not substrings a hostname or path can contain; pin git identity and default branch explicitly in test helpers (`tests/oneoff_e2e.rs::git`). See `.planning/codebase/TESTING.md`.
 
 **Comments that assert a guarantee should be backed by a test.** `tests/async_blocking_guard.rs` and `tests/spawn_seam_guard.rs` exist because prose comments were not enough. A comment that says "never call X here" should have a guard test or the rule is not enforced.
 
