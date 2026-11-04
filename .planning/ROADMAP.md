@@ -364,3 +364,94 @@ independent of the driver work (Phases 28-31), so parallel-safe like Phases 24 a
 Plans:
 
 - [ ] TBD (promote with /gsd-review-backlog when ready)
+
+### Phase 999.9: One-off dashboard running badge (BACKLOG)
+
+**Goal:** The dashboard row shows that a sandboxed one-off agent is working on a project (a
+count of live runs), not only the project's Driver tab (`t` / `T` and the one-line status).
+**Requirements:** TBD
+**Plans:** 0 plans
+
+Plans:
+
+- [ ] TBD (promote with /gsd-review-backlog when ready)
+
+Captured 2026-11-03 from todo `2026-11-03-oneoff-dashboard-running-badge` (source: quick 261103-f5y
+CONTEXT.md, deferred as I-13; CONTEXT asked for a running badge "if cheap"). The dashboard has no
+per-project read of the one-off root today: it needs a lock probe of each listed run's
+`<data>/gsd-meta-manager/oneoff/<hash8>/<run-id>/run.lock` (via `oneoff::store::live_seen`, which
+falls back to the legacy per-project `oneoff.lock` for a run dir without one) for every registered
+project on the dashboard tick. Any number of runs may be live per project since quick 261103-hx7,
+so the badge can count them. **Approach:** fold the probe into the existing 20-tick launcher-marker
+scan (`Action::LauncherMarkersRescanned`): `live_seen` over `read_runs` per project, off the render
+thread, stored beside `launcher_marker`; badge in the Status cell only while one reads `HeldBy`.
+Gate on `GSDMM_EXPERIMENTAL_FEATURES` like every driver surface; add render-escape and flag-off
+tests. Files: `src/ui/screens/normal.rs`, `src/oneoff/store.rs`, `src/ui/screens/mod.rs`.
+
+### Phase 999.10: One-off hard ceiling raise via session resume (BACKLOG)
+
+**Goal:** A "raise the ceiling" action for a live one-off: stop the session, then relaunch the
+agent with `claude --resume <session-id>` and a higher `--max-budget-usd` in the SAME clone and run
+dir, so the work and the conversation carry on.
+**Requirements:** TBD
+**Plans:** 0 plans
+
+Plans:
+
+- [ ] TBD (promote with /gsd-review-backlog when ready)
+
+Captured 2026-11-03 from todo `2026-11-03-oneoff-raise-hard-ceiling-via-resume` (source: quick
+261103-gt1 CONTEXT.md, C-14, C-19; out of scope for gt1 by decision). **Problem:** `--max-budget-usd`
+is the agent's own hard ceiling, fixed at launch. The soft cap and spend meter only make it visible
+and let the operator ask the agent to wrap up earlier; a run on track but near the ceiling can only
+end as `over_budget` or be restarted from scratch in a new clone. **Needs:** the session id from the
+stream's `system` init event (classified as `StreamEvent::System`; the classifier must keep the id,
+runtime-side); decisions on the run record (one run, several sessions: `run.json` keeps the ceiling
+history), the report contract (the agent has not reported yet) and the wall clock (keeps counting
+from the first spawn). Shares the session-id plumbing with Phase 999.11. Files:
+`src/oneoff/launch.rs`, `src/oneoff/runtime.rs`, `src/oneoff/session.rs`.
+
+### Phase 999.11: One-off resume through the agent session (BACKLOG)
+
+**Goal:** `task resume` continues a paused, stopped or killed one-off through the agent's own
+session (resume flag + session id) instead of a fresh session primed with the old task, so the
+agent keeps its conversation: what it had read, tried and decided.
+**Requirements:** TBD
+**Plans:** 0 plans
+
+Plans:
+
+- [ ] TBD (promote with /gsd-review-backlog when ready)
+
+Captured 2026-11-03 from todo `2026-11-03-oneoff-resume-with-the-agent-session` (source: quick
+261103-klf CONTEXT.md, C-09, C-10). Today resume starts a NEW run with a FRESH session primed with
+the old task, the old report's headline and follow-ups and the commit log. klf chose that on
+purpose: the transcript lives in the per-run config dir inside the old sandbox, resumability could
+not be verified without a paid run, and the fresh path is fully testable on the fake harness.
+**Approach:** behind the `AgentRuntime` seam, keep the session id from the stream's `system` init
+event (classified runtime-side, never in a neutral file) and start the new session with the agent's
+resume flag in the SAME per-run config dir, copied or re-bound into the new run. **Needs:** a
+decision on where the old config dir goes (copy the transcript in vs re-bind the config dir); a
+fallback to the primed fresh session when the transcript cannot be resumed; a paid-run check that
+the resumed agent really continues from where it paused. Shares session-id plumbing with Phase
+999.10. Files: `src/oneoff/resume.rs`, `src/oneoff/launch.rs`, `src/oneoff/runtime.rs`.
+
+### Phase 999.12: Second agent runtime behind the one-off seam (BACKLOG)
+
+**Goal:** Add a second `oneoff::runtime::AgentRuntime` variant (Codex, ...) so the seam's shape is
+tested against a real second implementation.
+**Requirements:** TBD
+**Plans:** 0 plans
+
+Plans:
+
+- [ ] TBD (promote with /gsd-review-backlog when ready)
+
+Captured 2026-11-03 from todo `2026-11-03-oneoff-second-agent-runtime` (source: quick 261103-f5y
+CONTEXT.md, C-10). Today the only variant is Claude; every agent-specific fact (argv, env, config
+seeding, credential, egress upstream, stream parsing, models) lives in the runtime and the seam
+guard keeps the rest neutral. **Approach:** the new variant implements the same methods: its argv
+(with or without a budget cap, `caps().budget_cap`), its config dir and seeding, its credential and
+egress upstream, and a stream parser into `AgentOutcome`. Chosen per run (CLI flag first, then the
+confirm popup), never through a config surface unless one is asked for. Extend the seam guard's
+positive control. Files: `src/oneoff/runtime.rs`, `tests/oneoff_runtime_seam_guard.rs`.

@@ -2,6 +2,7 @@
 created: 2026-11-03T00:00:00.000Z
 title: Resume a one-off through the agent's own session instead of a primed fresh one
 area: launcher
+resolved_by: promoted to backlog Phase 999.11 (.planning/ROADMAP.md)
 severity: minor
 source: .planning/quick/261103-klf-cancel-pause-one-off-runs-and-resolvers-/261103-klf-CONTEXT.md
 files:

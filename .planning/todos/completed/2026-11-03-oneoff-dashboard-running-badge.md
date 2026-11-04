@@ -2,6 +2,7 @@
 created: 2026-11-03T00:00:00.000Z
 title: Dashboard badge for a running one-off task
 area: ui
+resolved_by: promoted to backlog Phase 999.9 (.planning/ROADMAP.md)
 severity: minor
 source: .planning/quick/261103-f5y-one-off-sandboxed-task-dispatch-from-the/261103-f5y-CONTEXT.md
 files:

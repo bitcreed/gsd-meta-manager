@@ -2,6 +2,7 @@
 created: 2026-11-03T00:00:00.000Z
 title: Raise a one-off's hard spend ceiling by stopping and resuming the session
 area: launcher
+resolved_by: promoted to backlog Phase 999.10 (.planning/ROADMAP.md)
 severity: minor
 source: .planning/quick/261103-gt1-live-viewer-with-message-injection-and-s/261103-gt1-CONTEXT.md
 files:
