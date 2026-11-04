@@ -13,7 +13,7 @@ last_mapped_at: 2026-11-03
 [project-root]/                         # gsd-meta-manager (Rust crate, single binary)
 ├── Cargo.toml / Cargo.lock             # Crate manifest (edition 2021, rust-version 1.89)
 ├── README.md, CLAUDE.md, CONTRIBUTING.md, LICENSE
-├── src/                                # All production code (28 top-level .rs files + 13 subtrees)
+├── src/                                # All production code (28 top-level .rs files + 11 subtree directories; `ui/screens/` holds 19 files)
 │   ├── main.rs                         # Binary entry: subcommand dispatch, tokio runtime, TUI loop
 │   ├── lib.rs                          # Re-exports every non-binary module as `pub mod`
 │   ├── action.rs, app.rs, event.rs     # Message enum, reducer, event bus
@@ -35,7 +35,7 @@ last_mapped_at: 2026-11-03
 │   ├── oneoff/                         # One-off task runner (experimental)
 │   ├── state_reader/                   # `.planning/` parsers → ProjectState
 │   └── ui/                             # ratatui rendering and Screen implementations
-├── tests/                              # Integration tests (~80 files) + fixtures
+├── tests/                              # Integration tests (about 56 top-level `*.rs` files) + fixtures
 │   ├── *.rs                            # One file per area (agents_*, driverctl_*, launcher_*, oneoff_*, state_reader_*, …)
 │   ├── common/mod.rs                   # Shared test helpers
 │   ├── launcher_support/mod.rs         # Launcher test helpers

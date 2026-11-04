@@ -58,7 +58,7 @@ but never touch TUI state.
 
 **Key Characteristics:**
 - One `Action` enum (`src/action.rs`) is the only way event sources change TUI state.
-- All TUI state is mutated on one task by `App::update` (`src/app.rs`); no `Arc<RwLock<…>>`.
+- All TUI state is mutated on one task by `App::update` (`src/app.rs`). No `RwLock` appears in `src/`; the only shared mutable state is a small set of `Arc<Mutex<…>>` handles (for example `App::oneoff_landings` in `src/app.rs` and `src/driverctl/serve.rs`), which worker threads touch and which never hold `AppContext`.
 - Blocking work (file parsing, git, `/proc` scans, agent-worktree scans) runs on
   `tokio::task::spawn_blocking` and returns results as `Action` values.
 - Agent-executing code (`src/launcher/`, `src/oneoff/`, `src/driverctl/`) is deliberately
