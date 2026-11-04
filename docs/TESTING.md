@@ -120,6 +120,43 @@ The ignored tests fall into these groups:
 
 Do not run `cargo test -- --ignored` casually: some of these tests spend real model budget.
 
+### Running inside the one-off sandbox
+
+The suite must pass inside the one-off sandbox, because a conflict resolver session runs it
+there as its verification step and a failure that only the sandbox causes blocks the landing
+(quick 261103-pd7: a substring assertion on `sandbox` failed because the sandbox's hostname
+is `gsdmm-sandbox`). What differs there (`src/launcher/sandbox.rs`):
+
+- the hostname is `gsdmm-sandbox`, and the PID, network, IPC and UTS namespaces are unshared;
+  only loopback exists, with `HTTPS_PROXY` / `http_proxy` pointing at the egress bridge;
+- the root is read-only; `/tmp`, `/run`, `/etc` and `$HOME` are tmpfs with an allowlist of binds;
+- there is no controlling terminal (`--new-session`);
+- credential variables are stripped;
+- the git identity and `init.defaultBranch` come only from the gitconfig the one-off writes, never
+  from your own `~/.gitconfig`.
+
+The rule that follows: assert **keys and fields**, never a substring that a hostname, user name
+or path can contain, and set the git identity (`-c user.name=… -c user.email=…`) and the default
+branch (`init -b <branch>`) explicitly, or use `GIT_CONFIG_GLOBAL=/dev/null`. Never skip a test in
+the sandbox.
+
+To check locally, run the suite inside a bubblewrap approximation of it (hostname, no network, a
+new session, tmpfs `/tmp`, `/run` and `$HOME` so there is no ambient git identity; the toolchain
+is bound back in). It is stricter than the real sandbox about git identity. No CI job runs it.
+
+```bash
+bwrap --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp --tmpfs /run --dir "$XDG_RUNTIME_DIR" \
+  --tmpfs "$HOME" --ro-bind "$HOME/.rustup" "$HOME/.rustup" --bind "$HOME/.cargo" "$HOME/.cargo" \
+  --ro-bind "$HOME/.claude" "$HOME/.claude" --ro-bind "$HOME/.local/share/nvm" "$HOME/.local/share/nvm" \
+  --bind "$PWD" "$PWD" --unshare-uts --hostname gsdmm-sandbox --unshare-net --unshare-pid \
+  --unshare-ipc --new-session --die-with-parent --chdir "$PWD" -- \
+  cargo test --no-fail-fast --offline
+```
+
+`~/.claude` and `~/.local/share/nvm` are bound read-only so the GSD conformance oracle and `node`
+resolve. Without a GSD install `tests/driver_router_conformance.rs` fails with its missing-oracle
+message by design; that is not a sandbox failure.
+
 ### Test environment variables
 
 None are required for the default suite. These are read by the tests themselves:
@@ -262,7 +299,7 @@ All of the following are committed under `tests/fixtures/`:
 | `roadmaps/` | Sanitised excerpts of real `ROADMAP.md` / `STATE.md` / `HANDOFF.json` files used by the state reader and Roadmap tab tests. The README in the directory lists each file's source and the shape it pins. |
 | `roadmap-shapes/` | Further roadmap layouts for the parser. |
 | `prompt/` | The master prompt and its generated `no-gap-rules` variant (goldens for `driver_prompt.rs`). |
-| `oneoff/` | Trimmed, credential-free structure of two real one-off streams (`real-bg-subagents.stream.jsonl`: background subagents, task events, five results, usage and a rate-limit event; `real-resumed.stream.jsonl`: a resumed run with no background agents). Loaded with `include_str!` by the session-lifecycle and meter tests. Regenerated from the recordings by a whitelist script, never edited by hand; the README in the directory lists the rules and the leak check. |
+| `oneoff/` | Trimmed, credential-free structure of two real one-off streams (`real-bg-subagents.stream.jsonl`: background subagents, task events, five results, usage and a rate-limit event; `real-resumed.stream.jsonl`: a resumed run with no background agents). The session-lifecycle tests load both with `include_str!`; the meter test reads `real-bg-subagents.stream.jsonl` by path (`env!("CARGO_MANIFEST_DIR")`). Regenerated from the recordings by a whitelist script, never edited by hand; the README in the directory lists the rules and the leak check. |
 | `driverctl/` | Run-store scenarios (`direction/`, `golden/`, `replay/`, `spike003/`). |
 
 ## Coverage Requirements

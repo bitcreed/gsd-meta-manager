@@ -510,7 +510,7 @@ fn sandboxed_launch_records_bwrap_scope_posture() {
         direction.contains("\nsandbox: \"bwrap-scope\"\n"),
         "{direction}"
     );
-    assert!(!direction.contains("sandbox_missing"), "{direction}");
+    assert!(!direction.contains("\nsandbox_missing:"), "{direction}");
     assert_eq!(fx.state_json()["sandbox"], "bwrap-scope");
 }
 

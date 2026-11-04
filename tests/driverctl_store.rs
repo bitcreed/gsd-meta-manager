@@ -1656,7 +1656,20 @@ fn a_launch_without_a_posture_writes_neither_key_and_clears_a_stale_one() {
     assert!(state.get("sandbox").is_none(), "{state}");
     assert!(state.get("sandbox_missing").is_none(), "{state}");
     let text = fx.read("DIRECTION.md");
-    assert!(!text.contains("sandbox"), "{text}");
+    // Assert on the frontmatter keys, never on a substring of the whole file: the host
+    // line carries the hostname, which is `gsdmm-sandbox` inside the one-off sandbox.
+    let frontmatter: Vec<&str> = text
+        .lines()
+        .skip(1)
+        .take_while(|line| line.trim_end() != "---")
+        .collect();
+    assert!(!frontmatter.is_empty(), "no frontmatter block: {text}");
+    for line in &frontmatter {
+        assert!(
+            !line.starts_with("sandbox:") && !line.starts_with("sandbox_missing:"),
+            "stale posture key {line:?} in {text}"
+        );
+    }
     let fm = parse_driver_frontmatter(&text).unwrap();
     assert_eq!((fm.sandbox, fm.sandbox_missing), (None, None));
 }
@@ -1676,7 +1689,7 @@ fn a_sandboxed_launch_has_no_missing_list() {
     assert!(state.get("sandbox_missing").is_none(), "{state}");
     let text = fx.read("DIRECTION.md");
     assert!(text.contains("\nsandbox: \"bwrap-scope\"\n"), "{text}");
-    assert!(!text.contains("sandbox_missing"), "{text}");
+    assert!(!text.contains("\nsandbox_missing:"), "{text}");
 }
 
 // ---------------------------------------------------------------- control (D-18, D-19)
