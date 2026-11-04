@@ -2296,6 +2296,16 @@ fn fixture_for(type_name: &str) -> Option<Fixture> {
                     note: identity.to_string(),
                 });
                 view.land_attempts = vec![1];
+                // pd7: an already-landed record, every field run-derived.
+                view.record.landed.push(crate::oneoff::store::Landing {
+                    merge_sha: Some(identity.to_string()),
+                    target_tip: Some(identity.to_string()),
+                    ..crate::oneoff::store::Landing::plain(
+                        crate::oneoff::store::LandingKind::AlreadyLanded,
+                        identity.to_string(),
+                        identity.to_string(),
+                    )
+                });
                 view.record.landed.push(crate::oneoff::store::Landing {
                     kind: crate::oneoff::store::LandingKind::Merged,
                     at: "2026-11-03T11:00:00Z".to_string(),

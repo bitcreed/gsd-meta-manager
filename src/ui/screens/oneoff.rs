@@ -2041,6 +2041,30 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn an_already_landed_run_reads_already_in_the_list_and_contained_by_in_the_summary() {
+        let mut view = finished_view("x");
+        view.record.landed.clear();
+        view.record.landed.push(Landing {
+            merge_sha: Some("0123456789abcdef0123456789abcdef01234567".to_owned()),
+            target_tip: Some("f".repeat(40)),
+            ..Landing::plain(
+                LandingKind::AlreadyLanded,
+                "2026-11-03T11:00:00Z".to_owned(),
+                "main".to_owned(),
+            )
+        });
+        assert_eq!(landing_label(&view), "already");
+        let lines: Vec<String> = landing_lines(&view.record.landed[0])
+            .iter()
+            .map(|l| l.to_string())
+            .collect();
+        assert_eq!(
+            lines,
+            ["Landed:    already in main (contained by 0123456789ab)"]
+        );
+    }
+
+    #[test]
     fn a_resolved_landing_is_marked_and_a_failed_one_says_why() {
         let (mut ctx, mut screen) = list_over(three_runs());
         key(&mut screen, &mut ctx, KeyCode::Char('j'));

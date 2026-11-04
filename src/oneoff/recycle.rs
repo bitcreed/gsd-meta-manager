@@ -32,7 +32,8 @@ use crate::launcher::process::run_bounded;
 use crate::launcher::push;
 
 use super::land::{
-    git_relevant_planted, land_lock_path, ref_commit, take_land_lock, track_branch, tracked_ref,
+    git_relevant_planted, land_lock_path, record_already_landed, ref_commit, take_land_lock,
+    track_branch, tracked_ref, try_land_lock,
 };
 use super::launch::settle_work;
 use super::report::read_validated;
@@ -317,9 +318,10 @@ fn keep_summary(view: &OneoffView) -> io::Result<()> {
     Ok(())
 }
 
-/// Slim the run `run_id` of `project` after a landing: take the run's land lock, slim,
-/// unlink `land.lock` while it is still held (I-15) and release it. `note` is the reason
-/// recorded in `pruned`. Never an error: the outcome says what happened.
+/// Slim the run `run_id` of `project` after a landing: take the run's land lock, slim and
+/// release it (the guard unlinks `land.lock` while still holding it, I-15, pd7 D-05).
+/// `note` is the reason recorded in `pruned`. Never an error: the outcome says what
+/// happened.
 pub fn slim_run(project: &Path, run_id: &str, note: &str) -> SlimOutcome {
     let Some(project_dir) = project_dir_for(project) else {
         return SlimOutcome::Skipped("no one-off directory for this project".to_owned());
@@ -336,10 +338,7 @@ pub fn slim_run(project: &Path, run_id: &str, note: &str) -> SlimOutcome {
         Some(view) => slim_locked(project, &view, note, true),
         None => SlimOutcome::Skipped("the run's record could not be read".to_owned()),
     };
-    // I-15: unlinked only by the process that holds it.
-    if matches!(outcome, SlimOutcome::Slimmed { .. }) {
-        let _ = fs::remove_file(land_lock_path(&run_dir));
-    }
+    // Dropping the guard unlinks the lock file, only while it is held (I-15).
     drop(lock);
     outcome
 }
@@ -605,6 +604,9 @@ pub struct RecycleReport {
     pub recovered: usize,
     /// Runs whose clone and bulky files were removed.
     pub slimmed: usize,
+    /// Finished runs found already contained in their target branch and recorded as
+    /// landed (quick 261103-pd7, D-03).
+    pub already_landed: usize,
     /// Runs whose clone was kept because something in it is not in a project branch.
     pub kept_clones: usize,
     /// Orphan run dirs removed (their work, if any, preserved first).
@@ -624,6 +626,10 @@ impl RecycleReport {
     pub fn summary(&self) -> Option<String> {
         let parts: Vec<String> = [
             (self.recovered, "recovered {} crashed run(s)"),
+            (
+                self.already_landed,
+                "recorded {} run(s) already in their target as landed",
+            ),
             (self.slimmed, "removed the clone of {} landed run(s)"),
             (self.orphans_removed, "removed {} orphan run dir(s)"),
             (self.orphans_preserved, "tracked the work of {} orphan(s)"),
@@ -642,6 +648,7 @@ impl RecycleReport {
     pub fn absorb(&mut self, other: RecycleReport) {
         self.recovered += other.recovered;
         self.slimmed += other.slimmed;
+        self.already_landed += other.already_landed;
         self.kept_clones += other.kept_clones;
         self.orphans_removed += other.orphans_removed;
         self.orphans_preserved += other.orphans_preserved;
@@ -721,6 +728,11 @@ fn tend_run(project: &Path, project_dir: &Path, view: &OneoffView, report: &mut 
     if view.live != LiveState::Finished || view.landing {
         return;
     }
+    if let Some(branch) = already_landed_candidate(&view.record) {
+        if tend_contained(project, project_dir, &id, &branch, report) {
+            return;
+        }
+    }
     let clone_present = fs::symlink_metadata(run_dir.join(WORK_DIR)).is_ok();
     let tracked_at_head = view
         .record
@@ -742,6 +754,99 @@ fn tend_run(project: &Path, project_dir: &Path, view: &OneoffView, report: &mut 
         return;
     }
     tidy_finished(project, view, report);
+}
+
+/// The branch a finished run's head may already be in, if the scan should look (pure,
+/// quick 261103-pd7, D-03): a finished run with commits and a recorded head, not paused,
+/// not continued by another run, with no landing that put its work on the target, and a
+/// recorded target branch. A detached or legacy target has no branch to look in.
+pub(crate) fn already_landed_candidate(record: &super::store::RunRecord) -> Option<String> {
+    if record.status != RecordStatus::Finished
+        || record.head.is_none()
+        || record.commits.unwrap_or(0) == 0
+        || record.resumed_by.is_some()
+        || matches!(record.outcome, Some(AgentOutcome::Paused))
+        || record.landed.iter().any(|l| l.kind.puts_work_on_target())
+    {
+        return None;
+    }
+    match record.land_target() {
+        super::store::LandTarget::Branch(branch) => Some(branch),
+        super::store::LandTarget::Detached { .. } | super::store::LandTarget::Legacy => None,
+    }
+}
+
+/// Record the run `id` as already landed when its head is an ancestor of `branch`'s tip,
+/// then slim it and delete its tracked branch (pd7 D-03). Takes the land lock without
+/// waiting. Returns `true` when the run was dealt with this scan (recorded, or its lock is
+/// held by a landing), `false` when it is not contained and the normal tidy applies.
+fn tend_contained(
+    project: &Path,
+    project_dir: &Path,
+    id: &str,
+    branch: &str,
+    report: &mut RecycleReport,
+) -> bool {
+    let Some(view) = read_view(project_dir, id) else {
+        return false;
+    };
+    let Some(head) = view.record.head.clone() else {
+        return false;
+    };
+    let Some(tip) = ref_commit(project, &format!("refs/heads/{branch}")) else {
+        return false;
+    };
+    if !push::git_in(
+        project,
+        &["merge-base", "--is-ancestor", &head, &tip],
+        push::GIT_QUICK,
+    )
+    .success
+    {
+        return false;
+    }
+    let Some(lock) = try_land_lock(&view.run_dir, id) else {
+        return true;
+    };
+    // Judged again under the lock: the run and the branch may have changed.
+    let Some(view) = read_view(project_dir, id) else {
+        return true;
+    };
+    let tip = ref_commit(project, &format!("refs/heads/{branch}")).unwrap_or(tip);
+    if view.live != LiveState::Finished
+        || already_landed_candidate(&view.record).as_deref() != Some(branch)
+    {
+        return true;
+    }
+    let mut record = view.record.clone();
+    if let Err(why) = record_already_landed(project, &view.run_dir, &mut record, branch, &tip) {
+        report.warnings.push(format!("{id}: {why}"));
+        return true;
+    }
+    report.already_landed += 1;
+    report.warnings.push(format!(
+        "{id}: its head is already in {branch}; recorded as landed"
+    ));
+    if let Some(view) = read_view(project_dir, id) {
+        match slim_locked(
+            project,
+            &view,
+            &format!("removed after landing in {branch}"),
+            true,
+        ) {
+            SlimOutcome::Slimmed { notes, .. } => {
+                report.slimmed += 1;
+                report.warnings.extend(notes);
+            }
+            SlimOutcome::Kept(why) => {
+                report.kept_clones += 1;
+                report.warnings.push(format!("{id}: kept the clone: {why}"));
+            }
+            SlimOutcome::Skipped(why) => report.warnings.push(format!("{id}: {why}")),
+        }
+    }
+    drop(lock);
+    true
 }
 
 /// Stale small files of a finished run that keeps its clone, and the resolver clones
@@ -867,7 +972,6 @@ fn recover_dead(project: &Path, project_dir: &Path, id: &str, report: &mut Recyc
         SlimOutcome::Slimmed { notes, .. } => {
             report.slimmed += 1;
             report.warnings.extend(notes);
-            let _ = fs::remove_file(land_lock_path(&run_dir));
         }
         SlimOutcome::Kept(why) => {
             report.kept_clones += 1;
@@ -1368,5 +1472,114 @@ mod tests {
         tidy_finished(&project, &view, &mut report);
         assert!(!land_clone.exists());
         assert!(attempt.is_dir());
+    }
+
+    #[test]
+    fn a_resolver_clone_goes_once_its_commit_is_on_a_project_branch() {
+        // pd7 D-04: the verdict is judged afresh on every scan, never stored.
+        let (_root, project, run_dir, _clone, base) = fixture();
+        let mut view = landed_view(&run_dir, &base);
+        view.record.landed.clear();
+        let attempt = run_dir.join("land/1");
+        fs::create_dir_all(&attempt).unwrap();
+        let land_clone = attempt.join("work");
+        git(
+            &run_dir,
+            &[
+                "clone",
+                "-q",
+                "--no-hardlinks",
+                &project.display().to_string(),
+                &land_clone.display().to_string(),
+            ],
+        );
+        push::planted::save_baseline_if_absent(
+            &run_dir,
+            &push::planted::snapshot(&run_dir.join("work")),
+        )
+        .unwrap();
+        fs::write(land_clone.join("m.txt"), "merge").unwrap();
+        git(&land_clone, &["add", "-A"]);
+        git(&land_clone, &["commit", "-qm", "merge"]);
+        let mut first = RecycleReport::default();
+        tidy_finished(&project, &view, &mut first);
+        assert!(land_clone.is_dir(), "an unreachable commit keeps the clone");
+        assert!(first.warnings.iter().any(|w| w.contains("resolver clone")));
+
+        // The commit reaches a project branch (what a fast-forward of the target does).
+        git(
+            &project,
+            &[
+                "fetch",
+                "-q",
+                &land_clone.display().to_string(),
+                "HEAD:refs/heads/reached",
+            ],
+        );
+        let mut second = RecycleReport::default();
+        tidy_finished(&project, &view, &mut second);
+        assert!(!land_clone.exists(), "the preservation is obsolete");
+        assert!(attempt.is_dir(), "the attempt dir stays");
+        assert!(second.warnings.is_empty(), "{:?}", second.warnings);
+    }
+
+    #[test]
+    fn already_landed_candidates_are_finished_branch_targeted_runs_with_work() {
+        use super::super::store::{Landing, RunRecord};
+        let (_root, _project, run_dir, _clone, base) = fixture();
+        let candidate = |edit: &dyn Fn(&mut RunRecord)| {
+            let mut record = landed_view(&run_dir, &base).record;
+            record.landed.clear();
+            record.commits = Some(2);
+            record.dispatch_branch = Some("main".to_owned());
+            record.dispatch_tip = Some(base.clone());
+            record.dispatch_detached = false;
+            edit(&mut record);
+            already_landed_candidate(&record)
+        };
+        assert_eq!(candidate(&|_| {}), Some("main".to_owned()));
+        assert_eq!(candidate(&|r| r.commits = Some(0)), None);
+        assert_eq!(candidate(&|r| r.commits = None), None);
+        assert_eq!(candidate(&|r| r.head = None), None);
+        assert_eq!(candidate(&|r| r.outcome = Some(AgentOutcome::Paused)), None);
+        assert_eq!(candidate(&|r| r.status = RecordStatus::Running), None);
+        assert_eq!(
+            candidate(&|r| r.landed.push(Landing::plain(
+                LandingKind::Merged,
+                "t".to_owned(),
+                "main".to_owned()
+            ))),
+            None
+        );
+        assert_eq!(
+            candidate(&|r| r.landed.push(Landing::plain(
+                LandingKind::AlreadyLanded,
+                "t".to_owned(),
+                "main".to_owned()
+            ))),
+            None
+        );
+        assert_eq!(
+            candidate(&|r| r.landed.push(Landing::plain(
+                LandingKind::Pushed,
+                "t".to_owned(),
+                "o abc".to_owned()
+            ))),
+            Some("main".to_owned()),
+            "a push does not put the work on the target"
+        );
+        assert_eq!(candidate(&|r| r.dispatch_detached = true), None);
+        assert_eq!(
+            candidate(&|r| {
+                r.dispatch_branch = None;
+                r.dispatch_tip = None;
+            }),
+            None,
+            "a legacy record has no branch to look in"
+        );
+        assert_eq!(
+            candidate(&|r| r.resumed_by = Some("oneoff-x".to_owned())),
+            None
+        );
     }
 }

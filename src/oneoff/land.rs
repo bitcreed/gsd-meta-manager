@@ -1587,6 +1587,44 @@ mod tests {
     }
 
     #[test]
+    fn the_land_lock_file_is_unlinked_when_released() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = land_lock_path(dir.path());
+        let held = take_land_lock(dir.path(), "oneoff-x").unwrap();
+        assert!(path.exists(), "the file exists while the lock is held");
+        assert!(landing_in_progress(dir.path()));
+        // A second take waits its bounded time and refuses; try_ refuses at once.
+        let started = std::time::Instant::now();
+        assert!(try_land_lock(dir.path(), "oneoff-x").is_none());
+        assert!(started.elapsed() < Duration::from_millis(100));
+        assert!(take_land_lock(dir.path(), "oneoff-x").is_err());
+        assert!(
+            path.exists(),
+            "a refused take leaves the holder's file alone"
+        );
+        drop(held);
+        assert!(!path.exists(), "the file is gone after the release");
+        assert!(!landing_in_progress(dir.path()), "a probe never creates it");
+        assert!(!path.exists());
+        // A try that wins unlinks too, and the path can be taken again.
+        drop(try_land_lock(dir.path(), "oneoff-x").expect("free"));
+        assert!(!path.exists());
+        drop(take_land_lock(dir.path(), "oneoff-x").unwrap());
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn a_guard_whose_file_was_replaced_does_not_unlink_the_new_one() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = land_lock_path(dir.path());
+        let held = take_land_lock(dir.path(), "oneoff-x").unwrap();
+        fs::remove_file(&path).unwrap();
+        fs::write(&path, b"").unwrap();
+        drop(held);
+        assert!(path.exists(), "somebody else's file is not ours to unlink");
+    }
+
+    #[test]
     fn sensitive_paths_are_called_out() {
         let agent_settings = format!(
             "{}settings.json",

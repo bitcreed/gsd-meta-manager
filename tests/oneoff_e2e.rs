@@ -3182,3 +3182,79 @@ fn already_landed_shows_in_list_and_status() {
         "{human}"
     );
 }
+
+#[test]
+fn already_landed_runs_are_recorded_by_the_scan() {
+    let fx = fixture();
+    let (id, _) = quick_run(&fx);
+    let manual = merge_by_hand(&fx, &id);
+
+    let list = run(&fx, &["list", ALIAS]);
+    assert_eq!(list.status.code(), Some(0), "{list:?}");
+    let stderr = String::from_utf8_lossy(&list.stderr).into_owned();
+    assert!(
+        stderr.contains(&id) && stderr.contains("recorded as landed"),
+        "{stderr}"
+    );
+    let after = status_of_run(&fx, &id);
+    let record = &after["record"];
+    assert_eq!(record["landed"][0]["kind"], "already-landed", "{record}");
+    assert_eq!(
+        record["landed"][0]["merge_sha"],
+        manual.as_str(),
+        "{record}"
+    );
+    assert!(record["pruned"]["at"].is_string(), "{record}");
+    assert!(git_text(fx.project(), &["branch", "--list", "gsd-oneoff/*"]).is_empty());
+    let dir = run_dir(&fx, &id);
+    assert!(!dir.join("work").exists());
+    assert!(!dir.join("land.lock").exists());
+
+    // A second scan changes nothing and creates no lock.
+    let record_text = fs::read_to_string(dir.join("run.json")).unwrap();
+    let again = run(&fx, &["list", ALIAS]);
+    assert_eq!(again.status.code(), Some(0), "{again:?}");
+    assert_eq!(
+        fs::read_to_string(dir.join("run.json")).unwrap(),
+        record_text
+    );
+    assert!(lock_files(&fx).is_empty(), "{:?}", lock_files(&fx));
+}
+
+#[test]
+fn the_scan_leaves_an_unlanded_run_alone() {
+    let fx = fixture();
+    let (id, _) = quick_run(&fx);
+    // Work that is not in `main`: nothing to record.
+    let list = run(&fx, &["list", ALIAS]);
+    assert_eq!(list.status.code(), Some(0), "{list:?}");
+    let after = status_of_run(&fx, &id);
+    assert!(after["record"]["landed"].as_array().unwrap().is_empty());
+    assert!(branch_head(fx.project(), &id).is_some());
+    assert!(lock_files(&fx).is_empty(), "{:?}", lock_files(&fx));
+}
+
+#[test]
+fn no_land_lock_is_left_after_a_landing_a_refusal_or_a_scan() {
+    // A normal fast-forward landing.
+    let fx = fixture();
+    let (id, _) = quick_run(&fx);
+    let merged = run(&fx, &["land", "merge", ALIAS, &id]);
+    assert_eq!(merged.status.code(), Some(0), "{merged:?}");
+    assert!(lock_files(&fx).is_empty(), "{:?}", lock_files(&fx));
+
+    // A refused landing (dirty checkout).
+    let fx = fixture();
+    let (id, _) = quick_run(&fx);
+    fs::write(fx.project().join("untracked.txt"), "x").unwrap();
+    let refused = run(&fx, &["land", "merge", ALIAS, &id]);
+    assert_ne!(refused.status.code(), Some(0), "{refused:?}");
+    assert!(lock_files(&fx).is_empty(), "{:?}", lock_files(&fx));
+
+    // A scan over an unlanded finished run, twice.
+    for _ in 0..2 {
+        let list = run(&fx, &["list", ALIAS]);
+        assert_eq!(list.status.code(), Some(0), "{list:?}");
+        assert!(lock_files(&fx).is_empty(), "{:?}", lock_files(&fx));
+    }
+}

@@ -467,6 +467,14 @@ attempt dir. On any failure nothing lands, the tracked branch stays, every attem
 is kept, and `run.json` `land_failure` (reason, conflicted files, attempts) says why; a
 later success clears it. A landing is never a rebase. One landing of a run runs at a
 time (`<run-dir>/land.lock`): a second `merge`, and `discard`, refuse while it runs.
+`land.lock` exists only while a landing, a slim or a scan holds it: the holder unlinks it
+when it releases it, and a probe never creates it. A `merge` of a run whose head is
+already in the target branch (you merged or fast-forwarded it yourself) changes nothing in
+your checkout: it records a landing of kind `already-landed` (the target branch, the
+commit that brought the head in, the target's tip when it was found), clears
+`land_failure`, deletes the tracked branch and slims the run like any landing. A second
+`merge` of that run refuses, saying where the work is. Binaries older than this change
+cannot read an `already-landed` record in `run.json`.
 `task land merge` blocks until it ends and Ctrl-C stops a resolver; the TUI runs it off
 the render thread. Changed paths under `.claude/`, `.github/`, `.husky/` or named
 `.gitattributes`, `.gitmodules`, `.envrc` are listed as a warning. `push` sends the head
@@ -558,6 +566,13 @@ run that needs it) and does the following.
   Stale `.tmp*` files, stop requests, `inbox/` and a free `run.lock` of finished runs are
   removed, and the resolver clone of an unlanded run's failed attempt is removed only
   when everything in it is already in a branch of the project.
+- *Runs already in their target.* A finished, not-paused run that made commits, whose
+  recorded dispatch branch still exists and has the run's head among its ancestors (a
+  manual merge or fast-forward), is recorded as `already-landed`, its tracked branch is
+  deleted and it is slimmed, exactly as `task land merge` does. The scan takes the land
+  lock without waiting and skips a run whose lock is held. Runs with a detached or
+  legacy target, a target branch that is gone, no commits, a pause or a successor are
+  left alone.
 - *Orphans.* A directory named like a run id with no valid `run.json`, with no lock held
   and untouched for more than an hour (the daemon creates its directory before its lock)
   has its clone's work preserved as `gsd-oneoff/<dirname>` first (same gate; a finding
