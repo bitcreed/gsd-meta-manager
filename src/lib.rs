@@ -17,6 +17,8 @@ pub mod error;
 pub mod executor;
 /// The `GSDMM_EXPERIMENTAL_FEATURES` startup flag (quick task 260917-fko, D1).
 pub mod experimental;
+/// The TUI's input reader thread and the shared terminal shell-out helper (quick 261103-tn4).
+pub mod input;
 pub mod journal;
 /// Resolve the CLI's positional `<alias|path>` launch target (quick 260930-vvk).
 pub mod launch_target;

@@ -10,6 +10,7 @@ use event::EventBus;
 use gsd_meta_manager::app::App;
 use gsd_meta_manager::cli::{Cli, Commands, EnvelopeAction};
 use gsd_meta_manager::config::{load_config, save_config, Config};
+use gsd_meta_manager::input::run_with_terminal_suspended;
 use gsd_meta_manager::main_loop::{pump, PumpOutcome};
 use gsd_meta_manager::registry::{add_project, list_projects, remove_project};
 use gsd_meta_manager::watcher::FileWatcher;
@@ -538,7 +539,13 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                 }
             }
 
-            event_bus.spawn_crossterm_reader();
+            let input = match event_bus.spawn_input_reader() {
+                Ok(r) => r,
+                Err(e) => {
+                    tui::restore();
+                    return Err(e.into());
+                }
+            };
             // Keep the 250ms tick. It drives the 20-tick session poll and the
             // 3s status-message expiry; `pump`'s 16ms redraw interval is a
             // separate concern and purely additive. Removing this would
@@ -547,7 +554,7 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
 
             let mut rx = event_bus.rx;
 
-            let result = run_tui_loop(&mut terminal, &mut app, &mut rx).await;
+            let result = run_tui_loop(&mut terminal, &mut app, &mut rx, &input).await;
 
             tui::restore();
 
@@ -558,7 +565,8 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Draw, [`pump`], the editor shell-out, the quit check.
+/// Draw, [`pump`], the editor shell-out (through `input`, which is parked while
+/// the editor owns the terminal), the quit check.
 ///
 /// Everything that used to be a bare `rx.recv().await` here now lives in
 /// `gsd_meta_manager::main_loop::pump`, in the **library**, because this file is
@@ -568,6 +576,7 @@ async fn run_tui_loop(
     terminal: &mut ratatui::DefaultTerminal,
     app: &mut App,
     rx: &mut tokio::sync::mpsc::UnboundedReceiver<gsd_meta_manager::action::Action>,
+    input: &gsd_meta_manager::input::InputReader,
 ) -> anyhow::Result<()> {
     loop {
         // Apply the desired mouse capture (quick 260926-dyf, I-14). This is
@@ -607,22 +616,25 @@ async fn run_tui_loop(
 
         // Check if a screen action requested an editor launch
         if let Some((path, line)) = app.pending_editor.take() {
-            // Suspend the TUI. D-05: mouse capture goes off before the
-            // terminal is handed to the editor (`tui::restore` disables it),
-            // and comes back on return only if it was on.
-            let mouse_was_on = tui::mouse_captured();
-            tui::restore();
-
             // Determine editor: $VISUAL > $EDITOR > vi
             let editor = std::env::var("VISUAL")
                 .or_else(|_| std::env::var("EDITOR"))
                 .unwrap_or_else(|_| "vi".to_string());
 
-            // Spawn editor and wait for it to exit. The library decides the program
-            // and argv (WR-06: `code -w` runs through `sh`, the path always a
-            // separate argument); this is the one place the process is built.
+            // The library decides the program and argv (WR-06: `code -w` runs
+            // through `sh`, the path always a separate argument); this is the one
+            // place the process is built.
             let (program, argv) = gsd_meta_manager::app::editor_command(&editor, &path, line);
-            let status = std::process::Command::new(&program).args(&argv).status();
+
+            // Suspend the TUI. D-05: mouse capture goes off before the terminal
+            // is handed to the editor (`Handoff::release_terminal` -> `restore`),
+            // and comes back on return only if it was on. The input reader is
+            // parked first, so it cannot race the editor for keystrokes
+            // (quick 261103-tn4).
+            let status =
+                run_with_terminal_suspended(input, &mut tui::Handoff::new(terminal), || {
+                    std::process::Command::new(&program).args(&argv).status()
+                });
 
             // The exit status also reaches the library: a DIRECTION.md edit temp is
             // applied (or kept, on a failed editor) by `App::after_editor`, not here.
@@ -657,13 +669,6 @@ async fn run_tui_loop(
             // temp is applied.
             app.after_editor(&path, exit);
 
-            // Re-initialize TUI
-            *terminal = tui::init();
-            if mouse_was_on {
-                // Errors are left to the loop's sync at the top, which retries
-                // and reports.
-                let _ = tui::set_mouse_capture(true);
-            }
             app.needs_redraw = true;
         }
 

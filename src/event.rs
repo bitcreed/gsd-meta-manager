@@ -1,6 +1,5 @@
-use crossterm::event::{Event, EventStream, KeyEventKind};
-use futures::StreamExt;
 use gsd_meta_manager::action::Action;
+use gsd_meta_manager::input::{CrosstermSource, InputReader};
 use std::time::Duration;
 use tokio::sync::mpsc;
 
@@ -15,18 +14,10 @@ impl EventBus {
         Self { tx, rx }
     }
 
-    pub fn spawn_crossterm_reader(&self) {
-        let tx = self.tx.clone();
-        tokio::spawn(async move {
-            let mut reader = EventStream::new();
-            while let Some(Ok(event)) = reader.next().await {
-                if let Some(action) = map_event_to_action(event) {
-                    if tx.send(action).is_err() {
-                        break;
-                    }
-                }
-            }
-        });
+    /// Start the app-owned tty reader (see `gsd_meta_manager::input`). The
+    /// returned handle suspends it around interactive shell-outs.
+    pub fn spawn_input_reader(&self) -> std::io::Result<InputReader> {
+        InputReader::spawn(CrosstermSource, self.tx.clone())
     }
 
     pub fn spawn_tick(&self, interval_ms: u64) {
@@ -40,26 +31,5 @@ impl EventBus {
                 }
             }
         });
-    }
-}
-
-fn map_event_to_action(event: Event) -> Option<Action> {
-    match event {
-        Event::Key(key_event) => {
-            // Only handle key press events, not release or repeat
-            if key_event.kind == KeyEventKind::Press {
-                Some(Action::RawKey(key_event))
-            } else {
-                None
-            }
-        }
-        Event::Resize(_w, _h) => Some(Action::Resize),
-        // Mouse capture turns on any-motion tracking, and `pump` drains this
-        // FIFO on a biased-first arm: a continuous producer there starves every
-        // other arm (see `main_loop::pump`'s doc). So only a left press and
-        // vertical wheel steps are forwarded; everything else is dropped here
-        // (quick 260926-dyf, T-dyf-01).
-        Event::Mouse(m) => gsd_meta_manager::ui::mouse::routed(&m).map(|_| Action::Mouse(m)),
-        _ => None,
     }
 }
