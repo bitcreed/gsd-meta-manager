@@ -242,14 +242,49 @@ pub(super) fn help_lines(experimental: bool) -> Vec<Line<'static>> {
         // stale `r` row: `r` toggles nothing on the Roadmap and is bound only
         // on the Config tab. Each wording is unique in this body, so the
         // whole-row assertions can tell them from the dashboard's `Enter`.
-        row("j/k g/G", "Roadmap tab: move the phase cursor / top / bottom (detail view)"),
-        row("h / l", "Roadmap tab: jump to a dependency / to a phase it unblocks (detail view)"),
-        row("[ / ]", "Roadmap tab: previous / next phase in the same wave (detail view)"),
-        row("Space", "Roadmap tab: fold / unfold a milestone (detail view)"),
-        row("Enter", "Roadmap tab: open the phase in Phases (detail view)"),
-        row("Enter", "Backlog tab: open / close the item's content pane (detail view)"),
-        row("j/k PgUp/PgDn", "Backlog tab: scroll the open content pane (detail view)"),
-        row("e", "Backlog tab: edit the open item where it lives, e.g. ROADMAP.md (detail view)"),
+        row(
+            "j/k g/G",
+            "Roadmap tab: move the phase cursor / top / bottom (detail view)",
+        ),
+        row(
+            "h / l",
+            "Roadmap tab: jump to a dependency / to a phase it unblocks (detail view)",
+        ),
+        row(
+            "[ / ]",
+            "Roadmap tab: previous / next phase in the same wave (detail view)",
+        ),
+        row(
+            "Space",
+            "Roadmap tab: fold / unfold a milestone (detail view)",
+        ),
+        row(
+            "Enter",
+            "Roadmap tab: open the phase in Phases (detail view)",
+        ),
+        row(
+            "Enter",
+            "Backlog tab: open / close the item's content pane (detail view)",
+        ),
+        row(
+            "j/k PgUp/PgDn",
+            "Backlog tab: scroll the open content pane (detail view)",
+        ),
+        row(
+            "e",
+            "Backlog tab: edit the open item where it lives, e.g. ROADMAP.md (detail view)",
+        ),
+    ]);
+    // Quick 261103-ubn: the Backlog tab's one-key one-off. Documented only with the
+    // experimental flag on, because the key is inert without it (the 260917-fko
+    // discovery gate: a help row for a dead key would advertise it).
+    if experimental {
+        lines.push(row(
+            "t",
+            "Backlog tab: start the selected item as a one-off /gsd-quick run (experimental)",
+        ));
+    }
+    lines.extend([
         // Phase 24-07 (D-B04) made `m` the Docs / Sessions sub-tab switch;
         // since quick 260926-1t1 it is an alias of the arrows and `[` / `]`,
         // documented here only (the strip and footer no longer show it).
@@ -613,6 +648,33 @@ mod tests {
         screen
     }
 
+    /// The Backlog tab's one-off row (quick 261103-ubn), built through `row()`.
+    fn backlog_t_row() -> String {
+        row(
+            "t",
+            "Backlog tab: start the selected item as a one-off /gsd-quick run (experimental)",
+        )
+        .spans[0]
+            .content
+            .to_string()
+    }
+
+    #[test]
+    fn the_backlog_one_off_row_is_documented_only_with_the_flag_on() {
+        let on = body_with(true);
+        assert_eq!(
+            on.lines().filter(|line| *line == backlog_t_row()).count(),
+            1,
+            "{on}"
+        );
+        let off = body_with(false);
+        assert!(
+            !off.lines().any(|line| line == backlog_t_row()),
+            "a row for a key that is inert with the flag off:\n{off}"
+        );
+        assert!(!off.contains("start the selected item as a one-off"));
+    }
+
     #[test]
     fn help_lines_documents_every_key_this_phase_binds() {
         let text = body();
@@ -695,6 +757,21 @@ mod tests {
             "the dashboard's backlog shortcut must be documented, and the row \
              {backlog_row:?} is missing:\n{text}"
         );
+        // Quick 261103-ubn: the Backlog tab's one-off key, flag-on, and directly
+        // under the Backlog tab's `e` row.
+        let lines: Vec<&str> = text.lines().collect();
+        let edit = row(
+            "e",
+            "Backlog tab: edit the open item where it lives, e.g. ROADMAP.md (detail view)",
+        )
+        .spans[0]
+            .content
+            .to_string();
+        let at = lines
+            .iter()
+            .position(|line| *line == edit)
+            .expect("the Backlog `e` row");
+        assert_eq!(lines[at + 1], backlog_t_row(), "{text}");
         assert!(
             text.contains("/term/h") && text.contains("//h"),
             "both needs-a-human filter forms must be documented:\n{text}"

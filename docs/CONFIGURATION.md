@@ -117,7 +117,7 @@ The binary itself does not require any environment variables to start. It does, 
 | `TMUX` | Optional | `src/terminal_switch.rs` | Presence of `$TMUX` indicates the binary is running inside tmux; required for the "switch to existing Claude session" feature. Absent → tab-switching returns a clear error. |
 | `GSD_HOME` | Optional | `src/state_reader/config_json.rs` (`user_defaults_path`) | Root of the GSD-owned store. GSD user defaults are read from, and the Config tab's global scope writes to, `$GSD_HOME/.gsd/defaults.json`. Unset or empty falls back to `$HOME`, matching gsd-core's own `GSD_HOME \|\| homedir()` rule. Any other value is used as given. |
 | `HOME` | Optional | `src/state_reader/config_json.rs` (`user_defaults_path`) | Fallback root for `$GSD_HOME/.gsd/defaults.json` (the GSD user defaults overlay) when `GSD_HOME` is unset or empty. If neither is set, the defaults file is simply not loaded. |
-| `GSDMM_EXPERIMENTAL_FEATURES` | Optional | `src/experimental.rs` (read once at startup by `App::from_config`) | Turns on the experimental surfaces, which today means the **Driver** tab and everything that leads to it, one-off tasks (`t` / `T`) included. **Default is OFF.** Accepted truthy values are `1`, `true`, `yes` and `on`, ASCII-case-insensitive with surrounding whitespace trimmed; unset, empty, `0`, `false`, `no`, `off` and any unrecognised value are OFF. |
+| `GSDMM_EXPERIMENTAL_FEATURES` | Optional | `src/experimental.rs` (read once at startup by `App::from_config`) | Turns on the experimental surfaces, which today means the **Driver** tab and everything that leads to it, one-off tasks (`t` / `T`, and `t` on the Backlog tab) included. **Default is OFF.** Accepted truthy values are `1`, `true`, `yes` and `on`, ASCII-case-insensitive with surrounding whitespace trimmed; unset, empty, `0`, `false`, `no`, `off` and any unrecognised value are OFF. |
 | `GSD_MM_ENVELOPE_ROOT` | Optional | `src/envelope/mod.rs` (`envelope_root`) | Overrides the root directory of the per-alias envelope ledger, which otherwise lives under `dirs::data_local_dir()/gsd-meta-manager/`. Intended for tests; it only moves where the ledger is read and written. Unset or empty uses the default. |
 | `GSDMM_ONEOFF_REPORT_DIR` | Never set by users | `src/taskctl_cli.rs` (`taskctl report`) | Set by the one-off launcher inside the sandbox (and pinned by the run's `gsd-meta-manager` shim): the directory `taskctl report` writes `report.json` to. Unset, relative or missing makes `taskctl report` exit 1. |
 | `GSDMM_ONEOFF_SOFT_CAP_GRACE_SECS` | Tests only | `src/oneoff/session.rs` (`grace_from_env`) | Shortens the one-off soft cap's grace (integer 1-600 seconds; default 300). Read once by the launcher daemon at session start. |
@@ -132,7 +132,8 @@ Editor fallback chain: `$VISUAL` → `$EDITOR` → `vi`.
 The driver launcher runs a real agent against a real repository (inside a
 sandbox), so its surface is hidden rather than merely disabled: with the variable
 unset the TUI has **eight** tabs, no `Shift+D`, no `D` in the detail-view tab
-hint, no Driver section in the help screen, and none of the launcher's dashboard
+hint, no Driver section in the help screen, no Backlog-tab `t` (the key is inert and
+its help row is hidden), and none of the launcher's dashboard
 markers (the driven badge, the attention ranking and the `h` filter that read
 them). A user who never asked for a driver cannot discover one by pressing a
 key.
@@ -209,7 +210,25 @@ opens the live view on the run's newest conflict-resolver session (read-only: no
 message or soft cap; its header says `resolver land/<n>`), and says so when the run
 has none.
 
-**CLI.** `gsd-meta-manager task run <alias|path> (--todo <file> | --text <task>)
+**Key (Backlog tab).** `t` on the selected backlog item, in the list or with its
+content pane open, starts a `/gsd-quick` one-off at once: no picker, no typing, no
+confirm popup, and another run starts even while others are live. It uses the confirm
+popup's default model and the default spend ceiling and wall clock. The task's first
+line is `Implement backlog item 999.N: <title>`; then comes the item's ROADMAP.md
+section (its `### Phase 999.N:` heading down to the next same-or-higher heading or
+thematic break), or the item directory's `.md` files when ROADMAP.md has no section for
+it, inlined as data between BEGIN/END markers, with control and invisible formatting
+characters removed and capped at 48 KiB behind a visible truncation note. The agent is
+told to delete the `### Phase 999.N:` section from the `## Backlog` section of
+ROADMAP.md, and the `.planning/phases/999.N-*` directory if there is one, if and only
+if it reports `done`; that removal reaches your checkout only when you land the run.
+The entry is read from your working tree at the keypress, while the run's clone is made
+from the last commit. A refusal (no item selected, an item with no entry, an
+unsupported platform) is a status-line message, never a dialog. Experimental only: with
+`GSDMM_EXPERIMENTAL_FEATURES` off the key does nothing and the help screen has no row for
+it.
+
+**CLI.** `gsd-meta-manager task run <alias|path> (--todo <file> | --text <task> | --backlog <999.N>)
 [--mode quick|fast] [--model opus] [--max-budget-usd 10] [--cap-minutes 60]
 [--unsandboxed] [--foreground]`; `task status <project> [--run-id <id>] [--json]`;
 `task list <project> [--json]`; `task stop <project> [--run-id <id>] [--wait-secs

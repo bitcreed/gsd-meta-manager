@@ -1616,6 +1616,21 @@ impl App {
                 }
             };
             let defaults = crate::cli::task_run_defaults();
+            // Quick 261103-ubn: a backlog dispatch names its item (the number has passed
+            // `valid_backlog_number`; it is rendered anyway), so this message does not
+            // replace the key handler's with a less specific one.
+            let starting = match &task {
+                crate::oneoff::TaskSpec::Backlog { number, .. } => format!(
+                    "Starting one-off {} for backlog {} on {}...",
+                    mode.command(),
+                    crate::text::render_for_terminal(number),
+                    crate::text::render_for_terminal(alias)
+                ),
+                _ => format!(
+                    "Starting a one-off on {}",
+                    crate::text::render_for_terminal(alias)
+                ),
+            };
             let options = crate::oneoff::launch::OneoffOptions {
                 resume: None,
                 project,
@@ -1641,13 +1656,7 @@ impl App {
                     result,
                 });
             });
-            self.ctx.status_message = Some((
-                format!(
-                    "Starting a one-off on {}",
-                    crate::text::render_for_terminal(alias)
-                ),
-                std::time::Instant::now(),
-            ));
+            self.ctx.status_message = Some((starting, std::time::Instant::now()));
             self.needs_redraw = true;
         }
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
@@ -8903,6 +8912,46 @@ mod tests {
             .map(|(t, _)| t)
             .unwrap_or_default();
         assert!(message.contains("started"), "{message}");
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
+    async fn backlog_one_off_start_status_names_the_item() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, mut rx) = app_on_the_driver_tab(dir.path());
+        app.oneoff_seams = OneoffSeams { run: fake_oneoff };
+        let task = crate::oneoff::TaskSpec::Backlog {
+            number: "999.1".to_owned(),
+            title: "Backlog seam item".to_owned(),
+            entry: "### Phase 999.1: Backlog seam item\n\nbody".to_owned(),
+        };
+        app.update(Action::OneoffRunRequested {
+            alias: OBS_ALIAS.to_string(),
+            mode: crate::oneoff::Mode::Quick,
+            task: task.clone(),
+            model: "opus".to_owned(),
+        });
+        let message = app
+            .ctx
+            .status_message
+            .clone()
+            .map(|(t, _)| t)
+            .unwrap_or_default();
+        assert!(message.contains("backlog 999.1"), "{message}");
+        assert!(message.contains("/gsd-quick"), "{message}");
+        let _ = next_matching(&mut rx, |a| matches!(a, Action::OneoffRunStarted { .. })).await;
+        let (options, _) = RECORDED_ONEOFFS
+            .lock()
+            .unwrap()
+            .iter()
+            .rev()
+            .find(|(o, _)| o.task == task)
+            .cloned()
+            .expect("the seam was called with the backlog task");
+        let defaults = crate::cli::task_run_defaults();
+        assert_eq!(options.mode, crate::oneoff::Mode::Quick);
+        assert_eq!(options.max_budget_usd, defaults.max_budget_usd);
+        assert_eq!(options.cap_minutes, defaults.cap_minutes);
     }
 
     #[test]

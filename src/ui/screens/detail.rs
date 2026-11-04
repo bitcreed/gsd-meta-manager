@@ -6031,6 +6031,68 @@ impl Screen for DetailScreen {
                     self.alias.clone(),
                 )))
             }
+            // `t` on the Backlog tab (quick 261103-ubn): start the SELECTED item as a
+            // `/gsd-quick` one-off at once, list or open pane alike: no picker, no
+            // confirm, and another run starts even while others are live (261103-hx7,
+            // C-28). Gated by the experimental flag (the 260917-fko discovery gate): with
+            // it off the guard is false and `t` falls through to the unbound-key arm. The
+            // item is read from the checkout at keypress, like Backlog `e`. Every refusal
+            // is a status line, never a dialog.
+            KeyCode::Char('t') if current_view == DetailSubView::Backlog && ctx.experimental => {
+                ctx.needs_redraw = true;
+                let refuse = |ctx: &mut AppContext, message: String| {
+                    ctx.status_message = Some((message, std::time::Instant::now()));
+                    ScreenAction::None
+                };
+                if !super::driver_steer::can_steer() {
+                    return refuse(
+                        ctx,
+                        super::driver_steer::STEERING_UNSUPPORTED_PLATFORM.to_string(),
+                    );
+                }
+                let alias = self.alias.clone();
+                let project_path = ctx
+                    .config
+                    .projects
+                    .get(&alias)
+                    .map(|project| project.path.clone());
+                let number = ctx.view_cache.get(&alias).and_then(|cache| {
+                    cache
+                        .backlog_items
+                        .get(cache.backlog_selected)
+                        .map(|item| item.number.as_raw_for_logic_only().to_owned())
+                });
+                let (Some(project_path), Some(number)) = (project_path, number) else {
+                    return refuse(ctx, "No backlog item selected".to_string());
+                };
+                match crate::oneoff::backlog::backlog_spec(&project_path, &number) {
+                    // Messages carry repository text (a number or a refusal), so they are
+                    // escaped on the way to the status line (T-ubn-02).
+                    Err(message) => {
+                        refuse(ctx, crate::text::render_for_terminal(&message).to_string())
+                    }
+                    Ok(task) => {
+                        ctx.status_message = Some((
+                            format!(
+                                "Starting one-off /gsd-quick for backlog {}...",
+                                crate::text::render_for_terminal(&number)
+                            ),
+                            std::time::Instant::now(),
+                        ));
+                        super::driver_confirm::dispatch(
+                            ctx,
+                            Action::OneoffRunRequested {
+                                alias: alias.clone(),
+                                mode: crate::oneoff::Mode::Quick,
+                                task,
+                                model: super::oneoff::default_model(),
+                            },
+                            &alias,
+                        );
+                        ScreenAction::None
+                    }
+                }
+            }
             // `e` on the Driver tab: edit the SELECTED launcher run's DIRECTION.md body in
             // `$VISUAL`/`$EDITOR` (30-04, D-17). Tab-scoped, so `e` keeps its Docs,
             // Queue, Backlog and Archive meanings. The handler writes nothing: it asks
@@ -20742,6 +20804,160 @@ mod tests {
             rx.try_recv(),
             Ok(crate::action::Action::OneoffTodosRequested { .. })
         ));
+    }
+
+    // ── quick 261103-ubn: `t` on the Backlog tab dispatches the selected item ──
+
+    /// The Backlog fixture with an event channel; the Backlog tab is opened.
+    fn backlog_one_off_fixture() -> (
+        DetailScreen,
+        AppContext,
+        tempfile::TempDir,
+        tokio::sync::mpsc::UnboundedReceiver<crate::action::Action>,
+    ) {
+        let (mut screen, mut ctx, td) = backlog_content_fixture();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        ctx.event_tx = Some(tx);
+        press(&mut screen, &mut ctx, KeyCode::Char('3'));
+        (screen, ctx, td, rx)
+    }
+
+    fn assert_dispatched_for_item_999_1(
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::action::Action>,
+    ) {
+        match rx.try_recv() {
+            Ok(crate::action::Action::OneoffRunRequested {
+                alias,
+                mode,
+                task,
+                model,
+            }) => {
+                assert_eq!(alias, TEST_ALIAS);
+                assert_eq!(mode, crate::oneoff::Mode::Quick);
+                assert_eq!(model, super::super::oneoff::default_model());
+                match task {
+                    crate::oneoff::TaskSpec::Backlog {
+                        number,
+                        title,
+                        entry,
+                    } => {
+                        assert_eq!(number, "999.1");
+                        assert_eq!(title, "Alternate transport fallback");
+                        assert!(entry.contains("Read the device another way."), "{entry}");
+                        assert!(entry.contains("- [ ] TBD"), "{entry}");
+                    }
+                    other => panic!("{other:?}"),
+                }
+            }
+            other => panic!("expected a OneoffRunRequested, got {other:?}"),
+        }
+        assert!(rx.try_recv().is_err(), "exactly one action");
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn backlog_one_off_t_dispatches_the_selected_item_without_a_screen() {
+        let (mut screen, mut ctx, _td, mut rx) = backlog_one_off_fixture();
+        let action = screen.handle_key(KeyCode::Char('t'), KeyModifiers::NONE, &mut ctx);
+        assert!(
+            matches!(action, ScreenAction::None),
+            "no picker, no confirm"
+        );
+        assert_dispatched_for_item_999_1(&mut rx);
+        assert!(
+            status_text(&ctx).contains("backlog 999.1"),
+            "{}",
+            status_text(&ctx)
+        );
+        assert!(status_text(&ctx).starts_with("Starting one-off /gsd-quick"));
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn backlog_one_off_t_works_with_the_content_pane_open() {
+        let (mut screen, mut ctx, _td, mut rx) = backlog_one_off_fixture();
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        assert!(ctx.view_cache[TEST_ALIAS].backlog_expanded);
+        let action = screen.handle_key(KeyCode::Char('t'), KeyModifiers::NONE, &mut ctx);
+        assert!(matches!(action, ScreenAction::None));
+        assert_dispatched_for_item_999_1(&mut rx);
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn backlog_one_off_t_starts_another_run_while_one_is_live() {
+        let (mut screen, mut ctx, _td, mut rx) = backlog_one_off_fixture();
+        let mut view = crate::ui::screens::oneoff::tests::finished_view("x");
+        view.live = crate::oneoff::store::LiveState::Running;
+        ctx.view_cache
+            .entry(TEST_ALIAS.to_string())
+            .or_default()
+            .oneoff_runs = vec![view];
+        for _ in 0..2 {
+            screen.handle_key(KeyCode::Char('t'), KeyModifiers::NONE, &mut ctx);
+            assert_dispatched_for_item_999_1(&mut rx);
+        }
+    }
+
+    #[test]
+    fn backlog_one_off_t_is_inert_with_the_flag_off() {
+        let (mut screen, mut ctx, _td, mut rx) = backlog_one_off_fixture();
+        ctx.experimental = false;
+        ctx.status_message = None;
+        let action = screen.handle_key(KeyCode::Char('t'), KeyModifiers::NONE, &mut ctx);
+        assert!(matches!(action, ScreenAction::None));
+        assert!(rx.try_recv().is_err(), "nothing on the channel");
+        assert!(ctx.status_message.is_none(), "no status noise");
+    }
+
+    #[test]
+    fn backlog_one_off_t_does_nothing_on_the_other_tabs() {
+        let (mut screen, mut ctx, _td, mut rx) = backlog_one_off_fixture();
+        for tab in ['1', '2'] {
+            press(&mut screen, &mut ctx, KeyCode::Char(tab));
+            screen.handle_key(KeyCode::Char('t'), KeyModifiers::NONE, &mut ctx);
+            assert!(
+                !matches!(
+                    rx.try_recv(),
+                    Ok(crate::action::Action::OneoffRunRequested { .. })
+                ),
+                "tab {tab}"
+            );
+        }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn backlog_one_off_t_refuses_an_item_without_an_entry_on_the_status_line() {
+        let (mut screen, mut ctx, td, mut rx) = backlog_one_off_fixture();
+        std::fs::remove_file(td.path().join(".planning/ROADMAP.md")).unwrap();
+        let action = screen.handle_key(KeyCode::Char('t'), KeyModifiers::NONE, &mut ctx);
+        assert!(matches!(action, ScreenAction::None));
+        assert!(
+            status_text(&ctx).contains("has no ROADMAP.md entry to dispatch"),
+            "{}",
+            status_text(&ctx)
+        );
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn backlog_one_off_t_with_no_items_says_nothing_is_selected() {
+        let (mut screen, mut ctx, td, mut rx) = backlog_one_off_fixture();
+        std::fs::remove_dir_all(td.path().join(".planning/phases")).unwrap();
+        ctx.view_cache
+            .entry(TEST_ALIAS.to_string())
+            .or_default()
+            .backlog_items
+            .clear();
+        screen.handle_key(KeyCode::Char('t'), KeyModifiers::NONE, &mut ctx);
+        assert!(
+            status_text(&ctx).contains("No backlog item selected"),
+            "{}",
+            status_text(&ctx)
+        );
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]

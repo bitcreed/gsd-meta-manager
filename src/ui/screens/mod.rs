@@ -1391,7 +1391,8 @@ pub struct AppContext {
     /// Parsed milestone archives, keyed alias first, milestone second — see
     /// [`crate::archive::ArchiveCache`] for why that is a type.
     pub archive_cache: crate::archive::ArchiveCache,
-    /// Whether the experimental surfaces — today, every driver surface — exist
+    /// Whether the experimental surfaces — today, every driver surface plus the
+    /// Backlog tab's one-off `t` — exist
     /// at all in this TUI session (quick task 260917-fko, D1/D2).
     ///
     /// **Resolved exactly once, at startup**, in `App::from_config` from
