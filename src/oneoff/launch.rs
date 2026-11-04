@@ -52,6 +52,7 @@ use crate::launcher::sandbox::{
 use crate::launcher::stop::signal_target;
 use crate::launcher::LauncherError;
 
+use super::backlog::{clean_entry, valid_backlog_number};
 use super::cancel::{
     pause_grace_from_env, read_request, request_now, signal_scope, stop_grace_from_env,
     write_request, Cancel, CancelStep, CutEnd, StopBy, StopKind, StopRecord, StopRequest,
@@ -168,6 +169,18 @@ fn validate(opts: &OneoffOptions) -> Result<(), LauncherError> {
         TaskSpec::Todo { file_name, .. } => {
             if !valid_todo_file_name(file_name) {
                 return Err(invalid(format!("{file_name:?} is not a todo file name")));
+            }
+        }
+        TaskSpec::Backlog { number, entry, .. } => {
+            if !valid_backlog_number(number) {
+                return Err(invalid(
+                    "not a backlog number: expected 999.<digits>".to_owned(),
+                ));
+            }
+            if clean_entry(entry).trim().is_empty() {
+                return Err(invalid(format!(
+                    "backlog {number} has no entry to dispatch"
+                )));
             }
         }
     }
@@ -1247,6 +1260,12 @@ pub fn daemon_argv(opts: &OneoffOptions, run_id: &str, config: Option<&Path>) ->
             argv.push("--text".into());
             argv.push(text.into());
         }
+        // 261103-ubn: only the number travels; the daemon reads the entry from the
+        // checkout again, as a todo's title is.
+        (None, TaskSpec::Backlog { number, .. }) => {
+            argv.push("--backlog".into());
+            argv.push(number.into());
+        }
     }
     argv.push("--model".into());
     argv.push(opts.model.clone().into());
@@ -1752,6 +1771,56 @@ mod tests {
         assert!(argv.windows(2).any(|w| w == ["--text", "fix x"]));
         assert!(argv.windows(2).any(|w| w == ["--mode", "fast"]));
         assert!(argv.contains(&"--unsandboxed".to_owned()));
+    }
+
+    fn backlog_task() -> TaskSpec {
+        TaskSpec::Backlog {
+            number: "999.3".to_owned(),
+            title: "Demo".to_owned(),
+            entry: "### Phase 999.3: Demo\n\nbody".to_owned(),
+        }
+    }
+
+    #[test]
+    fn a_backlog_task_travels_as_its_number_alone() {
+        let argv = strings(&daemon_argv(&opts(backlog_task()), "oneoff-x", None));
+        assert!(
+            argv.windows(2).any(|w| w == ["--backlog", "999.3"]),
+            "{argv:?}"
+        );
+        assert!(!argv.contains(&"--todo".to_owned()));
+        assert!(!argv.contains(&"--text".to_owned()));
+        assert!(
+            !argv.iter().any(|a| a.contains("body")),
+            "the entry stays home"
+        );
+        let mut resumed = opts(backlog_task());
+        resumed.resume = Some(ResumeSpec {
+            from_run: "oneoff-20261103-100000".to_owned(),
+            start: ResumeFrom::Branch,
+        });
+        let argv = strings(&daemon_argv(&resumed, "oneoff-new", None));
+        assert!(argv.contains(&"--resume-from".to_owned()));
+        assert!(!argv.contains(&"--backlog".to_owned()));
+    }
+
+    #[test]
+    fn validation_judges_a_backlog_task() {
+        assert!(validate(&opts(backlog_task())).is_ok());
+        for number in ["999", "../999.1", "999.1 ", ""] {
+            let bad = opts(TaskSpec::Backlog {
+                number: number.to_owned(),
+                title: "t".to_owned(),
+                entry: "e".to_owned(),
+            });
+            assert!(validate(&bad).is_err(), "{number:?}");
+        }
+        let blank = opts(TaskSpec::Backlog {
+            number: "999.3".to_owned(),
+            title: "t".to_owned(),
+            entry: " \n\u{7}".to_owned(),
+        });
+        assert!(validate(&blank).is_err());
     }
 
     #[test]

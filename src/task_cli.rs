@@ -256,18 +256,29 @@ mod unix {
             }
             (None, _) => None,
         };
-        let task = match (&args.todo, &args.text) {
+        let task = match (&args.todo, &args.text, &args.backlog) {
             _ if resumed_task.is_some() => resumed_task.unwrap_or(TaskSpec::Text(String::new())),
-            (Some(file), None) => match todo_spec(&project, file) {
+            (Some(file), None, None) => match todo_spec(&project, file) {
                 Ok(spec) => spec,
                 Err(message) => {
                     err_line(&format!("task run: {message}"));
                     return 1;
                 }
             },
-            (None, Some(text)) => TaskSpec::Text(text.clone()),
+            (None, Some(text), None) => TaskSpec::Text(text.clone()),
+            // 261103-ubn: the parent and the re-executed daemon both read the entry
+            // from the project checkout (the todo pattern, TOCTOU-tolerant).
+            (None, None, Some(number)) => {
+                match gsd_meta_manager::oneoff::backlog::backlog_spec(&project, number) {
+                    Ok(spec) => spec,
+                    Err(message) => {
+                        err_line(&format!("task run: {message}"));
+                        return 1;
+                    }
+                }
+            }
             _ => {
-                err_line("task run: give exactly one of --todo and --text");
+                err_line("task run: give exactly one of --todo, --text and --backlog");
                 return 1;
             }
         };

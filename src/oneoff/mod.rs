@@ -34,6 +34,7 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod backlog;
 pub mod cancel;
 pub mod inbox;
 pub mod merge;
@@ -132,6 +133,14 @@ pub enum TaskSpec {
     Todo { file_name: String, title: String },
     /// A typed task, verbatim.
     Text(String),
+    /// A backlog item (quick 261103-ubn): its `999.N` number, the Backlog tab's title
+    /// and the cleaned, bounded ROADMAP.md entry, recorded at dispatch so a resume
+    /// rebuilds the same prompt.
+    Backlog {
+        number: String,
+        title: String,
+        entry: String,
+    },
 }
 
 /// How the agent session ended, as the runtime seam reads it (C-10, C-14).
@@ -225,6 +234,25 @@ mod tests {
         assert_eq!(Mode::Fast.command(), "/gsd-fast");
     }
 
+    /// Records written before the Backlog variant still deserialize (261103-ubn).
+    #[test]
+    fn stored_task_records_from_before_the_backlog_variant_still_deserialize() {
+        assert_eq!(
+            serde_json::from_str::<TaskSpec>(r#"{"kind":"text","spec":"fix x"}"#).unwrap(),
+            TaskSpec::Text("fix x".to_owned())
+        );
+        assert_eq!(
+            serde_json::from_str::<TaskSpec>(
+                r#"{"kind":"todo","spec":{"file_name":"a.md","title":"A"}}"#
+            )
+            .unwrap(),
+            TaskSpec::Todo {
+                file_name: "a.md".to_owned(),
+                title: "A".to_owned()
+            }
+        );
+    }
+
     #[test]
     fn task_specs_and_outcomes_round_trip_through_json() {
         for spec in [
@@ -233,10 +261,23 @@ mod tests {
                 title: "A".to_owned(),
             },
             TaskSpec::Text("fix x".to_owned()),
+            TaskSpec::Backlog {
+                number: "999.3".to_owned(),
+                title: "Demo".to_owned(),
+                entry: "### Phase 999.3: Demo\n\nbody".to_owned(),
+            },
         ] {
             let text = serde_json::to_string(&spec).unwrap();
             assert_eq!(serde_json::from_str::<TaskSpec>(&text).unwrap(), spec);
         }
+        let backlog = TaskSpec::Backlog {
+            number: "999.3".to_owned(),
+            title: "t".to_owned(),
+            entry: "e".to_owned(),
+        };
+        assert!(serde_json::to_string(&backlog)
+            .unwrap()
+            .starts_with(r#"{"kind":"backlog","spec":"#));
         for outcome in [
             AgentOutcome::Finished,
             AgentOutcome::Failed {

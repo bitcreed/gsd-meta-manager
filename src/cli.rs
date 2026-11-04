@@ -642,9 +642,9 @@ pub enum LandAction {
     },
 }
 
-/// Arguments of `task run <project> (--todo <file> | --text <task>)`.
+/// Arguments of `task run <project> (--todo <file> | --text <task> | --backlog <999.N>)`.
 #[derive(Args, Debug, Clone)]
-#[command(group(clap::ArgGroup::new("task").required(true).args(["todo", "text", "resume_from"])))]
+#[command(group(clap::ArgGroup::new("task").required(true).args(["todo", "text", "backlog", "resume_from"])))]
 pub struct TaskRunArgs {
     /// Alias or path of a registered project
     pub project: String,
@@ -654,6 +654,9 @@ pub struct TaskRunArgs {
     /// A typed task: one line, at most 2000 characters
     #[arg(long, allow_hyphen_values = true)]
     pub text: Option<String>,
+    /// A backlog item's number; its ROADMAP.md entry (else its directory's .md files) is the task
+    #[arg(long, value_name = "999.N")]
+    pub backlog: Option<String>,
     /// quick runs /gsd-quick, fast runs /gsd-fast
     #[arg(long, value_enum, default_value_t = crate::oneoff::Mode::Quick)]
     pub mode: crate::oneoff::Mode,

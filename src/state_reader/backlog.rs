@@ -265,18 +265,53 @@ pub fn load_backlog_content(planning_dir: &Path, dir_name: &str) -> Option<Strin
     });
     parts.extend(roadmap_entry);
 
-    let item_dir = planning_dir.join("phases").join(dir_name);
-    for md_path in md_files(&item_dir) {
-        let Ok(body) = std::fs::read_to_string(&md_path) else {
-            continue;
-        };
-        let name = md_path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        parts.push(format!("── {name} ──\n\n{}", body.trim_end()));
-    }
+    parts.extend(dir_md_parts(planning_dir, dir_name));
 
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("\n\n"))
+    }
+}
+
+/// Each `.md` file of an item's directory, in name order, under its
+/// `── <file name> ──` label. Shared by [`load_backlog_content`] and
+/// [`backlog_dispatch_entry`] so the two cannot label the sources differently.
+fn dir_md_parts(planning_dir: &Path, dir_name: &str) -> Vec<String> {
+    let item_dir = planning_dir.join("phases").join(dir_name);
+    md_files(&item_dir)
+        .into_iter()
+        .filter_map(|md_path| {
+            let body = std::fs::read_to_string(&md_path).ok()?;
+            let name = md_path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            Some(format!("── {name} ──\n\n{}", body.trim_end()))
+        })
+        .collect()
+}
+
+/// What a one-off is dispatched with for one backlog item (quick 261103-ubn):
+/// the item's ROADMAP.md section (its `### Phase 999.N:` heading through the line
+/// before the next same-or-higher heading or thematic break, the SAME locator as
+/// [`load_backlog_content`] and [`backlog_edit_target`]) and ONLY that. When
+/// ROADMAP.md has no section for the item, the directory's `.md` bodies stand in,
+/// labelled as in [`load_backlog_content`]. `None` when there is neither.
+///
+/// INFERRED: an item marked PROMOTED is not special-cased; the user chose it.
+///
+/// The text is raw, read off disk from a repository the user cloned; the caller
+/// cleans and bounds it.
+pub fn backlog_dispatch_entry(planning_dir: &Path, dir_name: &str) -> Option<String> {
+    let section = parse_backlog_dir_name(dir_name).and_then(|(number, _)| {
+        let roadmap = std::fs::read_to_string(planning_dir.join("ROADMAP.md")).ok()?;
+        super::roadmap_md::phase_section(&roadmap, &number)
+    });
+    if section.is_some() {
+        return section;
+    }
+    let parts = dir_md_parts(planning_dir, dir_name);
     if parts.is_empty() {
         None
     } else {
@@ -921,5 +956,55 @@ Plans:
             ten.contains("TEN BODY") && !ten.contains("ONE BODY"),
             "{ten:?}"
         );
+    }
+
+    /// quick 261103-ubn: the dispatch entry is the ROADMAP section only: it stops at
+    /// the next `### Phase`, at a `## ` heading and at a thematic break, keeps a `####`
+    /// sub-heading, and never takes a longer number's section.
+    #[test]
+    fn the_dispatch_entry_is_the_roadmap_section_and_only_that() {
+        let (_td, planning) = backlog_fixture();
+        std::fs::create_dir_all(planning.join("phases/999.10-ten")).unwrap();
+        std::fs::write(
+            planning.join("ROADMAP.md"),
+            "## Backlog\n\n### Phase 999.1: One (BACKLOG)\n\nONE BODY\n\n#### Sub\n\nSUB BODY\n\n\
+             ### Phase 999.10: Ten (BACKLOG)\n\nTEN BODY\n\n---\n\nAFTER BREAK\n\n\
+             ## Next milestone\n\nOUTSIDE\n",
+        )
+        .unwrap();
+        let one = backlog_dispatch_entry(&planning, "999.1-alternate-transport-fallback").unwrap();
+        assert!(one.starts_with("### Phase 999.1:"), "{one:?}");
+        assert!(one.contains("ONE BODY") && one.contains("#### Sub") && one.contains("SUB BODY"));
+        assert!(!one.contains("TEN BODY"), "{one:?}");
+        let ten = backlog_dispatch_entry(&planning, "999.10-ten").unwrap();
+        assert!(
+            ten.contains("TEN BODY") && !ten.contains("ONE BODY"),
+            "{ten:?}"
+        );
+        assert!(
+            !ten.contains("AFTER BREAK") && !ten.contains("OUTSIDE"),
+            "{ten:?}"
+        );
+    }
+
+    #[test]
+    fn the_dispatch_entry_falls_back_to_the_labelled_dir_md_then_to_none() {
+        let (_td, planning) = backlog_fixture();
+        let dir = "999.1-alternate-transport-fallback";
+        std::fs::write(planning.join("ROADMAP.md"), "## Backlog\n").unwrap();
+        assert_eq!(backlog_dispatch_entry(&planning, dir), None);
+        std::fs::write(
+            planning.join("phases").join(dir).join("999.1-NOTE.md"),
+            "# Note\n\nDo it this way.\n",
+        )
+        .unwrap();
+        let entry = backlog_dispatch_entry(&planning, dir).unwrap();
+        assert!(
+            entry.starts_with("── 999.1-NOTE.md ──\n\n# Note"),
+            "{entry:?}"
+        );
+        assert!(entry.contains("Do it this way."));
+        // The same labelling as the content pane.
+        assert_eq!(Some(entry), load_backlog_content(&planning, dir));
     }
 }

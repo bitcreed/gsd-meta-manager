@@ -323,6 +323,76 @@ fn a_fast_run_has_the_fast_prompt_and_no_summary() {
     assert_eq!(record["report"]["status"], "partial");
 }
 
+/// `fx` plus a committed ROADMAP.md with two backlog entries and their directories
+/// (quick 261103-ubn).
+fn with_backlog(fx: Fixture) -> Fixture {
+    let project = fx.project();
+    fs::write(
+        project.join(".planning/ROADMAP.md"),
+        "# Roadmap\n\n## Backlog\n\n\
+         ### Phase 999.3: Demo backlog item (BACKLOG)\n\n\
+         **Goal:** Make the demo work end to end.\n\n\
+         #### Notes\n\n\
+         - [ ] TBD\n\
+         - Mind the second body line.\n\n\
+         ### Phase 999.4: Other item (BACKLOG)\n\n\
+         **Goal:** Something unrelated to the demo.\n",
+    )
+    .unwrap();
+    for dir in ["999.3-demo-backlog-item", "999.4-other-item"] {
+        let path = project.join(".planning/phases").join(dir);
+        fs::create_dir_all(&path).unwrap();
+        fs::write(path.join(".gitkeep"), "").unwrap();
+    }
+    git(project, &["add", "-A"]);
+    git(project, &["commit", "-qm", "backlog"]);
+    fx
+}
+
+#[test]
+fn a_detached_backlog_run_carries_the_item_entry_and_nothing_else() {
+    let fx = with_backlog(fixture());
+    fx.write_scenario("printf '%s\\n' '{\"type\":\"result\",\"subtype\":\"success\"}'\n");
+    let out = run(&fx, &["run", ALIAS, "--backlog", "999.3"]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let status = wait_finished(&fx);
+    let prompt = fx.recorded("prompt.txt");
+    assert!(
+        // The harness records a prompt with its newlines escaped.
+        prompt.starts_with("/gsd-quick Implement backlog item 999.3: Demo backlog item\\n"),
+        "{prompt}"
+    );
+    for needle in [
+        "### Phase 999.3: Demo backlog item (BACKLOG)",
+        "**Goal:** Make the demo work end to end.",
+        "#### Notes",
+        "- [ ] TBD",
+        "- Mind the second body line.",
+        "<<< BEGIN BACKLOG ENTRY 999.3 >>>",
+        "<<< END BACKLOG ENTRY 999.3 >>>",
+        "If and only if the status is done",
+        "### Phase 999.3:",
+        ".planning/phases/999.3-*",
+    ] {
+        assert!(prompt.contains(needle), "{needle:?} missing from {prompt}");
+    }
+    assert!(!prompt.contains("999.4"), "{prompt}");
+    assert!(!prompt.contains("Something unrelated"), "{prompt}");
+    let task = &status["record"]["task"];
+    assert_eq!(task["kind"], "backlog", "{task}");
+    assert_eq!(task["spec"]["number"], "999.3", "{task}");
+}
+
+#[test]
+fn an_unknown_backlog_item_is_refused_before_any_agent_starts() {
+    let fx = with_backlog(fixture());
+    let out = run(&fx, &["run", ALIAS, "--backlog", "999.9", "--foreground"]);
+    assert_ne!(out.status.code(), Some(0), "{out:?}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("is not an item"), "{stderr}");
+    assert!(!fx.rec_dir().join("prompt.txt").exists());
+}
+
 /// Waits for `release`, then commits a file named after its own pid and reports done.
 const PARALLEL_SCENARIO: &str = r#"
 touch "$FAKE_CLAUDE_DIR/started-$$"

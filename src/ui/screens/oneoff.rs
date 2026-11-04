@@ -51,6 +51,18 @@ const TYPE_ROW: &str = "type a task...";
 /// The headline's width in a run list row; longer headlines are cut.
 const ROW_HEADLINE_CHARS: usize = 36;
 
+/// The model a one-off starts with when none is chosen: the runtime's first model,
+/// else `opus`. The confirm popup and the Backlog tab's one-key dispatch (quick
+/// 261103-ubn) both use this, so the two never disagree.
+pub(crate) fn default_model() -> String {
+    AgentRuntime::default()
+        .models()
+        .first()
+        .copied()
+        .unwrap_or("opus")
+        .to_owned()
+}
+
 /// `value` escaped and capped for one line.
 fn shown(value: &str) -> String {
     let rendered = render_for_terminal(value).to_string();
@@ -310,13 +322,11 @@ impl OneoffScreen {
     }
 
     fn confirm(mode: Mode, task: TaskSpec) -> OneoffMode {
-        let model = AgentRuntime::default()
-            .models()
-            .first()
-            .copied()
-            .unwrap_or("opus")
-            .to_owned();
-        OneoffMode::Confirm { mode, task, model }
+        OneoffMode::Confirm {
+            mode,
+            task,
+            model: default_model(),
+        }
     }
 
     fn picker_key(&mut self, code: KeyCode, ctx: &mut AppContext) -> ScreenAction {
@@ -835,6 +845,9 @@ impl OneoffScreen {
                         format!("{} ({})", shown(title), shown(file_name))
                     }
                     TaskSpec::Text(text) => shown(text),
+                    TaskSpec::Backlog { number, title, .. } => {
+                        format!("backlog {}: {}", shown(number), shown(title))
+                    }
                 };
                 let lines = vec![
                     Line::from(format!("Command:       {}", mode.command())),
