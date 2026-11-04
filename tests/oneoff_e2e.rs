@@ -3334,3 +3334,113 @@ fn resume_chain_landing_closes_out_the_predecessor() {
     );
     assert!(lock_files(&fx).is_empty(), "{:?}", lock_files(&fx));
 }
+
+#[test]
+fn resume_chain_predecessor_left_by_an_older_landing_is_closed_by_the_scan() {
+    let fx = fixture();
+    let (old, new) = finished_resume_chain(&fx);
+
+    // The predecessor's land lock is held, so the landing leaves it alone: the state an
+    // older build left behind (the successor merged, the predecessor whole).
+    let held = gsd_meta_manager::driver::lock::acquire_at(
+        &run_dir(&fx, &old).join("land.lock"),
+        &old,
+        std::process::id(),
+    )
+    .expect("the test takes the predecessor's land lock");
+    let merged = run(&fx, &["land", "merge", ALIAS, &new]);
+    assert_eq!(merged.status.code(), Some(0), "{merged:?}");
+    let before = status_of_run(&fx, &old);
+    assert!(
+        before["record"]["landed"].as_array().unwrap().is_empty(),
+        "{before}"
+    );
+    assert!(run_dir(&fx, &old).join("work").exists());
+    assert!(branch_head(fx.project(), &old).is_some());
+    drop(held);
+    // The test's own guard left the file behind; a scan or a landing owns it from here.
+    let _ = fs::remove_file(run_dir(&fx, &old).join("land.lock"));
+
+    let list = run(&fx, &["list", ALIAS]);
+    assert_eq!(list.status.code(), Some(0), "{list:?}");
+    let stderr = String::from_utf8_lossy(&list.stderr).into_owned();
+    assert!(
+        stderr.contains(&old) && stderr.contains("recorded as landed"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("has not landed"), "{stderr}");
+    assert_closed_out(&fx, &old);
+
+    let record_text = fs::read_to_string(run_dir(&fx, &old).join("run.json")).unwrap();
+    let again = run(&fx, &["list", ALIAS]);
+    assert_eq!(again.status.code(), Some(0), "{again:?}");
+    assert_eq!(
+        fs::read_to_string(run_dir(&fx, &old).join("run.json")).unwrap(),
+        record_text
+    );
+    assert!(lock_files(&fx).is_empty(), "{:?}", lock_files(&fx));
+}
+
+#[test]
+fn resume_chain_discarded_successor_keeps_the_predecessor() {
+    let fx = fixture();
+    let (old, new) = finished_resume_chain(&fx);
+    let old_head = status_of_run(&fx, &old)["record"]["head"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let discarded = run(&fx, &["land", "discard", ALIAS, &new]);
+    assert_eq!(discarded.status.code(), Some(0), "{discarded:?}");
+    let list = run(&fx, &["list", ALIAS]);
+    assert_eq!(list.status.code(), Some(0), "{list:?}");
+    let stderr = String::from_utf8_lossy(&list.stderr).into_owned();
+    assert!(!stderr.contains("has not landed"), "{stderr}");
+    assert!(!stderr.contains("recorded as landed"), "{stderr}");
+
+    let after = status_of_run(&fx, &old);
+    let record = &after["record"];
+    assert!(record["landed"].as_array().unwrap().is_empty(), "{record}");
+    assert!(record["pruned"].is_null(), "{record}");
+    assert!(run_dir(&fx, &old).join("work").exists());
+    assert_eq!(
+        branch_head(fx.project(), &old).as_deref(),
+        Some(old_head.as_str())
+    );
+}
+
+#[test]
+fn run_lock_is_removed_when_a_run_ends() {
+    let fx = fixture();
+    // No `list` or `status` has scanned since the run finished.
+    let id = start_with_graces(&fx, PAUSE_HONOURED_SCENARIO, "5", "60");
+    assert!(
+        run_dir(&fx, &id).join("run.lock").exists(),
+        "a live run holds its lock"
+    );
+    let paused = run(
+        &fx,
+        &[
+            "stop",
+            ALIAS,
+            "--run-id",
+            &id,
+            "--pause",
+            "--wait-secs",
+            "30",
+        ],
+    );
+    assert_eq!(paused.status.code(), Some(0), "{paused:?}");
+    assert!(
+        wait_until(Duration::from_secs(30), || !run_dir(&fx, &id)
+            .join("run.lock")
+            .exists()),
+        "the paused run left its run.lock"
+    );
+    let done = wait_run_finished(&fx, &id);
+    assert_eq!(done["live"], "finished", "{done}");
+
+    let fx = fixture();
+    let (id, _) = quick_run(&fx);
+    assert!(!run_dir(&fx, &id).join("run.lock").exists());
+}

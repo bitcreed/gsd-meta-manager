@@ -575,26 +575,23 @@ pub(crate) fn retention_picks(newest_first: &[Aging], days: i64, max: usize) -> 
 }
 
 /// Why a finished run is slimmed now, if it is (pure, D-B): it landed (before this
-/// change, or its slim was cut short), or a successor continues it and its work is in
-/// `gsd-oneoff/<id>`.
+/// change, or its slim was cut short). A run that a successor continues is not slimmed
+/// here: it waits for a landing in its chain, which closes it out through
+/// [`contained_candidate`] (quick 261103-qqm, I-03).
 pub(crate) fn leftover_slim_note(
     record: &super::store::RunRecord,
     clone_present: bool,
-    tracked_at_head: bool,
 ) -> Option<String> {
     if record.pruned.is_some() && !clone_present {
         return None;
     }
-    if let Some(landing) = record.landed.last() {
-        return Some(match landing.kind {
-            LandingKind::Merged | LandingKind::AlreadyLanded => {
-                format!("removed after landing in {}", landing.detail)
-            }
-            LandingKind::Pushed => "removed after push".to_owned(),
-        });
-    }
-    (record.resumed_by.is_some() && tracked_at_head)
-        .then(|| "removed after it was resumed".to_owned())
+    let landing = record.landed.last()?;
+    Some(match landing.kind {
+        LandingKind::Merged | LandingKind::AlreadyLanded => {
+            format!("removed after landing in {}", landing.detail)
+        }
+        LandingKind::Pushed => "removed after push".to_owned(),
+    })
 }
 
 /// What one scan did.
@@ -714,7 +711,8 @@ pub fn recycle_project(project: &Path) -> RecycleReport {
 }
 
 /// A run with a valid record: recover it when it is dead, otherwise put a finished one
-/// in order.
+/// in order. A run whose successor has not landed keeps its clone and branch (qqm I-03); one
+/// whose head a landing in its chain contains is closed out like a landed run.
 fn tend_run(project: &Path, project_dir: &Path, view: &OneoffView, report: &mut RecycleReport) {
     let id = view.record.run_id.clone();
     let run_dir = &view.run_dir;
@@ -728,18 +726,15 @@ fn tend_run(project: &Path, project_dir: &Path, view: &OneoffView, report: &mut 
     if view.live != LiveState::Finished || view.landing {
         return;
     }
-    if let Some(branch) = already_landed_candidate(&view.record) {
+    // qqm I-06: a finished run needs no run lock, whatever else happens to it below.
+    clear_stale_run_lock(run_dir, report);
+    if let Some(branch) = contained_candidate(project_dir, &view.record) {
         if tend_contained(project, project_dir, &id, &branch, report) {
             return;
         }
     }
     let clone_present = fs::symlink_metadata(run_dir.join(WORK_DIR)).is_ok();
-    let tracked_at_head = view
-        .record
-        .head
-        .as_deref()
-        .is_some_and(|head| ref_commit(project, &tracked_ref(&id)).as_deref() == Some(head));
-    if let Some(note) = leftover_slim_note(&view.record, clone_present, tracked_at_head) {
+    if let Some(note) = leftover_slim_note(&view.record, clone_present) {
         match slim_run(project, &id, &note) {
             SlimOutcome::Slimmed { notes, .. } => {
                 report.slimmed += 1;
@@ -925,6 +920,17 @@ fn tend_contained(
     true
 }
 
+/// Remove the free `run.lock` of a finished run (quick 261103-qqm, I-06): the launcher
+/// unlinks its own at the end of a run, and an older run left it behind. Only a lock that
+/// probes as free goes; a held, unprobeable or absent one is left alone. A symlink is
+/// removed as a link.
+fn clear_stale_run_lock(run_dir: &Path, report: &mut RecycleReport) {
+    let path = run_dir.join(RUN_LOCK_FILE);
+    if probe_at(&path) == LockProbe::Free && fs::remove_file(&path).is_ok() {
+        report.stale_files += 1;
+    }
+}
+
 /// Stale small files of a finished run that keeps its clone, and the resolver clones
 /// of its failed attempts whose commits are all preserved (I-11). Under the land lock.
 fn tidy_finished(project: &Path, view: &OneoffView, report: &mut RecycleReport) {
@@ -960,9 +966,6 @@ fn tidy_finished(project: &Path, view: &OneoffView, report: &mut RecycleReport) 
     if super::cancel::read_request(&land).ok().flatten().is_some() {
         super::cancel::clear_request(&land);
         removed.set(removed.get() + 1);
-    }
-    if probe_at(&run_dir.join(RUN_LOCK_FILE)) == LockProbe::Free {
-        remove(&run_dir.join(RUN_LOCK_FILE));
     }
     for entry in fs::read_dir(&land).into_iter().flatten().flatten() {
         let clone = entry.path().join(WORK_DIR);
@@ -1390,30 +1393,30 @@ mod tests {
     #[test]
     fn a_landed_run_that_still_has_a_clone_is_slimmed_and_an_unlanded_one_is_not() {
         let mut record = super::super::store::tests::record();
-        assert_eq!(leftover_slim_note(&record, true, false), None, "unlanded");
+        assert_eq!(leftover_slim_note(&record, true), None, "unlanded");
         record.landed.push(super::super::store::Landing::plain(
             LandingKind::Merged,
             "2026-11-03T10:00:00Z".to_owned(),
             "main".to_owned(),
         ));
         assert_eq!(
-            leftover_slim_note(&record, true, false).as_deref(),
+            leftover_slim_note(&record, true).as_deref(),
             Some("removed after landing in main")
         );
         // Landed before this change: no clone, never pruned -> the record is marked.
-        assert!(leftover_slim_note(&record, false, false).is_some());
+        assert!(leftover_slim_note(&record, false).is_some());
         // Pruned and clean: nothing to do; pruned with leftovers: finish the slim.
         record.pruned = Some(Pruned {
             at: "t".to_owned(),
             note: "n".to_owned(),
         });
-        assert_eq!(leftover_slim_note(&record, false, false), None);
-        assert!(leftover_slim_note(&record, true, false).is_some());
-        // A resumed run is slimmed only when its work is in the tracked branch.
+        assert_eq!(leftover_slim_note(&record, false), None);
+        assert!(leftover_slim_note(&record, true).is_some());
+        // qqm I-03: a resumed run waits for its successor's landing, whatever its
+        // tracked branch says.
         let mut resumed = super::super::store::tests::record();
         resumed.resumed_by = Some("oneoff-20261103-150000".to_owned());
-        assert_eq!(leftover_slim_note(&resumed, true, false), None);
-        assert!(leftover_slim_note(&resumed, true, true).is_some());
+        assert_eq!(leftover_slim_note(&resumed, true), None);
     }
 
     #[test]
@@ -1597,6 +1600,114 @@ mod tests {
         assert!(!land_clone.exists(), "the preservation is obsolete");
         assert!(attempt.is_dir(), "the attempt dir stays");
         assert!(second.warnings.is_empty(), "{:?}", second.warnings);
+    }
+
+    fn chain_record(
+        id: &str,
+        from: Option<&str>,
+        by: Option<&str>,
+    ) -> super::super::store::RunRecord {
+        let mut record = super::super::store::tests::record();
+        record.run_id = id.to_owned();
+        record.status = RecordStatus::Finished;
+        record.head = Some("a".repeat(40));
+        record.resumed_from = from.map(str::to_owned);
+        record.resumed_by = by.map(str::to_owned);
+        record
+    }
+
+    fn landing(kind: LandingKind, detail: &str) -> super::super::store::Landing {
+        super::super::store::Landing::plain(kind, "t".to_owned(), detail.to_owned())
+    }
+
+    #[test]
+    fn resume_chain_branch_is_the_landing_of_a_successor_that_put_work_on_the_target() {
+        const P1: &str = "oneoff-20261103-100000";
+        const P2: &str = "oneoff-20261103-100001";
+        const S: &str = "oneoff-20261103-100002";
+        let pred = chain_record(P1, None, Some(P2));
+        let mut middle = chain_record(P2, Some(P1), Some(S));
+        let mut last = chain_record(S, Some(P2), None);
+        // Nothing landed yet.
+        assert_eq!(
+            successor_landing_branch(&pred, &[middle.clone(), last.clone()]),
+            None
+        );
+        assert_eq!(
+            successor_landing_branch(&pred, &[]),
+            None,
+            "no successor read"
+        );
+        last.landed.push(landing(LandingKind::Merged, "main"));
+        assert_eq!(
+            successor_landing_branch(&pred, &[middle.clone(), last.clone()]).as_deref(),
+            Some("main"),
+            "two hops away"
+        );
+        // A push puts nothing on a project branch.
+        last.landed = vec![landing(LandingKind::Pushed, "origin abc")];
+        assert_eq!(
+            successor_landing_branch(&pred, &[middle.clone(), last.clone()]),
+            None
+        );
+        // An already-landed successor counts, and the latest landing names the branch.
+        middle.landed = vec![
+            landing(LandingKind::Merged, "old"),
+            landing(LandingKind::AlreadyLanded, "main"),
+        ];
+        assert_eq!(
+            successor_landing_branch(&pred, &[middle.clone()]).as_deref(),
+            Some("main")
+        );
+        // A paused predecessor with no commits still qualifies (I-02).
+        let mut paused = pred.clone();
+        paused.outcome = Some(AgentOutcome::Paused);
+        paused.commits = Some(0);
+        assert_eq!(
+            successor_landing_branch(&paused, &[middle.clone()]).as_deref(),
+            Some("main")
+        );
+        // A successor whose `resumed_from` names another run is not a link.
+        let mut stranger = middle.clone();
+        stranger.resumed_from = Some("oneoff-20261103-999999".to_owned());
+        assert_eq!(successor_landing_branch(&pred, &[stranger]), None);
+        // The wrong run in the list is not a link either.
+        assert_eq!(successor_landing_branch(&pred, &[last.clone()]), None);
+        // An implausible landing detail is no branch.
+        let mut odd = middle.clone();
+        odd.landed = vec![landing(LandingKind::Merged, "--upload-pack=evil")];
+        assert_eq!(successor_landing_branch(&pred, &[odd]), None);
+        // The run itself must be finished, have a head, be continued and not landed.
+        let mut running = pred.clone();
+        running.status = RecordStatus::Running;
+        assert_eq!(successor_landing_branch(&running, &[middle.clone()]), None);
+        let mut headless = pred.clone();
+        headless.head = None;
+        assert_eq!(successor_landing_branch(&headless, &[middle.clone()]), None);
+        let mut alone = pred.clone();
+        alone.resumed_by = None;
+        assert_eq!(successor_landing_branch(&alone, &[middle.clone()]), None);
+        let mut landed = pred;
+        landed.landed = vec![landing(LandingKind::Merged, "main")];
+        assert_eq!(successor_landing_branch(&landed, &[middle]), None);
+    }
+
+    #[test]
+    fn stale_run_lock_removal_takes_a_free_lock_and_leaves_a_held_one() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join(RUN_LOCK_FILE);
+        let mut report = RecycleReport::default();
+        clear_stale_run_lock(dir.path(), &mut report);
+        assert_eq!(report.stale_files, 0, "no lock, nothing to count");
+        fs::write(&path, "").unwrap();
+        clear_stale_run_lock(dir.path(), &mut report);
+        assert!(!path.exists());
+        assert_eq!(report.stale_files, 1);
+        let held = crate::driver::lock::acquire_at(&path, "oneoff-20261103-100000", 1).unwrap();
+        clear_stale_run_lock(dir.path(), &mut report);
+        assert!(path.exists(), "a held lock stays");
+        assert_eq!(report.stale_files, 1);
+        drop(held);
     }
 
     #[test]

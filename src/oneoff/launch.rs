@@ -262,19 +262,15 @@ pub fn run_foreground(opts: OneoffOptions) -> Result<RunRecord, LauncherError> {
 
     // C-01: the per-run lock first, before `run.json` exists. Nothing below writes
     // before this.
-    let lock = acquire_at_with_retry(
-        &run_lock_path(&run_dir),
-        &run_id,
-        std::process::id(),
-        ACQUIRE_RETRY_BUDGET,
-    )
-    .map_err(|e| match e {
-        LockError::Unavailable { detail } => LauncherError::Io {
-            detail: format!("one-off lock: {detail}"),
-        },
-        LockError::HeldBy { run_id, .. } => locked(&run_id),
-        LockError::HeldByUnknownRun => locked(&run_id),
-    })?;
+    let run_lock = run_lock_path(&run_dir);
+    let lock = acquire_at_with_retry(&run_lock, &run_id, std::process::id(), ACQUIRE_RETRY_BUDGET)
+        .map_err(|e| match e {
+            LockError::Unavailable { detail } => LauncherError::Io {
+                detail: format!("one-off lock: {detail}"),
+            },
+            LockError::HeldBy { run_id, .. } => locked(&run_id),
+            LockError::HeldByUnknownRun => locked(&run_id),
+        })?;
     let user_stop = Arc::new(AtomicBool::new(false));
     install_signal_handlers(&user_stop)?;
 
@@ -322,7 +318,9 @@ pub fn run_foreground(opts: OneoffOptions) -> Result<RunRecord, LauncherError> {
         record.ended_at = Some(rfc3339(Utc::now()));
         let _ = write_record(&run_dir, &record);
     }
-    // Lock last: the record is final before the lock goes free.
+    // Lock last: the record is final before the lock goes free. The file goes with the
+    // run (qqm I-06): it is unlinked while still held, and only if it is still ours.
+    super::land::unlink_if_held(&lock, &run_lock);
     drop(lock);
     result.map(|()| record)
 }

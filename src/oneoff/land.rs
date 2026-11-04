@@ -121,9 +121,17 @@ pub(crate) struct LandLock {
 
 impl Drop for LandLock {
     fn drop(&mut self) {
-        if self.lock.is_at(&self.path) {
-            let _ = fs::remove_file(&self.path);
-        }
+        unlink_if_held(&self.lock, &self.path);
+    }
+}
+
+/// Unlink the lock file at `path` while `lock` is still held, and only when `path` still
+/// names the inode `lock` holds (quick 261103-qqm, I-06; the rule of [`LandLock`]'s drop,
+/// shared with the launcher's `run.lock`). A failure is ignored: a file left behind is the
+/// scan's to remove.
+pub(crate) fn unlink_if_held(lock: &RunLock, path: &Path) {
+    if lock.is_at(path) {
+        let _ = fs::remove_file(path);
     }
 }
 
