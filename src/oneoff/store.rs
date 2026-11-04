@@ -539,6 +539,10 @@ pub fn synthesize(outcome: &AgentOutcome, max_budget_usd: f64, cap_minutes: f64)
             ReportStatus::Failed,
             "The run was killed before the agent reported".to_owned(),
         ),
+        AgentOutcome::Crashed { detail } => (
+            ReportStatus::Failed,
+            format!("The launcher died before the run finished: {detail}"),
+        ),
     };
     let headline = fit(&headline, MAX_HEADLINE);
     Report::validate(status, &headline, &[], &[], &[]).unwrap_or_else(|_| {
@@ -1297,6 +1301,12 @@ pub(crate) mod tests {
             (AgentOutcome::Stopped, ReportStatus::Failed),
             (AgentOutcome::Paused, ReportStatus::Partial),
             (AgentOutcome::Killed, ReportStatus::Failed),
+            (
+                AgentOutcome::Crashed {
+                    detail: "no launcher".to_owned(),
+                },
+                ReportStatus::Failed,
+            ),
         ] {
             let report = synthesize(&outcome, 10.0, 60.0);
             assert_eq!(report.status, status, "{outcome:?}");

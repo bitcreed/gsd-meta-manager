@@ -243,7 +243,7 @@ pub(crate) fn tracked_ref(run_id: &str) -> String {
 }
 
 /// The commit `reference` names in `project`, if it exists.
-fn ref_commit(project: &Path, reference: &str) -> Option<String> {
+pub(crate) fn ref_commit(project: &Path, reference: &str) -> Option<String> {
     let found = git_in(
         project,
         &[

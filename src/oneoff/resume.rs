@@ -91,7 +91,13 @@ pub fn resume_refusal(view: &OneoffView, successor_blocks: bool) -> Result<(), S
         return Err("the run was already merged; there is nothing to resume".to_owned());
     }
     match &record.outcome {
-        Some(AgentOutcome::Paused | AgentOutcome::Stopped | AgentOutcome::Killed) => {}
+        // o2r I-08: a crashed run (the launcher died) resumes like a killed one.
+        Some(
+            AgentOutcome::Paused
+            | AgentOutcome::Stopped
+            | AgentOutcome::Killed
+            | AgentOutcome::Crashed { .. },
+        ) => {}
         Some(other) => {
             return Err(format!(
                 "the run finished on its own ({}); only a paused, stopped or killed run \
@@ -451,6 +457,24 @@ mod tests {
         let mut v = view(AgentOutcome::Paused);
         v.record.resumed_by = Some("oneoff-y".to_owned());
         assert!(resume_refusal(&v, false).is_ok());
+    }
+
+    #[test]
+    fn a_crashed_run_with_a_tracked_branch_resumes() {
+        let crashed = || AgentOutcome::Crashed {
+            detail: "the launcher died".to_owned(),
+        };
+        assert_eq!(resume_refusal(&view(crashed()), false), Ok(()));
+        // Its work must be in the project, as for any other resumable run.
+        let mut untracked = view(crashed());
+        untracked.record.tracked_branch = None;
+        assert!(resume_refusal(&untracked, false)
+            .unwrap_err()
+            .contains("not in the project"));
+        // A run that finished on its own still says so.
+        assert!(resume_refusal(&view(AgentOutcome::Finished), false)
+            .unwrap_err()
+            .contains("finished on its own"));
     }
 
     #[test]

@@ -1654,6 +1654,45 @@ impl App {
         let _ = (project, tx);
     }
 
+    /// The cleanup scan of the one-off run directories (quick 261103-o2r, D-B), run once
+    /// at TUI start: dead runs are finished as `crashed` and their work preserved, landed
+    /// runs lose their clone, orphan dirs and old records go. Off the render thread on
+    /// `spawn_blocking`, answered by ONE [`Action::OneoffRecycled`]. It does nothing with
+    /// the experimental flag off or without an event channel.
+    pub fn start_oneoff_recycle(&self) {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            if !self.ctx.experimental {
+                return;
+            }
+            let Some(tx) = self.ctx.event_tx.clone() else {
+                return;
+            };
+            let projects: Vec<PathBuf> = self
+                .ctx
+                .config
+                .projects
+                .values()
+                .map(|p| p.path.clone())
+                .collect();
+            if projects.is_empty() {
+                return;
+            }
+            tokio::task::spawn_blocking(move || {
+                let mut total = crate::oneoff::recycle::RecycleReport::default();
+                for project in projects {
+                    total.absorb(crate::oneoff::recycle::recycle_project(&project));
+                }
+                let _ = tx.send(Action::OneoffRecycled {
+                    summary: total.summary(),
+                    warnings: total.warnings,
+                });
+            });
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        let _ = self;
+    }
+
     /// `b` / `M` after `u` (quick 261103-klf, C-01, I-17): resume the named run as a new,
     /// detached run, on `spawn_blocking`; the answer is a [`Action::OneoffCommandDone`].
     #[cfg_attr(
@@ -3323,6 +3362,18 @@ impl App {
             Action::OneoffCommandDone { alias, message } => {
                 if self.ctx.experimental {
                     self.finish_oneoff(&alias, &format!("{alias}: {message}"));
+                }
+            }
+            Action::OneoffRecycled { summary, warnings } => {
+                for warning in &warnings {
+                    tracing::warn!(
+                        "one-off cleanup: {}",
+                        crate::text::render_for_terminal(warning)
+                    );
+                }
+                if let (true, Some(text)) = (self.ctx.experimental, summary) {
+                    self.ctx.status_message = Some((text, std::time::Instant::now()));
+                    self.needs_redraw = true;
                 }
             }
             // 30-05, D-18: `s` minted a slug; create the run, edit it, check it, then
@@ -8958,6 +9009,60 @@ mod tests {
         let (stored, result) = app.ctx.view_cache[OBS_ALIAS].oneoff_diff.clone().unwrap();
         assert_eq!(stored, id);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn a_recycle_answer_sets_one_status_line_only_when_it_did_something() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, _rx) = app_on_the_driver_tab(dir.path());
+        app.ctx.experimental = true;
+        app.ctx.status_message = None;
+        app.update(Action::OneoffRecycled {
+            summary: None,
+            warnings: vec!["x: kept the clone".to_owned()],
+        });
+        assert!(app.ctx.status_message.is_none());
+        app.update(Action::OneoffRecycled {
+            summary: Some("one-off cleanup: recovered 1 crashed run(s)".to_owned()),
+            warnings: Vec::new(),
+        });
+        assert!(app
+            .ctx
+            .status_message
+            .as_ref()
+            .is_some_and(|(m, _)| m.contains("recovered 1 crashed")));
+        // With the flag off the answer is ignored.
+        app.ctx.status_message = None;
+        app.ctx.experimental = false;
+        app.update(Action::OneoffRecycled {
+            summary: Some("one-off cleanup: x".to_owned()),
+            warnings: Vec::new(),
+        });
+        assert!(app.ctx.status_message.is_none());
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
+    async fn the_startup_recycle_scan_runs_only_with_the_flag_on_and_answers_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, mut rx) = app_on_the_driver_tab(dir.path());
+        app.ctx.experimental = false;
+        app.start_oneoff_recycle();
+        // Flag off: nothing was spawned, so nothing arrives.
+        let none = tokio::time::timeout(std::time::Duration::from_millis(300), async {
+            loop {
+                match rx.recv().await {
+                    Some(Action::OneoffRecycled { .. }) => return true,
+                    Some(_) => {}
+                    None => return false,
+                }
+            }
+        })
+        .await;
+        assert!(none.is_err() || none == Ok(false), "{none:?}");
+        app.ctx.experimental = true;
+        app.start_oneoff_recycle();
+        next_matching(&mut rx, |a| matches!(a, Action::OneoffRecycled { .. })).await;
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]

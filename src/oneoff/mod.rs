@@ -156,6 +156,10 @@ pub enum AgentOutcome {
     /// The session was killed, immediately or after a TERM or pause grace ran out
     /// (quick 261103-klf, C-05). The `stop` record says which.
     Killed,
+    /// The launcher died before the run finished (a crash, a reboot, an OOM kill, a
+    /// killed TUI): written by the recovery scan, never by the run itself (quick
+    /// 261103-o2r, D-B). `detail` is host-written.
+    Crashed { detail: String },
 }
 
 impl AgentOutcome {
@@ -170,6 +174,7 @@ impl AgentOutcome {
             AgentOutcome::Stopped => "stopped",
             AgentOutcome::Paused => "paused",
             AgentOutcome::Killed => "killed",
+            AgentOutcome::Crashed { .. } => "crashed",
         }
     }
 }
@@ -245,6 +250,9 @@ mod tests {
             AgentOutcome::Stopped,
             AgentOutcome::Paused,
             AgentOutcome::Killed,
+            AgentOutcome::Crashed {
+                detail: "the launcher died".to_owned(),
+            },
         ] {
             let text = serde_json::to_string(&outcome).unwrap();
             assert!(text.contains(outcome.word()), "{text}");

@@ -80,7 +80,12 @@ What it writes:
   the stop and the resume links, and its merge diff is bounded and exportable. A run
   lands into the branch `HEAD` pointed at when it was dispatched (`task land merge
   --into <branch>` overrides), and once it has landed or been pushed its clone and
-  bulky files are removed, leaving a small record.
+  bulky files are removed, leaving a small record. A run whose launcher died (a
+  crash, a reboot) is recovered as `crashed` on the next TUI start, `task list` or
+  `task run`, its work kept as `gsd-oneoff/<run-id>`; orphan run directories are
+  recycled and finished records age out after 30 days or beyond the newest 50 (only
+  when nothing unlanded is left in them). Nothing is deleted unless its commits are
+  already in a branch of the project.
 
 What it never touches:
 

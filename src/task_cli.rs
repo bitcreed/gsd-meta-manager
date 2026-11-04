@@ -266,6 +266,11 @@ mod unix {
                 return 1;
             }
         };
+        // o2r D-B: the parent scans; the daemon it starts never does (it would race the
+        // directory its own parent just claimed).
+        if !args.daemon_child {
+            recycle(&project, "task run");
+        }
         let options = OneoffOptions {
             project,
             alias,
@@ -642,6 +647,18 @@ mod unix {
         )
     }
 
+    /// Run the cleanup scan of `project` (quick 261103-o2r, D-B) and say on stderr what it
+    /// did: stdout, and `--json`, stay untouched.
+    fn recycle(project: &Path, verb: &str) {
+        let report = gsd_meta_manager::oneoff::recycle::recycle_project(project);
+        if let Some(summary) = report.summary() {
+            err_line(&format!("{verb}: {}", shown(&summary)));
+        }
+        for warning in &report.warnings {
+            err_line(&format!("{verb}: {}", shown(warning)));
+        }
+    }
+
     fn list_main(target: &str, json: bool, config: Option<PathBuf>) -> i32 {
         let (_, project, _) = match resolve_project(target, config) {
             Ok(resolved) => resolved,
@@ -654,6 +671,8 @@ mod unix {
             err_line("task list: no one-off directory for this project");
             return 1;
         };
+        // o2r D-B: put the project's run directories in order before listing them.
+        recycle(&project, "task list");
         let views = read_runs_in(&project_dir, None);
         if json {
             let all: Vec<serde_json::Value> = views.iter().map(view_json).collect();

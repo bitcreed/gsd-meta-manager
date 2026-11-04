@@ -506,6 +506,10 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
             // Store watcher on App context so new projects can be watched dynamically
             app.ctx.watcher = Some(watcher);
 
+            // One-off cleanup (quick 261103-o2r, D-B): recover dead runs, slim landed
+            // ones, drop orphans. Off the render thread; one status line comes back.
+            app.start_oneoff_recycle();
+
             // Startup scan: auto-register any active Claude sessions whose
             // working_dir is an unregistered GSD project. The session poll
             // tick handles the same logic ongoing (every ~5s), but this

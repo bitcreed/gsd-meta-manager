@@ -2792,3 +2792,293 @@ fn slimmed_merge_then_push_is_refused_with_where_the_work_is() {
     let again = run(&fx, &["land", "merge", ALIAS, &id]);
     assert_eq!(again.status.code(), Some(1), "{again:?}");
 }
+
+// ---------------------------------------------------------------- o2r: crash recovery
+
+/// Commits, signals that it did and then waits to be killed.
+const CRASH_SCENARIO: &str = r#"
+G="git -c user.name=t -c user.email=t@example.com"
+echo work > crash.txt
+$G add -A
+$G commit -qm "work before the crash"
+touch "$FAKE_CLAUDE_DIR/committed"
+while :; do sleep 0.1; done
+"#;
+
+/// `kill -KILL pid` (and its group), ignoring a process that is already gone.
+fn sigkill(pid: &str) {
+    for target in [pid.to_owned(), format!("-{pid}")] {
+        let _ = Command::new("kill")
+            .args(["-KILL", "--", &target])
+            .stderr(Stdio::null())
+            .status();
+    }
+}
+
+fn alive(pid: &str) -> bool {
+    Command::new("kill")
+        .args(["-0", pid])
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
+/// Start a run that commits and waits, then kill its daemon and its scope: the launcher
+/// died. Returns the run id and the clone's head at the moment of death.
+fn crashed_run(fx: &Fixture) -> (String, String) {
+    fx.write_scenario(CRASH_SCENARIO);
+    let _ = fs::remove_file(fx.rec_dir().join("committed"));
+    let out = run(fx, &["run", ALIAS, "--text", "crash"]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let id = started_id(&out);
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let daemon = stdout
+        .split("(pid ")
+        .nth(1)
+        .and_then(|rest| rest.split(')').next())
+        .unwrap_or_else(|| panic!("no pid in {stdout}"))
+        .to_owned();
+    assert!(
+        wait_until(Duration::from_secs(30), || fx
+            .rec_dir()
+            .join("committed")
+            .exists()),
+        "the scenario never committed"
+    );
+    let record: Value =
+        serde_json::from_str(&fs::read_to_string(run_dir(fx, &id).join("run.json")).unwrap())
+            .unwrap();
+    let unit = record["scope_unit"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no scope unit in {record}"))
+        .trim_end_matches(".scope")
+        .to_owned();
+    let scope_pid = fs::read_to_string(fx.shims().join(format!("{unit}.pid")))
+        .unwrap()
+        .trim()
+        .to_owned();
+    let head = git_text(&run_dir(fx, &id).join("work"), &["rev-parse", "HEAD"]);
+    sigkill(&daemon);
+    sigkill(&scope_pid);
+    assert!(
+        wait_until(Duration::from_secs(30), || !alive(&daemon)
+            && !alive(&scope_pid)),
+        "the run did not die"
+    );
+    // The record still says it runs; its lock is free: the state `status` calls crashed.
+    assert!(
+        wait_until(Duration::from_secs(30), || {
+            let out = run(fx, &["status", ALIAS, "--run-id", &id, "--json"]);
+            serde_json::from_slice::<Value>(&out.stdout).is_ok_and(|v| v["live"] == "crashed")
+        }),
+        "the run never read as crashed"
+    );
+    (id, head)
+}
+
+#[test]
+fn recycle_a_crashed_run_is_finished_tracked_and_slimmed() {
+    let fx = fixture();
+    let (id, head) = crashed_run(&fx);
+
+    let list = run(&fx, &["list", ALIAS]);
+    assert_eq!(list.status.code(), Some(0), "{list:?}");
+    let err = String::from_utf8_lossy(&list.stderr);
+    assert!(err.contains("recovered 1 crashed run"), "{err}");
+
+    let after = status_of_run(&fx, &id);
+    let record = &after["record"];
+    assert_eq!(record["status"], "finished", "{record}");
+    assert_eq!(record["outcome"]["kind"], "crashed", "{record}");
+    assert_eq!(record["report_source"]["kind"], "synthesized", "{record}");
+    assert_eq!(record["report"]["status"], "failed", "{record}");
+    assert_eq!(record["head"], head.as_str(), "{record}");
+    assert_eq!(
+        record["tracked_branch"],
+        format!("refs/heads/gsd-oneoff/{id}"),
+        "{record}"
+    );
+    assert_eq!(
+        branch_head(fx.project(), &id).as_deref(),
+        Some(head.as_str())
+    );
+    assert!(record["pruned"]["note"]
+        .as_str()
+        .unwrap()
+        .contains("crash recovery"));
+    assert!(
+        !run_dir(&fx, &id).join("work").exists(),
+        "the clone is gone"
+    );
+    assert!(dir_size(&run_dir(&fx, &id)) < 1_000_000);
+
+    // A second pass has nothing left to do.
+    let again = run(&fx, &["list", ALIAS]);
+    assert!(
+        !String::from_utf8_lossy(&again.stderr).contains("recovered"),
+        "{again:?}"
+    );
+
+    // The recovered work lands from the tracked branch.
+    let merged = run(&fx, &["land", "merge", ALIAS, &id]);
+    assert_eq!(merged.status.code(), Some(0), "{merged:?}");
+    assert_eq!(git_text(fx.project(), &["rev-parse", "main"]), head);
+}
+
+#[test]
+fn recycle_a_crashed_run_with_a_planted_file_keeps_its_clone() {
+    let fx = fixture();
+    let (id, _) = crashed_run(&fx);
+    // A git-relevant file the agent planted after the launch baseline.
+    fs::write(
+        run_dir(&fx, &id).join("work/.gitattributes"),
+        "* filter=planted\n",
+    )
+    .unwrap();
+
+    let list = run(&fx, &["list", ALIAS]);
+    assert_eq!(list.status.code(), Some(0), "{list:?}");
+    let after = status_of_run(&fx, &id);
+    let record = &after["record"];
+    assert_eq!(record["status"], "finished", "{record}");
+    assert_eq!(record["outcome"]["kind"], "crashed", "{record}");
+    assert!(record["tracked_branch"].is_null(), "{record}");
+    assert!(
+        record["tracking_note"]
+            .as_str()
+            .unwrap()
+            .contains("planted"),
+        "{record}"
+    );
+    assert_eq!(branch_head(fx.project(), &id), None, "no branch is made");
+    assert!(
+        run_dir(&fx, &id).join("work").is_dir(),
+        "the clone with unpreserved commits is kept"
+    );
+    assert!(record["pruned"].is_null(), "{record}");
+}
+
+#[test]
+fn recycle_a_crashed_run_can_be_resumed() {
+    let fx = fixture();
+    let (id, _) = crashed_run(&fx);
+    let list = run(&fx, &["list", ALIAS]);
+    assert_eq!(list.status.code(), Some(0), "{list:?}");
+    fx.write_scenario(CRASH_SCENARIO);
+    let _ = fs::remove_file(fx.rec_dir().join("committed"));
+    let resumed = run(
+        &fx,
+        &[
+            "resume", ALIAS, "--run-id", &id, "--from", "branch", "--detach",
+        ],
+    );
+    assert_eq!(resumed.status.code(), Some(0), "{resumed:?}");
+    let new_id = String::from_utf8_lossy(&resumed.stdout)
+        .split_whitespace()
+        .rfind(|w| w.starts_with("oneoff-"))
+        .map(|w| w.trim_end_matches([',', ')', '.', ':']).to_owned())
+        .unwrap_or_default();
+    assert!(!new_id.is_empty() && new_id != id, "{resumed:?}");
+    let stop = run(&fx, &["stop", ALIAS, "--run-id", &new_id]);
+    assert_eq!(stop.status.code(), Some(0), "{stop:?}");
+}
+
+#[test]
+fn recycle_an_orphan_run_dir_is_preserved_then_removed() {
+    let fx = fixture();
+    let projects = project_dir(&fx);
+    fs::create_dir_all(&projects).unwrap();
+    let orphan = "oneoff-20200101-000000";
+    let young = "oneoff-20200101-000001";
+    let dir = projects.join(orphan);
+    fs::create_dir(&dir).unwrap();
+    git(
+        &projects,
+        &[
+            "clone",
+            "-q",
+            "--no-hardlinks",
+            &fx.project().display().to_string(),
+            &dir.join("work").display().to_string(),
+        ],
+    );
+    let work = dir.join("work");
+    git(
+        &work,
+        &["switch", "-q", "-c", &format!("gsd-oneoff/{orphan}")],
+    );
+    fs::write(work.join("orphan.txt"), "left behind").unwrap();
+    git(&work, &["add", "-A"]);
+    git(&work, &["commit", "-qm", "orphan work"]);
+    let tip = git_text(&work, &["rev-parse", "HEAD"]);
+    // A young orphan dir and a directory that is no run id at all are left alone.
+    fs::create_dir(projects.join(young)).unwrap();
+    fs::create_dir(projects.join("notes")).unwrap();
+    // The orphan is older than an hour (the directory last: its entries change it).
+    let two_hours_ago = std::time::SystemTime::now() - Duration::from_secs(2 * 3600);
+    fs::File::open(&dir)
+        .unwrap()
+        .set_modified(two_hours_ago)
+        .unwrap();
+
+    let list = run(&fx, &["list", ALIAS]);
+    assert_eq!(list.status.code(), Some(0), "{list:?}");
+    assert_eq!(
+        branch_head(fx.project(), orphan).as_deref(),
+        Some(tip.as_str()),
+        "{list:?}"
+    );
+    assert!(!dir.exists(), "{list:?}");
+    assert!(projects.join(young).is_dir());
+    assert!(projects.join("notes").is_dir());
+    let err = String::from_utf8_lossy(&list.stderr);
+    assert!(err.contains("orphan"), "{err}");
+}
+
+#[test]
+fn recycle_an_orphan_with_a_planted_file_is_kept() {
+    let fx = fixture();
+    let projects = project_dir(&fx);
+    fs::create_dir_all(&projects).unwrap();
+    let orphan = "oneoff-20200101-000000";
+    let dir = projects.join(orphan);
+    fs::create_dir(&dir).unwrap();
+    git(
+        &projects,
+        &[
+            "clone",
+            "-q",
+            "--no-hardlinks",
+            &fx.project().display().to_string(),
+            &dir.join("work").display().to_string(),
+        ],
+    );
+    let work = dir.join("work");
+    git(
+        &work,
+        &["switch", "-q", "-c", &format!("gsd-oneoff/{orphan}")],
+    );
+    // A program-running key in the clone's own config: `upload-pack` inside it would run
+    // it, so the planted-file gate (no baseline, strict mode) refuses the clone.
+    fs::write(work.join("orphan.txt"), "unpreserved").unwrap();
+    git(&work, &["add", "-A"]);
+    git(&work, &["commit", "-qm", "unpreserved"]);
+    let config = work.join(".git/config");
+    let mut text = fs::read_to_string(&config).unwrap();
+    text.push_str("[core]\n\tfsmonitor = /bin/false\n");
+    fs::write(&config, text).unwrap();
+    let two_hours_ago = std::time::SystemTime::now() - Duration::from_secs(2 * 3600);
+    fs::File::open(&dir)
+        .unwrap()
+        .set_modified(two_hours_ago)
+        .unwrap();
+
+    let list = run(&fx, &["list", ALIAS]);
+    assert_eq!(list.status.code(), Some(0), "{list:?}");
+    assert!(
+        dir.join("work").is_dir(),
+        "unpreserved work is never deleted"
+    );
+    assert_eq!(branch_head(fx.project(), orphan), None);
+    assert!(String::from_utf8_lossy(&list.stderr).contains("planted"));
+}

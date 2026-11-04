@@ -372,6 +372,13 @@ pub enum Action {
         run_id: String,
         from: crate::oneoff::resume::ResumeFrom,
     },
+    /// The startup cleanup scan of the one-off run directories finished (quick
+    /// 261103-o2r, D-B): `summary` is the one status line (`None` when it did nothing),
+    /// `warnings` what it kept or could not do (logged).
+    OneoffRecycled {
+        summary: Option<String>,
+        warnings: Vec<String>,
+    },
     /// A one-off command finished; `message` is its outcome, already worded.
     OneoffCommandDone {
         alias: String,

@@ -1096,9 +1096,6 @@ fn finalize(
     end: HostEnd,
 ) {
     let opts = ctx.opts;
-    // C-05: the planted-file gate reads files only, so it runs before any git touches
-    // the clone (the tracking fetch starts `upload-pack` inside the agent's repository).
-    let planted_findings = git_relevant_planted(ctx.run_dir, work).len();
     let outcome = ctx.runtime.outcome(stream_path, rc, end);
     match read_validated(&report_dir.join(REPORT_FILE)) {
         Ok(report) => {
@@ -1118,8 +1115,39 @@ fn finalize(
     record.outcome = Some(outcome);
     record.exit_code = rc;
 
+    // The planted-file gate, the work facts and the tracked branch (shared with crash
+    // recovery, quick 261103-o2r, D-B).
+    settle_work(
+        ctx.project,
+        ctx.run_dir,
+        work,
+        ctx.run_id,
+        opts.mode,
+        record,
+    );
+    record.status = RecordStatus::Finished;
+    record.ended_at = Some(rfc3339(Utc::now()));
+}
+
+/// Derive the work facts of a run from its clone and track its branch in the project:
+/// the planted-file gate (file reads only, before any git touches the clone), then the
+/// tip, the commit count, the changed files and the SUMMARY path read with hardened git,
+/// then `track_branch` for a run with commits and a clean gate. A tracking failure is a
+/// `tracking_note`, never an error. Used by `finalize` and by crash recovery (quick
+/// 261103-o2r, D-B); the caller sets `status` and `ended_at`.
+pub(crate) fn settle_work(
+    project: &Path,
+    run_dir: &Path,
+    work: &Path,
+    run_id: &str,
+    mode: Mode,
+    record: &mut RunRecord,
+) {
+    // C-05: the planted-file gate reads files only, so it runs before any git touches
+    // the clone (the tracking fetch starts `upload-pack` inside the agent's repository).
+    let planted_findings = git_relevant_planted(run_dir, work).len();
     // I-9: only the tip of the work branch is recorded and landed.
-    let branch_ref = format!("refs/heads/{BRANCH_PREFIX}{}", ctx.run_id);
+    let branch_ref = format!("refs/heads/{BRANCH_PREFIX}{}", run_id);
     let head = git_read(
         work,
         &[
@@ -1147,7 +1175,7 @@ fn finalize(
                     changes.push((letter, path.to_owned()));
                 }
             }
-            record.summary_path = match opts.mode {
+            record.summary_path = match mode {
                 Mode::Quick => summary_path_from(&changes),
                 Mode::Fast => None,
             };
@@ -1167,7 +1195,7 @@ fn finalize(
         if current.success && current.stdout != head {
             record.warnings.push(format!(
                 "the clone's HEAD is not the tip of {BRANCH_PREFIX}{}; only the branch tip is recorded",
-                ctx.run_id
+                run_id
             ));
         }
         record.head = Some(head.clone());
@@ -1180,7 +1208,7 @@ fn finalize(
         } else if record.commits.unwrap_or(0) == 0 {
             record.tracking_note = Some("the run made no commits; no branch tracked".to_owned());
         } else {
-            match track_branch(ctx.project, work, ctx.run_id, &head) {
+            match track_branch(project, work, run_id, &head) {
                 Ok(reference) => record.tracked_branch = Some(reference),
                 Err(note) => record.tracking_note = Some(clean(&note, 400)),
             }
@@ -1192,8 +1220,6 @@ fn finalize(
             "the work branch {branch_ref} is gone; nothing can be landed"
         ));
     }
-    record.status = RecordStatus::Finished;
-    record.ended_at = Some(rfc3339(Utc::now()));
 }
 
 /// The argv the detached parent re-executes this binary with.

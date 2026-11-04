@@ -536,6 +536,42 @@ branch and a `tracking_note` saying why. A tracking failure never fails the run.
 `task status` prints `branch: gsd-oneoff/<run-id> @ <sha12>` while the branch is
 tracked, and `branch: none (<why>)` once a landing or a discard removed it.
 
+**Cleanup and recovery.** A scan puts a project's run directories in order: on TUI start
+(experimental flag on, off the render thread, one status line when it did something),
+on `task list` and on `task run` (a summary on stderr; stdout and `--json` are
+unchanged). It is cheap by default (a directory listing and lock probes; git only for a
+run that needs it) and does the following.
+
+- *Dead runs.* A record that says `preparing` or `running` whose `run.lock` is free, whose
+  `land.lock` is free and whose systemd scope unit (when one is recorded, and equals the
+  name rebuilt from the run id and the project) is not active is finished as `crashed`
+  (outcome `crashed`, a synthesized `failed` report unless the agent left a valid one, a
+  warning). Its commits beyond the base are tracked as `gsd-oneoff/<run-id>` through the
+  same planted-file gate and tracking as a normal finish, and only then is its clone
+  removed. A planted finding or a refused tracking keeps the clone and records the reason
+  in `tracking_note`. A lock that cannot be probed, a held land lock, an active or
+  unprobeable scope each mean the run is not touched at all. A crashed run can be
+  resumed (`task resume`, `u`).
+- *Landed runs from before.* A finished run with a recorded merge or push that still has
+  its clone (a leftover from before the slim existed, or a slim that was cut short) is
+  slimmed. A finished run that nothing landed keeps its clone: that is the unmerged work.
+  Stale `.tmp*` files, stop requests, `inbox/` and a free `run.lock` of finished runs are
+  removed, and the resolver clone of an unlanded run's failed attempt is removed only
+  when everything in it is already in a branch of the project.
+- *Orphans.* A directory named like a run id with no valid `run.json`, with no lock held
+  and untouched for more than an hour (the daemon creates its directory before its lock)
+  has its clone's work preserved as `gsd-oneoff/<dirname>` first (same gate; a finding
+  keeps the directory and warns) and is then removed. Other entries are never touched.
+- *Retention.* Finished records age out after 30 days or beyond the newest 50 per
+  project, and only when they are terminal and clean: no clone and no
+  `gsd-oneoff/<run-id>` branch. The limits are constants; the config file has no one-off
+  section.
+
+The invariant behind all of it: no code path except an explicit `task land discard`
+deletes a clone, an orphan or a resolver clone whose commits beyond the run's base are
+not contained in a branch of the project (`git for-each-ref --contains`, after a clean
+planted-file gate). A clone that fails the check is kept and the output says why.
+
 The binary additionally reads `dirs::data_local_dir()` (typically `~/.local/share` on Linux) to choose the log directory `gsd-meta-manager/`. If `dirs::data_local_dir()` returns `None`, logs are written to `/tmp` (see `src/main.rs`). Logs themselves are configured by `tracing-subscriber` with `.with_env_filter(EnvFilter::from_default_env())`, so `RUST_LOG` controls the log filter (see `src/main.rs`).
 
 ## Required vs optional settings
