@@ -2305,6 +2305,7 @@ fn fixture_for(type_name: &str) -> Option<Fixture> {
                     conflicted: vec![identity.to_string()],
                     attempts: vec![identity.to_string()],
                     range: Some(identity.to_string()),
+                    target_tip: None,
                 });
                 view.record.stop = Some(crate::oneoff::cancel::StopRecord {
                     kind: crate::oneoff::cancel::StopKind::Pause,

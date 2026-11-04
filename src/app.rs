@@ -8960,6 +8960,7 @@ mod tests {
             conflicted: vec!["shared.txt".to_owned()],
             attempts: vec!["land/1".to_owned()],
             range: None,
+            target_tip: None,
         });
         let id = view.record.run_id.clone();
         app.ctx

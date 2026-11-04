@@ -42,8 +42,8 @@ use crate::state_reader::driver_frontmatter::read_run_file_capped;
 
 use super::cancel::{read_request, StopKind};
 use super::land::{
-    clear_tracking_after_landing, git_relevant_planted, sensitive_warning, tracked_ref,
-    update_target, LandOptions, Target,
+    clear_tracking_after_landing, git_relevant_planted, record_already_landed, sensitive_warning,
+    tracked_ref, update_target, LandOptions, Target,
 };
 use super::launch::{run_sandboxed_session, SessionEvent, SessionSpec};
 use super::merge::{
@@ -83,6 +83,10 @@ enum Step {
         /// The target tip the attempt merged onto: the landed range starts here.
         tip: String,
     },
+    /// The run's head is already an ancestor of the target's tip (the target moved onto
+    /// it while the landing ran): record it as landed instead of merging (quick
+    /// 261103-pd7, D-02).
+    AlreadyLanded { tip: String },
     /// The target moved while the merge was made: redo it on the new tip.
     Moved,
     /// Nothing landed, and trying again cannot help.
@@ -346,6 +350,18 @@ pub(crate) fn land_by_merge(
                         &tip,
                     ))
                 }
+                Step::AlreadyLanded { tip } => {
+                    match record_already_landed(
+                        project,
+                        land.run_dir,
+                        &mut record,
+                        land.target_branch,
+                        &tip,
+                    ) {
+                        Ok(line) => return Ok(line),
+                        Err(reason) => break 'tries (reason, None),
+                    }
+                }
                 Step::Moved => {}
                 Step::Failed(reason) => break 'tries (reason, None),
                 Step::Stopped(kind) => {
@@ -408,6 +424,7 @@ fn landed(
     // branch is still there once it is not.
     record.landed.push(Landing {
         kind: LandingKind::Merged,
+        target_tip: None,
         at: rfc3339(Utc::now()),
         detail: land.target_branch.to_owned(),
         how: Some(how),
@@ -494,6 +511,10 @@ fn attempt(
         };
         tip
     };
+    // pd7 D-02: the target moved onto the head while the landing ran.
+    if pgit(project, &["merge-base", "--is-ancestor", land.head, &tip]).success {
+        return Step::AlreadyLanded { tip };
+    }
     let (name, email) = match merge_identity(project) {
         Ok(identity) => identity,
         Err(why) => return fail(why),
@@ -603,10 +624,7 @@ fn attempt(
             &["rev-parse", "--verify", "--quiet", "HEAD^{commit}"],
         ));
         if head_now.as_deref() == Some(tip.as_str()) {
-            return fail(format!(
-                "the run's head is already in {}; nothing to merge (discard the run)",
-                land.target_branch
-            ));
+            return Step::AlreadyLanded { tip };
         }
         how = MergeHow::Merge;
         names = Vec::new();

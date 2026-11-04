@@ -53,6 +53,27 @@ pub enum ReportSource {
 pub enum LandingKind {
     Merged,
     Pushed,
+    /// The run's head was already an ancestor of its target branch when the host looked
+    /// (a manual merge or fast-forward outside the tool; quick 261103-pd7, D-02).
+    #[serde(rename = "already-landed")]
+    AlreadyLanded,
+}
+
+impl LandingKind {
+    /// Whether the run's work is on the target branch after this landing. Every reader of
+    /// "landed-ness" goes through this instead of comparing against `Merged`.
+    pub fn puts_work_on_target(self) -> bool {
+        matches!(self, LandingKind::Merged | LandingKind::AlreadyLanded)
+    }
+
+    /// The word `task list` shows.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LandingKind::Merged => "merged",
+            LandingKind::Pushed => "pushed",
+            LandingKind::AlreadyLanded => "already-landed",
+        }
+    }
 }
 
 /// How a merge landing got into the target branch (quick 261103-hx7, C-21).
@@ -126,6 +147,10 @@ pub struct Landing {
     /// a landing recorded before klf.
     #[serde(default)]
     pub range: Option<String>,
+    /// The target branch's tip when an already-landed head was detected (quick
+    /// 261103-pd7); `None` for every other landing.
+    #[serde(default)]
+    pub target_tip: Option<String>,
 }
 
 impl Landing {
@@ -140,6 +165,7 @@ impl Landing {
             conflicted: Vec::new(),
             attempts: Vec::new(),
             range: None,
+            target_tip: None,
         }
     }
 }
@@ -405,7 +431,7 @@ impl RunRecord {
     /// branch still carries the ref; that reads as gone here, so no migration rewrite
     /// is needed. Every display uses this, never the raw field.
     pub fn branch_state(&self) -> BranchState {
-        let landed = self.landed.iter().any(|l| l.kind == LandingKind::Merged);
+        let landed = self.landed.iter().any(|l| l.kind.puts_work_on_target());
         match &self.tracked_branch {
             Some(_) if landed => BranchState::Gone {
                 why: "deleted after landing".to_owned(),
@@ -688,7 +714,7 @@ pub fn run_counts(runs: &[OneoffView]) -> RunCounts {
                 .record
                 .landed
                 .iter()
-                .any(|l| l.kind == LandingKind::Merged)
+                .any(|l| l.kind.puts_work_on_target())
         {
             counts.to_land += 1;
         }
@@ -1415,12 +1441,50 @@ pub(crate) mod tests {
             conflicted: vec!["shared.txt".to_owned()],
             attempts: vec!["land/1".to_owned()],
             range: Some("aaa..abc".to_owned()),
+            target_tip: None,
         });
         let text = serde_json::to_string(&full).unwrap();
         assert!(text.contains(r#""how":"resolved""#), "{text}");
         let back: RunRecord = serde_json::from_str(&text).unwrap();
         assert_eq!(back, full);
     }
+    #[test]
+    fn already_landed_is_a_landing_that_puts_work_on_the_target() {
+        assert_eq!(
+            serde_json::to_string(&LandingKind::AlreadyLanded).unwrap(),
+            r#""already-landed""#
+        );
+        let back: LandingKind = serde_json::from_str(r#""already-landed""#).unwrap();
+        assert_eq!(back, LandingKind::AlreadyLanded);
+        assert!(LandingKind::Merged.puts_work_on_target());
+        assert!(LandingKind::AlreadyLanded.puts_work_on_target());
+        assert!(!LandingKind::Pushed.puts_work_on_target());
+        assert_eq!(LandingKind::AlreadyLanded.as_str(), "already-landed");
+        assert_eq!(LandingKind::Merged.as_str(), "merged");
+        assert_eq!(LandingKind::Pushed.as_str(), "pushed");
+
+        let mut view = view_of(LiveState::Finished, 2, false, false);
+        view.record.tracked_branch = Some("refs/heads/gsd-oneoff/x".to_owned());
+        assert_eq!(run_counts(std::slice::from_ref(&view)).to_land, 1);
+        view.record.landed.push(Landing::plain(
+            LandingKind::AlreadyLanded,
+            "2026-11-03T10:00:00Z".to_owned(),
+            "main".to_owned(),
+        ));
+        assert_eq!(run_counts(std::slice::from_ref(&view)).to_land, 0);
+        assert!(matches!(
+            view.record.branch_state(),
+            BranchState::Gone { .. }
+        ));
+        assert!(
+            view.record.last_merge_landing().is_none(),
+            "the merge diff stays Merged-only"
+        );
+        let text = serde_json::to_string(&view.record).unwrap();
+        let again: RunRecord = serde_json::from_str(&text).unwrap();
+        assert_eq!(again, view.record);
+    }
+
     fn view_of(live: LiveState, commits: u32, landed: bool, landing: bool) -> OneoffView {
         let mut record = record();
         record.head = Some("a".repeat(40));

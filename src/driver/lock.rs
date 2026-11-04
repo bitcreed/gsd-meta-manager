@@ -124,12 +124,11 @@ pub struct LockHolder {
 /// buy, and two release paths for one resource is how a release comes to happen
 /// twice or not at all. Please do not add one.
 pub struct RunLock {
-    /// The held descriptor. **Never read, and that is precisely its job**: the
-    /// lock is alive for exactly as long as this file is open, so this field is
-    /// the mechanism rather than bookkeeping. It is not renamed to `_file`,
-    /// because an underscore reads as "leftover" and would invite the next
-    /// reader to delete it.
-    #[allow(dead_code)]
+    /// The held descriptor. **Its job is to stay open**: the lock is alive for
+    /// exactly as long as this file is open, so this field is the mechanism
+    /// rather than bookkeeping. The only thing read from it is its identity
+    /// ([`RunLock::is_at`]). It is not renamed to `_file`, because an underscore
+    /// reads as "leftover" and would invite the next reader to delete it.
     file: File,
     /// The record this run wrote into the lock file after winning.
     holder: LockHolder,
@@ -139,6 +138,18 @@ impl RunLock {
     /// What this lock's own file says about it.
     pub fn holder(&self) -> &LockHolder {
         &self.holder
+    }
+
+    /// Whether the descriptor this lock holds is the file `path` names right now:
+    /// the same device and inode. `false` when the path is absent, is another
+    /// file (it was unlinked and recreated) or cannot be inspected. A holder that
+    /// unlinks its lock file asks this first, so it never removes somebody
+    /// else's (quick 261103-pd7, D-05).
+    pub fn is_at(&self, path: &Path) -> bool {
+        let (Ok(held), Ok(named)) = (self.file.metadata(), std::fs::symlink_metadata(path)) else {
+            return false;
+        };
+        held.dev() == named.dev() && held.ino() == named.ino()
     }
 }
 
@@ -475,6 +486,23 @@ mod tests {
             lock.holder(),
             "a loser must read back exactly what the winner recorded — that record IS \
              the answer to \"which run holds the lock\""
+        );
+    }
+
+    #[test]
+    fn is_at_follows_the_inode_not_the_name() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let path = run_lock_path(dir.path());
+        let lock = acquire_at(&path, "r", 1).expect("acquire");
+        assert!(lock.is_at(&path), "right after the acquire");
+
+        std::fs::remove_file(&path).expect("unlink");
+        assert!(!lock.is_at(&path), "an absent path is not the held file");
+
+        std::fs::write(&path, b"").expect("recreate");
+        assert!(
+            !lock.is_at(&path),
+            "a recreated file is another inode, so it is not ours to unlink"
         );
     }
 

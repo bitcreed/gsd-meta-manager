@@ -44,8 +44,8 @@ mod unix {
     use gsd_meta_manager::oneoff::resume::{self, ResumeFrom, ResumeSpec, ResumeStarted};
     use gsd_meta_manager::oneoff::session::validate_soft_cap;
     use gsd_meta_manager::oneoff::store::{
-        project_dir_for, read_runs_in, resolve_run, BranchState, LiveState, MergeHow, OneoffView,
-        ReportSource, RunPick,
+        project_dir_for, read_runs_in, resolve_run, BranchState, LandingKind, LiveState, MergeHow,
+        OneoffView, ReportSource, RunPick,
     };
     use gsd_meta_manager::oneoff::stream::{
         meter_of_file, meter_text, rate_text, soft_cap_text, Follower, Meter,
@@ -72,6 +72,11 @@ mod unix {
     /// A shown string, escaped for the terminal.
     fn shown(text: &str) -> String {
         render_for_terminal(text).to_string()
+    }
+
+    /// The first 12 characters of a recorded sha (char-safe: the record is untrusted).
+    fn sha12(sha: &str) -> String {
+        sha.chars().take(12).collect()
     }
 
     /// The run `verb` acts on (quick 261103-hx7, I-03): `run_id`, or the newest run, or
@@ -469,6 +474,24 @@ mod unix {
             ));
         }
         for landing in &record.landed {
+            if landing.kind == LandingKind::AlreadyLanded {
+                lines.push(format!(
+                    "landed:    {} {} {}",
+                    landing.kind.as_str(),
+                    shown(&landing.at),
+                    shown(&landing.detail)
+                ));
+                if let Some(sha) = &landing.merge_sha {
+                    let tip = landing.target_tip.as_deref().map_or(String::new(), |t| {
+                        format!(" (target tip {} when detected)", shown(&sha12(t)))
+                    });
+                    lines.push(format!(
+                        "           contained by {}{tip}",
+                        shown(&sha12(sha))
+                    ));
+                }
+                continue;
+            }
             let how = landing
                 .how
                 .map_or(String::new(), |h| format!(" [{}]", h.as_str()));
@@ -616,10 +639,10 @@ mod unix {
             (None, Some(outcome)) => outcome.word(),
             (None, None) => "-",
         };
-        let landed = record.landed.last().map_or_else(
-            || "-".to_owned(),
-            |l| format!("{:?}", l.kind).to_lowercase(),
-        );
+        let landed = record
+            .landed
+            .last()
+            .map_or_else(|| "-".to_owned(), |l| l.kind.as_str().to_owned());
         let resumed = match (&record.resumed_by, &record.resumed_from) {
             (Some(by), _) => format!("  resumed as {}", shown(by)),
             (None, Some(from)) => format!("  resumed from {}", shown(from)),

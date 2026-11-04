@@ -30,7 +30,7 @@ use std::time::Duration;
 
 use chrono::Utc;
 
-use crate::driver::lock::{acquire_at_with_retry, probe_at, LockProbe, RunLock};
+use crate::driver::lock::{acquire_at, acquire_at_with_retry, probe_at, LockProbe, RunLock};
 use crate::error::LockError;
 use crate::launcher::process::run_bounded_with_stderr;
 use crate::launcher::push::{
@@ -104,20 +104,67 @@ pub fn landing_in_progress(run_dir: &Path) -> bool {
     )
 }
 
+/// The held land lock of a run. Dropping it releases the lock and removes the lock file
+/// (quick 261103-pd7, D-05): every taker went through `acquire_at`, which creates the
+/// file, and nothing but a successful slim ever unlinked it, so each landing, refusal and
+/// scan left a `land.lock` behind.
+///
+/// This `Drop` releases nothing: it only unlinks. The release stays the fd close that
+/// [`RunLock`] relies on. The unlink happens while the lock is still held, and only when
+/// the path still names the inode this guard holds ([`RunLock::is_at`]), so a holder never
+/// removes another holder's file; a taker that locked an inode somebody unlinked meanwhile
+/// notices in [`take_land_lock`] and retries.
+pub(crate) struct LandLock {
+    path: PathBuf,
+    lock: RunLock,
+}
+
+impl Drop for LandLock {
+    fn drop(&mut self) {
+        if self.lock.is_at(&self.path) {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+}
+
+/// How many times a take re-opens the lock path after locking an unlinked inode.
+const LAND_LOCK_REOPENS: usize = 16;
+
 /// Take the land lock of the run, or say why not.
-pub(crate) fn take_land_lock(run_dir: &Path, run_id: &str) -> Result<RunLock, String> {
-    acquire_at_with_retry(
-        &land_lock_path(run_dir),
-        run_id,
-        std::process::id(),
-        LAND_LOCK_WAIT,
-    )
-    .map_err(|e| match e {
+pub(crate) fn take_land_lock(run_dir: &Path, run_id: &str) -> Result<LandLock, String> {
+    let path = land_lock_path(run_dir);
+    for _ in 0..LAND_LOCK_REOPENS {
+        let lock = acquire_at_with_retry(&path, run_id, std::process::id(), LAND_LOCK_WAIT)
+            .map_err(land_lock_refusal)?;
+        if lock.is_at(&path) {
+            return Ok(LandLock { path, lock });
+        }
+        // The holder before us unlinked the file this descriptor was opened on; locking
+        // it excludes nobody. Drop it (without unlinking) and take the new file.
+    }
+    Err("land lock: the lock file kept changing under the take".to_owned())
+}
+
+/// Take the land lock of the run without waiting: `None` when it is held or cannot be
+/// taken (quick 261103-pd7, D-03, the scan).
+pub(crate) fn try_land_lock(run_dir: &Path, run_id: &str) -> Option<LandLock> {
+    let path = land_lock_path(run_dir);
+    for _ in 0..LAND_LOCK_REOPENS {
+        let lock = acquire_at(&path, run_id, std::process::id()).ok()?;
+        if lock.is_at(&path) {
+            return Some(LandLock { path, lock });
+        }
+    }
+    None
+}
+
+fn land_lock_refusal(e: LockError) -> String {
+    match e {
         LockError::HeldBy { .. } | LockError::HeldByUnknownRun => {
             "a landing of this run is already in progress".to_owned()
         }
         LockError::Unavailable { detail } => format!("land lock: {detail}"),
-    })
+    }
 }
 
 /// Everything the merge decision looks at.
@@ -703,7 +750,7 @@ fn run_source(project: &Path, view: &OneoffView, head: &str) -> Result<RunSource
         .landed
         .iter()
         .rev()
-        .find(|l| l.kind == LandingKind::Merged)
+        .find(|l| l.kind.puts_work_on_target())
         .map(|l| l.detail.as_str());
     choose_source(
         &SourceFacts {
@@ -773,6 +820,37 @@ fn merge_locked(
     facts.target_checked_out = target.checked_out;
     facts.branch = checkout_branch;
 
+    // pd7 D-02: a head the target already contains is recorded as landed. This reads only
+    // the project's own objects (a head never fetched fails the ancestry test), so it
+    // needs neither the clone nor the planted gate, and a dirty checkout does not block it:
+    // nothing in the checkout changes.
+    if !target.branch.is_empty()
+        && !view
+            .record
+            .landed
+            .iter()
+            .any(|l| l.kind.puts_work_on_target())
+    {
+        let tip_ref = if target.checked_out {
+            "HEAD".to_owned()
+        } else {
+            format!("refs/heads/{}", target.branch)
+        };
+        if let Some(tip) = ref_commit(project, &tip_ref) {
+            if git_in(project, &["merge-base", "--is-ancestor", &head, &tip]).success {
+                let mut updated = view.record.clone();
+                let message = record_already_landed(
+                    project,
+                    &view.run_dir,
+                    &mut updated,
+                    &target.branch,
+                    &tip,
+                )?;
+                return Ok((message, target.branch));
+            }
+        }
+    }
+
     // D-A: the run's clone, or, once it was removed, the tracked branch.
     let source = run_source(project, &view, &head)?;
     // I-4: the planted gate reads files only, and runs before any git touches the clone.
@@ -836,7 +914,7 @@ fn merge_locked(
         // creates nothing.
         if git_in(project, &["merge-base", "--is-ancestor", &head, &tip]).success {
             return Err(format!(
-                "the run's head is already in {branch}; nothing to merge (discard the run)"
+                "the run already landed in {branch}; nothing to merge"
             ));
         }
         let message = super::resolve::land_by_merge(project, &view, &target, &source_path, opts)?;
@@ -915,6 +993,75 @@ fn merge_locked(
     }
     lines.extend(sensitive_warning(&record.changed_files));
     Ok((lines.join("\n"), branch))
+}
+
+/// The commit on `tip`'s first-parent history that brought `head` in: the oldest commit
+/// of `head..tip` along the first-parent line that has `head` as an ancestor (the merge
+/// commit of a `--no-ff` merge). `head` itself when it sits on that line (a fast-forward,
+/// or a head that is the tip). `None` when git cannot say (quick 261103-pd7, D-02).
+pub(crate) fn containing_commit(project: &Path, head: &str, tip: &str) -> Option<String> {
+    let range = format!("{head}..{tip}");
+    let first = git_in(project, &["rev-list", "--first-parent", &range]);
+    let path = git_in(project, &["rev-list", "--ancestry-path", &range]);
+    if !first.success || !path.success {
+        return None;
+    }
+    let on_path: std::collections::HashSet<&str> = path.stdout.lines().collect();
+    let oldest = first.stdout.lines().rev().find(|c| on_path.contains(c));
+    let Some(oldest) = oldest else {
+        return Some(head.to_owned());
+    };
+    let parent = git_in(project, &["rev-parse", "--verify", &format!("{oldest}^1")]);
+    if !parent.success {
+        return None;
+    }
+    if parent.stdout == head {
+        return Some(head.to_owned());
+    }
+    Some(oldest.to_owned())
+}
+
+/// Record that the run's head is already in `branch` (whose tip is `tip`): an
+/// `already-landed` landing, `land_failure` cleared, the tracked branch deleted, and one
+/// write of the record. The caller holds the land lock and slims afterwards. The ancestry
+/// is checked again here, on the project's own objects. Returns the line to print.
+pub(crate) fn record_already_landed(
+    project: &Path,
+    run_dir: &Path,
+    record: &mut RunRecord,
+    branch: &str,
+    tip: &str,
+) -> Result<String, String> {
+    let head = record
+        .head
+        .clone()
+        .ok_or_else(|| "the run has no recorded head".to_owned())?;
+    if !git_in(project, &["merge-base", "--is-ancestor", &head, tip]).success {
+        return Err(format!("the run's head is not in {branch}"));
+    }
+    let merge_sha = containing_commit(project, &head, tip).unwrap_or_else(|| tip.to_owned());
+    record.landed.push(Landing {
+        merge_sha: Some(merge_sha.clone()),
+        target_tip: Some(tip.to_owned()),
+        ..Landing::plain(
+            LandingKind::AlreadyLanded,
+            rfc3339(Utc::now()),
+            branch.to_owned(),
+        )
+    });
+    record.land_failure = None;
+    let run_id = record.run_id.clone();
+    let mut lines = vec![format!(
+        "the run's head is already in {branch} ({}); recorded as landed",
+        &merge_sha[..merge_sha.len().min(7)]
+    )];
+    if let Some(line) = clear_tracking_after_landing(project, &run_id, &head, record) {
+        lines.push(line);
+    }
+    if let Err(e) = write_record(run_dir, record) {
+        eprintln!("task land: the landing was found but could not be recorded: {e}");
+    }
+    Ok(lines.join("\n"))
 }
 
 /// The line a fast-forward landing prints (mnr, D-04): `landed` is what the branch
@@ -1372,6 +1519,71 @@ mod tests {
             let why = merge_decision(&facts).unwrap_err();
             assert!(why.contains(needle), "{needle}: {why}");
         }
+    }
+
+    /// The module's hardened git with a fixed identity and default branch.
+    fn tgit(dir: &Path, args: &[&str]) -> String {
+        let mut full = vec!["-c", "user.name=t", "-c", "user.email=t@example.com"];
+        full.extend_from_slice(args);
+        let run = push::git_in(dir, &full, push::GIT_QUICK);
+        assert!(run.success, "git {args:?}: {}", run.last_error);
+        run.stdout
+    }
+
+    /// A repo with `main` holding one commit, and a side branch `run` one commit ahead.
+    fn two_branch_repo() -> (tempfile::TempDir, PathBuf, String) {
+        let root = tempfile::TempDir::new().unwrap();
+        let repo = root.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        tgit(&repo, &["init", "-q", "-b", "main"]);
+        fs::write(repo.join("a.txt"), "a").unwrap();
+        tgit(&repo, &["add", "-A"]);
+        tgit(&repo, &["commit", "-qm", "init"]);
+        tgit(&repo, &["switch", "-q", "-c", "run"]);
+        fs::write(repo.join("b.txt"), "b").unwrap();
+        tgit(&repo, &["add", "-A"]);
+        tgit(&repo, &["commit", "-qm", "run work"]);
+        let head = tgit(&repo, &["rev-parse", "HEAD"]);
+        tgit(&repo, &["switch", "-q", "main"]);
+        (root, repo, head)
+    }
+
+    fn commit_file(repo: &Path, name: &str) -> String {
+        fs::write(repo.join(name), name).unwrap();
+        tgit(repo, &["add", "-A"]);
+        tgit(repo, &["commit", "-qm", name]);
+        tgit(repo, &["rev-parse", "HEAD"])
+    }
+
+    #[test]
+    fn containing_commit_names_the_merge_that_brought_the_head_in() {
+        let (_root, repo, head) = two_branch_repo();
+        commit_file(&repo, "c.txt");
+        tgit(&repo, &["merge", "--no-ff", "-q", "-m", "m", "run"]);
+        let merge = tgit(&repo, &["rev-parse", "HEAD"]);
+        assert_eq!(containing_commit(&repo, &head, &merge), Some(merge.clone()));
+        // More commits after the merge: still the merge.
+        commit_file(&repo, "d.txt");
+        let tip = commit_file(&repo, "e.txt");
+        assert_eq!(containing_commit(&repo, &head, &tip), Some(merge));
+    }
+
+    #[test]
+    fn containing_commit_is_the_head_when_it_sits_on_the_first_parent_line() {
+        let (_root, repo, head) = two_branch_repo();
+        // The tip is the head.
+        tgit(&repo, &["merge", "--ff-only", "-q", "run"]);
+        assert_eq!(containing_commit(&repo, &head, &head), Some(head.clone()));
+        // Later commits on top of the head.
+        let tip = commit_file(&repo, "later.txt");
+        assert_eq!(containing_commit(&repo, &head, &tip), Some(head));
+    }
+
+    #[test]
+    fn containing_commit_is_none_for_an_unknown_head() {
+        let (_root, repo, _) = two_branch_repo();
+        let tip = tgit(&repo, &["rev-parse", "HEAD"]);
+        assert_eq!(containing_commit(&repo, &"f".repeat(40), &tip), None);
     }
 
     #[test]

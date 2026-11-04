@@ -10,7 +10,7 @@
 //! Nothing here names the agent.
 
 use super::merge::MIN_RESOLVER_BUDGET_USD;
-use super::store::{BranchState, LandingKind, OneoffView};
+use super::store::{BranchState, OneoffView};
 use super::{cancel::StopKind, AgentOutcome};
 
 /// Where the new run's clone starts (`--from`).
@@ -87,7 +87,7 @@ pub fn resume_refusal(view: &OneoffView, successor_blocks: bool) -> Result<(), S
     if view.landing {
         return Err("a landing of this run is in progress; wait for it to end".to_owned());
     }
-    if record.landed.iter().any(|l| l.kind == LandingKind::Merged) {
+    if record.landed.iter().any(|l| l.kind.puts_work_on_target()) {
         return Err("the run was already merged; there is nothing to resume".to_owned());
     }
     match &record.outcome {
@@ -367,6 +367,18 @@ mod tests {
         view.landing = false;
         view.run_dir = PathBuf::from("/x");
         view
+    }
+
+    #[test]
+    fn an_already_landed_run_is_not_resumed() {
+        let mut v = view(AgentOutcome::Paused);
+        v.record.landed.push(Landing::plain(
+            LandingKind::AlreadyLanded,
+            "t".to_owned(),
+            "main".to_owned(),
+        ));
+        let why = resume_refusal(&v, false).unwrap_err();
+        assert!(why.contains("already merged"), "{why}");
     }
 
     #[test]

@@ -356,7 +356,7 @@ pub(crate) fn slim_locked(
     if record.status != RecordStatus::Finished || view.live.may_be_live() {
         return SlimOutcome::Skipped("the run may still be live".to_owned());
     }
-    let merged = record.landed.iter().any(|l| l.kind == LandingKind::Merged);
+    let merged = record.landed.iter().any(|l| l.kind.puts_work_on_target());
     if require_landing && record.landed.is_empty() {
         return SlimOutcome::Skipped("the run has not landed".to_owned());
     }
@@ -588,7 +588,9 @@ pub(crate) fn leftover_slim_note(
     }
     if let Some(landing) = record.landed.last() {
         return Some(match landing.kind {
-            LandingKind::Merged => format!("removed after landing in {}", landing.detail),
+            LandingKind::Merged | LandingKind::AlreadyLanded => {
+                format!("removed after landing in {}", landing.detail)
+            }
             LandingKind::Pushed => "removed after push".to_owned(),
         });
     }

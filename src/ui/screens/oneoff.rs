@@ -937,6 +937,10 @@ fn landing_label(view: &OneoffView) -> String {
             kind: LandingKind::Pushed,
             ..
         }) => "pushed".to_owned(),
+        Some(Landing {
+            kind: LandingKind::AlreadyLanded,
+            ..
+        }) => "already".to_owned(),
         // A landing recorded before merge facts were kept was a fast-forward.
         Some(landing) => landing.how.unwrap_or(MergeHow::Ff).as_str().to_owned(),
         None if view.record.land_failure.is_some() => "land failed".to_owned(),
@@ -1012,6 +1016,14 @@ fn merge_warning(view: &OneoffView) -> Vec<String> {
 /// agent-resolved merge the `resolved by agent` marker with its conflicted files
 /// (D-06, C-29).
 fn landing_lines(landing: &Landing) -> Vec<Line<'static>> {
+    if landing.kind == LandingKind::AlreadyLanded {
+        let mut line = format!("Landed:    already in {}", shown(&landing.detail));
+        if let Some(sha) = &landing.merge_sha {
+            let short: String = sha.chars().take(12).collect();
+            line.push_str(&format!(" (contained by {})", shown(&short)));
+        }
+        return vec![Line::from(line)];
+    }
     let mut line = format!("Landed:    {:?} {}", landing.kind, shown(&landing.detail));
     if landing.kind == LandingKind::Merged {
         if let Some(sha) = &landing.merge_sha {
@@ -1441,6 +1453,7 @@ pub(crate) mod tests {
                 Vec::new()
             },
             range: None,
+            target_tip: None,
         }
     }
 

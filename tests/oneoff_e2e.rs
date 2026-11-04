@@ -3082,3 +3082,103 @@ fn recycle_an_orphan_with_a_planted_file_is_kept() {
     assert_eq!(branch_head(fx.project(), orphan), None);
     assert!(String::from_utf8_lossy(&list.stderr).contains("planted"));
 }
+
+// ---------------------------------------------------------------- pd7: already landed
+
+/// Merge the run's tracked branch into `main` by hand with a `--no-ff` merge commit, then
+/// leave an untracked file in the checkout. Returns the merge commit.
+fn merge_by_hand(fx: &Fixture, id: &str) -> String {
+    git(
+        fx.project(),
+        &[
+            "merge",
+            "--no-ff",
+            "-q",
+            "-m",
+            "manual",
+            &format!("gsd-oneoff/{id}"),
+        ],
+    );
+    fs::write(fx.project().join("untracked.txt"), "mine").unwrap();
+    git_text(fx.project(), &["rev-parse", "HEAD"])
+}
+
+fn lock_files(fx: &Fixture) -> Vec<PathBuf> {
+    fs::read_dir(project_dir(fx))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path().join("land.lock"))
+        .filter(|p| p.exists())
+        .collect()
+}
+
+#[test]
+fn already_landed_merge_records_slims_and_deletes_the_branch() {
+    let fx = fixture();
+    let (id, status) = quick_run(&fx);
+    let head = status["record"]["head"].as_str().unwrap().to_owned();
+    let manual = merge_by_hand(&fx, &id);
+    assert_ne!(manual, head, "a real merge commit");
+
+    let merged = run(&fx, &["land", "merge", ALIAS, &id]);
+    assert_eq!(merged.status.code(), Some(0), "{merged:?}");
+    let out = texts(&merged);
+    assert!(
+        out.contains("already in main") && out.contains("recorded as landed"),
+        "{out}"
+    );
+    assert_eq!(git_text(fx.project(), &["rev-parse", "main"]), manual);
+    assert_eq!(
+        fs::read_to_string(fx.project().join("untracked.txt")).unwrap(),
+        "mine",
+        "the checkout is untouched"
+    );
+
+    let after = status_of_run(&fx, &id);
+    let record = &after["record"];
+    let landing = &record["landed"][0];
+    assert_eq!(landing["kind"], "already-landed", "{record}");
+    assert_eq!(landing["detail"], "main", "{record}");
+    assert_eq!(landing["merge_sha"], manual.as_str(), "{record}");
+    assert_eq!(landing["target_tip"], manual.as_str(), "{record}");
+    assert!(record["land_failure"].is_null(), "{record}");
+    assert!(record["pruned"]["at"].is_string(), "{record}");
+    let branches = git_text(fx.project(), &["branch", "--list", "gsd-oneoff/*"]);
+    assert!(
+        branches.is_empty(),
+        "the tracked branch is gone: {branches}"
+    );
+    let dir = run_dir(&fx, &id);
+    assert!(!dir.join("work").exists(), "the clone is gone");
+    assert!(dir_size(&dir) < 1_000_000);
+    assert!(!dir.join("land.lock").exists(), "no land.lock is left");
+
+    let again = run(&fx, &["land", "merge", ALIAS, &id]);
+    assert_eq!(again.status.code(), Some(1), "{again:?}");
+}
+
+#[test]
+fn already_landed_shows_in_list_and_status() {
+    let fx = fixture();
+    let (id, _) = quick_run(&fx);
+    let manual = merge_by_hand(&fx, &id);
+    let merged = run(&fx, &["land", "merge", ALIAS, &id]);
+    assert_eq!(merged.status.code(), Some(0), "{merged:?}");
+
+    let list = texts(&run(&fx, &["list", ALIAS]));
+    assert!(
+        list.contains(&id) && list.contains("already-landed"),
+        "{list}"
+    );
+    let human = texts(&run(&fx, &["status", ALIAS, "--run-id", &id]));
+    assert!(human.contains("landed:    already-landed"), "{human}");
+    assert!(
+        human.contains(&format!("contained by {}", &manual[..12])),
+        "{human}"
+    );
+    assert!(
+        !human.contains("merge commit") && !human.contains("diff:"),
+        "{human}"
+    );
+}
