@@ -272,8 +272,13 @@ and can be shortened for tests with `GSDMM_ONEOFF_STOP_GRACE_SECS` and
 **Resume.** `task resume <project> --from branch|master` (TUI `u`) continues a run whose
 outcome is `paused`, `stopped` or `killed` and which has a head, as a NEW run: a new id,
 run dir, lock, stream and budget. The old record gets `resumed_by` and the new one
-`resumed_from`; the old run stops counting as "to land" and its tracked branch stays (it
-is an ancestor of the new one) until its own `discard`. Nothing is reopened: the new run
+`resumed_from`; the old run stops counting as "to land" and its tracked branch and clone
+stay until a run later in its resume chain lands, or until its own `discard`. When the new
+run lands (`task land merge`, or the next scan for a landing made earlier), every
+predecessor whose head is in the branch it landed in is recorded `already-landed`, its
+`gsd-oneoff/<id>` is deleted and its clone is removed; each such predecessor is named in the
+landing's output. If the new run is discarded, fails its resume merge or is only pushed,
+the old run keeps its clone and branch and can be resumed again. Nothing is reopened: the new run
 is a fresh sandboxed session, primed with the old task, the old report's headline and
 follow-ups, the `git log` of the commits already on the branch and a note that it is a
 continuation (the agent's own session is not resumed, because its transcript lives inside
@@ -432,9 +437,10 @@ three ways it lands, recorded as `how` in `run.json` and shown by `task status`:
 
 - `ff`: your branch is behind the head, so your own `git merge --ff-only` runs, hooks
   included. The message counts the commits your branch advanced by, which exceeds the
-  run's own count for a resumed run (the host's merge commit and the commits it was
-  resumed from), and names the agent's count when they differ: `landed 3 commit(s) of
-  <run> on <branch> (1 by the agent; now at <sha>)`.
+  agent's count for a `--from master` resume (the host's merge commit is the only commit
+  the agent did not make). The agent's count spans the whole resume chain, because the runs
+  the landed run continued were the agent's too, and the message names it when the two
+  differ: `landed 3 commit(s) of <run> on <branch> (2 by the agent; now at <sha>)`.
 - `merge`: your branch moved on. The launcher makes a fresh `--no-hardlinks` clone of
   your branch's tip in `<run-dir>/land/<n>/work`, fetches the run's branch into it and
   runs `git merge --no-ff` there with hooks off and your global git config off, using
@@ -519,7 +525,9 @@ opens it in `$EDITOR`.
 each with its own wall clock and spend ceiling; `task run` and the TUI's `t` no longer
 refuse (and `task run` no longer exits 3) while another run is live. Liveness comes from a lock file inside
 each run dir, `<run-dir>/run.lock`, which the launcher takes before `run.json`
-exists and releases last; it is host-only and never mounted into the sandbox. A run
+exists; when the run ends and the record is final, the launcher removes the file while
+still holding the lock and then releases it. It is host-only and never mounted into the
+sandbox. A run
 dir made before this change has no `run.lock` and is judged by the old per-project
 `oneoff.lock`, exactly as before. Two runs started in the same second get distinct
 ids (`oneoff-YYYYMMDD-HHMMSS`, then `-2`, `-3`...). Every verb that acts on one run
@@ -562,17 +570,23 @@ run that needs it) and does the following.
   resumed (`task resume`, `u`).
 - *Landed runs from before.* A finished run with a recorded merge or push that still has
   its clone (a leftover from before the slim existed, or a slim that was cut short) is
-  slimmed. A finished run that nothing landed keeps its clone: that is the unmerged work.
-  Stale `.tmp*` files, stop requests, `inbox/` and a free `run.lock` of finished runs are
-  removed, and the resolver clone of an unlanded run's failed attempt is removed only
+  slimmed. A finished run that nothing landed keeps its clone: that is the unmerged work,
+  and a resumed run is not slimmed before a run in its chain lands. A free `run.lock` of
+  every finished run is removed first, whatever else happens to the run. Stale `.tmp*`
+  files, stop requests and `inbox/` of finished runs are removed, and the resolver clone of an unlanded run's failed attempt is removed only
   when everything in it is already in a branch of the project.
 - *Runs already in their target.* A finished, not-paused run that made commits, whose
   recorded dispatch branch still exists and has the run's head among its ancestors (a
   manual merge or fast-forward), is recorded as `already-landed`, its tracked branch is
-  deleted and it is slimmed, exactly as `task land merge` does. The scan takes the land
-  lock without waiting and skips a run whose lock is held. Runs with a detached or
-  legacy target, a target branch that is gone, no commits, a pause or a successor are
-  left alone.
+  deleted and it is slimmed, exactly as `task land merge` does. The same goes for a run
+  that a successor continued, paused or not and with or without commits of its own, once a
+  run later in its resume chain has landed (merged or already-landed, not pushed) in a
+  branch that holds its head; every link of the chain must be confirmed from both sides
+  (`resumed_by` and `resumed_from`) and a walk follows at most 32 links. The scan takes the
+  land lock without waiting and skips a run whose lock is held. A plain run with a
+  detached or legacy target, a target branch that is gone or no commits is left alone, and
+  so are a paused run that no landed successor continues and a run whose successors have
+  not landed (discarded, failed or only pushed).
 - *Orphans.* A directory named like a run id with no valid `run.json`, with no lock held
   and untouched for more than an hour (the daemon creates its directory before its lock)
   has its clone's work preserved as `gsd-oneoff/<dirname>` first (same gate; a finding
