@@ -395,4 +395,56 @@ mod tests {
         );
         assert!(fake.violations() > 0);
     }
+
+    #[test]
+    fn suspend_waits_for_an_in_flight_poll_to_finish() {
+        let fake = Fake::new();
+        fake.poll_delay_ms.store(100, Ordering::SeqCst);
+        let (reader, _rx) = start(&fake);
+        wait_until("a poll in flight", || fake.in_poll.load(Ordering::SeqCst));
+
+        reader.suspend();
+        assert!(
+            !fake.in_poll.load(Ordering::SeqCst),
+            "suspend returned while a poll was still in flight"
+        );
+        let parked_at = fake.calls();
+        std::thread::sleep(Duration::from_millis(150));
+        assert_eq!(fake.calls(), parked_at, "the reader polled while suspended");
+
+        reader.resume();
+        wait_until("polling to resume", || fake.calls() > parked_at);
+    }
+
+    #[test]
+    fn suspend_returns_when_the_reader_has_exited() {
+        let fake = Fake::new();
+        fake.fail.store(true, Ordering::SeqCst);
+        let (reader, _rx) = start(&fake);
+
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let handoff_fake = Arc::clone(&fake);
+        std::thread::spawn(move || {
+            let mut handoff = FakeHandoff(handoff_fake);
+            let ran = run_with_terminal_suspended(&reader, &mut handoff, || true);
+            let _ = done_tx.send(ran);
+        });
+        let ran = done_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("run_with_terminal_suspended hung on a dead reader");
+        assert!(ran, "the child must still run when the tty reader has died");
+    }
+
+    #[test]
+    fn dropping_the_reader_stops_polling() {
+        let fake = Fake::new();
+        let (reader, _rx) = start(&fake);
+        wait_until("first poll", || fake.calls() > 0);
+
+        drop(reader);
+        std::thread::sleep(Duration::from_millis(100));
+        let settled = fake.calls();
+        std::thread::sleep(Duration::from_millis(150));
+        assert_eq!(fake.calls(), settled, "polling continued after drop");
+    }
 }
