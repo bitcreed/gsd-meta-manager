@@ -2294,7 +2294,8 @@ fn resume_from_master_merges_the_checkout_tip_into_the_run_first() {
     );
 
     // mnr D-04: the landing names what landed: the old run's wip commit, the host merge
-    // commit and the resumed commit, of which the agent made one.
+    // commit and the resumed commit. qqm I-05: the agent made two of them (the wip commit
+    // of the run it continued counts); the host merge commit is not the agent's.
     let landed = run(&fx, &["land", "merge", ALIAS, &new]);
     assert_eq!(landed.status.code(), Some(0), "{landed:?}");
     let landed = String::from_utf8_lossy(&landed.stdout);
@@ -2302,7 +2303,7 @@ fn resume_from_master_merges_the_checkout_tip_into_the_run_first() {
         landed.contains(&format!("landed 3 commit(s) of {new}")),
         "{landed}"
     );
-    assert!(landed.contains("(1 by the agent"), "{landed}");
+    assert!(landed.contains("(2 by the agent"), "{landed}");
 }
 
 /// A pause that commits a conflicting edit of `shared.txt`.
@@ -3257,4 +3258,79 @@ fn no_land_lock_is_left_after_a_landing_a_refusal_or_a_scan() {
         assert_eq!(list.status.code(), Some(0), "{list:?}");
         assert!(lock_files(&fx).is_empty(), "{:?}", lock_files(&fx));
     }
+}
+
+// ---------------------------------------------------------------- qqm: resume chain, run.lock
+
+/// A paused run resumed from its branch, the resumed run finished. Returns the old and
+/// the new run id.
+fn finished_resume_chain(fx: &Fixture) -> (String, String) {
+    let (old, _) = paused_run(fx);
+    fx.write_scenario(&resumed_scenario("  :"));
+    fs::write(fx.rec_dir().join("release"), "").unwrap();
+    let out = run(
+        fx,
+        &[
+            "resume", ALIAS, "--run-id", &old, "--from", "branch", "--detach",
+        ],
+    );
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let new = resumed_id(&out);
+    let done = wait_run_finished(fx, &new);
+    assert_eq!(done["record"]["outcome"]["kind"], "finished", "{done}");
+    (old, new)
+}
+
+/// A predecessor that is closed out: recorded `already-landed` in `main`, pruned, its
+/// clone, branch and locks gone.
+fn assert_closed_out(fx: &Fixture, old: &str) {
+    let after = status_of_run(fx, old);
+    let record = &after["record"];
+    assert_eq!(record["landed"][0]["kind"], "already-landed", "{record}");
+    assert_eq!(record["landed"][0]["detail"], "main", "{record}");
+    assert!(record["pruned"]["at"].is_string(), "{record}");
+    let dir = run_dir(fx, old);
+    assert!(!dir.join("work").exists(), "the clone is gone");
+    assert!(!dir.join("run.lock").exists(), "no run.lock");
+    assert!(!dir.join("land.lock").exists(), "no land.lock");
+    assert!(dir_size(&dir) < 1_000_000, "{}", dir_size(&dir));
+    assert_eq!(branch_head(fx.project(), old), None, "the branch is gone");
+}
+
+#[test]
+fn resume_chain_landing_closes_out_the_predecessor() {
+    let fx = fixture();
+    let (old, new) = finished_resume_chain(&fx);
+    assert!(
+        branch_head(fx.project(), &old).is_some(),
+        "the predecessor keeps its branch until the successor lands"
+    );
+
+    let merged = run(&fx, &["land", "merge", ALIAS, &new]);
+    assert_eq!(merged.status.code(), Some(0), "{merged:?}");
+    let out = String::from_utf8_lossy(&merged.stdout).into_owned();
+    // I-05: both runs' commits are the agent's.
+    assert!(
+        out.contains(&format!("landed 2 commit(s) of {new}")),
+        "{out}"
+    );
+    assert!(!out.contains("by the agent"), "{out}");
+    assert!(
+        out.contains(&old) && out.contains("recorded as landed"),
+        "{out}"
+    );
+    assert_closed_out(&fx, &old);
+
+    // The scan has nothing left to do.
+    let list = run(&fx, &["list", ALIAS]);
+    assert_eq!(list.status.code(), Some(0), "{list:?}");
+    assert!(!texts(&list).contains("has not landed"), "{list:?}");
+    let record_text = fs::read_to_string(run_dir(&fx, &old).join("run.json")).unwrap();
+    let again = run(&fx, &["list", ALIAS]);
+    assert_eq!(again.status.code(), Some(0), "{again:?}");
+    assert_eq!(
+        fs::read_to_string(run_dir(&fx, &old).join("run.json")).unwrap(),
+        record_text
+    );
+    assert!(lock_files(&fx).is_empty(), "{:?}", lock_files(&fx));
 }

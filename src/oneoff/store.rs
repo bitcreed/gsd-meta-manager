@@ -933,6 +933,64 @@ mod fs_store {
         })
     }
 
+    /// How many links a walk over a resume chain follows at most (quick 261103-qqm, I-07).
+    pub const MAX_RESUME_CHAIN: usize = 32;
+
+    /// The runs that continue `record`, in chain order (qqm, I-07): `resumed_by`, then
+    /// that run's `resumed_by`, and so on. Each link is confirmed from both sides (the
+    /// next record's `resumed_from` names the run it was reached from). The walk stops at
+    /// a missing or unreadable record (a discarded successor), at a link that is not
+    /// confirmed, at an id seen before and after [`MAX_RESUME_CHAIN`] links. Ids reach
+    /// the filesystem only through [`read_view`], which validates them.
+    pub fn resume_successors(project_dir: &Path, record: &RunRecord) -> Vec<RunRecord> {
+        let mut seen: Vec<String> = vec![record.run_id.clone()];
+        let mut found: Vec<RunRecord> = Vec::new();
+        let mut next = record.resumed_by.clone();
+        let mut from = record.run_id.clone();
+        while let Some(id) = next {
+            if found.len() >= MAX_RESUME_CHAIN || seen.contains(&id) {
+                break;
+            }
+            let Some(view) = read_view(project_dir, &id) else {
+                break;
+            };
+            if view.record.run_id != id || view.record.resumed_from.as_deref() != Some(&from) {
+                break;
+            }
+            seen.push(id.clone());
+            next = view.record.resumed_by.clone();
+            from = id;
+            found.push(view.record);
+        }
+        found
+    }
+
+    /// The runs `record` continues, the immediate predecessor first (qqm, I-07): the
+    /// same bounded walk through `resumed_from`, each predecessor's `resumed_by` naming
+    /// the run it was reached from.
+    pub fn resume_predecessors(project_dir: &Path, record: &RunRecord) -> Vec<OneoffView> {
+        let mut seen: Vec<String> = vec![record.run_id.clone()];
+        let mut found: Vec<OneoffView> = Vec::new();
+        let mut next = record.resumed_from.clone();
+        let mut child = record.run_id.clone();
+        while let Some(id) = next {
+            if found.len() >= MAX_RESUME_CHAIN || seen.contains(&id) {
+                break;
+            }
+            let Some(view) = read_view(project_dir, &id) else {
+                break;
+            };
+            if view.record.run_id != id || view.record.resumed_by.as_deref() != Some(&child) {
+                break;
+            }
+            seen.push(id.clone());
+            next = view.record.resumed_from.clone();
+            child = id;
+            found.push(view);
+        }
+        found
+    }
+
     /// Whether the run's `land.lock` is held. A lock that cannot be probed counts as
     /// held, never as free (the same rule as `land::landing_in_progress`).
     fn landing_held(run_dir: &Path) -> bool {
@@ -1189,6 +1247,130 @@ mod fs_store {
                 .collect();
             assert_eq!(listed, [b, a]);
             assert_eq!(read_runs_in(project_dir.path(), Some(1)).len(), 1);
+        }
+
+        /// A chain of finished runs `ids[0] -> ids[1] -> ...`, every link set both ways.
+        fn chain_in(project_dir: &Path, ids: &[&str]) {
+            for (i, id) in ids.iter().enumerate() {
+                let run_dir = project_dir.join(id);
+                fs::create_dir(&run_dir).unwrap();
+                let mut record = running(id);
+                record.status = crate::oneoff::store::RecordStatus::Finished;
+                record.resumed_from = i.checked_sub(1).map(|p| ids[p].to_owned());
+                record.resumed_by = ids.get(i + 1).map(|n| (*n).to_owned());
+                write_record(&run_dir, &record).unwrap();
+            }
+        }
+
+        fn ids_of(records: &[RunRecord]) -> Vec<&str> {
+            records.iter().map(|r| r.run_id.as_str()).collect()
+        }
+
+        #[test]
+        fn resume_chain_walk_follows_the_links_both_ways() {
+            let dir = TempDir::new().unwrap();
+            let ids = [
+                "oneoff-20261103-100000",
+                "oneoff-20261103-100001",
+                "oneoff-20261103-100002",
+            ];
+            chain_in(dir.path(), &ids);
+            let first = read_view(dir.path(), ids[0]).unwrap().record;
+            assert_eq!(
+                ids_of(&resume_successors(dir.path(), &first)),
+                [ids[1], ids[2]]
+            );
+            let last = read_view(dir.path(), ids[2]).unwrap().record;
+            let back: Vec<String> = resume_predecessors(dir.path(), &last)
+                .into_iter()
+                .map(|v| v.record.run_id)
+                .collect();
+            assert_eq!(back, [ids[1], ids[0]], "the immediate predecessor first");
+            assert!(resume_successors(dir.path(), &last).is_empty());
+        }
+
+        #[test]
+        fn resume_chain_walk_stops_at_a_missing_run() {
+            let dir = TempDir::new().unwrap();
+            let ids = [
+                "oneoff-20261103-100000",
+                "oneoff-20261103-100001",
+                "oneoff-20261103-100002",
+            ];
+            chain_in(dir.path(), &ids);
+            fs::remove_dir_all(dir.path().join(ids[1])).unwrap();
+            let first = read_view(dir.path(), ids[0]).unwrap().record;
+            assert!(resume_successors(dir.path(), &first).is_empty());
+            let last = read_view(dir.path(), ids[2]).unwrap().record;
+            assert!(resume_predecessors(dir.path(), &last).is_empty());
+        }
+
+        #[test]
+        fn resume_chain_walk_stops_at_an_unconfirmed_link() {
+            let dir = TempDir::new().unwrap();
+            let ids = [
+                "oneoff-20261103-100000",
+                "oneoff-20261103-100001",
+                "oneoff-20261103-100002",
+            ];
+            chain_in(dir.path(), &ids);
+            // The second run claims another origin: the first run's `resumed_by` is a
+            // claim nobody confirms.
+            let run_dir = dir.path().join(ids[1]);
+            let mut record = read_record(&run_dir).unwrap();
+            record.resumed_from = Some("oneoff-20261103-999999".to_owned());
+            write_record(&run_dir, &record).unwrap();
+            let first = read_view(dir.path(), ids[0]).unwrap().record;
+            assert!(resume_successors(dir.path(), &first).is_empty());
+            let last = read_view(dir.path(), ids[2]).unwrap().record;
+            let back: Vec<String> = resume_predecessors(dir.path(), &last)
+                .into_iter()
+                .map(|v| v.record.run_id)
+                .collect();
+            assert_eq!(
+                back,
+                [ids[1]],
+                "the walk ends where the claim has no origin"
+            );
+            // A forged id never reaches the filesystem.
+            let mut forged = running(ids[0]);
+            forged.resumed_by = Some("../escape".to_owned());
+            assert!(resume_successors(dir.path(), &forged).is_empty());
+        }
+
+        #[test]
+        fn resume_chain_walk_is_bounded_on_a_cycle_and_on_a_long_chain() {
+            let dir = TempDir::new().unwrap();
+            let (a, b) = ("oneoff-20261103-100000", "oneoff-20261103-100001");
+            chain_in(dir.path(), &[a, b]);
+            // b resumes a, and a resumes b.
+            for (id, from, by) in [(a, b, b), (b, a, a)] {
+                let run_dir = dir.path().join(id);
+                let mut record = read_record(&run_dir).unwrap();
+                record.resumed_from = Some(from.to_owned());
+                record.resumed_by = Some(by.to_owned());
+                write_record(&run_dir, &record).unwrap();
+            }
+            let first = read_view(dir.path(), a).unwrap().record;
+            assert_eq!(ids_of(&resume_successors(dir.path(), &first)), [b]);
+            assert_eq!(resume_predecessors(dir.path(), &first).len(), 1);
+
+            let long = TempDir::new().unwrap();
+            let owned: Vec<String> = (0..MAX_RESUME_CHAIN + 8)
+                .map(|n| format!("oneoff-20261103-1{n:05}"))
+                .collect();
+            let ids: Vec<&str> = owned.iter().map(String::as_str).collect();
+            chain_in(long.path(), &ids);
+            let head = read_view(long.path(), ids[0]).unwrap().record;
+            assert_eq!(
+                resume_successors(long.path(), &head).len(),
+                MAX_RESUME_CHAIN
+            );
+            let tail = read_view(long.path(), ids[ids.len() - 1]).unwrap().record;
+            assert_eq!(
+                resume_predecessors(long.path(), &tail).len(),
+                MAX_RESUME_CHAIN
+            );
         }
 
         #[test]

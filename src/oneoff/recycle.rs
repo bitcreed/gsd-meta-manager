@@ -38,9 +38,9 @@ use super::land::{
 use super::launch::settle_work;
 use super::report::read_validated;
 use super::store::{
-    project_dir_for, read_runs_in, read_view, rfc3339, run_ids_newest_first, synthesize,
-    verified_summary, write_record, LandingKind, LiveState, OneoffView, Pruned, RecordStatus,
-    ReportSource,
+    project_dir_for, read_runs_in, read_view, resume_predecessors, resume_successors, rfc3339,
+    run_ids_newest_first, synthesize, verified_summary, write_record, LandingKind, LiveState,
+    OneoffView, Pruned, RecordStatus, ReportSource,
 };
 use super::stream::spend_of_file;
 use super::{
@@ -776,6 +776,82 @@ pub(crate) fn already_landed_candidate(record: &super::store::RunRecord) -> Opti
     }
 }
 
+/// The branch a resumed run's work reached through a run that continues it, if the scan
+/// should look (pure, quick 261103-qqm, I-02): a finished run with a recorded head that a
+/// successor continues, no landing of its own that put work on the target, and a run later
+/// in its chain (`successors`, in chain order) with such a landing. Returns the branch of
+/// the first such landing's latest entry, when it is a plausible branch name. Every link is
+/// confirmed from both sides. A pause and a commit count of 0 do not disqualify the run: once
+/// the chain has landed, its clone is as dead as any landed run's. A push puts nothing on a
+/// project branch and so never qualifies.
+pub(crate) fn successor_landing_branch(
+    record: &super::store::RunRecord,
+    successors: &[super::store::RunRecord],
+) -> Option<String> {
+    if record.status != RecordStatus::Finished
+        || record.head.is_none()
+        || record.landed.iter().any(|l| l.kind.puts_work_on_target())
+    {
+        return None;
+    }
+    let mut expected = record.resumed_by.clone()?;
+    let mut previous = record.run_id.as_str();
+    for next in successors {
+        if next.run_id != expected || next.resumed_from.as_deref() != Some(previous) {
+            return None;
+        }
+        if let Some(landing) = next
+            .landed
+            .iter()
+            .rev()
+            .find(|l| l.kind.puts_work_on_target())
+        {
+            return push::plausible_branch(&landing.detail).then(|| landing.detail.clone());
+        }
+        expected = next.resumed_by.clone()?;
+        previous = next.run_id.as_str();
+    }
+    None
+}
+
+/// The branch the run's head may already be in, by either rule: a plain run
+/// ([`already_landed_candidate`]) or a predecessor whose successor landed
+/// ([`successor_landing_branch`]).
+pub(crate) fn contained_candidate(
+    project_dir: &Path,
+    record: &super::store::RunRecord,
+) -> Option<String> {
+    already_landed_candidate(record)
+        .or_else(|| successor_landing_branch(record, &resume_successors(project_dir, record)))
+}
+
+/// After the run `run_id` landed, close out every predecessor in its resume chain whose
+/// head is in the branch a later run landed in (quick 261103-qqm, I-04): the same routine
+/// the scan uses, with each predecessor's land lock taken without waiting (a held lock
+/// leaves that predecessor to the next scan). Returns the lines to print. Never an error.
+pub fn close_out_predecessors(project: &Path, run_id: &str) -> Vec<String> {
+    let mut report = RecycleReport::default();
+    let Some(project_dir) = project_dir_for(project) else {
+        return report.warnings;
+    };
+    let Some(view) = read_view(&project_dir, run_id) else {
+        return report.warnings;
+    };
+    for predecessor in resume_predecessors(&project_dir, &view.record) {
+        let id = predecessor.record.run_id.clone();
+        let Some(branch) = contained_candidate(&project_dir, &predecessor.record) else {
+            continue;
+        };
+        let slimmed = report.slimmed;
+        if tend_contained(project, &project_dir, &id, &branch, &mut report)
+            && report.slimmed > slimmed
+        {
+            report.warnings.push(format!("{id}: removed its clone"));
+        }
+    }
+    report.warnings
+}
+
 /// Record the run `id` as already landed when its head is an ancestor of `branch`'s tip,
 /// then slim it and delete its tracked branch (pd7 D-03). Takes the land lock without
 /// waiting. Returns `true` when the run was dealt with this scan (recorded, or its lock is
@@ -814,7 +890,7 @@ fn tend_contained(
     };
     let tip = ref_commit(project, &format!("refs/heads/{branch}")).unwrap_or(tip);
     if view.live != LiveState::Finished
-        || already_landed_candidate(&view.record).as_deref() != Some(branch)
+        || contained_candidate(project_dir, &view.record).as_deref() != Some(branch)
     {
         return true;
     }

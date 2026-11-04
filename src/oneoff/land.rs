@@ -781,7 +781,10 @@ pub fn merge(project: &Path, run_id: &str, opts: &LandOptions) -> Result<String,
         run_id,
         &format!("removed after landing in {branch}"),
     );
-    Ok(format!("{message}\n{}", slim.line()))
+    // qqm I-04: the runs this one continued landed with it.
+    let mut lines = vec![message, slim.line()];
+    lines.extend(super::recycle::close_out_predecessors(&project, run_id));
+    Ok(lines.join("\n"))
 }
 
 /// [`merge`] under the run's land lock. Returns the output and the branch landed into.
@@ -957,8 +960,9 @@ fn merge_locked(
         update_target(project, &target.branch, &head, &tip, run_id)?;
     }
     // mnr D-04: name what actually landed. The target advanced from `old_head` to
-    // `head`, which can be more than the agent's own commits (a resumed run carries the
-    // host merge commit and the commits it was resumed from).
+    // `head`, which can be more than the agent's own commits: a resumed run carries the
+    // commits of the runs it continued (the agent's too, qqm I-05) and a host merge commit
+    // (not the agent's).
     let landed = old_head.as_deref().and_then(|old| {
         let counted = git_in(project, &["rev-list", "--count", &format!("{old}..{head}")]);
         counted
@@ -966,9 +970,10 @@ fn merge_locked(
             .then(|| counted.stdout.trim().parse::<u32>().ok())
             .flatten()
     });
+    let agent = chain_agent_commits(project, record, &tip);
     let mut lines = vec![landed_message(
         landed,
-        facts.commits,
+        agent,
         run_id,
         &branch,
         &head[..head.len().min(12)],
@@ -993,6 +998,34 @@ fn merge_locked(
     }
     lines.extend(sensitive_warning(&record.changed_files));
     Ok((lines.join("\n"), branch))
+}
+
+/// The agent's commits in this landing (quick 261103-qqm, I-05): the sum, over the landed
+/// run and the runs it continues, of the commits in `<head> ^<base> ^<old_tip>`, so only
+/// what this landing brought in is counted and a host merge commit (the base of a
+/// `--from master` resume) is not. A member whose count fails, or that lacks a base or a
+/// head, contributes its recorded `commits`.
+fn chain_agent_commits(project: &Path, record: &RunRecord, old_tip: &str) -> u32 {
+    let counted = |member: &RunRecord| -> u32 {
+        let recorded = member.commits.unwrap_or(0);
+        let (Some(head), Some(base)) = (member.head.as_deref(), member.base.as_deref()) else {
+            return recorded;
+        };
+        let base = format!("^{base}");
+        let tip = format!("^{old_tip}");
+        let out = git_in(project, &["rev-list", "--count", head, &base, &tip]);
+        if !out.success {
+            return recorded;
+        }
+        out.stdout.trim().parse::<u32>().unwrap_or(recorded)
+    };
+    let predecessors = super::store::project_dir_for(project)
+        .map(|dir| super::store::resume_predecessors(&dir, record))
+        .unwrap_or_default();
+    predecessors
+        .iter()
+        .map(|view| counted(&view.record))
+        .fold(counted(record), u32::saturating_add)
 }
 
 /// The commit on `tip`'s first-parent history that brought `head` in: the oldest commit
