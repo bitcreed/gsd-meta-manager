@@ -240,7 +240,9 @@ Tests never call the real `systemd-run`, `bwrap`, `systemctl`, `claude` or `gh`.
 one-off tests `mod launcher_support;` and put fake `/bin/sh` executables first on `PATH`; the fakes log
 their argv, and the fake `claude` runs a scenario script the test writes. Use short scratch paths
 (unix socket paths are limited to 107 bytes). Tests that build throwaway git repositories use
-`mod common;` and `common::git`.
+`mod common;` and `common::git`. The fake `claude` shim execs the script named by
+`FAKE_CLAUDE_SCENARIO` under `/bin/sh` (written by the harness's `write_scenario`), so a scenario
+can emit whatever stream-json lines a test needs.
 
 ### Fixture strategy
 
