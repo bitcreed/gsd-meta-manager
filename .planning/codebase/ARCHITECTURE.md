@@ -80,7 +80,8 @@ but never touch TUI state.
 
 **Event transport:**
 - Purpose: Produce `Action`s from terminal input, timers, filesystem, and background tasks.
-- Location: `src/event.rs` (EventBus: crossterm reader, 250ms tick), `src/watcher.rs`
+- Location: `src/input.rs` (the crossterm reader: an app-owned std thread that can be
+  suspended), `src/event.rs` (EventBus: the channel and the 250ms tick), `src/watcher.rs`
   (notify-debouncer-full, 200ms), `src/session_detector.rs` (`/proc` scan for `claude`).
 - Contains: sender clones and spawned tasks only; no state.
 - Depends on: `src/action.rs`.
@@ -182,7 +183,8 @@ but never touch TUI state.
 
 ### Key Input Path
 
-1. `EventBus::spawn_crossterm_reader` maps `KeyEvent` → `Action::RawKey`.
+1. `input::InputReader`'s thread (started by `EventBus::spawn_input_reader`) maps
+   `KeyEvent` → `Action::RawKey` via `map_event_to_action`.
 2. `App::update` forwards to the top `Screen::handle_key(code, modifiers, &mut AppContext)`.
 3. The returned `ScreenAction` (`None`, `Push`, `Replace`, `Pop`, `Quit`,
    `SetStatusMessage`, `SuspendAndEdit`, `DispatchAction`) is applied by `App`, which owns the
@@ -240,7 +242,11 @@ but never touch TUI state.
 - Pattern: Tagged enum; producers hold cloned `UnboundedSender<Action>`.
 
 **`EventBus` (`src/event.rs`):**
-- Purpose: Owns the channel and spawns the crossterm reader and tick task.
+- Purpose: Owns the channel, spawns the tick task, and starts the input reader through
+  `spawn_input_reader`.
+- Interactive shell-outs (the editor) go through `input::run_with_terminal_suspended`, which
+  parks the reader before the terminal is released and resumes it after it is reclaimed
+  (`tui::Handoff` is the production terminal handoff).
 
 **`App` (`src/app.rs`):**
 - Purpose: Top-level state and the only `update` entry point.
