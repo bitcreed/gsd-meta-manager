@@ -240,7 +240,8 @@ Tests never call the real `systemd-run`, `bwrap`, `systemctl`, `claude` or `gh`.
 one-off tests `mod launcher_support;` and put fake `/bin/sh` executables first on `PATH`; the fakes log
 their argv, and the fake `claude` runs a scenario script the test writes. Use short scratch paths
 (unix socket paths are limited to 107 bytes). Tests that build throwaway git repositories use
-`mod common;` and `common::git`.
+`mod common;` and `common::git`. The one-off session-lifecycle and meter tests use no fakes; they
+replay the recorded streams in `tests/fixtures/oneoff/` (lifecycle via `include_str!`, meter by path).
 
 ### Fixture strategy
 
