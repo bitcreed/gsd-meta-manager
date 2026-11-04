@@ -4,10 +4,10 @@ milestone: v2.1.0
 current_phase_name: Sandbox Egress & Agent-Channel Isolation
 status: shipped
 stopped_at: v2.1.0 released locally (tag v2.1.0, not pushed) — interim gsd-core 1.20.0 Sync release between milestones
-last_updated: "2026-11-04T03:49:50.149Z"
+last_updated: "2026-11-04T04:19:45.347Z"
 last_activity: 2026-11-03
 last_activity_desc: v2.1.0 released — gsd-core 1.20.0 Sync
-state_head: 6d55fb7b51fe0f133f34983ff7ad17f2c63d4b46
+state_head: 2ffc8db459f1de5da81fd5d07159590f9cd180bd
 progress:
   total_phases: 16
   completed_phases: 16
@@ -46,7 +46,7 @@ Milestone: v2.0 Autonomous Orchestration — SHIPPED 2026-10-29 as v2.0.0
 Phase: — (between milestones; Phases 14-31 archived to `.planning/milestones/v2.0-phases/`)
 Plan: —
 Status: shipped
-Last activity: 2026-11-03 - Completed quick task 261103-tn4: Fix editor/interactive child shell-outs competing with TUI input reader for stdin
+Last activity: 2026-11-03 - Completed quick task 261103-ubn: Dispatch a backlog item as a one-off gsd-quick run with one key
 
 Archive: `.planning/milestones/v2.0-ROADMAP.md`, `v2.0-REQUIREMENTS.md`, `v2.0-MILESTONE-AUDIT.md`.
 Carried forward: five security-adjacent review clusters as todos `2026-10-29-v2-carry-*`;
@@ -534,6 +534,7 @@ Older entries (Phase 19 T-19-* rows, Phase 21 round-13 gaps, Phase 26 risks, 31-
 | 261103-pd7 | Fix one-off sandbox-sensitive tests, already-landed runs, stale preservation, land.lock churn, TESTING.md fixture note | 2026-11-03 | 1766a37 | [261103-pd7-fix-one-off-sandbox-sensitive-tests-alre](./quick/261103-pd7-fix-one-off-sandbox-sensitive-tests-alre/) |
 | 261103-qqm | Fix one-off resume-chain cleanup, chain commit attribution, and stale run.lock | 2026-11-03 | c89c74a | [261103-qqm-fix-one-off-resume-chain-cleanup-chain-c](./quick/261103-qqm-fix-one-off-resume-chain-cleanup-chain-c/) |
 | 261103-tn4 | Fix editor/interactive child shell-outs competing with TUI input reader for stdin | 2026-11-03 | 6d55fb7 | [261103-tn4-fix-editor-interactive-child-shell-outs-](./quick/261103-tn4-fix-editor-interactive-child-shell-outs-/) |
+| 261103-ubn | Dispatch a backlog item as a one-off gsd-quick run with one key | 2026-11-03 | 2ffc8db | [261103-ubn-dispatch-a-backlog-item-as-a-one-off-gsd](./quick/261103-ubn-dispatch-a-backlog-item-as-a-one-off-gsd/) |
 
 ## Deferred Items
 
