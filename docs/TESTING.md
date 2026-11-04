@@ -242,7 +242,9 @@ their argv, and the fake `claude` runs a scenario script the test writes. Use sh
 (unix socket paths are limited to 107 bytes). Tests that build throwaway git repositories use
 `mod common;` and `common::git`. The fake `claude` shim execs the script named by
 `FAKE_CLAUDE_SCENARIO` under `/bin/sh` (written by the harness's `write_scenario`), so a scenario
-can emit whatever stream-json lines a test needs.
+can emit whatever stream-json lines a test needs. The one-off session-lifecycle and meter tests use
+no fakes; they replay the recorded streams in `tests/fixtures/oneoff/` (lifecycle via `include_str!`,
+meter by path).
 
 ### Fixture strategy
 
