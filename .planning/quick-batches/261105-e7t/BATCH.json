@@ -9,7 +9,7 @@
       "quick_id": "261105-e7u",
       "client_id": null,
       "description": "Sync baseline to gsd-core 1.20.1: src/state_reader/config_json.rs GSD_CORE_SYNCED_VERSION → 1.20.1, GSD_CORE_SYNCED_COMMIT → v1.20.1, TREE_VERSION → 1.20.1; docs/GSD-CORE-SYNC.md new sha (9385f4618)/date + \"v1.20.1 delta\" section (no config-key changes; milestone-prefixed phase-id grammar made explicit, handled by the sibling phase-id task; dispatch-isolation files + fork-probe cache now under <project>/.gsd/ which the app reads neither; no CLI/routing/codex changes); README.md \"synced against gsd-core\" note → 1.20.1; keep constants↔doc test consistent; DEFAULTS_OPTION_COUNT unchanged. Touches no source file shared with the sibling task.",
-      "status": "pending",
+      "status": "complete",
       "depends_on": [],
       "planned_files": [
         "src/state_reader/config_json.rs",
@@ -22,7 +22,7 @@
       "dispatched_branch": null,
       "dispatched_base": null,
       "wave": 0,
-      "commit": null,
+      "commit": "f7e6fef",
       "failure_reason": null
     },
     {

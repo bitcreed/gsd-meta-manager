@@ -535,6 +535,7 @@ Older entries (Phase 19 T-19-* rows, Phase 21 round-13 gaps, Phase 26 risks, 31-
 | 261103-qqm | Fix one-off resume-chain cleanup, chain commit attribution, and stale run.lock | 2026-11-03 | c89c74a | [261103-qqm-fix-one-off-resume-chain-cleanup-chain-c](./quick/261103-qqm-fix-one-off-resume-chain-cleanup-chain-c/) |
 | 261103-tn4 | Fix editor/interactive child shell-outs competing with TUI input reader for stdin | 2026-11-03 | 6d55fb7 | [261103-tn4-fix-editor-interactive-child-shell-outs-](./quick/261103-tn4-fix-editor-interactive-child-shell-outs-/) |
 | 261103-ubn | Dispatch a backlog item as a one-off gsd-quick run with one key | 2026-11-03 | 2ffc8db | [261103-ubn-dispatch-a-backlog-item-as-a-one-off-gsd](./quick/261103-ubn-dispatch-a-backlog-item-as-a-one-off-gsd/) |
+| 261105-e7u | Sync baseline to gsd-core 1.20.1 | 2026-11-05 | f7e6fef | .planning/quick/261105-e7u-sync-baseline-to-gsd-core-1-20-1-src-state-reader-config-jso |
 
 ## Deferred Items
 
