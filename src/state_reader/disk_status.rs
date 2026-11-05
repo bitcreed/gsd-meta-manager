@@ -629,6 +629,14 @@ pub(crate) fn leading_frontmatter_value(content: &str, key: &str) -> Option<Stri
 /// `13-SUMMARY.md` (stem `13`) has no plan index and so pairs with no plan, a
 /// standalone `SUMMARY.md` (stem ``) likewise, and `14-REMEDIATION-SUMMARY.md`
 /// likewise. Those fall back to the exact-stem rule, which is what they want.
+///
+/// **No `M-NN` grammar, deliberately** (quick-261105-fq6): upstream has none
+/// either. `extractCanonicalPlanId` (`core-utils.cts:413-432`) reads
+/// `03-01-01-setup` as `03-01` under every convention, which is this function's
+/// `(3, 1)`, and upstream sorts plans lexically (`phase-locator.cts:574`),
+/// which is [`plan_id_order`]'s tie-break. What changes under
+/// `milestone-prefixed` is which summaries may pair by this index, not the
+/// index (see the pairing comment in `infer_disk_status_with`).
 pub(crate) fn plan_index(stem: &str) -> Option<(super::phase_num::PhaseNum, u32)> {
     let mut parts = stem.splitn(3, '-');
     let phase = super::phase_num::PhaseNum::parse(parts.next()?)?;

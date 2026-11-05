@@ -247,6 +247,12 @@ pub struct ProjectState {
     /// the source is an enum, so `tests/spawn_seam_guard.rs`'s census of free
     /// `String` fields on this struct stays unchanged.
     pub gsd_install: gsd_install::GsdInstallStatus,
+    /// The phase-id convention this snapshot was read under
+    /// ([`phase_id_convention`]), resolved once per parse and stored so a
+    /// consumer that compares written phase references (the router's G15) reads
+    /// them the way the snapshot did. A `Copy` enum, not a free string, so the
+    /// struct gains no third-party-text field.
+    pub phase_id_convention: phase_num::PhaseIdConvention,
 }
 
 impl ProjectState {
@@ -661,14 +667,20 @@ fn file_mtime(path: &Path) -> Option<chrono::DateTime<chrono::Utc>> {
 }
 
 /// Normalise a HANDOFF.json `phase` value: `"12"`, `12`, `"04"`, `"18.1"`,
-/// `18.1` and `"Phase 12"` all parse; anything else is `None`.
-fn handoff_phase(value: &serde_json::Value) -> Option<phase_num::PhaseNum> {
+/// `18.1` and `"Phase 12"` all parse; anything else is `None`. Under
+/// [`phase_num::PhaseIdConvention::MilestonePrefixed`] the whole `M-NN` id is
+/// read (`"3-02"` is phase `3-02`, not `3`), so an M-NN HANDOFF for the
+/// current phase is not read as behind it.
+fn handoff_phase(
+    value: &serde_json::Value,
+    convention: phase_num::PhaseIdConvention,
+) -> Option<phase_num::PhaseNum> {
     let text = match value {
         serde_json::Value::String(s) => s.clone(),
         serde_json::Value::Number(n) => n.to_string(),
         _ => return None,
     };
-    roadmap_md::extract_phase_id(&text).and_then(|id| phase_num::PhaseNum::parse(&id))
+    roadmap_md::extract_phase_id(&text, convention).and_then(|id| phase_num::PhaseNum::parse(&id))
 }
 
 /// Detect HANDOFF.md or HANDOFF.json in a planning directory.
@@ -687,7 +699,10 @@ fn handoff_phase(value: &serde_json::Value) -> Option<phase_num::PhaseNum> {
 /// preferred because a handoff can be touched after the fact: cdr-configurator's
 /// HANDOFF.json has a later mtime than its STATE.md, but declares a timestamp
 /// older than it — and it asks to plan a phase that is complete on disk.
-fn detect_handoff(planning_dir: &Path) -> Option<HandoffFile> {
+fn detect_handoff(
+    planning_dir: &Path,
+    convention: phase_num::PhaseIdConvention,
+) -> Option<HandoffFile> {
     // Try HANDOFF.json first
     let json_path = planning_dir.join("HANDOFF.json");
     if let Ok(content) = std::fs::read_to_string(&json_path) {
@@ -703,7 +718,7 @@ fn detect_handoff(planning_dir: &Path) -> Option<HandoffFile> {
                     .get("next_action")
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
-                handoff.phase = val.get("phase").and_then(handoff_phase);
+                handoff.phase = val.get("phase").and_then(|v| handoff_phase(v, convention));
                 handoff.written = val
                     .get("timestamp")
                     .and_then(|v| v.as_str())
@@ -978,6 +993,7 @@ pub fn parse_project_state_with(
     // The phase-id convention is resolved once per snapshot (upstream's
     // planning-snapshot does the same) and threaded to every id reader.
     let convention = phase_id_convention(planning_dir);
+    state.phase_id_convention = convention;
     let roadmap_path = planning_dir.join("ROADMAP.md");
     if let Ok(content) = std::fs::read_to_string(&roadmap_path) {
         state.phases = roadmap_md::parse_roadmap_phases(&content, convention);
@@ -1063,7 +1079,7 @@ pub fn parse_project_state_with(
     // Detect HANDOFF files for pause state. Staleness is decided here, once,
     // so every consumer of `paused` / `pause_context` (the dashboard badge,
     // needs-human and its /h filter, the Roadmap header banner) agrees.
-    if let Some(handoff) = detect_handoff(planning_dir) {
+    if let Some(handoff) = detect_handoff(planning_dir, convention) {
         match handoff_staleness(
             handoff.phase.as_ref(),
             handoff.written,
@@ -1194,6 +1210,8 @@ mod tests {
 
     // --- quick-260926-16t: stale HANDOFF --------------------------------------
 
+    const LEGACY: phase_num::PhaseIdConvention = phase_num::PhaseIdConvention::Legacy;
+
     fn pn(s: &str) -> phase_num::PhaseNum {
         phase_num::PhaseNum::parse(s).unwrap()
     }
@@ -1290,13 +1308,13 @@ mod tests {
     #[test]
     fn handoff_phase_accepts_strings_numbers_and_prefixes() {
         use serde_json::json;
-        assert_eq!(handoff_phase(&json!("12")), Some(pn("12")));
-        assert_eq!(handoff_phase(&json!("04")), Some(pn("4")));
-        assert_eq!(handoff_phase(&json!("18.1")), Some(pn("18.1")));
-        assert_eq!(handoff_phase(&json!("Phase 12")), Some(pn("12")));
-        assert_eq!(handoff_phase(&json!(12)), Some(pn("12")));
-        assert_eq!(handoff_phase(&json!("TBD")), None);
-        assert_eq!(handoff_phase(&json!(null)), None);
+        assert_eq!(handoff_phase(&json!("12"), LEGACY), Some(pn("12")));
+        assert_eq!(handoff_phase(&json!("04"), LEGACY), Some(pn("4")));
+        assert_eq!(handoff_phase(&json!("18.1"), LEGACY), Some(pn("18.1")));
+        assert_eq!(handoff_phase(&json!("Phase 12"), LEGACY), Some(pn("12")));
+        assert_eq!(handoff_phase(&json!(12), LEGACY), Some(pn("12")));
+        assert_eq!(handoff_phase(&json!("TBD"), LEGACY), None);
+        assert_eq!(handoff_phase(&json!(null), LEGACY), None);
     }
 
     #[test]
@@ -2103,6 +2121,43 @@ mod tests {
             files.push(("config.json", config));
         }
         make_planning(&files)
+    }
+
+    #[test]
+    fn milestone_prefixed_handoff_phase_reads_the_whole_m_nn_id() {
+        use serde_json::json;
+        let mp = phase_num::PhaseIdConvention::MilestonePrefixed;
+        assert_eq!(handoff_phase(&json!("3-02"), mp), Some(pn("3-02")));
+        assert_eq!(handoff_phase(&json!("3-02"), LEGACY), Some(pn("3")));
+
+        // End to end: a handoff for the current M-NN phase is not behind it.
+        let handoff = "{\"phase\": \"3-02\", \"next_action\": \"x\"}";
+        let state_md = "---\nstatus: executing\ncurrent_phase: \"3-02\"\n---\n";
+        let td = make_planning(&[
+            ("STATE.md", state_md),
+            ("ROADMAP.md", MP_ROADMAP),
+            ("HANDOFF.json", handoff),
+            (
+                "config.json",
+                "{\"phase_id_convention\": \"milestone-prefixed\"}",
+            ),
+        ]);
+        let state = parse_project_state(&td.path().join(".planning"));
+        assert_eq!(
+            state.phase_id_convention,
+            phase_num::PhaseIdConvention::MilestonePrefixed
+        );
+        assert_eq!(state.stale_handoff, None);
+        assert!(state.paused);
+
+        // Legacy reads the same handoff as phase 3, behind STATE's 3-02.
+        let td = make_planning(&[
+            ("STATE.md", state_md),
+            ("ROADMAP.md", MP_ROADMAP),
+            ("HANDOFF.json", handoff),
+        ]);
+        let state = parse_project_state(&td.path().join(".planning"));
+        assert_eq!(state.phase_id_convention, LEGACY);
     }
 
     #[test]

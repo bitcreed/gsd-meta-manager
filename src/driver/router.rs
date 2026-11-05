@@ -646,11 +646,12 @@ fn gate_for(
     // that explicitly owes a verification. A gate that never fires is worse than
     // an absent one: it also answers "how often did this stop a run?" with a
     // zero that has nothing to do with the posture.
-    let target_id = phase_identity(target_phase);
+    let convention = state.phase_id_convention;
+    let target_id = phase_identity(target_phase, convention);
     if state
         .deferred_verification_phases
         .iter()
-        .any(|phase| phase_identity(phase) == target_id)
+        .any(|phase| phase_identity(phase, convention) == target_id)
     {
         return Some((
             RouterReason::GateDeferredVerification,
@@ -674,8 +675,16 @@ fn gate_for(
 /// [`phase_key`](crate::state_reader::phase_num::phase_key), so a table cell
 /// `07.1` gates a `7.1` target (and `05` a `5`) — GSD pads the phase directory
 /// and details heading, so a padded cell is the ordinary case, not a typo.
-fn phase_identity(text: &str) -> String {
-    match crate::state_reader::roadmap_md::extract_phase_id(text) {
+///
+/// Under milestone-prefixed the id is the whole `M-NN`: upstream's
+/// `autonomous.md:172-176` drops only the phase whose number a Deferred
+/// Verification row names, and those numbers are `init.manager`'s whole `M-NN`
+/// ids, so a row for `3-02` must not gate target `3-01`.
+fn phase_identity(
+    text: &str,
+    convention: crate::state_reader::phase_num::PhaseIdConvention,
+) -> String {
+    match crate::state_reader::roadmap_md::extract_phase_id(text, convention) {
         Some(id) => crate::state_reader::phase_num::phase_key(&id),
         None => text.to_string(),
     }
@@ -1727,6 +1736,38 @@ mod tests {
             "G15 names WHICH phase owes a verification; parking phase 20 on phase 19's row \
              would make one deferred verification stop every phase in the project"
         );
+    }
+
+    #[test]
+    fn milestone_prefixed_g15_names_the_whole_m_nn_phase() {
+        use crate::state_reader::phase_num::PhaseIdConvention;
+        let build = |cell: &str| {
+            let mut state = state_with(
+                &["3-01", "3-02"],
+                &[("3-01", DiskStatus::Planned), ("3-02", DiskStatus::Planned)],
+            );
+            state.phase_id_convention = PhaseIdConvention::MilestonePrefixed;
+            state.deferred_verification_phases = vec![cell.to_string()];
+            state
+        };
+        // A sibling's row does not park the target...
+        let sibling = build("3-02");
+        assert!(
+            matches!(decide(&sibling, "3-01"), Decision::Run { .. }),
+            "a row for 3-02 must not gate 3-01"
+        );
+        // ...but it does park its own phase.
+        assert_eq!(
+            park_reason(&decide(&sibling, "3-02")),
+            RouterReason::GateDeferredVerification
+        );
+        for cell in ["03-01", "Phase 3-01"] {
+            assert_eq!(
+                park_reason(&decide(&build(cell), "3-01")),
+                RouterReason::GateDeferredVerification,
+                "a G15 row `{cell}` names phase 3-01"
+            );
+        }
     }
 
     #[test]

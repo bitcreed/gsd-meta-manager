@@ -572,6 +572,41 @@ const FIXTURES: &[Fixture] = &[
         },
     },
     Fixture {
+        name: "milestone_prefixed_slugged_plan",
+        target: "3-01",
+        upstream: Upstream::SameCommand,
+        build: |root| {
+            milestone_prefixed_tree(
+                root,
+                &[("3-01", "Alpha")],
+                &[
+                    "03-01-alpha/03-01-01-setup-PLAN.md",
+                    "03-01-alpha/03-01-01-SUMMARY.md",
+                ],
+                "",
+            )
+        },
+    },
+    Fixture {
+        name: "milestone_prefixed_sibling_deferred_verification",
+        target: "3-01",
+        upstream: Upstream::SameCommand,
+        build: |root| {
+            milestone_prefixed_tree(
+                root,
+                &[("3-01", "Alpha"), ("3-02", "Beta")],
+                &[
+                    "03-01-alpha/03-01-01-PLAN.md",
+                    "03-02-beta/03-02-01-PLAN.md",
+                ],
+                "\n## Deferred Verification\n\n\
+                 | Phase | Reason | Resume |\n\
+                 |-------|--------|--------|\n\
+                 | 3-02 | verification_deferred_human | /gsd:verify-work 3-02 |\n",
+            )
+        },
+    },
+    Fixture {
         name: "complete",
         target: TARGET,
         upstream: Upstream::NoAction,
@@ -868,6 +903,10 @@ fn every_fixture_reaches_the_state_it_is_named_for() {
                 "year_slug_dir" => "planned",
                 // `3-01-alpha` is not phase `3-01` (gsd-core wants `03-01`).
                 "unpadded_dir" => "no_directory",
+                // `03-01-01-setup-PLAN.md` does not pair with
+                // `03-01-01-SUMMARY.md`, as upstream reads it.
+                "slugged_plan" => "planned",
+                "sibling_deferred_verification" => "planned",
                 other => panic!(
                     "milestone_prefixed fixture shape `{other}` has no expected state mapped"
                 ),

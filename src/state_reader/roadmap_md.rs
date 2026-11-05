@@ -106,10 +106,15 @@ fn per_convention(
 /// emphasis, and a trailing `-<slug>`. Returns `None` when nothing identifier
 /// shaped is there, so a caller can keep the raw text rather than substituting a
 /// guess.
-pub fn extract_phase_id(text: &str) -> Option<String> {
-    static ID_AT_START: OnceLock<Regex> = OnceLock::new();
-    let id_at_start =
-        ID_AT_START.get_or_init(|| Regex::new(&format!(r"^({id})", id = PHASE_ID)).unwrap());
+///
+/// **Under [`PhaseIdConvention::MilestonePrefixed`] the id is the whole `M-NN`**
+/// (`3-02`, not `3`), following upstream `parsePhaseFromProse`'s
+/// `PHASE_PROSE_MILESTONE_PREFIXED_RE` and `phaseKeyFromProse`
+/// (`phase-id.cts:2173-2187`, `:2225-2247`; #5626 / #5675 / #5676). The legacy
+/// pattern string is unchanged.
+pub fn extract_phase_id(text: &str, convention: PhaseIdConvention) -> Option<String> {
+    static ID_AT_START: [OnceLock<Regex>; 2] = [OnceLock::new(), OnceLock::new()];
+    let id_at_start = per_convention(&ID_AT_START, convention, |id| format!(r"^({id})"));
 
     let trimmed = text
         .trim()
@@ -532,7 +537,7 @@ fn parse_phases_in_region(
     // plans are `07.1-01-PLAN.md`, and `\d+-` alone never counted them. It
     // may carry a letter too (`12A-01-PLAN.md`, `23A.1.2-01-PLAN.md`), the
     // same token [`PHASE_ID`] recognises in the phase line itself.
-    let plan_re = plan_checklist_re();
+    let plan_re = plan_checklist_re(convention);
     // `**Depends on**: …`, with the emphasis markers optional.
     let depends_re = DEPENDS
         .get_or_init(|| Regex::new(r"(?i)^\s*\*{0,2}Depends on\*{0,2}\s*:\s*(.*)$").unwrap());
@@ -594,10 +599,25 @@ fn parse_phases_in_region(
 /// Group 1 is the checkbox. The phase part of the optional `NN-NN-` prefix is
 /// `\d+[A-Za-z]?(?:\.\d+)*`, so a letter-suffixed phase's `12A-01-PLAN.md` and
 /// `23A.1.2-01-PLAN.md` items count.
-fn plan_checklist_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r"^\s*- \[([ xX])\] (?:\d+[A-Za-z]?(?:\.\d+)*-\d+-)?PLAN\.md").unwrap()
+///
+/// **Under [`PhaseIdConvention::MilestonePrefixed`]** the phase part may carry
+/// the `M-NN` segment too (`(?:-\d+)?` right after the leading digit run), so
+/// `03-01-01-PLAN.md` counts. The legacy pattern string is byte-identical.
+///
+/// [inferred] Upstream has no roadmap plan-row counter: its plan counts come
+/// from disk (`roadmap.cts:812`, `init.cts:3152`). It does recognise plan rows
+/// by the literal disk filename (`roadmap.cts:1810-1815`, `core-utils.cts:575`)
+/// and its writers emit `03-01-01-PLAN.md` rows for M-NN phases, so this local
+/// counter reads the filename upstream writes.
+fn plan_checklist_re(convention: PhaseIdConvention) -> &'static Regex {
+    static RE: [OnceLock<Regex>; 2] = [OnceLock::new(), OnceLock::new()];
+    per_convention(&RE, convention, |_| match convention {
+        PhaseIdConvention::Legacy => {
+            r"^\s*- \[([ xX])\] (?:\d+[A-Za-z]?(?:\.\d+)*-\d+-)?PLAN\.md".to_string()
+        }
+        PhaseIdConvention::MilestonePrefixed => {
+            r"^\s*- \[([ xX])\] (?:\d+(?:-\d+)?[A-Za-z]?(?:\.\d+)*-\d+-)?PLAN\.md".to_string()
+        }
     })
 }
 
@@ -1045,7 +1065,7 @@ pub fn parse_planned_build_phases(
     content: &str,
     convention: PhaseIdConvention,
 ) -> Vec<RoadmapPhase> {
-    let plan_re = plan_checklist_re();
+    let plan_re = plan_checklist_re(convention);
     let depends_re = Regex::new(r"(?i)^\s*\*{0,2}Depends on\*{0,2}\s*:\s*(.*)$").unwrap();
     let heading = build_heading_re();
     let any_heading = any_heading_re();
@@ -1869,7 +1889,18 @@ fn same_milestone(a: &str, b: &str) -> bool {
 /// API` is a phase, never a `v2` milestone; upstream 30322c042
 /// `buildCurrentMilestoneRoadmapPhaseIdsField`). The milestone-list `range` /
 /// `single` regexes and the [`extract_phase_id`] endpoints keep the legacy
-/// token: `M-NN` ranges in a milestone list are out of scope.
+/// token, because there is no `M-NN` milestone-list range grammar to port
+/// (quick-261105-fq6, musk M-0043 item 3 — not applicable):
+/// - gsd-core 1.20.1 has no milestone-list range reader. No `phases?\s+<id>`
+///   range reader exists in `src/roadmap-parser.cts`, `src/milestone.cts`,
+///   `src/roadmap.cts` or `src/init.cts`; the only `\bphases?\s+(` source is
+///   `PHASE_DEP_REF_SOURCE`, used for dependency lists only (`init.cts:3378`,
+///   `planning-inspect.cts:1071`). Current-milestone membership is heading
+///   scope, which this function reads under M-NN.
+/// - Its M-NN migrator (`src/roadmap-upgrade.cts`) never rewrites milestone
+///   bullets: it contains no `Phases` rewrite.
+/// - Its template (`templates/roadmap.md:145-152`) shows only legacy
+///   `Phases 1-4` bullets.
 pub fn roadmap_milestones(content: &str, convention: PhaseIdConvention) -> Vec<RoadmapMilestone> {
     let ms_heading = Regex::new(r"(?i)^##[ \t]+Milestones\b").unwrap();
     let ms_boundary = Regex::new(r"^#{1,2}[ \t]").unwrap();
@@ -1906,7 +1937,9 @@ pub fn roadmap_milestones(content: &str, convention: PhaseIdConvention) -> Vec<R
     let numbered = Regex::new(r"(?i)\bMilestone\s+\d").unwrap();
     let tags = Regex::new(r"<[^>]*>").unwrap();
 
-    let endpoint = |text: &str| extract_phase_id(text).and_then(|id| PhaseNum::parse(&id));
+    let endpoint = |text: &str| {
+        extract_phase_id(text, PhaseIdConvention::Legacy).and_then(|id| PhaseNum::parse(&id))
+    };
     let cut_label = |text: &str| -> String {
         let t = text
             .trim()
@@ -2106,7 +2139,7 @@ mod tests {
             ("M-2-something", "M-2"),
         ] {
             assert_eq!(
-                extract_phase_id(written).as_deref(),
+                extract_phase_id(written, PhaseIdConvention::Legacy).as_deref(),
                 Some(expected),
                 "`{written}` names phase {expected}. A consumer comparing two \
                  written references by raw equality fires on one spelling and \
@@ -2116,12 +2149,55 @@ mod tests {
 
         for nothing in ["", "TBD", "Phase", "—"] {
             assert_eq!(
-                extract_phase_id(nothing),
+                extract_phase_id(nothing, PhaseIdConvention::Legacy),
                 None,
                 "text naming no identifier must yield None so a caller keeps the \
                  raw bytes rather than substituting a guess: {nothing:?}"
             );
         }
+    }
+
+    #[test]
+    fn milestone_prefixed_plan_rows_count_m_nn_plan_files() {
+        let roadmap = "## Phases\n\n\
+            - [ ] **Phase 3-01: Alpha** - d\n\n\
+            ### Phase 3-01: Alpha\n\n\
+            **Goal**: g\n\
+            **Depends on**: Nothing\n\n\
+            - [x] 03-01-01-PLAN.md — a\n\
+            - [ ] 03-01-02-PLAN.md — b\n";
+        let phases = parse_roadmap_phases(roadmap, PhaseIdConvention::MilestonePrefixed);
+        let alpha = phases
+            .iter()
+            .find(|p| p.number == "3-01")
+            .expect("phase 3-01");
+        assert_eq!((alpha.total_plans, alpha.completed_plans), (2, 1));
+    }
+
+    #[test]
+    fn milestone_prefixed_extract_phase_id_reads_the_whole_m_nn_id() {
+        let mp = PhaseIdConvention::MilestonePrefixed;
+        for (written, expected) in [
+            ("3-01", "3-01"),
+            ("Phase 3-02", "3-02"),
+            ("**03-01**", "03-01"),
+            ("#3-01", "3-01"),
+            ("3-01-alpha-slug", "3-01"),
+            ("19-gitsafe-git-blast-radius-envelope", "19"),
+            ("Phase 7.1.", "7.1"),
+        ] {
+            assert_eq!(
+                extract_phase_id(written, mp).as_deref(),
+                Some(expected),
+                "`{written}`"
+            );
+        }
+        assert_eq!(extract_phase_id("TBD", mp), None);
+        assert_eq!(
+            extract_phase_id("3-01", PhaseIdConvention::Legacy).as_deref(),
+            Some("3"),
+            "legacy is unchanged"
+        );
     }
 
     // ── quick 260926-gtl: letter-suffixed phase ids (gsd-core #2128 / #4830) ──
@@ -2159,10 +2235,13 @@ mod tests {
         assert_eq!(letter.depends_on, ["12A"]);
 
         assert_eq!(
-            extract_phase_id("23A.1.2-some-slug").as_deref(),
+            extract_phase_id("23A.1.2-some-slug", PhaseIdConvention::Legacy).as_deref(),
             Some("23A.1.2")
         );
-        assert_eq!(extract_phase_id("Phase 12A").as_deref(), Some("12A"));
+        assert_eq!(
+            extract_phase_id("Phase 12A", PhaseIdConvention::Legacy).as_deref(),
+            Some("12A")
+        );
         let section = phase_section(roadmap, "23A.1.2").expect("the entry is found");
         assert!(
             section.starts_with("### Phase 23A.1.2: Letter"),

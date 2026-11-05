@@ -65,7 +65,12 @@ fn read_milestone_claim(planning_dir: &Path) -> Option<MilestoneClaim> {
         .ok()?;
     let value: serde_json::Value = serde_json::from_str(&text).ok()?;
     let object = value.as_object()?;
-    let phase = object.get("phase").and_then(super::handoff_phase);
+    // The workstream's own convention: an M-NN claim (`"3-02"`) names that
+    // phase, not phase 3 (quick-261105-fq6; byte-identical for Legacy).
+    let convention = super::phase_id_convention(planning_dir);
+    let phase = object
+        .get("phase")
+        .and_then(|v| super::handoff_phase(v, convention));
     let updated_at = object
         .get("updated_at")
         .and_then(|v| v.as_i64().or_else(|| v.as_f64().map(|f| f as i64)))
