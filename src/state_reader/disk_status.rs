@@ -961,6 +961,17 @@ fn phase_continue_here_blocking(phase_dir: &Path) -> bool {
 /// 6. Check for *-VERIFICATION.md or VERIFICATION.md
 /// 7. Derive status from artifact presence
 pub fn infer_disk_status(phase_dir: &Path) -> DiskInference {
+    infer_disk_status_with(phase_dir, PhaseIdConvention::Legacy)
+}
+
+/// [`infer_disk_status`] under an explicit phase-id convention. The convention
+/// changes exactly one thing: the summary-pairing rule of tier 2 (see the
+/// pairing comment below). `infer_disk_status` is the
+/// [`PhaseIdConvention::Legacy`] wrapper, so its callers are unchanged.
+pub(crate) fn infer_disk_status_with(
+    phase_dir: &Path,
+    convention: PhaseIdConvention,
+) -> DiskInference {
     if !phase_dir.is_dir() {
         return DiskInference {
             status: DiskStatus::NoDirectory,
@@ -1231,6 +1242,19 @@ pub fn infer_disk_status(phase_dir: &Path) -> DiskInference {
     //      Ambiguity abstains: an index naming more than one surviving plan
     //      pairs with nothing, so one summary can never satisfy two plans.
     //
+    // **Under `milestone-prefixed`, tier 2 narrows** (quick-261105-fq6). A
+    // summary pairs by index only when its whole stem IS the `<phase>-<plan>`
+    // index, i.e. holds exactly one `-` (`03-01-SUMMARY.md`). This ports
+    // upstream's `summaryCandidates` (`core-utils.cts:473-517`): a summary must
+    // be named `extractCanonicalPlanId(plan)-SUMMARY.md` (`:510`), and a
+    // canonical id is two-segment (`:413-432`, `03-01-01-setup` reads as
+    // `03-01` under every convention). GSD's M-NN summaries are three-segment
+    // (`03-01-01-SUMMARY.md`) and pair upstream only through the marker swap
+    // (`:478`), which tier 1's exact-stem rule already is — so a slugged
+    // `03-01-01-setup-PLAN.md` beside `03-01-01-SUMMARY.md` stays Planned, as
+    // upstream reads it. Legacy tier 2 is unchanged. `plan_index` itself is
+    // unchanged too: upstream has no M-NN plan-id grammar.
+    //
     // The count is of PLANS matched, not of summary files, so two summaries
     // resolving to the same plan cannot push `summary_count` past `plan_count`
     // and fake a completion.
@@ -1245,7 +1269,9 @@ pub fn infer_disk_status(phase_dir: &Path) -> DiskInference {
         let id = name.strip_suffix("-SUMMARY.md").unwrap_or("");
         let matched = if let Some(exact) = plan_ids.get(id) {
             Some(exact.clone())
-        } else if let Some(index) = plan_index(id) {
+        } else if let Some(index) = plan_index(id).filter(|_| {
+            convention != PhaseIdConvention::MilestonePrefixed || id.matches('-').count() == 1
+        }) {
             match plan_indices.get(&index).map(Vec::as_slice) {
                 Some([only]) => Some(only.clone()),
                 _ => None,
@@ -1385,23 +1411,39 @@ fn plan_id_order(a: &str, b: &str) -> std::cmp::Ordering {
 /// the boundary guard against longer-number collisions.
 ///
 /// **[`PhaseIdConvention::MilestonePrefixed`]**, for a `phase_number` that
-/// parses as a [`PhaseNum`]: the directory's leading `M-NN` token
-/// (`^[0-9]+(?:-[0-9]+)?(?:\.[0-9]+)*`, ending the name or followed by `-`)
-/// must be the same [`PhaseNum`] as the phase. Upstream reads
-/// `^(phaseNumberTokenSource('milestone-prefixed'))-?` the same way in
-/// `cmdFindPhase`, `cmdPhaseComplete` and `cmdInitProgress`. There is no
-/// bare-integer fallback: `03-02-beta` is phase `3-02` and never phase `3`
-/// (#5676). A phase that does not parse (`AB-29`, `12A`) uses the legacy rule.
+/// parses as a [`PhaseNum`]: this is gsd-core's `phaseTokenMatches`
+/// (`phase-id.cts:1684-1691`, the non-bracket part), which is the PRIMARY pass
+/// of `matchPhaseDirs`. The query is normalized the way upstream's
+/// `normalizePhaseName` does ([`upstream_normalize_phase_name`]) and compared,
+/// ignoring ASCII case, with the directory's `extractPhaseToken`
+/// ([`upstream_dir_token`]) — and, when the name carries a project-code prefix
+/// (`CK-03-01-alpha`), with the token of the prefix-stripped name. So
+/// `03-01-alpha` is phase `3-01`, `03-alpha` is phase `3`, `14-2026-photos` is
+/// phase `14` (a >= 3-digit continuation is a slug word, #2232), and an
+/// unpadded `3-01-alpha` is NOT phase `3-01`.
 ///
-/// **Known divergence (T-e7v-04).** Upstream `findPhaseInternal` still applies
-/// its #2528 unique bare-integer fallback, so with a lone `03-02-beta` gsd-core
-/// 1.20.1 reads phase `3` as that directory. With two or more `03-*`
-/// directories it refuses, and agrees with this rule (measured 2026-11-05).
+/// gsd-core 1.20.1 does not dispatch directory lookup on the convention at all:
+/// `findPhaseInternal` hands `matchPhaseDirs` an already-normalized query and
+/// `convention` undefined (`phase-locator.cts:189,200-204,518`;
+/// `docs/CONTEXT-INDEX.json:1347`: "null, sequential, and milestone-prefixed
+/// lookups receive undefined and retain their prior bytes"). M-NN directory
+/// lookup is therefore the legacy matcher, and this predicate is its primary
+/// pass only. The #2528 bare-integer fallback is a SET rule and lives in
+/// [`select_phase_dir`]. A phase that does not parse (`AB-29`, `12A`) uses the
+/// legacy body here too.
+///
+/// Measured against the installed oracle (1.20.1, 2026-11-05): a bare `3` with
+/// a lone `03-02-beta` reads that directory; `14-2026-photos` is phase `14`;
+/// `3-01-alpha` is not phase `3-01`; `CK-03-01-alpha` is phase `3-01`.
 fn phase_dir_matches(dir_name: &str, phase_number: &str, convention: PhaseIdConvention) -> bool {
-    if convention == PhaseIdConvention::MilestonePrefixed {
-        if let Some(want) = PhaseNum::parse(phase_number) {
-            return dir_leading_phase(dir_name).is_some_and(|have| have == want);
+    if convention == PhaseIdConvention::MilestonePrefixed && PhaseNum::parse(phase_number).is_some()
+    {
+        let want = upstream_normalize_phase_name(phase_number);
+        if upstream_dir_token(dir_name).eq_ignore_ascii_case(&want) {
+            return true;
         }
+        let stripped = strip_project_code_prefix(dir_name);
+        return stripped != dir_name && upstream_dir_token(stripped).eq_ignore_ascii_case(&want);
     }
     let mut candidates: Vec<String> = vec![phase_number.to_string()];
     if !phase_number.is_empty() && phase_number.chars().all(|c| c.is_ascii_digit()) {
@@ -1433,15 +1475,224 @@ fn phase_dir_matches(dir_name: &str, phase_number: &str, convention: PhaseIdConv
         .any(|c| dir_name == c || dir_name.starts_with(&format!("{c}-")))
 }
 
-/// The phase a directory name leads with under the milestone-prefixed grammar:
-/// its `M-NN` token, which must end the name or be followed by `-`. Captures
-/// only; an untrusted name is never byte-indexed.
-fn dir_leading_phase(dir_name: &str) -> Option<PhaseNum> {
-    static LEADING: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-    let re = LEADING
-        .get_or_init(|| regex::Regex::new(r"^([0-9]+(?:-[0-9]+)?(?:\.[0-9]+)*)(?:-|$)").unwrap());
-    re.captures(dir_name)
-        .and_then(|caps| PhaseNum::parse(&caps[1]))
+/// Left-pad an all-digit string with `'0'` to at least two characters (JS
+/// `padStart(2, '0')`: `007` stays `007`).
+fn pad2(digits: &str) -> String {
+    format!("{digits:0>2}")
+}
+
+/// gsd-core's `normalizePhaseName` (`phase-id.cts:546-569`) for the inputs the
+/// milestone-prefixed branch receives, which are those [`PhaseNum::parse`]
+/// accepts: the leading digit run and an `-N` segment are padded to two digits,
+/// a `.N` decimal tail is kept verbatim. Deliberately NOT
+/// [`PhaseNum::padded`], which renders `007` as `07` and `07.01` as `07.1`,
+/// unlike upstream.
+fn upstream_normalize_phase_name(phase: &str) -> String {
+    let phase = phase.trim();
+    let (head, tail) = match phase.split_once('.') {
+        Some((head, tail)) => (head, Some(tail)),
+        None => (phase, None),
+    };
+    let mut out = match head.split_once('-') {
+        Some((major, sub)) => format!("{}-{}", pad2(major), pad2(sub)),
+        None => pad2(head),
+    };
+    if let Some(tail) = tail {
+        out.push('.');
+        out.push_str(tail);
+    }
+    out
+}
+
+/// gsd-core's `stripProjectCodePrefix` (`phase-id.cts:45,536-540`): a leading
+/// `[A-Za-z][A-Za-z0-9_]*-` is removed only when a digit follows it.
+fn strip_project_code_prefix(name: &str) -> &str {
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = RE.get_or_init(|| regex::Regex::new(r"(?is)^[A-Z][A-Z0-9_]*-([0-9].*)$").unwrap());
+    re.captures(name)
+        .and_then(|caps| caps.get(1))
+        .map_or(name, |m| m.as_str())
+}
+
+/// gsd-core's non-bracket `extractPhaseToken` (`phase-id.cts:1235-1273`) with
+/// `derivePhaseTokenSegments` (`:1160-1208`). Splits and char predicates only;
+/// an untrusted name is never byte-indexed.
+fn upstream_dir_token(name: &str) -> String {
+    static CAPTURE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let capture =
+        CAPTURE.get_or_init(|| regex::Regex::new(r"(?is)^([A-Z][A-Z0-9_]*)-([0-9].*)$").unwrap());
+    let (prefix, rest) = match capture.captures(name) {
+        Some(caps) => (format!("{}-", &caps[1]), caps[2].to_string()),
+        None => (String::new(), name.to_string()),
+    };
+
+    let mut pushed: Vec<&str> = Vec::new();
+    let mut first_letter_prefixed = false;
+    for (i, seg) in rest.split('-').enumerate() {
+        let mut chars = seg.chars();
+        if i == 0 {
+            if chars.next().is_some_and(|c| c.is_ascii_digit()) {
+                pushed.push(seg);
+            } else if is_short_letter_digit_start(seg) {
+                pushed.push(seg);
+                first_letter_prefixed = true;
+            } else {
+                break;
+            }
+        } else if (first_letter_prefixed && chars.next().is_some_and(|c| c.is_ascii_digit()))
+            || (!first_letter_prefixed && is_continuation_segment(seg))
+        {
+            pushed.push(seg);
+        } else {
+            break;
+        }
+    }
+    if pushed.is_empty() {
+        return name.to_string();
+    }
+    // `:1265-1271`: a lowercase digit+letter slug word admitted as a two-digit
+    // continuation ("10x") is removed again.
+    if !first_letter_prefixed && pushed.len() > 1 {
+        if let Some(last) = pushed.last() {
+            let mut c = last.chars();
+            let two_digits = c.next().is_some_and(|x| x.is_ascii_digit())
+                && c.next().is_some_and(|x| x.is_ascii_digit());
+            let tail: Vec<char> = c.collect();
+            if two_digits
+                && tail.first().is_some_and(|x| x.is_ascii_lowercase())
+                && tail
+                    .iter()
+                    .all(|x| x.is_ascii_lowercase() || x.is_ascii_digit())
+            {
+                pushed.pop();
+            }
+        }
+    }
+    format!("{prefix}{}", pushed.join("-"))
+}
+
+/// `^[A-Za-z]{1,3}[0-9]` (`phase-id.cts:1189`).
+fn is_short_letter_digit_start(seg: &str) -> bool {
+    let letters = seg.chars().take_while(|c| c.is_ascii_alphabetic()).count();
+    (1..=3).contains(&letters) && seg.chars().nth(letters).is_some_and(|c| c.is_ascii_digit())
+}
+
+/// `isPhaseContinuationSegment`, `^\d{2}(?!\d)` (`phase-id.cts:131-135`).
+fn is_continuation_segment(seg: &str) -> bool {
+    let mut c = seg.chars();
+    c.next().is_some_and(|x| x.is_ascii_digit())
+        && c.next().is_some_and(|x| x.is_ascii_digit())
+        && !c.next().is_some_and(|x| x.is_ascii_digit())
+}
+
+/// `unpad`, `/^0+(?=\d)/` (`phase-id.cts:1717`): leading zeros stripped, the
+/// final character kept. Strings, never `u32`, so a long run cannot overflow.
+fn unpad(digits: &str) -> &str {
+    let keep = digits.len().saturating_sub(1);
+    let zeros = digits.bytes().take(keep).take_while(|b| *b == b'0').count();
+    &digits[zeros..]
+}
+
+/// The result of resolving a phase number against one directory listing.
+#[derive(Debug, PartialEq, Eq)]
+enum DirSelection {
+    One(String),
+    /// Two or more directories claim the phase (`searchPhaseInDir`,
+    /// `phase-locator.cts:529`): upstream refuses, and so does the caller.
+    Ambiguous,
+    Missing,
+}
+
+/// Resolve `phase_number` against the directory names of ONE listing.
+///
+/// [`PhaseIdConvention::Legacy`], or milestone-prefixed with a phase that does
+/// not parse: the first name in the given order for which [`phase_dir_matches`]
+/// holds. That is the original behaviour verbatim and never yields
+/// [`DirSelection::Ambiguous`].
+///
+/// Milestone-prefixed with a parseable phase follows `matchPhaseDirs`
+/// (`phase-id.cts:2021-2093`) as `findPhaseInternal` drives it. The query
+/// arrives already normalized (`phase-locator.cts:189,251`), so the literal pass
+/// at `:2079-2082` cannot fire and is not ported.
+/// 1. Primary (`:2075`): every name satisfying [`phase_dir_matches`]. One name
+///    is the directory; two or more are ambiguous.
+/// 2. Otherwise, for an all-digit query (`BARE_INTEGER_RE`, `:2085`), the #2528
+///    bare-integer fallback (`:2084-2092`): every name whose
+///    project-code-stripped form starts with a digit run that ends the name or
+///    is followed by `-` (`^(\d+)(?:-|$)`, `:1712`) and whose `unpad`ded run
+///    equals the `unpad`ded query. Again one name is the directory, two or more
+///    are ambiguous (#2237).
+fn select_phase_dir(
+    names: &[String],
+    phase_number: &str,
+    convention: PhaseIdConvention,
+) -> DirSelection {
+    let m_nn = convention == PhaseIdConvention::MilestonePrefixed
+        && PhaseNum::parse(phase_number).is_some();
+    if !m_nn {
+        return names
+            .iter()
+            .find(|n| phase_dir_matches(n, phase_number, convention))
+            .map_or(DirSelection::Missing, |n| DirSelection::One(n.clone()));
+    }
+    let pick = |hits: Vec<&String>| match hits.as_slice() {
+        [] => DirSelection::Missing,
+        [one] => DirSelection::One((*one).clone()),
+        _ => DirSelection::Ambiguous,
+    };
+    let primary: Vec<&String> = names
+        .iter()
+        .filter(|n| phase_dir_matches(n, phase_number, convention))
+        .collect();
+    if !primary.is_empty() {
+        return pick(primary);
+    }
+    let want = upstream_normalize_phase_name(phase_number);
+    if want.is_empty() || !want.bytes().all(|b| b.is_ascii_digit()) {
+        return DirSelection::Missing;
+    }
+    let want = unpad(&want);
+    static LEADING_RUN: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let leading = LEADING_RUN.get_or_init(|| regex::Regex::new(r"^([0-9]+)(?:-|$)").unwrap());
+    pick(
+        names
+            .iter()
+            .filter(|n| {
+                leading
+                    .captures(strip_project_code_prefix(n))
+                    .is_some_and(|caps| unpad(&caps[1]) == want)
+            })
+            .collect(),
+    )
+}
+
+/// The UTF-8 names of the subdirectories of `dir`, in `read_dir` order.
+fn subdir_names(dir: &Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+        .filter_map(|e| e.file_name().to_str().map(str::to_string))
+        .collect()
+}
+
+/// The archived milestone phase listings (`milestones/*/`), in `read_dir` order,
+/// as `(directory, subdirectory names)`.
+fn archived_listings(planning_dir: &Path) -> Vec<(PathBuf, Vec<String>)> {
+    let Ok(entries) = std::fs::read_dir(planning_dir.join("milestones")) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+        .map(|e| {
+            let path = e.path();
+            let names = subdir_names(&path);
+            (path, names)
+        })
+        .collect()
 }
 
 /// Find a phase directory by its number, checking both active phases/ and archived milestones/.
@@ -1466,41 +1717,21 @@ fn find_phase_dir_in(
     phase_number: &str,
     convention: PhaseIdConvention,
 ) -> Option<PathBuf> {
-    // Check phases/ directory first
+    // phases/ first. An ambiguous live result stops the search before the
+    // archives, as findPhaseInternal's does (`phase-locator.cts:703`).
     let phases_dir = planning_dir.join("phases");
-    if let Ok(entries) = std::fs::read_dir(&phases_dir) {
-        for entry in entries.flatten() {
-            if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                if let Some(name) = entry.file_name().to_str() {
-                    if phase_dir_matches(name, phase_number, convention) {
-                        return Some(entry.path());
-                    }
-                }
-            }
-        }
+    match select_phase_dir(&subdir_names(&phases_dir), phase_number, convention) {
+        DirSelection::One(name) => return Some(phases_dir.join(name)),
+        DirSelection::Ambiguous => return None,
+        DirSelection::Missing => {}
     }
 
-    // Check milestones/*/ directories for archived phases
-    let milestones_dir = planning_dir.join("milestones");
-    if let Ok(milestone_entries) = std::fs::read_dir(&milestones_dir) {
-        for milestone_entry in milestone_entries.flatten() {
-            if milestone_entry
-                .file_type()
-                .map(|t| t.is_dir())
-                .unwrap_or(false)
-            {
-                if let Ok(phase_entries) = std::fs::read_dir(milestone_entry.path()) {
-                    for phase_entry in phase_entries.flatten() {
-                        if phase_entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                            if let Some(name) = phase_entry.file_name().to_str() {
-                                if phase_dir_matches(name, phase_number, convention) {
-                                    return Some(phase_entry.path());
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+    // milestones/*/ for archived phases.
+    for (dir, names) in archived_listings(planning_dir) {
+        match select_phase_dir(&names, phase_number, convention) {
+            DirSelection::One(name) => return Some(dir.join(name)),
+            DirSelection::Ambiguous => return None,
+            DirSelection::Missing => {}
         }
     }
 
@@ -1515,44 +1746,25 @@ pub fn infer_phase_status(
     convention: PhaseIdConvention,
 ) -> DiskInference {
     // Check if phase is in milestones/ (archived = Complete)
-    let milestones_dir = planning_dir.join("milestones");
-    if let Ok(milestone_entries) = std::fs::read_dir(&milestones_dir) {
-        for milestone_entry in milestone_entries.flatten() {
-            if milestone_entry
-                .file_type()
-                .map(|t| t.is_dir())
-                .unwrap_or(false)
-            {
-                if let Ok(phase_entries) = std::fs::read_dir(milestone_entry.path()) {
-                    for phase_entry in phase_entries.flatten() {
-                        if phase_entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                            if let Some(name) = phase_entry.file_name().to_str() {
-                                if phase_dir_matches(name, phase_number, convention) {
-                                    // Archived phase -- always Complete.
-                                    //
-                                    // Deliberately NOT re-derived through the
-                                    // verification conjunct: a phase archived
-                                    // into a milestone shipped, and the
-                                    // milestone archive is the corroboration.
-                                    // Its `verification_status` stays `Missing`
-                                    // because nothing was read, which is the
-                                    // honest value — not a claim it passed.
-                                    return DiskInference {
-                                        status: DiskStatus::Complete,
-                                        ..Default::default()
-                                    };
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+    for (_, names) in archived_listings(planning_dir) {
+        if let DirSelection::One(_) = select_phase_dir(&names, phase_number, convention) {
+            // Archived phase -- always Complete.
+            //
+            // Deliberately NOT re-derived through the verification conjunct: a
+            // phase archived into a milestone shipped, and the milestone archive
+            // is the corroboration. Its `verification_status` stays `Missing`
+            // because nothing was read, which is the honest value — not a claim
+            // it passed.
+            return DiskInference {
+                status: DiskStatus::Complete,
+                ..Default::default()
+            };
         }
     }
 
     // Check phases/ directory
     match find_phase_dir_in(planning_dir, phase_number, convention) {
-        Some(dir) => infer_disk_status(&dir),
+        Some(dir) => infer_disk_status_with(&dir, convention),
         None => DiskInference {
             status: DiskStatus::NoDirectory,
             ..Default::default()
@@ -3697,33 +3909,169 @@ actuals:
 
     #[test]
     fn phase_dir_matches_milestone_prefixed_reads_the_m_nn_token() {
+        // The PRIMARY pass of upstream's matchPhaseDirs (phaseTokenMatches).
         let mp = PhaseIdConvention::MilestonePrefixed;
         for (dir, phase) in [
             ("03-01-alpha", "3-01"),
             ("03-01", "3-01"),
             ("03-alpha", "3"),
-            ("3-alpha", "3"),
             ("07.1-x", "7.1"),
+            // Oracle-measured 2026-11-05: a >= 3-digit continuation is a slug
+            // word, so this directory is phase 14 (e7v asserted the opposite).
+            ("14-2026-foo", "14"),
+            ("CK-03-01-alpha", "3-01"),
             ("AB-29-slug", "AB-29"),
         ] {
             assert!(phase_dir_matches(dir, phase, mp), "{dir} ~ {phase}");
         }
         for (dir, phase) in [
             ("03-02-beta", "3"),
+            // The bare-integer fallback is a set rule; it lives in select.
+            ("3-alpha", "3"),
             ("03-01.1-x", "3-01"),
             ("03-01-alpha", "3-02"),
-            ("14-2026-foo", "14"),
+            ("3-01-alpha", "3-01"),
         ] {
             assert!(!phase_dir_matches(dir, phase, mp), "{dir} !~ {phase}");
         }
     }
 
     #[test]
+    fn milestone_prefixed_dir_token_and_query_match_upstream() {
+        // Vectors computed by calling the installed gsd-core 1.20.1
+        // phase-id.cjs extractPhaseToken / normalizePhaseName.
+        for (input, token) in [
+            ("03-02-beta", "03-02"),
+            ("03-01-alpha", "03-01"),
+            ("03-01", "03-01"),
+            ("3-01-alpha", "3-01"),
+            ("14-2026-photos", "14"),
+            ("03-01.1-x", "03-01.1"),
+            ("07.1-x", "07.1"),
+            ("3-alpha", "3"),
+            ("CK-03-01-alpha", "CK-03-01"),
+            ("03-01-10x-foo", "03-01"),
+            ("03-01-02-foo", "03-01-02"),
+            ("03-012-x", "03"),
+            ("AB-29-slug", "AB-29"),
+            ("003-alpha", "003"),
+        ] {
+            assert_eq!(upstream_dir_token(input), token, "token of {input}");
+        }
+        for (input, name) in [
+            ("3", "03"),
+            ("03", "03"),
+            ("3-01", "03-01"),
+            ("3-1", "03-01"),
+            ("03-01", "03-01"),
+            ("7.1", "07.1"),
+            ("07.01", "07.01"),
+            ("3-01.1", "03-01.1"),
+            ("14", "14"),
+            ("007", "007"),
+        ] {
+            assert_eq!(
+                upstream_normalize_phase_name(input),
+                name,
+                "normalize {input}"
+            );
+        }
+        assert_eq!(unpad("007"), "7");
+        assert_eq!(unpad("00"), "0");
+        assert_eq!(unpad("0"), "0");
+        assert_eq!(unpad("12"), "12");
+        assert_eq!(strip_project_code_prefix("CK-03-01"), "03-01");
+        assert_eq!(strip_project_code_prefix("CK-alpha"), "CK-alpha");
+        // A non-ASCII name is handled by captures and splits, never indexing.
+        assert_eq!(upstream_dir_token("é-03"), "é-03");
+    }
+
+    #[test]
+    fn milestone_prefixed_dir_selection_ports_match_phase_dirs() {
+        let mp = PhaseIdConvention::MilestonePrefixed;
+        let names = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let one = |s: &str| DirSelection::One(s.to_string());
+        for (dirs, query, want) in [
+            (&["03-02-beta"][..], "3", one("03-02-beta")),
+            (
+                &["03-01-alpha", "03-02-beta"][..],
+                "3",
+                DirSelection::Ambiguous,
+            ),
+            (&["03-alpha", "03-02-beta"][..], "3", one("03-alpha")),
+            (&["3-alpha"][..], "3", one("3-alpha")),
+            (&["14-2026-photos"][..], "14", one("14-2026-photos")),
+            (&["3-01-alpha"][..], "3-01", DirSelection::Missing),
+            (&["CK-03-01-alpha"][..], "3-01", one("CK-03-01-alpha")),
+            (&["03-01.1-x"][..], "3-01", DirSelection::Missing),
+            (&["07.1-x"][..], "7.1", one("07.1-x")),
+            (&["03-01"][..], "3-01", one("03-01")),
+            (&["03-01-alpha"][..], "3-02", DirSelection::Missing),
+            (&["03-alpha", "03-beta"][..], "3", DirSelection::Ambiguous),
+            (&["AB-29-slug"][..], "AB-29", one("AB-29-slug")),
+            (&["CK-03-02-beta"][..], "3", one("CK-03-02-beta")),
+        ] {
+            assert_eq!(
+                select_phase_dir(&names(dirs), query, mp),
+                want,
+                "{dirs:?} ~ {query}"
+            );
+        }
+    }
+
+    #[test]
     fn milestone_prefixed_dir_rule_is_off_by_default() {
-        assert!(phase_dir_matches(
-            "03-02-beta",
-            "3",
-            PhaseIdConvention::Legacy
-        ));
+        let legacy = PhaseIdConvention::Legacy;
+        assert!(phase_dir_matches("03-02-beta", "3", legacy));
+        // Today's first-match behaviour, characterized; Legacy never refuses.
+        let a = vec!["03-01-alpha".to_string(), "03-02-beta".to_string()];
+        let b = vec!["03-02-beta".to_string(), "03-01-alpha".to_string()];
+        assert_eq!(
+            select_phase_dir(&a, "3", legacy),
+            DirSelection::One("03-01-alpha".into())
+        );
+        assert_eq!(
+            select_phase_dir(&b, "3", legacy),
+            DirSelection::One("03-02-beta".into())
+        );
+    }
+
+    fn pairing_dir(files: &[&str]) -> tempfile::TempDir {
+        let dir = tempdir().unwrap();
+        for f in files {
+            fs::write(dir.path().join(f), "---\nphase: x\n---\n\n# x\n").unwrap();
+        }
+        dir
+    }
+
+    #[test]
+    fn milestone_prefixed_summaries_pair_by_exact_stem_or_canonical_id() {
+        let mp = PhaseIdConvention::MilestonePrefixed;
+        let slugged = pairing_dir(&["03-01-01-setup-PLAN.md", "03-01-01-SUMMARY.md"]);
+        let r = infer_disk_status_with(slugged.path(), mp);
+        assert_eq!((r.plan_count, r.summary_count), (1, 0));
+        assert_eq!(r.status, DiskStatus::Planned);
+
+        let canonical = pairing_dir(&["03-01-01-setup-PLAN.md", "03-01-SUMMARY.md"]);
+        let r = infer_disk_status_with(canonical.path(), mp);
+        assert_eq!(r.summary_count, 1);
+        assert_eq!(r.status, DiskStatus::Executed);
+
+        let exact = pairing_dir(&["03-01-01-PLAN.md", "03-01-01-SUMMARY.md"]);
+        assert_eq!(infer_disk_status_with(exact.path(), mp).summary_count, 1);
+
+        let partial = pairing_dir(&[
+            "03-01-01-PLAN.md",
+            "03-01-02-PLAN.md",
+            "03-01-01-SUMMARY.md",
+        ]);
+        let r = infer_disk_status_with(partial.path(), mp);
+        assert_eq!((r.plan_count, r.summary_count), (2, 1));
+        assert_eq!(r.status, DiskStatus::Partial);
+
+        // HEAD's legacy tier 2, unchanged.
+        let r = infer_disk_status_with(slugged.path(), PhaseIdConvention::Legacy);
+        assert_eq!(r.summary_count, 1);
+        assert_eq!(infer_disk_status(slugged.path()).summary_count, 1);
     }
 }

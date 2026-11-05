@@ -335,6 +335,44 @@ fn milestone_prefixed_skeleton(root: &Path) {
     );
 }
 
+/// A `milestone-prefixed` project built from a list of `(phase id, name)`
+/// roadmap entries and the files to write under `.planning/phases/`. Written as
+/// files, like [`skeleton`]. A file ending `-SUMMARY.md` is a completed summary;
+/// anything else is a plan. `state_extra` is appended to the skeleton STATE.md.
+fn milestone_prefixed_tree(
+    root: &Path,
+    phases: &[(&str, &str)],
+    files: &[&str],
+    state_extra: &str,
+) {
+    write(
+        &root.join(".planning/config.json"),
+        "{\n  \"phase_id_convention\": \"milestone-prefixed\"\n}\n",
+    );
+    let mut roadmap = String::from("# Roadmap\n\n## Phases\n\n");
+    for (id, name) in phases {
+        roadmap.push_str(&format!("- [ ] **Phase {id}: {name}** - d\n"));
+    }
+    for (id, name) in phases {
+        roadmap.push_str(&format!(
+            "\n### Phase {id}: {name}\n\n**Goal**: g\n**Depends on**: Nothing\n"
+        ));
+    }
+    write(&root.join(".planning/ROADMAP.md"), &roadmap);
+    write(
+        &root.join(".planning/STATE.md"),
+        &format!("---\nstatus: in_progress\n---\n\n# State\n{state_extra}"),
+    );
+    for file in files {
+        let body = if file.ends_with("-SUMMARY.md") {
+            "---\nphase: x\nstatus: complete\n---\n\n# Summary\n"
+        } else {
+            "---\nphase: x\n---\n\n# Plan\n"
+        };
+        write(&root.join(".planning/phases").join(file), body);
+    }
+}
+
 fn phase_dir(root: &Path) -> PathBuf {
     root.join(".planning/phases/01-alpha")
 }
@@ -475,11 +513,13 @@ const FIXTURES: &[Fixture] = &[
             );
         },
     },
-    // gsd-core >= 1.20.1's `milestone-prefixed` convention (#5675 / #5676). Both
-    // fixtures share one tree; the oracle is measured to emit
+    // gsd-core >= 1.20.1's `milestone-prefixed` convention (#5675 / #5676). The
+    // first two fixtures share one tree; the oracle is measured to emit
     // `/gsd-execute-phase 3-01` for the M-NN phase and `/gsd-discuss-phase 3`
-    // for the bare one (which borrows no sibling's plans). They need an oracle
-    // >= 1.20.1, which quick-261105-e7u pins for CI and the pre-tag container.
+    // for the bare one when two `03-*` siblings exist (a bare `3` takes a lone
+    // `3`-leading sibling directory, #2528, and two siblings are ambiguous,
+    // #2237 — the next fixtures pin the lone case). They need an oracle >=
+    // 1.20.1, which quick-261105-e7u pins for CI and the pre-tag container.
     Fixture {
         name: "milestone_prefixed_m_nn_phase",
         target: "3-01",
@@ -491,6 +531,45 @@ const FIXTURES: &[Fixture] = &[
         target: "3",
         upstream: Upstream::SameCommand,
         build: milestone_prefixed_skeleton,
+    },
+    Fixture {
+        name: "milestone_prefixed_bare_phase_lone_sibling",
+        target: "3",
+        upstream: Upstream::SameCommand,
+        build: |root| {
+            milestone_prefixed_tree(
+                root,
+                &[("3", "Gamma"), ("3-02", "Beta")],
+                &["03-02-beta/03-02-01-PLAN.md"],
+                "",
+            )
+        },
+    },
+    Fixture {
+        name: "milestone_prefixed_year_slug_dir",
+        target: "14",
+        upstream: Upstream::SameCommand,
+        build: |root| {
+            milestone_prefixed_tree(
+                root,
+                &[("14", "Photos")],
+                &["14-2026-photos/14-01-PLAN.md"],
+                "",
+            )
+        },
+    },
+    Fixture {
+        name: "milestone_prefixed_unpadded_dir",
+        target: "3-01",
+        upstream: Upstream::SameCommand,
+        build: |root| {
+            milestone_prefixed_tree(
+                root,
+                &[("3-01", "Alpha")],
+                &["3-01-alpha/3-01-01-PLAN.md"],
+                "",
+            )
+        },
     },
     Fixture {
         name: "complete",
@@ -778,10 +857,20 @@ fn every_fixture_reaches_the_state_it_is_named_for() {
             .name
             .strip_prefix("milestone_prefixed_")
             .map(|shape| match shape {
-                // `03-01-alpha` holds a plan; bare `3` has no directory of
-                // its own and must not borrow `03-02-beta`'s plans.
+                // `03-01-alpha` holds a plan.
                 "m_nn_phase" => "planned",
-                _ => "no_directory",
+                // Two `03-*` siblings are ambiguous (#2237), so a bare `3`
+                // has no directory of its own and borrows no plans.
+                "bare_phase" => "no_directory",
+                // A lone `3`-leading sibling is taken (#2528).
+                "bare_phase_lone_sibling" => "planned",
+                // `14-2026-photos` is phase 14, not a malformed M-NN id.
+                "year_slug_dir" => "planned",
+                // `3-01-alpha` is not phase `3-01` (gsd-core wants `03-01`).
+                "unpadded_dir" => "no_directory",
+                other => panic!(
+                    "milestone_prefixed fixture shape `{other}` has no expected state mapped"
+                ),
             })
             .or_else(|| {
                 fixture
