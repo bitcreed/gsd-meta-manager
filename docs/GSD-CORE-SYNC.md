@@ -1,18 +1,18 @@
 # gsd-core config sync record
 
-**Config surface synced against gsd-core `v1.20.0`**
-(`b14172e38d02aeab483856949453264228886517`, `package.json` 1.20.0, tagged
-2026-11-03) **on 2026-11-03. Conformance oracle / `GSD_CORE_SYNCED_VERSION`
-pinned at `1.20.0`**, the latest version published on npm.
+**Config surface synced against gsd-core `v1.20.1`**
+(`9385f4618b52ef68ed8a5e8bdd93cfb25bd87765`, `package.json` 1.20.1, tagged
+2026-11-05) **on 2026-11-05. Conformance oracle / `GSD_CORE_SYNCED_VERSION`
+pinned at `1.20.1`**, the latest version published on npm.
 
 `src/state_reader/config_json.rs` carries the machine-readable copy of those
 values as three constants, which at this sync all name the same release:
 
 | Constant | Value | What it means |
 |---|---|---|
-| `GSD_CORE_SYNCED_VERSION` | `1.20.0` | The **conformance-oracle pin**: the latest gsd-core release published on npm at or below the synced commit. `scripts/install-conformance-oracle.sh` greps this declaration and runs `npm install @opengsd/gsd-core@<version>` — in the publish job (`.github/workflows/release.yml`) and inside `./scripts/pre-tag-check.sh --container`. The floor of the installed-GSD comparison's in-sync range. |
-| `GSD_CORE_SYNCED_COMMIT` | `v1.20.0` | The tree the config surface was diffed against, as `git describe --tags --always` spells it. |
-| `GSD_CORE_SYNCED_TREE_VERSION` | `1.20.0` | The `package.json` version of that tree. The ceiling of the installed-GSD comparison's in-sync range (quick task 260926-j0a). |
+| `GSD_CORE_SYNCED_VERSION` | `1.20.1` | The **conformance-oracle pin**: the latest gsd-core release published on npm at or below the synced commit. `scripts/install-conformance-oracle.sh` greps this declaration and runs `npm install @opengsd/gsd-core@<version>` — in the publish job (`.github/workflows/release.yml`) and inside `./scripts/pre-tag-check.sh --container`. The floor of the installed-GSD comparison's in-sync range. |
+| `GSD_CORE_SYNCED_COMMIT` | `v1.20.1` | The tree the config surface was diffed against, as `git describe --tags --always` spells it. |
+| `GSD_CORE_SYNCED_TREE_VERSION` | `1.20.1` | The `package.json` version of that tree. The ceiling of the installed-GSD comparison's in-sync range (quick task 260926-j0a). |
 
 This file is the human-readable half: the full key inventory, per-key status,
 and the exact commands that produced it, so the *next* sync starts from a
@@ -43,7 +43,11 @@ was two quick tasks: 261103-em6 re-ported the `.planning` formats (the ROADMAP
 phase-entry grammar, the Progress-table owner and the milestone slice), and
 261103-f5i moved the baseline, promoted the two planner stall knobs to typed
 rows and corrected three help texts — see
-[The v1.20.0 delta](#the-v1200-delta-quick-task-261103-f5i).
+[The v1.20.0 delta](#the-v1200-delta-quick-task-261103-f5i). The v1.20.1 sync
+(quick task 261105-e7u) was baseline-only, a hotfix release with no config key,
+default or loader change; the milestone-prefixed phase-id readers it touches are
+ported by quick task 261105-e7v — see
+[The v1.20.1 delta](#the-v1201-delta-quick-task-261105-e7u).
 
 > **Keep this file, `config_json.rs`'s three constants and README.md's
 > `**GSD compatibility:**` note in step, in the SAME commit.** A record that
@@ -75,7 +79,7 @@ it, and nothing below checks out a branch there.
 
 **Measure against a REF, never the working tree.** The local checkout's HEAD is
 whatever branch someone last worked on (at the time of writing: `next`, at
-`v1.18.0-151-g3730c6704` with `package.json` 1.19.0, i.e. 151 commits past the
+`v1.20.1-24-g9d6b6c728` with `package.json` 1.20.1, i.e. 24 commits past the
 last tag it was described from) — not the sync target. A
 plain `cat "$CORE/docs/CONFIGURATION.md"` or `node -p require(package.json)`
 measures the wrong tree.
@@ -83,7 +87,7 @@ measures the wrong tree.
 ```bash
 CORE=~/projects/node/gsd-core
 REF=v1.21.0                          # the sync target: the next release tag
-PREV=v1.20.0                         # the previous GSD_CORE_SYNCED_COMMIT
+PREV=v1.20.1                         # the previous GSD_CORE_SYNCED_COMMIT
 
 # 1. The baseline constants.
 git -C "$CORE" describe --tags --always "$REF"   # -> GSD_CORE_SYNCED_COMMIT
@@ -134,6 +138,86 @@ reproduced verbatim.
 `capabilities/<name>/capability.json` (like `workflow.ui_interaction_capture`)
 shows up in CONFIGURATION.md and in step 4's capability diff, but not in
 `config-schema.manifest.json`'s `validKeys`. Diff both.
+
+---
+
+## The v1.20.1 delta (quick task 261105-e7u)
+
+Measured on 2026-11-05 between `v1.20.0` and `v1.20.1`
+(`9385f4618b52ef68ed8a5e8bdd93cfb25bd87765`), against the tags, not the
+working tree. v1.20.1 is a hotfix release: 20 commits, two of them
+release-branch merges (#5894), and a CHANGELOG with a Fixed section only.
+
+| Measurement | v1.20.0 | v1.20.1 | Change |
+|---|---:|---:|---|
+| CONFIGURATION.md key cells (step 2) | 263 | 263 | **+0 / -0** (the file has no diff) |
+| `config-schema.manifest.json`, `config-defaults.manifest.json`, `gsd-core/templates/config.json` | — | — | unchanged (no diff) |
+| `src/config.cts`, `src/secrets.cts`, `src/config-loader.cts` | — | — | unchanged (no diff) |
+| Existing keys whose default changed | — | — | **none** |
+| `capabilities/*/capability.json` | 1.20.0 | 1.20.1 | 45 files bump `version`; no other line changes |
+
+The Modelled count stays 138 and `DEFAULTS_OPTION_COUNT` stays 138. No Defaults
+row, typed field or reader changes in this build.
+
+**Milestone-prefixed phase ids (#5675, #5676).** Under
+`phase_id_convention: milestone-prefixed`, `src/phase-id.cts` now has one owner
+per convention for the numeric phase token: `phaseNumberTokenSource(convention)`
+returns the #5626 M-NN grammar `\d+(?:-\d+)?[A-Z]?(?:\.\d+)*` for
+milestone-prefixed and the unchanged numeric source otherwise. #5676
+(30322c042) covers `phase complete`, `state sync`, init progress, init
+manager's heading scans and checked-phase fallback, `find-phase` and the
+planning snapshot; #5675 (a195bbc38) covers `drift-guard phase-status` and
+workstream progress. A `03-02-beta` directory is phase `3-02`, not `3`. For
+every other convention the token source is byte-identical, so default-convention
+`.planning` reads are unchanged. This build's port of the grammar is owned by
+quick task 261105-e7v (same batch); this sync changes no reader.
+
+**`<project>/.gsd/` tool state (#5682, #5757).** Both the dispatch-isolation
+sentinel (`.gsd/dispatch-isolation-sentinel.json`) and the harness fork-probe
+cache (`.gsd/harness-fork-probe.json`) already lived under `<project>/.gsd/` at
+v1.20.0. v1.20.1 adds per-dispatch keyed records at
+`.gsd/dispatch-isolation/<phase>--<plan>.json` (#5682, a8e0f1a1d), so two
+orchestrators in one checkout stop overwriting each other's decision. It also
+adds `src/gsd-tool-dir.cts` as the single owner of the directory (#5757,
+3e2e1f331), which never writes through a `.gsd` symlink resolving outside the
+project and seeds `.gsd/.gitignore` so the cache stays out of git. This build
+reads neither. The only `.gsd` paths under `src/` are `$HOME/.gsd` (the sandbox
+read-only bind list, `src/launcher/home.rs`) and `$GSD_HOME/.gsd` (the defaults
+store), and the only dispatch-isolation hit is instruction prose in
+`src/launcher/assets/MASTER-PROMPT.md`.
+
+**Other areas.**
+
+- **The CLI.** `commands/gsd` changes only `new-project.md` and
+  `new-milestone.md`. The closing hand-off now recommends `/gsd:discuss-phase`,
+  with `/gsd:plan-phase` to plan directly and `/gsd:execute-phase` to execute
+  (#5723), and both `requires:` lists gain `discuss-phase` and `execute-phase`.
+  No verb is added or removed, and this app calls no new verbs. Also:
+  `effort sync --apply` records rewritten agent hashes in
+  `gsd-file-manifest.json` (#5683), which this build does not read, and
+  `phase insert` names the owning milestone in its error (#5679).
+- **Routing.** `init.manager`'s output shape is unchanged. `src/init.cts` only
+  threads the phase-id convention into its scans, byte-identical except under
+  milestone-prefixed, and `src/smart-entry.cts` has no diff.
+  `tests/driver_router_conformance.rs` is green against the installed gsd-core
+  1.20.1 (see quick task 261105-e7u's SUMMARY for the run). Any
+  milestone-prefixed conformance fixture belongs to 261105-e7v.
+- **Agents/worktrees.** `agents/` has no diff. The isolation-guard hook change is
+  the #5682 keyed record above.
+- **Codex and installs.** `capabilities/codex/capability.json` changes only
+  `version`, and the upstream install-tree fixtures (`tests/fixtures`) have no
+  diff. #5715 (5a7cfecf7) rewrites each config-dir reference once in installed
+  files (nested or `$&` config dirs, including the Codex agent TOML). The
+  install roots `src/state_reader/gsd_install.rs` reads
+  (`<config home>/gsd-core/VERSION` for Claude and Codex, global and
+  project-local) are unchanged.
+- **Secret-bearing keys.** `git diff` of `src/secrets.cts` and
+  `gsd-core/references/gsd-run-resolver.md` over the range is empty: no change.
+  The resolver-order comments in `src/state_reader/queue_md.rs` stay accurate.
+- **Release pipeline only.** #5890, #5894, #5902, #5903 and #5904 (merge-commit
+  release PRs, ancestry checks, changeset lint, issue-link and title gates,
+  prompt-injection-scan fixtures) plus two CI timeout history updates. Nothing
+  here reads them.
 
 ---
 
@@ -890,7 +974,7 @@ warning.
 Then, in priority order:
 
 1. **Re-measure the baseline trio** with step 1 against the next release tag
-   (`REF=v1.21.0`, `PREV=v1.20.0`). If `GSD_CORE_SYNCED_COMMIT` already
+   (`REF=v1.21.0`, `PREV=v1.20.1`). If `GSD_CORE_SYNCED_COMMIT` already
    matches the new REF, there is nothing else to do. If the target is an
    untagged tree past the last npm release, see "When the three disagree"
    above. After moving the oracle pin, re-run

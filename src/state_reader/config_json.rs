@@ -2,14 +2,14 @@ use serde::{Deserialize, Serialize};
 
 /// The latest gsd-core release PUBLISHED ON NPM at or below
 /// [`GSD_CORE_SYNCED_COMMIT`] — MEASURED rather than remembered (quick tasks
-/// 260916-vqw ID-1/ID-4, 260926-gtk, 261012-kee, 261016-dx3, 261019-foc, 261027-184, 261103-f5i).
+/// 260916-vqw ID-1/ID-4, 260926-gtk, 261012-kee, 261016-dx3, 261019-foc, 261027-184, 261103-f5i, 261105-e7u).
 ///
 /// **It is the conformance-oracle pin.** `scripts/install-conformance-oracle.sh`
 /// greps this declaration and npm-installs `@opengsd/gsd-core@<this>` — in the
 /// publish job (`.github/workflows/release.yml`) and in
 /// `./scripts/pre-tag-check.sh --container`. It can only name a version that is
 /// on npm, so it lags [`GSD_CORE_SYNCED_TREE_VERSION`] whenever a sync targets
-/// an unpublished, untagged tree. At the v1.20.0 sync (261103-f5i) the target is
+/// an unpublished, untagged tree. At the v1.20.1 sync (261105-e7u) the target is
 /// a published tag, so all three constants name the same release.
 ///
 /// **What a future syncer does with the trio.** gsd-core adds config keys every
@@ -24,23 +24,23 @@ use serde::{Deserialize, Serialize};
 /// the local checkout's working-tree HEAD is not necessarily the sync target:
 ///
 /// ```text
-/// CORE=~/projects/node/gsd-core REF=v1.20.0
+/// CORE=~/projects/node/gsd-core REF=v1.20.1
 /// git -C "$CORE" describe --tags --always "$REF"   # -> GSD_CORE_SYNCED_COMMIT
 /// git -C "$CORE" show "$REF:package.json"          # -> GSD_CORE_SYNCED_TREE_VERSION
 /// npm view @opengsd/gsd-core version               # -> GSD_CORE_SYNCED_VERSION
 /// ```
-pub const GSD_CORE_SYNCED_VERSION: &str = "1.20.0";
+pub const GSD_CORE_SYNCED_VERSION: &str = "1.20.1";
 
 /// The exact gsd-core revision this build's config surface was synced
 /// against, as `git describe --tags --always` spells it.
 ///
-/// The `v1.20.0` release tag, full sha
-/// `b14172e38d02aeab483856949453264228886517`. Because the target is a tag, the
+/// The `v1.20.1` release tag, full sha
+/// `9385f4618b52ef68ed8a5e8bdd93cfb25bd87765`. Because the target is a tag, the
 /// describe is the bare tag name and contains [`GSD_CORE_SYNCED_VERSION`]. A
 /// future sync to an untagged tree past the last published release gets a
 /// `vX.Y.Z-N-g<sha>` describe that names the older tag — still containing the
 /// oracle pin, which is what `the_gsd_core_sync_baseline_is_recorded` checks.
-pub const GSD_CORE_SYNCED_COMMIT: &str = "v1.20.0";
+pub const GSD_CORE_SYNCED_COMMIT: &str = "v1.20.1";
 
 /// The `package.json` version of the gsd-core tree at
 /// [`GSD_CORE_SYNCED_COMMIT`], measured with `git -C "$CORE" show
@@ -55,7 +55,7 @@ pub const GSD_CORE_SYNCED_COMMIT: &str = "v1.20.0";
 /// Named so that the declaration regex `scripts/install-conformance-oracle.sh`
 /// greps for [`GSD_CORE_SYNCED_VERSION`] cannot match it: that grep must keep
 /// matching exactly one line, the oracle pin.
-pub const GSD_CORE_SYNCED_TREE_VERSION: &str = "1.20.0";
+pub const GSD_CORE_SYNCED_TREE_VERSION: &str = "1.20.1";
 
 /// Every key of a parsed block that this build has no typed field for.
 ///
