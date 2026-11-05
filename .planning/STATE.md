@@ -1,12 +1,12 @@
 ---
 gsd_state_version: "1.0"
-milestone: v2.1.0
+milestone: v2.2.0
 current_phase_name: Sandbox Egress & Agent-Channel Isolation
 status: shipped
-stopped_at: v2.1.0 released locally (tag v2.1.0, not pushed) — interim gsd-core 1.20.0 Sync release between milestones
-last_updated: "2026-11-05T17:48:20.619Z"
-last_activity: 2026-11-03
-last_activity_desc: v2.1.0 released — gsd-core 1.20.0 Sync
+stopped_at: v2.2.0 released and pushed (master + tag v2.2.0) — interim gsd-core 1.20.1 Sync & One-off Tasks release between milestones
+last_updated: "2026-11-05T20:00:00.000Z"
+last_activity: 2026-11-05
+last_activity_desc: v2.2.0 released — gsd-core 1.20.1 Sync & One-off Tasks
 state_head: a6b9d5140371b15918276e09eb1466322990b199
 progress:
   total_phases: 16
@@ -14,7 +14,7 @@ progress:
   total_plans: 125
   completed_plans: 125
   percent: 100
-milestone_name: gsd-core 1.20.0 Sync
+milestone_name: gsd-core 1.20.1 Sync & One-off Tasks
 current_phase: "28.1"
 ---
 
@@ -25,10 +25,20 @@ current_phase: "28.1"
 See: .planning/PROJECT.md (updated 2026-10-29)
 
 **Core value:** See the state of every GSD project at a glance and act on any of them without leaving the TUI.
-**Current focus:** Planning next milestone — v2.1.0 (gsd-core 1.20.0 Sync) shipped; start with `/gsd-new-milestone`
+**Current focus:** Planning next milestone — v2.2.0 (gsd-core 1.20.1 Sync & One-off Tasks) shipped; start with `/gsd-new-milestone`
 
 ## Current Position
 
+Status: v2.2.0 shipped 2026-11-05 (interim release between milestones; no milestone archived)
+  gsd-core v1.20.1 sync: quick 261105-e7u (baseline constants 1.20.1 / v1.20.1 / 1.20.1, sync
+  record), 261105-e7v (milestone-prefixed M-NN phase ids) and 261105-fq6 (M-NN parity gaps,
+  M-0043). Experimental one-off task runs: quick 261103-f5y, gt1, hx7, klf, mnr, o2r, p5n, pd7,
+  qqm, ubn; plus 261103-tn4 (editor shell-outs vs the TUI input reader). `cargo update`:
+  finl_unicode 1.5.0 -> 1.5.1. `./scripts/pre-tag-check.sh --container v2.2.0` (docker): gates
+  1-6 PASS, oracle @opengsd/gsd-core@1.20.1; 59 suites, 3645 passed, 0 failed, 17 ignored.
+  Next: `/gsd-new-milestone`.
+
+Earlier (v2.1.0 release, 2026-11-03):
 Status: v2.1.0 shipped 2026-11-03 (interim release between milestones; no milestone archived)
   gsd-core v1.20.0 sync: quick 261103-em6 (ROADMAP phase-entry grammar #5763 shared across the
   checklist recognizers, Progress table located by the #5761 owner rule and sliced to the current
@@ -586,11 +596,12 @@ non-unique bullets in these narrative logs). Disclosed per file instead [inferre
 
 ## Session Continuity
 
-Last session: 2026-11-03
-Stopped at: v2.1.0 released locally (gsd-core 1.20.0 Sync, interim, between milestones) — release commit and annotated tag v2.1.0 created; nothing pushed (origin is public; the user pushes)
+Last session: 2026-11-05
+Stopped at: v2.2.0 released (gsd-core 1.20.1 Sync & One-off Tasks, interim, between milestones) — release commit and annotated tag v2.2.0 created and pushed to origin (master + v2.2.0, push approved for this release)
 Resume file: None
 
-Next: push `master` and tag `v2.1.0` (user), then `/gsd-new-milestone`.
+Next: `/gsd-new-milestone`.
+Earlier (2026-11-03): v2.1.0 released — release commit and annotated tag v2.1.0 created.
 Earlier (2026-10-29): v2.0.0 released locally — milestone v2.0 archived, release commit and annotated tag v2.0.0 created.
 Earlier session history: `.planning/STATE-ARCHIVE.md`.
 
