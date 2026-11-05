@@ -1,3 +1,4 @@
+use super::phase_num::{PhaseIdConvention, PhaseNum};
 use super::plan_waves;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -1371,17 +1372,37 @@ fn plan_id_order(a: &str, b: &str) -> std::cmp::Ordering {
 /// Test whether a phase directory name belongs to the given phase number.
 ///
 /// GSD 1.8.0 phase directories are no longer always `NN-slug`: they may be
-/// decimal (`0.3-slug`), milestone-prefixed (`M1-2-slug`), project-code-prefixed
-/// (`AB-29-slug`), or year-prefixed multi-segment (`14-2026-foo`). Matching must
+/// decimal (`0.3-slug`), letter-prefixed (`M1-2-slug`, `AB-29-slug`, matched as
+/// a raw prefix), or year-prefixed multi-segment (`14-2026-foo`). Matching must
 /// also be pad-insensitive (`3-foo` and `03-foo` both match phase `3`) while
 /// still rejecting bare-number-vs-longer-number collisions (`1` must not match
 /// `14-foo` or `1.2-foo`).
 ///
-/// A candidate list is built from `phase_number` — always the raw string, plus
-/// (for all-digit numbers) the zero-padded-to-2 and leading-zeros-stripped forms.
-/// A directory matches a candidate `C` when it equals `C` or starts with `C-`;
-/// the trailing `-` is the boundary guard against longer-number collisions.
-fn phase_dir_matches(dir_name: &str, phase_number: &str) -> bool {
+/// **[`PhaseIdConvention::Legacy`]** builds a candidate list from
+/// `phase_number` — always the raw string, plus (for all-digit numbers) the
+/// zero-padded-to-2 and leading-zeros-stripped forms. A directory matches a
+/// candidate `C` when it equals `C` or starts with `C-`; the trailing `-` is
+/// the boundary guard against longer-number collisions.
+///
+/// **[`PhaseIdConvention::MilestonePrefixed`]**, for a `phase_number` that
+/// parses as a [`PhaseNum`]: the directory's leading `M-NN` token
+/// (`^[0-9]+(?:-[0-9]+)?(?:\.[0-9]+)*`, ending the name or followed by `-`)
+/// must be the same [`PhaseNum`] as the phase. Upstream reads
+/// `^(phaseNumberTokenSource('milestone-prefixed'))-?` the same way in
+/// `cmdFindPhase`, `cmdPhaseComplete` and `cmdInitProgress`. There is no
+/// bare-integer fallback: `03-02-beta` is phase `3-02` and never phase `3`
+/// (#5676). A phase that does not parse (`AB-29`, `12A`) uses the legacy rule.
+///
+/// **Known divergence (T-e7v-04).** Upstream `findPhaseInternal` still applies
+/// its #2528 unique bare-integer fallback, so with a lone `03-02-beta` gsd-core
+/// 1.20.1 reads phase `3` as that directory. With two or more `03-*`
+/// directories it refuses, and agrees with this rule (measured 2026-11-05).
+fn phase_dir_matches(dir_name: &str, phase_number: &str, convention: PhaseIdConvention) -> bool {
+    if convention == PhaseIdConvention::MilestonePrefixed {
+        if let Some(want) = PhaseNum::parse(phase_number) {
+            return dir_leading_phase(dir_name).is_some_and(|have| have == want);
+        }
+    }
     let mut candidates: Vec<String> = vec![phase_number.to_string()];
     if !phase_number.is_empty() && phase_number.chars().all(|c| c.is_ascii_digit()) {
         if phase_number.len() < 2 {
@@ -1412,19 +1433,46 @@ fn phase_dir_matches(dir_name: &str, phase_number: &str) -> bool {
         .any(|c| dir_name == c || dir_name.starts_with(&format!("{c}-")))
 }
 
+/// The phase a directory name leads with under the milestone-prefixed grammar:
+/// its `M-NN` token, which must end the name or be followed by `-`. Captures
+/// only; an untrusted name is never byte-indexed.
+fn dir_leading_phase(dir_name: &str) -> Option<PhaseNum> {
+    static LEADING: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = LEADING
+        .get_or_init(|| regex::Regex::new(r"^([0-9]+(?:-[0-9]+)?(?:\.[0-9]+)*)(?:-|$)").unwrap());
+    re.captures(dir_name)
+        .and_then(|caps| PhaseNum::parse(&caps[1]))
+}
+
 /// Find a phase directory by its number, checking both active phases/ and archived milestones/.
 ///
 /// Search order:
 /// 1. planning_dir/phases/ for directories starting with zero-padded phase number (e.g., "05-")
 /// 2. planning_dir/milestones/*/ for archived phases
+///
+/// Resolves the project's phase-id convention itself
+/// ([`super::phase_id_convention`]), so every caller reads `M-NN` directories
+/// the way the snapshot does.
 pub fn find_phase_dir(planning_dir: &Path, phase_number: &str) -> Option<PathBuf> {
+    find_phase_dir_in(
+        planning_dir,
+        phase_number,
+        super::phase_id_convention(planning_dir),
+    )
+}
+
+fn find_phase_dir_in(
+    planning_dir: &Path,
+    phase_number: &str,
+    convention: PhaseIdConvention,
+) -> Option<PathBuf> {
     // Check phases/ directory first
     let phases_dir = planning_dir.join("phases");
     if let Ok(entries) = std::fs::read_dir(&phases_dir) {
         for entry in entries.flatten() {
             if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
                 if let Some(name) = entry.file_name().to_str() {
-                    if phase_dir_matches(name, phase_number) {
+                    if phase_dir_matches(name, phase_number, convention) {
                         return Some(entry.path());
                     }
                 }
@@ -1445,7 +1493,7 @@ pub fn find_phase_dir(planning_dir: &Path, phase_number: &str) -> Option<PathBuf
                     for phase_entry in phase_entries.flatten() {
                         if phase_entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
                             if let Some(name) = phase_entry.file_name().to_str() {
-                                if phase_dir_matches(name, phase_number) {
+                                if phase_dir_matches(name, phase_number, convention) {
                                     return Some(phase_entry.path());
                                 }
                             }
@@ -1461,7 +1509,11 @@ pub fn find_phase_dir(planning_dir: &Path, phase_number: &str) -> Option<PathBuf
 
 /// Infer a phase's status by locating its directory and scanning artifacts.
 /// Archived phases (in milestones/) are always Complete per Pitfall 4.
-pub fn infer_phase_status(planning_dir: &Path, phase_number: &str) -> DiskInference {
+pub fn infer_phase_status(
+    planning_dir: &Path,
+    phase_number: &str,
+    convention: PhaseIdConvention,
+) -> DiskInference {
     // Check if phase is in milestones/ (archived = Complete)
     let milestones_dir = planning_dir.join("milestones");
     if let Ok(milestone_entries) = std::fs::read_dir(&milestones_dir) {
@@ -1475,7 +1527,7 @@ pub fn infer_phase_status(planning_dir: &Path, phase_number: &str) -> DiskInfere
                     for phase_entry in phase_entries.flatten() {
                         if phase_entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
                             if let Some(name) = phase_entry.file_name().to_str() {
-                                if phase_dir_matches(name, phase_number) {
+                                if phase_dir_matches(name, phase_number, convention) {
                                     // Archived phase -- always Complete.
                                     //
                                     // Deliberately NOT re-derived through the
@@ -1499,7 +1551,7 @@ pub fn infer_phase_status(planning_dir: &Path, phase_number: &str) -> DiskInfere
     }
 
     // Check phases/ directory
-    match find_phase_dir(planning_dir, phase_number) {
+    match find_phase_dir_in(planning_dir, phase_number, convention) {
         Some(dir) => infer_disk_status(&dir),
         None => DiskInference {
             status: DiskStatus::NoDirectory,
@@ -2226,7 +2278,7 @@ mod tests {
         // Also create phases/ directory (empty, no phase 05 there)
         fs::create_dir_all(dir.path().join("phases")).unwrap();
 
-        let result = infer_phase_status(dir.path(), "05");
+        let result = infer_phase_status(dir.path(), "05", PhaseIdConvention::Legacy);
         assert_eq!(result.status, DiskStatus::Complete);
     }
 
@@ -2889,49 +2941,93 @@ mod tests {
 
     #[test]
     fn test_phase_dir_matches_year_prefixed() {
-        assert!(phase_dir_matches("14-2026-foo", "14"));
+        assert!(phase_dir_matches(
+            "14-2026-foo",
+            "14",
+            PhaseIdConvention::Legacy
+        ));
     }
 
     #[test]
     fn test_phase_dir_matches_decimal() {
-        assert!(phase_dir_matches("0.3-slug", "0.3"));
+        assert!(phase_dir_matches(
+            "0.3-slug",
+            "0.3",
+            PhaseIdConvention::Legacy
+        ));
     }
 
     #[test]
-    fn test_phase_dir_matches_milestone_prefixed() {
-        assert!(phase_dir_matches("M1-2-slug", "M1-2"));
+    fn test_phase_dir_matches_letter_prefixed_id() {
+        assert!(phase_dir_matches(
+            "M1-2-slug",
+            "M1-2",
+            PhaseIdConvention::Legacy
+        ));
     }
 
     #[test]
     fn test_phase_dir_matches_project_code_prefixed() {
-        assert!(phase_dir_matches("AB-29-slug", "AB-29"));
+        assert!(phase_dir_matches(
+            "AB-29-slug",
+            "AB-29",
+            PhaseIdConvention::Legacy
+        ));
     }
 
     #[test]
     fn test_phase_dir_matches_pad_insensitive() {
-        assert!(phase_dir_matches("3-foo", "3"));
-        assert!(phase_dir_matches("03-foo", "3"));
+        assert!(phase_dir_matches("3-foo", "3", PhaseIdConvention::Legacy));
+        assert!(phase_dir_matches("03-foo", "3", PhaseIdConvention::Legacy));
     }
 
     #[test]
     fn test_phase_dir_matches_rejects_longer_number() {
-        assert!(!phase_dir_matches("14-foo", "1"));
+        assert!(!phase_dir_matches("14-foo", "1", PhaseIdConvention::Legacy));
     }
 
     #[test]
     fn test_phase_dir_matches_rejects_decimal_boundary() {
-        assert!(!phase_dir_matches("1.2-foo", "1"));
+        assert!(!phase_dir_matches(
+            "1.2-foo",
+            "1",
+            PhaseIdConvention::Legacy
+        ));
     }
 
     /// ttbook: ROADMAP's checklist says `7.1`, the directory is `07.1-slug`.
     #[test]
     fn test_phase_dir_matches_decimal_pad_insensitive() {
-        assert!(phase_dir_matches("07.1-apply-owner-rulings", "7.1"));
-        assert!(phase_dir_matches("07.1-apply-owner-rulings", "07.1"));
-        assert!(phase_dir_matches("7.1-apply", "07.1"));
-        assert!(!phase_dir_matches("07.10-foo", "7.1"));
-        assert!(!phase_dir_matches("07-consolidation", "7.1"));
-        assert!(!phase_dir_matches("07.1-apply", "7"));
+        assert!(phase_dir_matches(
+            "07.1-apply-owner-rulings",
+            "7.1",
+            PhaseIdConvention::Legacy
+        ));
+        assert!(phase_dir_matches(
+            "07.1-apply-owner-rulings",
+            "07.1",
+            PhaseIdConvention::Legacy
+        ));
+        assert!(phase_dir_matches(
+            "7.1-apply",
+            "07.1",
+            PhaseIdConvention::Legacy
+        ));
+        assert!(!phase_dir_matches(
+            "07.10-foo",
+            "7.1",
+            PhaseIdConvention::Legacy
+        ));
+        assert!(!phase_dir_matches(
+            "07-consolidation",
+            "7.1",
+            PhaseIdConvention::Legacy
+        ));
+        assert!(!phase_dir_matches(
+            "07.1-apply",
+            "7",
+            PhaseIdConvention::Legacy
+        ));
     }
 
     #[test]
@@ -3597,5 +3693,37 @@ actuals:
             None,
             "oversized"
         );
+    }
+
+    #[test]
+    fn phase_dir_matches_milestone_prefixed_reads_the_m_nn_token() {
+        let mp = PhaseIdConvention::MilestonePrefixed;
+        for (dir, phase) in [
+            ("03-01-alpha", "3-01"),
+            ("03-01", "3-01"),
+            ("03-alpha", "3"),
+            ("3-alpha", "3"),
+            ("07.1-x", "7.1"),
+            ("AB-29-slug", "AB-29"),
+        ] {
+            assert!(phase_dir_matches(dir, phase, mp), "{dir} ~ {phase}");
+        }
+        for (dir, phase) in [
+            ("03-02-beta", "3"),
+            ("03-01.1-x", "3-01"),
+            ("03-01-alpha", "3-02"),
+            ("14-2026-foo", "14"),
+        ] {
+            assert!(!phase_dir_matches(dir, phase, mp), "{dir} !~ {phase}");
+        }
+    }
+
+    #[test]
+    fn milestone_prefixed_dir_rule_is_off_by_default() {
+        assert!(phase_dir_matches(
+            "03-02-beta",
+            "3",
+            PhaseIdConvention::Legacy
+        ));
     }
 }

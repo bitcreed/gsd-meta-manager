@@ -1,4 +1,4 @@
-use super::phase_num::{phase_key, PhaseNum};
+use super::phase_num::{phase_key, PhaseIdConvention, PhaseNum};
 use regex::Regex;
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -43,7 +43,7 @@ pub struct RoadmapProgress {
 ///
 /// Accepts:
 /// - bare numeric / decimal IDs (`4`, `0.3`, `14`, `26`)
-/// - project-code / milestone-prefixed IDs (`M-2`, `AB-29`)
+/// - letter-prefixed (project-code) IDs (`M-2`, `AB-29`)
 /// - a trailing letter (covers backlog sentinels like `999.x`)
 /// - letter-suffixed ids with dotted sub-phases (`12A`, `12A.1`, `23A.1.2`) —
 ///   gsd-core's canonical `PHASE_NUMBER_TOKEN_SOURCE` `\d+[A-Z]?(?:\.\d+)*`
@@ -56,6 +56,38 @@ pub struct RoadmapProgress {
 /// has not already consumed, so every decimal, padded, prefixed and sentinel
 /// match is unchanged; only a letter followed by `.N` segments newly matches.
 const PHASE_ID: &str = r"(?:[A-Za-z]{1,4}-)?[0-9][0-9.]*[A-Za-z]?(?:\.[0-9]+)*";
+
+/// [`PHASE_ID`] with gsd-core's `milestone-prefixed` `M-NN` segment: one
+/// optional `-NN` after the leading digit run (`3-01`, `03-01.1`). Upstream's
+/// `PHASE_NUMBER_TOKEN_SOURCE_MILESTONE_PREFIXED` (`src/phase-id.cts`, v1.20.1,
+/// #5675 / #5676), which the `regex` crate reads in linear time. Only used
+/// when `.planning/config.json` opts in (see [`phase_id_source`]).
+const PHASE_ID_MILESTONE_PREFIXED: &str =
+    r"(?:[A-Za-z]{1,4}-)?[0-9]+(?:-[0-9]+)?[0-9.]*[A-Za-z]?(?:\.[0-9]+)*";
+
+/// The id token a scanner reads under `convention` (upstream
+/// `phaseNumberTokenSource`). [`PhaseIdConvention::Legacy`] is exactly
+/// [`PHASE_ID`], so a project that did not opt in compiles the same pattern
+/// strings it compiled before (upstream `phaseHeadingPrefixSrcFor`'s rule).
+fn phase_id_source(convention: PhaseIdConvention) -> &'static str {
+    match convention {
+        PhaseIdConvention::Legacy => PHASE_ID,
+        PhaseIdConvention::MilestonePrefixed => PHASE_ID_MILESTONE_PREFIXED,
+    }
+}
+
+/// One compiled regex per convention. `build` receives the id token source.
+fn per_convention(
+    slots: &'static [OnceLock<Regex>; 2],
+    convention: PhaseIdConvention,
+    build: impl FnOnce(&'static str) -> String,
+) -> &'static Regex {
+    let slot = match convention {
+        PhaseIdConvention::Legacy => &slots[0],
+        PhaseIdConvention::MilestonePrefixed => &slots[1],
+    };
+    slot.get_or_init(|| Regex::new(&build(phase_id_source(convention))).unwrap())
+}
 
 /// The phase identifier a written phase reference names, in the forms this file
 /// already recognises.
@@ -107,6 +139,12 @@ pub fn extract_phase_id(text: &str) -> Option<String> {
 /// A leading alphabetic project-code prefix (`M-`, `AB-`) is stripped first so
 /// only the numeric body is inspected. Ordinary decimals like `0.3` are kept.
 /// Numeric, so GSD's padded spellings (`00`, `0999.1`) are sentinels too.
+///
+/// A milestone-prefixed `M-NN` id (`0-01`, `999-01`) is a sentinel when its
+/// milestone (the leading integer) is 0 or 999 — upstream `isSentinelPhaseId`'s
+/// leading-int rule, `SENTINEL_RANGES` `[0, 999]`. Legacy decimals keep the
+/// local rule, so `0.3` stays a real phase. Sentinel-ness reads the same
+/// leading integer under both conventions, so it needs no convention argument.
 fn is_sentinel_phase(number: &str) -> bool {
     let n = match number.split_once('-') {
         Some((prefix, rest))
@@ -117,7 +155,9 @@ fn is_sentinel_phase(number: &str) -> bool {
         _ => number,
     };
     match super::phase_num::PhaseNum::parse(n) {
-        Some(num) => num == 0 || num.major() == 999,
+        Some(num) => {
+            num == 0 || num.major() == 999 || (num.has_milestone_segment() && num.major() == 0)
+        }
         None => n == "0" || n == "999" || n.starts_with("999."),
     }
 }
@@ -154,6 +194,14 @@ fn is_sentinel_phase(number: &str) -> bool {
 ///    ids (`Phase M-2`), which upstream skips. Negation prose (`blocks on
 ///    nothing in Phases 9-11`) is read, as upstream reads it: dropping a real
 ///    dependency is the dangerous direction.
+///
+/// **The grammar is the legacy token under every convention.** Upstream
+/// 30322c042's maintainer decision is that "dependency lists keep reading
+/// `Phases 1-3` as range endpoints under every non-bracket convention", so
+/// `**Depends on**: Phase 3-01` reads as `["3", "01"]` (oracle gsd-core 1.20.1
+/// `dep_phases ["3","01"]`, `deps_satisfied` false). Reading `3-01` as one
+/// dependency would let the driver run a phase where GSD's router emits
+/// nothing; the upstream reading fails closed, and a test pins it.
 ///
 /// The entry's own phase is never listed (#4764 self-reference), and a
 /// repeated identifier appears once — both compared by [`dep_ref_key`], so
@@ -235,7 +283,9 @@ fn dep_ref_key(id: &str) -> String {
 ///   `- [x] **Phase N: Title** (INSERTED) - desc`, `… (3/3 plans) — done`
 /// - plain checklist: `- [x] Phase N: Title — desc`
 /// - parenthetical cluster tags: `- [ ] **Phase 26 (Cluster B): Title** - desc`
-/// - project-code / milestone-prefixed IDs: `Phase M-2`, `Phase AB-29`
+/// - letter-prefixed (project-code) IDs: `Phase M-2`, `Phase AB-29`
+/// - under [`PhaseIdConvention::MilestonePrefixed`] only, gsd-core's `M-NN`
+///   ids: `Phase 3-01: Alpha`
 /// - markdown headings, colon or spaced-dash separated: `### Phase 4:
 ///   Visualization`, `### Phase 13 — Title` (no checkbox → `completed: false`)
 /// - `<details>` / `</details>` / `<summary>` wrapper lines are transparent, so
@@ -243,8 +293,8 @@ fn dep_ref_key(id: &str) -> String {
 ///   are still counted — but **every line of a closed-milestone collapse is
 ///   skipped** ([`closed_milestone_lines`], GSD's own rule): those phases are
 ///   shipped history and go to [`parse_shipped_phases`] instead.
-pub fn parse_roadmap_phases(content: &str) -> Vec<RoadmapPhase> {
-    parse_phases_in_region(content, Region::Current)
+pub fn parse_roadmap_phases(content: &str, convention: PhaseIdConvention) -> Vec<RoadmapPhase> {
+    parse_phases_in_region(content, Region::Current, convention)
 }
 
 /// Which part of a roadmap a phase parser reads: everything outside
@@ -307,16 +357,15 @@ const PHASE_ENTRY_BOLD_OPEN: &str = r"(?:\*\*|__)[ \t]*";
 /// differently (`desc`, not `- desc`), so moving them here would change
 /// captures. It closes on `**` only: a `__` wrapper closes only at the end of
 /// the line and so never has this grammar's dash tail.
-fn checklist_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(&format!(
+fn checklist_re(convention: PhaseIdConvention) -> &'static Regex {
+    static RE: [OnceLock<Regex>; 2] = [OnceLock::new(), OnceLock::new()];
+    per_convention(&RE, convention, |id| {
+        format!(
             r"{open}(~~)?{bold}Phase ({id})(?:\s*\([^)]*\))?:\s*(.+?)\*\*(~~)?\s*[-\x{{2014}}]\s*(.*)",
             open = phase_entry_open("-", true),
             bold = PHASE_ENTRY_BOLD_OPEN,
-            id = PHASE_ID
-        ))
-        .unwrap()
+            id = id
+        )
     })
 }
 
@@ -328,40 +377,35 @@ fn checklist_re() -> &'static Regex {
 /// `PHASE_ENTRY_BOLD_CLOSE_SRC`). The `regex` crate has no lookahead, so the
 /// `__` close consumes its trailing blanks and asserts `$`; groups 5 and 6 then
 /// match empty.
-fn bold_checkbox_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(&format!(
+fn bold_checkbox_re(convention: PhaseIdConvention) -> &'static Regex {
+    static RE: [OnceLock<Regex>; 2] = [OnceLock::new(), OnceLock::new()];
+    per_convention(&RE, convention, |id| {
+        format!(
             r"{open}(~~)?{bold}Phase ({id})(?:\s*\([^)]*\))?:\s*(.+?)(?:\*\*|__[ \t]*$)(~~)?(.*)$",
             open = phase_entry_open("[-*]", true),
             bold = PHASE_ENTRY_BOLD_OPEN,
-            id = PHASE_ID
-        ))
-        .unwrap()
+            id = id
+        )
     })
 }
 
 /// R5, a bare `Phase 01: Name (3 plans, complete)` line — this repository's
 /// own v1.0-v1.2 shape. Consulted ONLY inside a closed collapse: anywhere
 /// else a bare line is prose. Groups: 1=id, 2=the text after the colon.
-fn bare_phase_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(&format!(
-            r"^\s*Phase ({id})(?:\s*\([^)]*\))?:\s+(.+?)\s*$",
-            id = PHASE_ID
-        ))
-        .unwrap()
+fn bare_phase_re(convention: PhaseIdConvention) -> &'static Regex {
+    static RE: [OnceLock<Regex>; 2] = [OnceLock::new(), OnceLock::new()];
+    per_convention(&RE, convention, |id| {
+        format!(r"^\s*Phase ({id})(?:\s*\([^)]*\))?:\s+(.+?)\s*$", id = id)
     })
 }
 
 /// Whether `line` opens (or, retired, still bounds) a phase entry in `region`.
-fn is_entry_line(line: &str, region: Region) -> bool {
-    checklist_re().is_match(line)
-        || bold_checkbox_re().is_match(line)
-        || plain_checkbox_re().is_match(line)
-        || phase_heading_re().is_match(line)
-        || (region == Region::Closed && bare_phase_re().is_match(line))
+fn is_entry_line(line: &str, region: Region, convention: PhaseIdConvention) -> bool {
+    checklist_re(convention).is_match(line)
+        || bold_checkbox_re(convention).is_match(line)
+        || plain_checkbox_re(convention).is_match(line)
+        || phase_heading_re(convention).is_match(line)
+        || (region == Region::Closed && bare_phase_re(convention).is_match(line))
 }
 
 /// The one phase-line grammar both channels share. Recognizers are tried in
@@ -369,7 +413,11 @@ fn is_entry_line(line: &str, region: Region) -> bool {
 /// [`plain_checkbox_re`], headings [`phase_heading_re`], and in the closed
 /// region only R5 [`bare_phase_re`] — so an original-grammar line keeps its
 /// captures exactly. Only R2, R3 and R5 read a plan tally.
-fn recognize_phase_line(line: &str, region: Region) -> Option<RecognizedLine> {
+fn recognize_phase_line(
+    line: &str,
+    region: Region,
+    convention: PhaseIdConvention,
+) -> Option<RecognizedLine> {
     let entry = |number: &str,
                  name: String,
                  description: String,
@@ -394,7 +442,7 @@ fn recognize_phase_line(line: &str, region: Region) -> Option<RecognizedLine> {
         }
     };
 
-    if let Some(caps) = checklist_re().captures(line) {
+    if let Some(caps) = checklist_re(convention).captures(line) {
         // Strikethrough (`~~...~~`) marks a retired phase → exclude entirely.
         let retired = caps.get(2).is_some() || caps.get(5).is_some() || line.contains("~~");
         return Some(entry(
@@ -407,7 +455,7 @@ fn recognize_phase_line(line: &str, region: Region) -> Option<RecognizedLine> {
             EntryShape::Checklist,
         ));
     }
-    if let Some(caps) = bold_checkbox_re().captures(line) {
+    if let Some(caps) = bold_checkbox_re(convention).captures(line) {
         let retired = caps.get(2).is_some() || caps.get(5).is_some() || line.contains("~~");
         let (tags, description, tally) = split_bold_tail(&caps[6]);
         let mut name = caps[4].trim().to_string();
@@ -425,7 +473,7 @@ fn recognize_phase_line(line: &str, region: Region) -> Option<RecognizedLine> {
             EntryShape::Checklist,
         ));
     }
-    if let Some(caps) = plain_checkbox_re().captures(line) {
+    if let Some(caps) = plain_checkbox_re(convention).captures(line) {
         let retired = caps.get(2).is_some() || line.contains("~~");
         let (name, description, tally) = split_summary_rest(&caps[4]);
         return Some(entry(
@@ -438,7 +486,7 @@ fn recognize_phase_line(line: &str, region: Region) -> Option<RecognizedLine> {
             EntryShape::Checklist,
         ));
     }
-    if let Some(caps) = phase_heading_re().captures(line) {
+    if let Some(caps) = phase_heading_re(convention).captures(line) {
         // `###`-style headings carry no checkbox and no inline description.
         return Some(entry(
             &caps[1],
@@ -451,7 +499,7 @@ fn recognize_phase_line(line: &str, region: Region) -> Option<RecognizedLine> {
         ));
     }
     if region == Region::Closed {
-        if let Some(caps) = bare_phase_re().captures(line) {
+        if let Some(caps) = bare_phase_re(convention).captures(line) {
             let (name, description, tally) = split_summary_rest(&caps[2]);
             let completed = tally.is_some_and(|t| t.says_complete);
             return Some(entry(
@@ -474,7 +522,11 @@ fn recognize_phase_line(line: &str, region: Region) -> Option<RecognizedLine> {
 /// `**Depends on**:` line is read. Plan counts are the per-field max of the
 /// line's tally and the scanned items. A heading is complete only in the
 /// closed region, and only when it lists plans and every one is checked.
-fn parse_phases_in_region(content: &str, region: Region) -> Vec<RoadmapPhase> {
+fn parse_phases_in_region(
+    content: &str,
+    region: Region,
+    convention: PhaseIdConvention,
+) -> Vec<RoadmapPhase> {
     static DEPENDS: OnceLock<Regex> = OnceLock::new();
     // The phase part of a plan filename may be decimal: an inserted phase's
     // plans are `07.1-01-PLAN.md`, and `\d+-` alone never counted them. It
@@ -494,7 +546,7 @@ fn parse_phases_in_region(content: &str, region: Region) -> Vec<RoadmapPhase> {
         if !in_region(i) {
             continue;
         }
-        let Some(recognized) = recognize_phase_line(line, region) else {
+        let Some(recognized) = recognize_phase_line(line, region, convention) else {
             continue;
         };
         let Some(mut phase) = recognized.phase else {
@@ -507,7 +559,7 @@ fn parse_phases_in_region(content: &str, region: Region) -> Vec<RoadmapPhase> {
         // in a closed collapse is never credited to a live phase above it.
         let (mut scanned_total, mut scanned_done) = (0u32, 0u32);
         for (j, l) in lines.iter().enumerate().skip(i + 1) {
-            if !in_region(j) || is_entry_line(l, region) {
+            if !in_region(j) || is_entry_line(l, region, convention) {
                 break;
             }
             if let Some(plan_caps) = plan_re.captures(l) {
@@ -774,15 +826,14 @@ fn split_summary_rest(rest: &str) -> (String, String, Option<PlanTally>) {
 /// workflow writes: `- [x] Phase 1: Name (2/2 plans) — completed D`. Opens on
 /// [`phase_entry_open`], so `- [ ]Phase 1: Name` (no gap after the box) counts.
 /// Groups: 1=checkbox, 2=strike-open, 3=id, 4=the text after the colon.
-fn plain_checkbox_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(&format!(
+fn plain_checkbox_re(convention: PhaseIdConvention) -> &'static Regex {
+    static RE: [OnceLock<Regex>; 2] = [OnceLock::new(), OnceLock::new()];
+    per_convention(&RE, convention, |id| {
+        format!(
             r"{open}(~~)?Phase ({id})(?:\s*\([^)]*\))?:\s+(.+?)\s*$",
             open = phase_entry_open("[-*]", true),
-            id = PHASE_ID
-        ))
-        .unwrap()
+            id = id
+        )
     })
 }
 
@@ -843,8 +894,8 @@ fn split_bold_tail(tail: &str) -> (Vec<String>, String, Option<PlanTally>) {
 /// the per-field max of the line's tally and the plan items listed below it.
 /// Retired (`~~`) and sentinel ids are excluded. Duplicates merge as in
 /// [`parse_roadmap_phases`].
-pub fn parse_shipped_phases(content: &str) -> Vec<RoadmapPhase> {
-    parse_phases_in_region(content, Region::Closed)
+pub fn parse_shipped_phases(content: &str, convention: PhaseIdConvention) -> Vec<RoadmapPhase> {
+    parse_phases_in_region(content, Region::Closed, convention)
 }
 
 /// The `#### Build phase N (Milestone M): Title` heading a roadmap uses for a
@@ -883,14 +934,13 @@ fn any_heading_re() -> &'static Regex {
 ///
 /// The separator may also be a **spaced** dash (`### Phase 13 — Title`, `-`,
 /// `–`, `--`). Spaced, so `### Phase 3 Implementation Scope` stays prose.
-fn phase_heading_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(&format!(
+fn phase_heading_re(convention: PhaseIdConvention) -> &'static Regex {
+    static RE: [OnceLock<Regex>; 2] = [OnceLock::new(), OnceLock::new()];
+    per_convention(&RE, convention, |id| {
+        format!(
             r"^\s*#{{2,4}}\s+Phase ({id})(?:\s*\([^)]*\))?(?::\s+|\s+(?:--|[-\x{{2013}}\x{{2014}}])\s+)(.+?)\s*$",
-            id = PHASE_ID
-        ))
-        .unwrap()
+            id = id
+        )
     })
 }
 
@@ -991,7 +1041,10 @@ fn parse_build_depends_on(text: &str, known_ids: &[String]) -> Vec<String> {
 /// **Display-only, kept apart from [`parse_roadmap_phases`].** GSD does not
 /// count these headings, so merging them into the GSD phase list would let the
 /// driver router and the frontier target a phase GSD does not know exists.
-pub fn parse_planned_build_phases(content: &str) -> Vec<RoadmapPhase> {
+pub fn parse_planned_build_phases(
+    content: &str,
+    convention: PhaseIdConvention,
+) -> Vec<RoadmapPhase> {
     let plan_re = plan_checklist_re();
     let depends_re = Regex::new(r"(?i)^\s*\*{0,2}Depends on\*{0,2}\s*:\s*(.*)$").unwrap();
     let heading = build_heading_re();
@@ -1040,7 +1093,7 @@ pub fn parse_planned_build_phases(content: &str) -> Vec<RoadmapPhase> {
         return Vec::new();
     }
 
-    let mut known_ids: Vec<String> = parse_roadmap_phases(content)
+    let mut known_ids: Vec<String> = parse_roadmap_phases(content, convention)
         .into_iter()
         .map(|p| p.number)
         .collect();
@@ -1091,9 +1144,12 @@ pub fn parse_planned_build_phases(content: &str) -> Vec<RoadmapPhase> {
 /// **`Untrusted` values**: the text is the project's own prose and reaches a
 /// cell only through `shown()`. Lines are joined with spaces, so no raw
 /// newline from the roadmap reaches a cell.
-pub fn parse_phase_goals(content: &str) -> HashMap<String, crate::text::Untrusted> {
+pub fn parse_phase_goals(
+    content: &str,
+    convention: PhaseIdConvention,
+) -> HashMap<String, crate::text::Untrusted> {
     static GOAL: OnceLock<Regex> = OnceLock::new();
-    let phase_heading = phase_heading_re();
+    let phase_heading = phase_heading_re(convention);
     let goal = GOAL.get_or_init(|| {
         Regex::new(r"(?i)^[ \t]*\*\*Goal(?::\*\*|\*\*[ \t]*:?)[ \t]*(.*)$").unwrap()
     });
@@ -1215,6 +1271,11 @@ pub fn phase_section_line(content: &str, phase_id: &str) -> Option<usize> {
 
 /// `(1-based heading line, section text)` for [`phase_section`] and
 /// [`phase_section_line`].
+///
+/// Headings are read with the milestone-prefixed id token under every
+/// convention: upstream looks an already-known id up the same way
+/// (`phaseMarkdownRegexSource` reads `M-NN` unconditionally). The wanted key
+/// decides the match, so every legacy lookup is unchanged.
 fn locate_phase_section(content: &str, phase_id: &str) -> Option<(usize, String)> {
     let want = phase_key(phase_id);
     let mut in_fence = false;
@@ -1229,7 +1290,9 @@ fn locate_phase_section(content: &str, phase_id: &str) -> Option<(usize, String)
                 if ends_entry {
                     break;
                 }
-            } else if let Some(caps) = phase_heading_re().captures(line) {
+            } else if let Some(caps) =
+                phase_heading_re(PhaseIdConvention::MilestonePrefixed).captures(line)
+            {
                 if phase_key(caps[1].trim_end_matches(['.', ','])) == want {
                     section = Some((heading_level(line), idx + 1, Vec::new()));
                 }
@@ -1800,7 +1863,14 @@ fn same_milestone(a: &str, b: &str) -> bool {
 /// may also declare a single `Phase N`. A milestone heading additionally
 /// opens a scope that collects the phase headers nested beneath it, closed by
 /// the next heading of the same or a higher level.
-pub fn roadmap_milestones(content: &str) -> Vec<RoadmapMilestone> {
+///
+/// Under [`PhaseIdConvention::MilestonePrefixed`] the heading scope reads
+/// `M-NN` phase headings and checklist entries (`### Phase 3-01: Migrate to v2
+/// API` is a phase, never a `v2` milestone; upstream 30322c042
+/// `buildCurrentMilestoneRoadmapPhaseIdsField`). The milestone-list `range` /
+/// `single` regexes and the [`extract_phase_id`] endpoints keep the legacy
+/// token: `M-NN` ranges in a milestone list are out of scope.
+pub fn roadmap_milestones(content: &str, convention: PhaseIdConvention) -> Vec<RoadmapMilestone> {
     let ms_heading = Regex::new(r"(?i)^##[ \t]+Milestones\b").unwrap();
     let ms_boundary = Regex::new(r"^#{1,2}[ \t]").unwrap();
     let bold = Regex::new(r"\*\*(.+?)\*\*").unwrap();
@@ -1819,7 +1889,7 @@ pub fn roadmap_milestones(content: &str) -> Vec<RoadmapMilestone> {
     // heading too, never a `v2` milestone (quick 260926-fi9).
     let phase_heading = Regex::new(&format!(
         r"^\s*#{{2,4}}\s+(?:(?i:build)\s+)?[Pp]hase ({id})(?:\s*\([^)]*\))?(?::|\s+(?:--|[-\x{{2013}}\x{{2014}}])\s)",
-        id = PHASE_ID
+        id = phase_id_source(convention)
     ))
     .unwrap();
     // The same entry opening as the phase parsers (#5763). Bold stays required
@@ -1829,7 +1899,7 @@ pub fn roadmap_milestones(content: &str) -> Vec<RoadmapMilestone> {
         r"{open}(?:~~)?{bold}Phase ({id})",
         open = phase_entry_open("[-*]", false),
         bold = PHASE_ENTRY_BOLD_OPEN,
-        id = PHASE_ID
+        id = phase_id_source(convention)
     ))
     .unwrap();
     let version = Regex::new(r"\bv\d+(\.\d+)*\b").unwrap();
@@ -2008,7 +2078,7 @@ mod tests {
             **Depends on**: Phase 7\n\n\
             - [ ] 07.1-01-PLAN.md — a\n\
             - [ ] 07.1-02-PLAN.md — b\n";
-        let phases = parse_roadmap_phases(roadmap);
+        let phases = parse_roadmap_phases(roadmap, PhaseIdConvention::Legacy);
         let numbers: Vec<&str> = phases.iter().map(|p| p.number.as_str()).collect();
         assert_eq!(
             numbers,
@@ -2067,7 +2137,7 @@ mod tests {
             **Depends on**: Phase 12A\n\n\
             Plans:\n\
             - [x] 23A.1.2-01-PLAN.md — one\n";
-        let phases = parse_roadmap_phases(roadmap);
+        let phases = parse_roadmap_phases(roadmap, PhaseIdConvention::Legacy);
         let numbers: Vec<&str> = phases.iter().map(|p| p.number.as_str()).collect();
         assert_eq!(
             numbers,
@@ -2099,7 +2169,11 @@ mod tests {
             "{section}"
         );
         assert_eq!(
-            goal_of(&parse_phase_goals(roadmap), "23A.1.2").as_deref(),
+            goal_of(
+                &parse_phase_goals(roadmap, PhaseIdConvention::Legacy),
+                "23A.1.2"
+            )
+            .as_deref(),
             Some("letter-suffixed goal")
         );
     }
@@ -2113,7 +2187,7 @@ mod tests {
             "### Phase 20: Router\n\n**Goal**: something\n**Depends on**: {depends}\n\
              **Requirements**: DRIVE-02\n"
         );
-        let phases = parse_roadmap_phases(&content);
+        let phases = parse_roadmap_phases(&content, PhaseIdConvention::Legacy);
         assert_eq!(phases.len(), 1, "the fixture declares exactly one phase");
         phases[0].depends_on.clone()
     }
@@ -2152,7 +2226,7 @@ mod tests {
     #[test]
     fn test_depends_on_absent_line_is_an_empty_list_not_a_guess() {
         let content = "### Phase 20: Router\n\n**Goal**: something\n**Requirements**: DRIVE-02\n";
-        let phases = parse_roadmap_phases(content);
+        let phases = parse_roadmap_phases(content, PhaseIdConvention::Legacy);
         assert_eq!(phases.len(), 1);
         assert!(
             phases[0].depends_on.is_empty(),
@@ -2184,7 +2258,7 @@ mod tests {
     /// return the declared dependencies of the phase numbered `row`.
     fn depends_of_row(row: &str, text: &str) -> Vec<String> {
         let content = format!("### Phase {row}: X\n\n**Depends on**: {text}\n");
-        parse_roadmap_phases(&content)
+        parse_roadmap_phases(&content, PhaseIdConvention::Legacy)
             .into_iter()
             .find(|p| p.number == row)
             .unwrap_or_else(|| panic!("the fixture declares phase {row}"))
@@ -2289,7 +2363,7 @@ mod tests {
         // nothing.
         let content = std::fs::read_to_string(&roadmap)
             .expect("this repository ships its own .planning/milestones/v2.0-ROADMAP.md");
-        let phases = parse_roadmap_phases(&content);
+        let phases = parse_roadmap_phases(&content, PhaseIdConvention::Legacy);
         let find = |number: &str| {
             phases
                 .iter()
@@ -2323,7 +2397,7 @@ mod tests {
 - [x] **Phase 3: Live State** - File-watcher auto-refresh
 - [ ] **Phase 4: Visualization** - ASCII roadmap
 "#;
-        let phases = parse_roadmap_phases(content);
+        let phases = parse_roadmap_phases(content, PhaseIdConvention::Legacy);
         assert_eq!(phases.len(), 4);
         assert!(!phases[0].completed);
         assert_eq!(phases[0].number, "1");
@@ -2337,14 +2411,14 @@ mod tests {
 
     #[test]
     fn test_parse_roadmap_empty() {
-        let phases = parse_roadmap_phases("");
+        let phases = parse_roadmap_phases("", PhaseIdConvention::Legacy);
         assert!(phases.is_empty());
     }
 
     #[test]
     fn test_parse_roadmap_uppercase_x() {
         let content = "- [X] **Phase 1: Done** - Completed phase\n";
-        let phases = parse_roadmap_phases(content);
+        let phases = parse_roadmap_phases(content, PhaseIdConvention::Legacy);
         assert_eq!(phases.len(), 1);
         assert!(phases[0].completed);
     }
@@ -2366,7 +2440,7 @@ Plans:
 - [x] 02-01-PLAN.md -- Dashboard table
 - [ ] 02-02-PLAN.md -- Help overlay
 "#;
-        let phases = parse_roadmap_phases(content);
+        let phases = parse_roadmap_phases(content, PhaseIdConvention::Legacy);
         assert_eq!(phases.len(), 2);
 
         assert_eq!(phases[0].total_plans, 3);
@@ -2385,7 +2459,7 @@ Plans:
 Plans:
 - [x] PLAN.md -- solo plan
 "#;
-        let phases = parse_roadmap_phases(content);
+        let phases = parse_roadmap_phases(content, PhaseIdConvention::Legacy);
         assert_eq!(phases.len(), 1);
         assert_eq!(phases[0].total_plans, 1);
         assert_eq!(phases[0].completed_plans, 1);
@@ -2401,7 +2475,7 @@ Plans:
 - [x] 03-01-PLAN.md -- numbered plan
 - [ ] PLAN.md -- standalone plan
 "#;
-        let phases = parse_roadmap_phases(content);
+        let phases = parse_roadmap_phases(content, PhaseIdConvention::Legacy);
         assert_eq!(phases.len(), 1);
         assert_eq!(phases[0].total_plans, 2);
         assert_eq!(phases[0].completed_plans, 1);
@@ -2411,7 +2485,7 @@ Plans:
     fn test_parse_roadmap_heading_form() {
         // `### Phase N: Title` (no checkbox) parses as a phase with completed=false.
         let content = "### Phase 4: Visualization\n";
-        let phases = parse_roadmap_phases(content);
+        let phases = parse_roadmap_phases(content, PhaseIdConvention::Legacy);
         assert_eq!(phases.len(), 1);
         assert_eq!(phases[0].number, "4");
         assert_eq!(phases[0].name, "Visualization");
@@ -2430,7 +2504,7 @@ Plans:
 
 #### Phase 3: Live State
 "#;
-        let phases = parse_roadmap_phases(content);
+        let phases = parse_roadmap_phases(content, PhaseIdConvention::Legacy);
         assert_eq!(phases.len(), 2);
         assert_eq!(phases[0].number, "2");
         assert_eq!(phases[0].name, "Dashboard");
@@ -2444,7 +2518,7 @@ Plans:
     fn test_parse_roadmap_parenthetical_tag() {
         // A parenthetical cluster tag is not part of the number or name.
         let content = "- [ ] **Phase 26 (Cluster B): Title** - desc\n";
-        let phases = parse_roadmap_phases(content);
+        let phases = parse_roadmap_phases(content, PhaseIdConvention::Legacy);
         assert_eq!(phases.len(), 1);
         assert_eq!(phases[0].number, "26");
         assert_eq!(phases[0].name, "Title");
@@ -2457,7 +2531,7 @@ Plans:
         let content = r#"- [ ] **Phase M-2: Milestone Two** - desc
 - [x] **Phase AB-29: Big One** - done
 "#;
-        let phases = parse_roadmap_phases(content);
+        let phases = parse_roadmap_phases(content, PhaseIdConvention::Legacy);
         assert_eq!(phases.len(), 2);
         assert_eq!(phases[0].number, "M-2");
         assert_eq!(phases[0].name, "Milestone Two");
@@ -2483,7 +2557,7 @@ Plans:
 
 - [ ] **Phase 2: Dashboard** - Main UI
 "#;
-        let phases = parse_roadmap_phases(content);
+        let phases = parse_roadmap_phases(content, PhaseIdConvention::Legacy);
         assert_eq!(phases.len(), 2);
         assert_eq!(phases[0].number, "1");
         assert_eq!(phases[0].total_plans, 2);
@@ -2518,7 +2592,7 @@ Plans:
 
 ### Phase 6: Sessions
 "#;
-        let phases = parse_roadmap_phases(content);
+        let phases = parse_roadmap_phases(content, PhaseIdConvention::Legacy);
         assert_eq!(phases.len(), 3);
 
         // First-seen order preserved.
@@ -2555,7 +2629,7 @@ Plans:
 
 - [x] **Phase 2: Dashboard** - Main project list
 "#;
-        let phases = parse_roadmap_phases(content);
+        let phases = parse_roadmap_phases(content, PhaseIdConvention::Legacy);
         assert_eq!(phases.len(), 1);
         assert_eq!(phases[0].number, "2");
         // OR rule picks up the later checkbox.
@@ -2571,7 +2645,7 @@ Plans:
     fn test_parse_roadmap_decimal_id_preserved() {
         // Existing decimal IDs still parse.
         let content = "- [ ] **Phase 0.3: Spike** - explore\n";
-        let phases = parse_roadmap_phases(content);
+        let phases = parse_roadmap_phases(content, PhaseIdConvention::Legacy);
         assert_eq!(phases.len(), 1);
         assert_eq!(phases[0].number, "0.3");
         assert_eq!(phases[0].name, "Spike");
@@ -2586,7 +2660,7 @@ Plans:
 ~~Phase 8: Bare strike~~
 - [ ] **Phase 2: Real Two** - live
 "#;
-        let phases = parse_roadmap_phases(content);
+        let phases = parse_roadmap_phases(content, PhaseIdConvention::Legacy);
         assert_eq!(phases.len(), 2);
         assert_eq!(phases[0].number, "1");
         assert_eq!(phases[1].number, "2");
@@ -2603,7 +2677,7 @@ Plans:
 - [ ] **Phase 0.3: Spike** - real decimal
 - [ ] **Phase 2: Beta** - real
 "#;
-        let phases = parse_roadmap_phases(content);
+        let phases = parse_roadmap_phases(content, PhaseIdConvention::Legacy);
         let numbers: Vec<&str> = phases.iter().map(|p| p.number.as_str()).collect();
         assert_eq!(numbers, vec!["1", "0.3", "2"]);
         assert!(!numbers.contains(&"0"));
@@ -2614,7 +2688,7 @@ Plans:
     #[test]
     fn padded_backlog_sentinels_are_excluded_too() {
         let content = "### Phase 00: Pre-milestone\n### Phase 01: Real\n### Phase 0999.1: Later\n### Phase 00.3: Spike\n";
-        let numbers: Vec<String> = parse_roadmap_phases(content)
+        let numbers: Vec<String> = parse_roadmap_phases(content, PhaseIdConvention::Legacy)
             .into_iter()
             .map(|p| p.number)
             .collect();
@@ -2628,7 +2702,7 @@ Plans:
 - [x] **Phase 2: Two** - b
 - [ ] **Phase M-2: Three** - c
 "#;
-        let phases = parse_roadmap_phases(content);
+        let phases = parse_roadmap_phases(content, PhaseIdConvention::Legacy);
         assert_eq!(phases.len(), 3);
         assert_eq!(phases[0].number, "1");
         assert_eq!(phases[1].number, "2");
@@ -2646,7 +2720,7 @@ Plans:
 
 **UI hint**: yes
 "#;
-        let phases = parse_roadmap_phases(content);
+        let phases = parse_roadmap_phases(content, PhaseIdConvention::Legacy);
         assert_eq!(phases.len(), 1);
         assert_eq!(phases[0].total_plans, 2);
         assert_eq!(phases[0].completed_plans, 0);
@@ -2953,7 +3027,7 @@ Plans:
     // `docs/reference/roadmap-phase-entry.md` (readers #5763, writers #5764).
 
     fn one_phase(line: &str) -> RoadmapPhase {
-        let phases = parse_roadmap_phases(line);
+        let phases = parse_roadmap_phases(line, PhaseIdConvention::Legacy);
         assert_eq!(phases.len(), 1, "exactly one phase from {line:?}");
         phases.into_iter().next().unwrap()
     }
@@ -3016,7 +3090,10 @@ Plans:
         let phase = one_phase("- [ ] __Phase 1: __init__ helpers__");
         assert_eq!(phase.name, "__init__ helpers");
         // Upstream parity: `__` closes only at the end of the line.
-        assert!(parse_roadmap_phases("- [ ] __Phase 2: Name__ - tail").is_empty());
+        assert!(
+            parse_roadmap_phases("- [ ] __Phase 2: Name__ - tail", PhaseIdConvention::Legacy)
+                .is_empty()
+        );
     }
 
     #[test]
@@ -3027,7 +3104,10 @@ Plans:
             "> - [ ] **Phase 2: Quoted** - d",
             "See - [x] Phase 3: Plain mention",
         ] {
-            assert!(parse_roadmap_phases(line).is_empty(), "{line:?}");
+            assert!(
+                parse_roadmap_phases(line, PhaseIdConvention::Legacy).is_empty(),
+                "{line:?}"
+            );
         }
     }
 
@@ -3046,7 +3126,10 @@ Plans:
             // A lone `*` is not a bold wrapper.
             "- [ ] *Phase 4: D* - d",
         ] {
-            assert!(parse_roadmap_phases(line).is_empty(), "{line:?}");
+            assert!(
+                parse_roadmap_phases(line, PhaseIdConvention::Legacy).is_empty(),
+                "{line:?}"
+            );
         }
     }
 
@@ -3057,11 +3140,11 @@ Plans:
             *\t[x] **Phase 1: A** - a\n\
             text - [x] **Phase 2: B** - b\n\n\
             </details>\n";
-        let shipped = parse_shipped_phases(roadmap);
+        let shipped = parse_shipped_phases(roadmap, PhaseIdConvention::Legacy);
         assert_eq!(shipped.len(), 1);
         assert_eq!(shipped[0].number, "1");
         assert!(shipped[0].completed);
-        assert!(parse_roadmap_phases(roadmap).is_empty());
+        assert!(parse_roadmap_phases(roadmap, PhaseIdConvention::Legacy).is_empty());
     }
 
     #[test]
@@ -3070,7 +3153,7 @@ Plans:
             * [ ] **Phase 9: Nine**\n\
             -\t[x] __Phase 10: Ten__\n\
             see - [ ] **Phase 11: Eleven** here\n";
-        let ms = roadmap_milestones(roadmap);
+        let ms = roadmap_milestones(roadmap, PhaseIdConvention::Legacy);
         let current = ms
             .iter()
             .find(|m| m.label.as_raw_for_logic_only() == "v2.0 Current")
@@ -3097,7 +3180,7 @@ Plans:
 
     #[test]
     fn roadmap_milestones_parses_and_dedupes_a_repo_shaped_roadmap() {
-        let ms = roadmap_milestones(REPO_SHAPED);
+        let ms = roadmap_milestones(REPO_SHAPED, PhaseIdConvention::Legacy);
         assert_eq!(
             labels(&ms),
             vec!["v7.0 MVP", "v8.0 Config", "v9.0 Autonomous Orchestration"]
@@ -3121,7 +3204,7 @@ Plans:
         let content = "## Phases\n\n### 🚧 v8.1 Core (In Progress)\n\n\
             #### Phase 5: Alpha\n#### Phase 6: Beta\n\n\
             ### 📋 v9.2 Next (Planned)\n\n#### Phase 7: Gamma\n";
-        let ms = roadmap_milestones(content);
+        let ms = roadmap_milestones(content, PhaseIdConvention::Legacy);
         assert_eq!(labels(&ms), vec!["v8.1 Core", "v9.2 Next"]);
         assert_eq!(milestone_index_of(&ms, "5"), Some(0));
         assert_eq!(milestone_index_of(&ms, "06"), Some(0));
@@ -3135,7 +3218,7 @@ Plans:
         let content = "## Milestones\n\n\
             - 🚧 **Milestone 1: Reassessment** - Phases 1-7 (in progress)\n\n\
             ## Notes\n\n### Milestone mapping (decision D10)\n\n- [ ] **Phase 8: Z** - z\n";
-        let ms = roadmap_milestones(content);
+        let ms = roadmap_milestones(content, PhaseIdConvention::Legacy);
         assert_eq!(labels(&ms), vec!["Milestone 1: Reassessment"]);
         assert!(ms[0].contains("7.1"));
         assert!(ms[0].contains("07"));
@@ -3147,7 +3230,7 @@ Plans:
         let content = "## Milestones\n\n\
             - ✅ **v1.0 Base** - Phases 1-7 (shipped)\n\
             - 🚧 **v2.0 Next** - Phases 7.1-12 (in progress)\n";
-        let ms = roadmap_milestones(content);
+        let ms = roadmap_milestones(content, PhaseIdConvention::Legacy);
         assert_eq!(labels(&ms), vec!["v1.0 Base", "v2.0 Next"]);
         assert_eq!(milestone_index_of(&ms, "7"), Some(0));
         assert_eq!(milestone_index_of(&ms, "7.1"), Some(1), "exact range wins");
@@ -3163,10 +3246,16 @@ Plans:
 
     #[test]
     fn roadmap_milestones_singular_phase_only_on_milestone_bullets() {
-        let ms = roadmap_milestones("## Milestones\n\n- 📋 **M5 web** - Phase 18 (planned)\n");
+        let ms = roadmap_milestones(
+            "## Milestones\n\n- 📋 **M5 web** - Phase 18 (planned)\n",
+            PhaseIdConvention::Legacy,
+        );
         assert_eq!(ms[0].first, PhaseNum::parse("18"));
         assert_eq!(ms[0].last, PhaseNum::parse("18"));
-        let ms = roadmap_milestones("## Plan\n\n### v2.0 Launch - see Phase 9\n");
+        let ms = roadmap_milestones(
+            "## Plan\n\n### v2.0 Launch - see Phase 9\n",
+            PhaseIdConvention::Legacy,
+        );
         assert_eq!(labels(&ms), vec!["v2.0 Launch - see Phase 9"]);
         assert_eq!(ms[0].first, None);
     }
@@ -3192,12 +3281,15 @@ Plans:
 
     #[test]
     fn active_milestone_index_matches_state_then_falls_back_to_in_progress() {
-        let ms = roadmap_milestones(REPO_SHAPED);
+        let ms = roadmap_milestones(REPO_SHAPED, PhaseIdConvention::Legacy);
         assert_eq!(active_milestone_index(&ms, "v9.0"), Some(2));
         assert_eq!(active_milestone_index(&ms, "v7.0 MVP"), Some(0));
         assert_eq!(active_milestone_index(&ms, ""), Some(2));
         assert_eq!(active_milestone_index(&ms, "v1.7.2"), Some(2));
-        let shipped = roadmap_milestones("## Milestones\n\n- ✅ **v1.0** - Phases 1-2 (shipped)\n");
+        let shipped = roadmap_milestones(
+            "## Milestones\n\n- ✅ **v1.0** - Phases 1-2 (shipped)\n",
+            PhaseIdConvention::Legacy,
+        );
         assert_eq!(active_milestone_index(&shipped, ""), None);
     }
 
@@ -3209,10 +3301,12 @@ Plans:
             "### v\n#### Phase 5:\n- 🚧 **x** - Phases 9-\n",
             "## Milestones\n- **v1** - Phases ab-cd\n### v1 (Phases 3-1)\n",
         ] {
-            let _ = roadmap_milestones(junk);
+            let _ = roadmap_milestones(junk, PhaseIdConvention::Legacy);
         }
-        assert!(roadmap_milestones("").is_empty());
-        assert!(roadmap_milestones("# Roadmap\n\nJust prose.\n").is_empty());
+        assert!(roadmap_milestones("", PhaseIdConvention::Legacy).is_empty());
+        assert!(
+            roadmap_milestones("# Roadmap\n\nJust prose.\n", PhaseIdConvention::Legacy).is_empty()
+        );
     }
 
     // ── Phase 24-01: vendored real-roadmap fixtures ─────────────────────────
@@ -3225,7 +3319,7 @@ Plans:
     /// support landed; it must stay byte-identical.
     #[test]
     fn ttbook_fixture_gsd_phase_list_is_unchanged_by_build_phase_support() {
-        let phases = parse_roadmap_phases(TTBOOK_ROADMAP);
+        let phases = parse_roadmap_phases(TTBOOK_ROADMAP, PhaseIdConvention::Legacy);
         let numbers: Vec<&str> = phases.iter().map(|p| p.number.as_str()).collect();
         assert_eq!(numbers, ["8", "9", "10", "11", "12", "13"]);
         let deps: Vec<Vec<&str>> = phases
@@ -3252,7 +3346,7 @@ Plans:
 
     #[test]
     fn ttbook_build_phase_headings_parse_as_planned_phases() {
-        let planned = parse_planned_build_phases(TTBOOK_ROADMAP);
+        let planned = parse_planned_build_phases(TTBOOK_ROADMAP, PhaseIdConvention::Legacy);
         let numbers: Vec<&str> = planned.iter().map(|p| p.number.as_str()).collect();
         assert_eq!(numbers, ["14", "15", "16", "17", "18"]);
         let names: Vec<&str> = planned.iter().map(|p| p.name.as_str()).collect();
@@ -3290,7 +3384,7 @@ Plans:
 
     #[test]
     fn build_phase_headings_are_not_milestones() {
-        let ms = roadmap_milestones(TTBOOK_ROADMAP);
+        let ms = roadmap_milestones(TTBOOK_ROADMAP, PhaseIdConvention::Legacy);
         let shorts: Vec<String> = ms
             .iter()
             .map(|m| split_milestone_label(m.label.as_raw_for_logic_only()).0)
@@ -3324,7 +3418,7 @@ Plans:
             **Depends on**: Build phases 1-4\n\n\
             #### Build phase 6: Six\n\n\
             **Depends on**: Build phases 1-999999999 (and Phase 3 as prose)\n";
-        let planned = parse_planned_build_phases(roadmap);
+        let planned = parse_planned_build_phases(roadmap, PhaseIdConvention::Legacy);
         assert_eq!(planned.len(), 2);
         assert_eq!(
             planned[0].depends_on,
@@ -3345,14 +3439,14 @@ Plans:
             - [x] 03-01-PLAN.md — a\n\
             - [ ] 03-02-PLAN.md — b\n\n\
             ## Next\n\n- [ ] 03-03-PLAN.md — outside the entry\n";
-        let planned = parse_planned_build_phases(roadmap);
+        let planned = parse_planned_build_phases(roadmap, PhaseIdConvention::Legacy);
         assert_eq!(planned.len(), 1);
         assert_eq!(planned[0].number, "3");
         assert_eq!(planned[0].name, "Plain title");
         assert_eq!(planned[0].depends_on, ["2"]);
         assert_eq!((planned[0].total_plans, planned[0].completed_plans), (2, 1));
         assert!(
-            parse_roadmap_phases(roadmap).is_empty(),
+            parse_roadmap_phases(roadmap, PhaseIdConvention::Legacy).is_empty(),
             "GSD's grammar does not see a build heading"
         );
     }
@@ -3372,7 +3466,7 @@ Plans:
         let roadmap = "### Phase 1: Colon outside\n\n**Goal**: first form\n\n\
             ### Phase 2: Colon inside\n\n**Goal:** second form\n\n\
             ### Phase 3: Lower case\n\n**goal**:   third form  \n";
-        let goals = parse_phase_goals(roadmap);
+        let goals = parse_phase_goals(roadmap, PhaseIdConvention::Legacy);
         assert_eq!(goal_of(&goals, "1").as_deref(), Some("first form"));
         assert_eq!(goal_of(&goals, "2").as_deref(), Some("second form"));
         assert_eq!(goal_of(&goals, "3").as_deref(), Some("third form"));
@@ -3383,7 +3477,7 @@ Plans:
         let roadmap = "- [ ] **Phase 7: Seven** - s\n\n## Phase Details\n\n\
             ### Phase 07: Seven\n\n**Goal**: the first goal\n**Goal**: a second goal\n\n\
             ### Phase 8: Empty goal\n\n**Goal**:   \n";
-        let goals = parse_phase_goals(roadmap);
+        let goals = parse_phase_goals(roadmap, PhaseIdConvention::Legacy);
         assert_eq!(
             goal_of(&goals, "7").as_deref(),
             Some("the first goal"),
@@ -3398,7 +3492,7 @@ Plans:
         let roadmap = "### Phase 1: No goal here\n\n**Depends on**: Nothing\n\n\
             ## Notes\n\n**Goal**: belongs to no phase\n\n\
             #### Build phase 2 (Milestone 2): Planned\n\n**Goal**: a build goal\n";
-        let goals = parse_phase_goals(roadmap);
+        let goals = parse_phase_goals(roadmap, PhaseIdConvention::Legacy);
         assert!(
             !goals.contains_key("1"),
             "the Goal line sits after `## Notes`"
@@ -3415,7 +3509,7 @@ Plans:
     /// roadmap string per case, so an unbalanced fence cannot leak across.
     fn goal_under_phase_1(body: &str) -> Option<String> {
         let roadmap = format!("### Phase 1: T\n\n{body}\n");
-        goal_of(&parse_phase_goals(&roadmap), "1")
+        goal_of(&parse_phase_goals(&roadmap, PhaseIdConvention::Legacy), "1")
     }
 
     #[test]
@@ -3480,7 +3574,11 @@ Plans:
 
         let letter = "### Phase 23A.1.2: K\n\n**Goal**: letter-suffixed\n";
         assert_eq!(
-            goal_of(&parse_phase_goals(letter), "23A.1.2").as_deref(),
+            goal_of(
+                &parse_phase_goals(letter, PhaseIdConvention::Legacy),
+                "23A.1.2"
+            )
+            .as_deref(),
             Some("letter-suffixed"),
             "a letter-suffixed phase keys its goal by the full id"
         );
@@ -3519,7 +3617,7 @@ Plans:
             ("sentriq", SENTRIQ_ROADMAP, (9..=12).collect()),
             ("ttbook", TTBOOK_ROADMAP, (8..=18).collect()),
         ] {
-            let goals = parse_phase_goals(content);
+            let goals = parse_phase_goals(content, PhaseIdConvention::Legacy);
             assert_eq!(
                 goals.len(),
                 keys.len(),
@@ -3537,7 +3635,7 @@ Plans:
 
     #[test]
     fn daily_vow_shipped_milestones_are_the_five_before_v1_5() {
-        let ms = roadmap_milestones(DAILY_VOW_ROADMAP);
+        let ms = roadmap_milestones(DAILY_VOW_ROADMAP, PhaseIdConvention::Legacy);
         assert_eq!(
             labels(&ms),
             [
@@ -3563,7 +3661,7 @@ Plans:
 
     #[test]
     fn sentriq_v0_11_is_shipped_by_version_order() {
-        let ms = roadmap_milestones(SENTRIQ_ROADMAP);
+        let ms = roadmap_milestones(SENTRIQ_ROADMAP, PhaseIdConvention::Legacy);
         assert_eq!(
             labels(&ms),
             ["v0.11 Phases", "Scope Explicitly Excluded from v0.12"]
@@ -3585,7 +3683,7 @@ Plans:
 
     #[test]
     fn ttbook_v1_is_shipped() {
-        let ms = roadmap_milestones(TTBOOK_ROADMAP);
+        let ms = roadmap_milestones(TTBOOK_ROADMAP, PhaseIdConvention::Legacy);
         assert_eq!(
             shipped_milestones(&ms, "v2"),
             [true, false, false, false, false]
@@ -3604,6 +3702,7 @@ Plans:
              - ✅ **v1.0 Old** - shipped long ago\n\
              - ✅ **v1.1 Ranged** - Phases 1-2 (shipped)\n\
              - 🚧 **v2.0 Now** - Phases 3-4 (in progress)\n",
+            PhaseIdConvention::Legacy,
         );
         assert_eq!(shipped_milestones(&ms, "v2.0"), [false, true, false]);
         assert_eq!(
@@ -3616,6 +3715,7 @@ Plans:
         let ms = roadmap_milestones(
             "## Plan\n\n### v0.9 Early (Phases 1-2)\n\n### v0.11 Later (Phases 3-4)\n\n\
              ### v0.20 Future (Phases 9-10)\n\n### v0.10 Loose\n",
+            PhaseIdConvention::Legacy,
         );
         assert_eq!(
             labels(&ms),
@@ -3652,6 +3752,7 @@ Plans:
              - **v3 C** - Phase 14\n\
              - **v4 D** - no phases\n\n\
              ## Later\n\n### Milestone 5 \"E\"\n\n#### Build phase 20: X\n#### Build phase 21: Y\n",
+            PhaseIdConvention::Legacy,
         );
         let counts: Vec<u32> = ms.iter().map(declared_phase_count).collect();
         assert_eq!(
@@ -3796,7 +3897,7 @@ Plans:
 
     #[test]
     fn ttbook_shipped_v1_lines_parse_as_shipped_phases() {
-        let shipped = parse_shipped_phases(TTBOOK_ROADMAP);
+        let shipped = parse_shipped_phases(TTBOOK_ROADMAP, PhaseIdConvention::Legacy);
         let numbers: Vec<&str> = shipped.iter().map(|p| p.number.as_str()).collect();
         assert_eq!(numbers, ["1", "2", "3", "4", "5", "6", "7", "7.1"]);
         let names: Vec<&str> = shipped.iter().map(|p| p.name.as_str()).collect();
@@ -3854,9 +3955,12 @@ Plans:
                 closed_milestone_lines(&lines).iter().all(|c| *c),
                 "{summary}: every line of the block, wrappers included, is closed"
             );
-            let shipped = parse_shipped_phases(&roadmap);
+            let shipped = parse_shipped_phases(&roadmap, PhaseIdConvention::Legacy);
             assert_eq!(shipped.len(), 1, "{summary}");
-            assert!(parse_roadmap_phases(&roadmap).is_empty(), "{summary}");
+            assert!(
+                parse_roadmap_phases(&roadmap, PhaseIdConvention::Legacy).is_empty(),
+                "{summary}"
+            );
         }
         for (why, roadmap) in [
             ("no marker", block("<summary>Completed phases</summary>")),
@@ -3877,7 +3981,7 @@ Plans:
                 "{why}: not a closed collapse"
             );
             assert!(
-                parse_shipped_phases(&roadmap).is_empty(),
+                parse_shipped_phases(&roadmap, PhaseIdConvention::Legacy).is_empty(),
                 "{why}: a plain line outside a closed collapse is not shipped"
             );
         }
@@ -3892,7 +3996,7 @@ Plans:
             flags,
             [false, false, true, true, true, true, true, false, false]
         );
-        let live = parse_roadmap_phases(roadmap);
+        let live = parse_roadmap_phases(roadmap, PhaseIdConvention::Legacy);
         assert_eq!(live.len(), 1);
         assert_eq!((live[0].completed_plans, live[0].total_plans), (0, 0));
     }
@@ -3915,7 +4019,7 @@ Plans:
 
     #[test]
     fn v1_era_fixture_gsd_facing_phases_are_the_live_shapes() {
-        let phases = parse_roadmap_phases(V1_ERA_ROADMAP);
+        let phases = parse_roadmap_phases(V1_ERA_ROADMAP, PhaseIdConvention::Legacy);
         assert_eq!(numbers_of(&phases), ["12", "13", "13.1", "14", "16"]);
 
         let p = find(&phases, "12");
@@ -3952,7 +4056,7 @@ Plans:
 
     #[test]
     fn v1_era_fixture_shipped_phases_are_every_collapse_shape() {
-        let shipped = parse_shipped_phases(V1_ERA_ROADMAP);
+        let shipped = parse_shipped_phases(V1_ERA_ROADMAP, PhaseIdConvention::Legacy);
         assert_eq!(
             numbers_of(&shipped),
             ["1", "2", "2.1", "3", "4", "5", "6", "07", "08", "9", "10", "11"]
@@ -4026,11 +4130,12 @@ Plans:
 
     #[test]
     fn v1_era_channels_share_no_key_and_negative_shapes_never_parse() {
-        let live: std::collections::HashSet<String> = parse_roadmap_phases(V1_ERA_ROADMAP)
-            .iter()
-            .map(|p| phase_key(&p.number))
-            .collect();
-        for p in parse_shipped_phases(V1_ERA_ROADMAP) {
+        let live: std::collections::HashSet<String> =
+            parse_roadmap_phases(V1_ERA_ROADMAP, PhaseIdConvention::Legacy)
+                .iter()
+                .map(|p| phase_key(&p.number))
+                .collect();
+        for p in parse_shipped_phases(V1_ERA_ROADMAP, PhaseIdConvention::Legacy) {
             assert!(
                 !live.contains(&phase_key(&p.number)),
                 "{} in both channels",
@@ -4054,24 +4159,24 @@ Plans:
         ];
         for line in negatives {
             assert!(
-                parse_roadmap_phases(line).is_empty(),
+                parse_roadmap_phases(line, PhaseIdConvention::Legacy).is_empty(),
                 "current region: {line}"
             );
             let collapsed =
                 format!("<details>\n<summary>v0 SHIPPED</summary>\n\n{line}\n\n</details>\n");
             assert!(
-                parse_shipped_phases(&collapsed).is_empty(),
+                parse_shipped_phases(&collapsed, PhaseIdConvention::Legacy).is_empty(),
                 "closed region: {line}"
             );
             assert!(
-                parse_roadmap_phases(&collapsed).is_empty(),
+                parse_roadmap_phases(&collapsed, PhaseIdConvention::Legacy).is_empty(),
                 "closed region: {line}"
             );
         }
         // A bare `Phase N:` line is prose outside a closed collapse.
         let bare = "Phase 20: a bare line outside any closed milestone is prose, not a phase";
-        assert!(parse_roadmap_phases(bare).is_empty());
-        assert!(parse_shipped_phases(bare).is_empty());
+        assert!(parse_roadmap_phases(bare, PhaseIdConvention::Legacy).is_empty());
+        assert!(parse_shipped_phases(bare, PhaseIdConvention::Legacy).is_empty());
     }
 
     /// This repository's own v1.0-v1.2 history is written as bare
@@ -4083,7 +4188,7 @@ Plans:
             .join("ROADMAP.md");
         let content = std::fs::read_to_string(&roadmap)
             .expect("this repository ships its own .planning/ROADMAP.md");
-        let shipped = parse_shipped_phases(&content);
+        let shipped = parse_shipped_phases(&content, PhaseIdConvention::Legacy);
         let expected: Vec<String> = (1..=13).map(|n| format!("{n:02}")).collect();
         let numbers = numbers_of(&shipped);
         assert!(
@@ -4095,10 +4200,11 @@ Plans:
         assert_eq!((first.completed_plans, first.total_plans), (3, 3));
         assert!(first.completed);
 
-        let live: std::collections::HashSet<String> = parse_roadmap_phases(&content)
-            .iter()
-            .map(|p| phase_key(&p.number))
-            .collect();
+        let live: std::collections::HashSet<String> =
+            parse_roadmap_phases(&content, PhaseIdConvention::Legacy)
+                .iter()
+                .map(|p| phase_key(&p.number))
+                .collect();
         for id in &expected {
             assert!(
                 !live.contains(&phase_key(id)),
@@ -4114,7 +4220,7 @@ Plans:
                        ### Phase 3 -- Three\n\n**Goal**: double dash\n\n\
                        ### Phase 4 – Four\n\n**Goal**: en dash\n\n\
                        ### Phase 5 - Five\n\n**Goal**: hyphen\n";
-        let goals = parse_phase_goals(roadmap);
+        let goals = parse_phase_goals(roadmap, PhaseIdConvention::Legacy);
         assert_eq!(goal_of(&goals, "2").as_deref(), Some("the dash goal"));
         assert_eq!(goal_of(&goals, "3").as_deref(), Some("double dash"));
         assert_eq!(goal_of(&goals, "4").as_deref(), Some("en dash"));
@@ -4122,40 +4228,170 @@ Plans:
         let two = phase_section(roadmap, "2").expect("the dash heading opens an entry");
         assert!(two.starts_with("### Phase 2 — Two"), "{two:?}");
         assert!(!two.contains("Three"), "{two:?}");
-        let phases = parse_roadmap_phases(roadmap);
+        let phases = parse_roadmap_phases(roadmap, PhaseIdConvention::Legacy);
         assert_eq!(numbers_of(&phases), ["2", "3", "4", "5"]);
         assert_eq!(phases[0].name, "Two");
 
         let ms = roadmap_milestones(
             "## Plan\n\n### Phase 2 - Migrate to v2 API\n\n### Phase 3 Implementation Scope\n",
+            PhaseIdConvention::Legacy,
         );
         assert!(ms.is_empty(), "{:?}", labels(&ms));
-        assert!(parse_roadmap_phases("### Phase 3 Implementation Scope\n").is_empty());
+        assert!(parse_roadmap_phases(
+            "### Phase 3 Implementation Scope\n",
+            PhaseIdConvention::Legacy
+        )
+        .is_empty());
     }
 
     #[test]
     fn bold_lines_parse_with_any_tail_and_the_existing_grammar_is_unchanged() {
-        let bare = parse_roadmap_phases("- [ ] **Phase 2: Name**\n");
+        let bare = parse_roadmap_phases("- [ ] **Phase 2: Name**\n", PhaseIdConvention::Legacy);
         assert_eq!(numbers_of(&bare), ["2"]);
         assert_eq!(bare[0].name, "Name");
         assert_eq!(bare[0].description, "");
 
         // A `--` tail is the existing grammar's: it keeps the second dash, as
         // it always has.
-        let dashed = parse_roadmap_phases("- [x] **Phase 3: Three** -- desc\n");
+        let dashed = parse_roadmap_phases(
+            "- [x] **Phase 3: Three** -- desc\n",
+            PhaseIdConvention::Legacy,
+        );
         assert_eq!(dashed[0].description, "- desc");
         assert!(dashed[0].completed);
 
-        let tagged = parse_roadmap_phases("- [ ] **Phase 03.1: Tagged** (INSERTED) - desc\n");
+        let tagged = parse_roadmap_phases(
+            "- [ ] **Phase 03.1: Tagged** (INSERTED) - desc\n",
+            PhaseIdConvention::Legacy,
+        );
         assert_eq!(tagged[0].name, "Tagged (INSERTED)");
         assert_eq!(tagged[0].description, "desc");
 
-        let tallied =
-            parse_roadmap_phases("- [x] **Phase 4: Four** (2/3 plans) — completed 2026-01-01\n");
+        let tallied = parse_roadmap_phases(
+            "- [x] **Phase 4: Four** (2/3 plans) — completed 2026-01-01\n",
+            PhaseIdConvention::Legacy,
+        );
         assert_eq!(tallied[0].description, "completed 2026-01-01");
         assert_eq!((tallied[0].completed_plans, tallied[0].total_plans), (2, 3));
 
-        let retired = parse_roadmap_phases("- [ ] ~~**Phase 5: Gone**~~ (dropped)\n");
+        let retired = parse_roadmap_phases(
+            "- [ ] ~~**Phase 5: Gone**~~ (dropped)\n",
+            PhaseIdConvention::Legacy,
+        );
         assert!(retired.is_empty());
+    }
+
+    // --- quick-261105-e7v: gsd-core's milestone-prefixed `M-NN` ids ---------
+
+    const MP: PhaseIdConvention = PhaseIdConvention::MilestonePrefixed;
+
+    #[test]
+    fn milestone_prefixed_checklists_and_headings_read_the_whole_m_nn_id() {
+        for line in [
+            "- [ ] **Phase 3-01: Alpha** - d",
+            "- [ ] **Phase 3-01: Alpha**",
+            "- [x] Phase 3-01: Alpha",
+            "### Phase 3-01: Alpha",
+        ] {
+            let phases = parse_roadmap_phases(line, MP);
+            assert_eq!(phases.len(), 1, "{line:?}");
+            assert_eq!(phases[0].number, "3-01", "{line:?}");
+            assert_eq!(phases[0].name, "Alpha", "{line:?}");
+        }
+        assert!(parse_roadmap_phases("- [x] Phase 3-01: Alpha", MP)[0].completed);
+        assert!(!parse_roadmap_phases("- [ ] **Phase 3-01: Alpha**", MP)[0].completed);
+
+        // A checklist `3-01` and a padded heading `03-01` are one row.
+        let merged = parse_roadmap_phases(
+            "- [ ] **Phase 3-01: Alpha** - d\n\n### Phase 03-01: Alpha\n",
+            MP,
+        );
+        assert_eq!(merged.len(), 1);
+
+        // Everything that is not an M-NN id reads as before.
+        let mixed = parse_roadmap_phases("### Phase 3: Gamma\n### Phase 07.1: X\n", MP);
+        let numbers: Vec<&str> = mixed.iter().map(|p| p.number.as_str()).collect();
+        assert_eq!(numbers, ["3", "07.1"]);
+    }
+
+    #[test]
+    fn milestone_prefixed_lines_are_not_phases_by_default() {
+        let content = "- [ ] **Phase 3-01: Alpha** - d\n### Phase 3-01: Alpha\n\
+                       ### Phase 3: Gamma\n### Phase 07.1: X\n";
+        let numbers: Vec<String> = parse_roadmap_phases(content, PhaseIdConvention::Legacy)
+            .into_iter()
+            .map(|p| p.number)
+            .collect();
+        assert_eq!(numbers, ["3", "07.1"]);
+        assert!(parse_roadmap_phases(content, MP)
+            .iter()
+            .any(|p| p.number == "3-01"));
+    }
+
+    #[test]
+    fn milestone_prefixed_phases_band_under_their_milestone() {
+        let content = "## Milestones\n\n- \u{1F6A7} **v3.0 Alpha** - in progress\n\n\
+            ## v3.0 Alpha\n\n### Phase 3-01: Migrate to v2 API\n\n\
+            - [ ] **Phase 3-02: Beta**\n";
+        let ms = roadmap_milestones(content, MP);
+        assert_eq!(
+            labels(&ms),
+            vec!["v3.0 Alpha"],
+            "the phase heading is not a milestone"
+        );
+        assert_eq!(milestone_index_of(&ms, "3-01"), Some(0));
+        assert_eq!(milestone_index_of(&ms, "3-02"), Some(0));
+    }
+
+    #[test]
+    fn milestone_prefixed_sentinels_and_progress_rows() {
+        let content = "- [ ] **Phase 999-01: Icebox**\n- [ ] **Phase 0-01: Prelude**\n\
+                       - [ ] **Phase 3-01: Alpha**\n- [ ] **Phase 0.3: Real**\n";
+        let numbers: Vec<String> = parse_roadmap_phases(content, MP)
+            .into_iter()
+            .map(|p| p.number)
+            .collect();
+        assert_eq!(numbers, ["3-01", "0.3"], "0.3 stays a real phase");
+
+        let table = "## Progress\n\n| Phase | Plans Complete | Status | Completed |\n\
+                     | --- | --- | --- | --- |\n\
+                     | 3-01. Alpha | 1/1 | Complete | x |\n\
+                     | 3-02. Beta | 0/2 | Not started | |\n\
+                     | 999-01. Icebox | 0/0 | Backlog | |\n";
+        let p = roadmap_progress(table, "").expect("table parses");
+        assert_eq!(counts(&p), (2, 1, 3, 1));
+    }
+
+    #[test]
+    fn milestone_prefixed_depends_on_keeps_upstream_range_endpoints() {
+        // gsd-core 1.20.1 reads `Phase 3-01` as the endpoints `3` and `01`
+        // (oracle `dep_phases ["3","01"]`, `deps_satisfied` false): a
+        // deliberate, fail-closed non-change pinned here (upstream 30322c042).
+        let content = "### Phase 3-02: Beta\n\n**Depends on**: Phase 3-01\n";
+        let phases = parse_roadmap_phases(content, MP);
+        assert_eq!(phases.len(), 1);
+        assert_eq!(phases[0].depends_on, ["3", "01"]);
+    }
+
+    #[test]
+    fn milestone_prefixed_goals_shipped_and_sections_read_m_nn_headings() {
+        let roadmap = "### Phase 3-01: Alpha\n\n**Goal**: ship the alpha\n\n\
+                       ### Phase 3-02: Beta\n\n**Goal**: ship the beta\n";
+        let goals = parse_phase_goals(roadmap, MP);
+        assert_eq!(goal_of(&goals, "3-01").as_deref(), Some("ship the alpha"));
+        assert_eq!(goal_of(&goals, "3-02").as_deref(), Some("ship the beta"));
+        assert!(parse_phase_goals(roadmap, PhaseIdConvention::Legacy).is_empty());
+
+        let shipped_roadmap = "<details>\n<summary>v2.0 MVP - SHIPPED 2026-01-01</summary>\n\n\
+                               Phase 2-01: Done (3 plans, complete)\n\n</details>\n";
+        let shipped = parse_shipped_phases(shipped_roadmap, MP);
+        assert_eq!(shipped.len(), 1);
+        assert_eq!(shipped[0].number, "2-01");
+        assert!(shipped[0].completed);
+
+        let section = phase_section(roadmap, "3-01").expect("the 3-01 section");
+        assert!(section.starts_with("### Phase 3-01: Alpha"));
+        assert!(section.contains("ship the alpha"));
+        assert!(!section.contains("Beta"));
     }
 }

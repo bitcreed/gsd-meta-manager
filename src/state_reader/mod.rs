@@ -774,6 +774,53 @@ fn handoff_staleness(
     None
 }
 
+/// The phase-id convention `.planning/config.json` selects
+/// (`phase_id_convention`), for the planning directory `planning_dir`.
+///
+/// Only the exact string `milestone-prefixed` opts in
+/// ([`phase_num::PhaseIdConvention::from_config_value`]); an absent key, an
+/// unreadable or unparseable file and every other value is
+/// [`phase_num::PhaseIdConvention::Legacy`]. Mirrors upstream
+/// `resolvePhaseIdConvention` (`src/planning-workspace.cts`): a raw
+/// `serde_json::Value` read, so an unrelated malformed key cannot sink it, and
+/// the workstream federation: when `planning_dir`'s parent directory is named
+/// `workstreams`, the workstream's own non-empty value wins, otherwise the
+/// root `<planning_dir>/../../config.json` decides. Any other directory stands
+/// alone; paths come from `planning_dir` only, never from file content.
+///
+/// Logs nothing: a config value can be a secret (T-jnf-03).
+pub(crate) fn phase_id_convention(planning_dir: &Path) -> phase_num::PhaseIdConvention {
+    fn configured(dir: &Path) -> Option<String> {
+        let raw = std::fs::read_to_string(dir.join("config.json")).ok()?;
+        let value: serde_json::Value = serde_json::from_str(&raw).ok()?;
+        value
+            .get("phase_id_convention")
+            .and_then(|v| v.as_str())
+            .filter(|v| !v.is_empty())
+            .map(str::to_string)
+    }
+
+    let own = configured(planning_dir);
+    let value = match own {
+        Some(v) => Some(v),
+        None => {
+            let in_workstreams = planning_dir
+                .parent()
+                .and_then(|p| p.file_name())
+                .is_some_and(|n| n == "workstreams");
+            if in_workstreams {
+                planning_dir
+                    .parent()
+                    .and_then(|p| p.parent())
+                    .and_then(configured)
+            } else {
+                None
+            }
+        }
+    };
+    phase_num::PhaseIdConvention::from_config_value(value.as_deref())
+}
+
 /// Parse a GSD project's .planning/ directory into a ProjectState.
 /// Gracefully handles missing or malformed files -- never panics.
 ///
@@ -927,13 +974,17 @@ pub fn parse_project_state_with(
     // Parse ROADMAP.md. The `## Progress` table (GSD 1.8.0) is authoritative
     // for progress counts when present, read for the current milestone (#5165);
     // otherwise STATE.md frontmatter stands.
+    //
+    // The phase-id convention is resolved once per snapshot (upstream's
+    // planning-snapshot does the same) and threaded to every id reader.
+    let convention = phase_id_convention(planning_dir);
     let roadmap_path = planning_dir.join("ROADMAP.md");
     if let Ok(content) = std::fs::read_to_string(&roadmap_path) {
-        state.phases = roadmap_md::parse_roadmap_phases(&content);
-        state.planned_phases = roadmap_md::parse_planned_build_phases(&content);
-        state.shipped_phases = roadmap_md::parse_shipped_phases(&content);
-        state.phase_goals = roadmap_md::parse_phase_goals(&content);
-        state.milestones = roadmap_md::roadmap_milestones(&content);
+        state.phases = roadmap_md::parse_roadmap_phases(&content, convention);
+        state.planned_phases = roadmap_md::parse_planned_build_phases(&content, convention);
+        state.shipped_phases = roadmap_md::parse_shipped_phases(&content, convention);
+        state.phase_goals = roadmap_md::parse_phase_goals(&content, convention);
+        state.milestones = roadmap_md::roadmap_milestones(&content, convention);
         // STATE.md is the milestone's primary source; a project whose STATE.md
         // carries no `milestone:` key still names it in ROADMAP's
         // `## Milestones` list, and an empty `Milestone:` field is worse than
@@ -955,7 +1006,7 @@ pub fn parse_project_state_with(
     let mut current_phase_inference: Option<disk_status::DiskInference> = None;
     let mut current_phase_number: Option<phase_num::PhaseNum> = None;
     for phase in &state.phases {
-        let inference = disk_status::infer_phase_status(planning_dir, &phase.number);
+        let inference = disk_status::infer_phase_status(planning_dir, &phase.number, convention);
         // Track the first phase whose IMPLEMENTATION is not finished as the
         // current phase status.
         //
@@ -2032,5 +2083,101 @@ mod tests {
         let td = make_planning(&[("STATE.md", "---\nstatus: executing\n---\n")]);
         let state = parse_project_state(&td.path().join(".planning"));
         assert!(state.workstreams.is_empty());
+    }
+
+    // --- quick-261105-e7v: milestone-prefixed phase ids ---------------------
+
+    const MP_ROADMAP: &str = "# Roadmap\n\n## Phases\n\n\
+        - [ ] **Phase 3: Gamma** - bare\n\
+        - [ ] **Phase 3-01: Alpha** - first\n\
+        - [ ] **Phase 3-02: Beta** - second\n";
+
+    fn mp_tree(config: Option<&str>) -> TempDir {
+        let mut files = vec![
+            ("STATE.md", "---\nstatus: executing\n---\n"),
+            ("ROADMAP.md", MP_ROADMAP),
+            ("phases/03-01-alpha/03-01-01-PLAN.md", "# Plan\n"),
+            ("phases/03-02-beta/03-02-01-PLAN.md", "# Plan\n"),
+        ];
+        if let Some(config) = config {
+            files.push(("config.json", config));
+        }
+        make_planning(&files)
+    }
+
+    #[test]
+    fn a_milestone_prefixed_project_reads_m_nn_phases_and_their_directories() {
+        let td = mp_tree(Some("{\"phase_id_convention\": \"milestone-prefixed\"}"));
+        let state = parse_project_state(&td.path().join(".planning"));
+        let numbers: Vec<&str> = state.phases.iter().map(|p| p.number.as_str()).collect();
+        assert_eq!(numbers, ["3", "3-01", "3-02"]);
+        let status = |id: &str| state.phase_disk_statuses[id].status;
+        assert_eq!(status("3"), disk_status::DiskStatus::NoDirectory);
+        assert_eq!(status("3-01"), disk_status::DiskStatus::Planned);
+        assert_eq!(status("3-02"), disk_status::DiskStatus::Planned);
+    }
+
+    #[test]
+    fn the_default_convention_reads_a_milestone_prefixed_tree_as_before() {
+        let td = mp_tree(None);
+        let state = parse_project_state(&td.path().join(".planning"));
+        let numbers: Vec<&str> = state.phases.iter().map(|p| p.number.as_str()).collect();
+        assert_eq!(numbers, ["3"]);
+        // The legacy candidate-prefix rule lends phase 3 a `03-*` directory.
+        assert_eq!(
+            state.phase_disk_statuses["3"].status,
+            disk_status::DiskStatus::Planned
+        );
+    }
+
+    #[test]
+    fn an_unreadable_or_other_convention_config_is_legacy() {
+        for config in [
+            "not json",
+            "{}",
+            "{\"phase_id_convention\": \"\"}",
+            "{\"phase_id_convention\": \"sequential\"}",
+            "{\"phase_id_convention\": \"bracket\"}",
+            "{\"phase_id_convention\": \"Milestone-Prefixed\"}",
+            "{\"phase_id_convention\": 7}",
+        ] {
+            let td = mp_tree(Some(config));
+            assert_eq!(
+                phase_id_convention(&td.path().join(".planning")),
+                phase_num::PhaseIdConvention::Legacy,
+                "{config}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_workstream_inherits_the_root_milestone_prefixed_convention() {
+        use phase_num::PhaseIdConvention::{Legacy, MilestonePrefixed};
+        let td = TempDir::new().unwrap();
+        let root = td.path().join(".planning");
+        fs::create_dir_all(root.join("workstreams/ws")).unwrap();
+        fs::write(
+            root.join("config.json"),
+            "{\"phase_id_convention\": \"milestone-prefixed\"}",
+        )
+        .unwrap();
+        let ws = root.join("workstreams/ws");
+        assert_eq!(phase_id_convention(&ws), MilestonePrefixed, "no own config");
+
+        fs::write(ws.join("config.json"), "{\"other\": 1}").unwrap();
+        assert_eq!(phase_id_convention(&ws), MilestonePrefixed, "key absent");
+
+        fs::write(
+            ws.join("config.json"),
+            "{\"phase_id_convention\": \"sequential\"}",
+        )
+        .unwrap();
+        assert_eq!(phase_id_convention(&ws), Legacy, "the workstream wins");
+
+        // A directory whose parent is not `workstreams` never reads upward.
+        let other = root.join("elsewhere/ws");
+        fs::create_dir_all(&other).unwrap();
+        assert_eq!(phase_id_convention(&other), Legacy);
+        assert_eq!(phase_id_convention(&root), MilestonePrefixed);
     }
 }

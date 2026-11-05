@@ -24,6 +24,7 @@ use gsd_meta_manager::agents::adapters::{AdapterReport, AgentAdapter, CoreSnapsh
 use gsd_meta_manager::agents::waves::derive;
 use gsd_meta_manager::agents::{scan_project_with, AgentLiveness, ProjectAgents};
 use gsd_meta_manager::state_reader::disk_status::infer_phase_status;
+use gsd_meta_manager::state_reader::phase_num::PhaseIdConvention;
 use gsd_meta_manager::state_reader::ProjectState;
 use gsd_meta_manager::text::Untrusted;
 use tempfile::TempDir;
@@ -157,7 +158,7 @@ fn phase_13_state(root: &Path) -> ProjectState {
     ProjectState {
         phase_disk_statuses: HashMap::from([(
             "13".to_string(),
-            infer_phase_status(&root.join(".planning"), "13"),
+            infer_phase_status(&root.join(".planning"), "13", PhaseIdConvention::Legacy),
         )]),
         ..ProjectState::default()
     }
@@ -421,7 +422,7 @@ fn slugged_phase_13_state(with_waves: bool) -> (TempDir, ProjectState) {
     let state = ProjectState {
         phase_disk_statuses: HashMap::from([(
             "13".to_string(),
-            infer_phase_status(&planning, "13"),
+            infer_phase_status(&planning, "13", PhaseIdConvention::Legacy),
         )]),
         ..ProjectState::default()
     };

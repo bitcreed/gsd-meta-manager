@@ -1,5 +1,6 @@
 use gsd_meta_manager::state_reader::backlog::parse_backlog_items;
 use gsd_meta_manager::state_reader::config_json::parse_gsd_config;
+use gsd_meta_manager::state_reader::phase_num::PhaseIdConvention;
 use gsd_meta_manager::state_reader::roadmap_md::parse_roadmap_phases;
 use gsd_meta_manager::state_reader::state_md::{
     extract_frontmatter, parse_state_md, read_frontmatter, FrontmatterFault, FrontmatterOutcome,
@@ -95,7 +96,7 @@ fn test_parse_real_roadmap() {
 - [x] **Phase 3: Live State and Detail View** - File-watcher auto-refresh and project drill-down
 - [ ] **Phase 4: Visualization, Creation, and Enqueue** - ASCII roadmap, new project creation
 ";
-    let phases = parse_roadmap_phases(content);
+    let phases = parse_roadmap_phases(content, PhaseIdConvention::Legacy);
     assert_eq!(phases.len(), 4);
     assert!(!phases[0].completed);
     assert_eq!(phases[0].number, "1");
@@ -108,14 +109,14 @@ fn test_parse_real_roadmap() {
 
 #[test]
 fn test_parse_roadmap_empty() {
-    let phases = parse_roadmap_phases("");
+    let phases = parse_roadmap_phases("", PhaseIdConvention::Legacy);
     assert!(phases.is_empty());
 }
 
 #[test]
 fn test_parse_roadmap_case_insensitive_x() {
     let content = "- [X] **Phase 1: Done Phase** - Completed\n";
-    let phases = parse_roadmap_phases(content);
+    let phases = parse_roadmap_phases(content, PhaseIdConvention::Legacy);
     assert_eq!(phases.len(), 1);
     assert!(phases[0].completed);
     assert_eq!(phases[0].name, "Done Phase");
@@ -916,7 +917,10 @@ fn test_this_repositorys_own_planning_dir_reads_without_panicking() {
     // assertions read the permanent v2.0 archive instead of the live file.
     let archived = std::fs::read_to_string(planning.join("milestones/v2.0-ROADMAP.md"))
         .expect("this repository ships its own .planning/milestones/v2.0-ROADMAP.md");
-    let phases = gsd_meta_manager::state_reader::roadmap_md::parse_roadmap_phases(&archived);
+    let phases = gsd_meta_manager::state_reader::roadmap_md::parse_roadmap_phases(
+        &archived,
+        PhaseIdConvention::Legacy,
+    );
     assert!(
         !phases.is_empty(),
         "the archived roadmap declares phases; if this is empty the reader found \

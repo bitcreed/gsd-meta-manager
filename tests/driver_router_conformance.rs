@@ -46,7 +46,7 @@ use gsd_meta_manager::driver::router::{decide, Decision, SAFE_COMMAND_ALPHABET};
 use gsd_meta_manager::state_reader::parse_project_state;
 use tempfile::TempDir;
 
-/// The phase every fixture's roadmap declares and every assertion targets.
+/// The default target phase: what a fixture's `target` is unless it names another.
 const TARGET: &str = "01";
 
 /// The oracle verb. Named once, because the whole point of the source scan in
@@ -157,7 +157,7 @@ impl Oracle {
         None
     }
 
-    /// The recommended action GSD's router emits for [`TARGET`] in `root`, as
+    /// The recommended action GSD's router emits for phase `target` in `root`, as
     /// `(action, command)`.
     ///
     /// `None` means the oracle emitted no action for that phase — which is
@@ -184,7 +184,11 @@ impl Oracle {
         command
     }
 
-    fn recommended_action(&self, root: &Path) -> Result<Option<(String, String)>, String> {
+    fn recommended_action(
+        &self,
+        root: &Path,
+        target: &str,
+    ) -> Result<Option<(String, String)>, String> {
         let output = self
             .query_command(ORACLE_VERB)
             .current_dir(root)
@@ -207,7 +211,7 @@ impl Oracle {
             .and_then(serde_json::Value::as_array)
             .into_iter()
             .flatten()
-            .find(|action| action.get("phase").and_then(serde_json::Value::as_str) == Some(TARGET))
+            .find(|action| action.get("phase").and_then(serde_json::Value::as_str) == Some(target))
             .map(|action| {
                 (
                     action
@@ -256,6 +260,9 @@ enum Upstream {
 /// One fixture project tree, and what both routers should say about it.
 struct Fixture {
     name: &'static str,
+    /// The phase both routers are asked about ([`TARGET`] unless the fixture's
+    /// roadmap numbers its phases differently).
+    target: &'static str,
     upstream: Upstream,
     build: fn(&Path),
 }
@@ -290,6 +297,44 @@ fn skeleton(root: &Path) {
     std::fs::create_dir_all(root.join(".planning/phases")).expect("the phases dir is creatable");
 }
 
+/// A project on gsd-core's `milestone-prefixed` phase-id convention: the
+/// config opt-in, a roadmap of `3`, `3-01` and `3-02`, and one plan under each
+/// of the two `M-NN` directories. Written as files, like [`skeleton`].
+fn milestone_prefixed_skeleton(root: &Path) {
+    write(
+        &root.join(".planning/config.json"),
+        "{\n  \"phase_id_convention\": \"milestone-prefixed\"\n}\n",
+    );
+    write(
+        &root.join(".planning/ROADMAP.md"),
+        "# Roadmap\n\n## Phases\n\n\
+         - [ ] **Phase 3: Gamma** - the bare milestone phase\n\
+         - [ ] **Phase 3-01: Alpha** - the first phase of milestone 3\n\
+         - [ ] **Phase 3-02: Beta** - the second phase of milestone 3\n\n\
+         ### Phase 3: Gamma\n\n\
+         **Goal**: exercise the bare id\n\
+         **Depends on**: Nothing\n\n\
+         ### Phase 3-01: Alpha\n\n\
+         **Goal**: exercise the M-NN id\n\
+         **Depends on**: Nothing\n\n\
+         ### Phase 3-02: Beta\n\n\
+         **Goal**: a sibling that must not lend its plans\n\
+         **Depends on**: Nothing\n",
+    );
+    write(
+        &root.join(".planning/STATE.md"),
+        "---\nstatus: in_progress\n---\n\n# State\n",
+    );
+    write(
+        &root.join(".planning/phases/03-01-alpha/03-01-01-PLAN.md"),
+        "---\nphase: 03-01\n---\n\n# Plan\n",
+    );
+    write(
+        &root.join(".planning/phases/03-02-beta/03-02-01-PLAN.md"),
+        "---\nphase: 03-02\n---\n\n# Plan\n",
+    );
+}
+
 fn phase_dir(root: &Path) -> PathBuf {
     root.join(".planning/phases/01-alpha")
 }
@@ -320,11 +365,13 @@ fn verification(root: &Path, status: &str) {
 const FIXTURES: &[Fixture] = &[
     Fixture {
         name: "no_directory",
+        target: TARGET,
         upstream: Upstream::SameCommand,
         build: |root| skeleton(root),
     },
     Fixture {
         name: "empty",
+        target: TARGET,
         upstream: Upstream::SameCommand,
         build: |root| {
             skeleton(root);
@@ -333,6 +380,7 @@ const FIXTURES: &[Fixture] = &[
     },
     Fixture {
         name: "discussed",
+        target: TARGET,
         upstream: Upstream::SameCommand,
         build: |root| {
             skeleton(root);
@@ -341,6 +389,7 @@ const FIXTURES: &[Fixture] = &[
     },
     Fixture {
         name: "researched",
+        target: TARGET,
         upstream: Upstream::SameCommand,
         build: |root| {
             skeleton(root);
@@ -349,6 +398,7 @@ const FIXTURES: &[Fixture] = &[
     },
     Fixture {
         name: "planned",
+        target: TARGET,
         upstream: Upstream::SameCommand,
         build: |root| {
             skeleton(root);
@@ -357,6 +407,7 @@ const FIXTURES: &[Fixture] = &[
     },
     Fixture {
         name: "partial",
+        target: TARGET,
         upstream: Upstream::NoAction,
         build: |root| {
             skeleton(root);
@@ -367,6 +418,7 @@ const FIXTURES: &[Fixture] = &[
     },
     Fixture {
         name: "executed_human_needed",
+        target: TARGET,
         upstream: Upstream::VerifyGate,
         build: |root| {
             skeleton(root);
@@ -377,6 +429,7 @@ const FIXTURES: &[Fixture] = &[
     },
     Fixture {
         name: "executed_gaps_found",
+        target: TARGET,
         upstream: Upstream::VerifyGate,
         build: |root| {
             skeleton(root);
@@ -393,6 +446,7 @@ const FIXTURES: &[Fixture] = &[
     // line scan finds `status: passed` and would call it GoalMet.
     Fixture {
         name: "executed_unparseable",
+        target: TARGET,
         upstream: Upstream::VerifyGate,
         build: |root| {
             skeleton(root);
@@ -409,6 +463,7 @@ const FIXTURES: &[Fixture] = &[
     // frontmatter.
     Fixture {
         name: "executed_unterminated",
+        target: TARGET,
         upstream: Upstream::VerifyGate,
         build: |root| {
             skeleton(root);
@@ -420,8 +475,26 @@ const FIXTURES: &[Fixture] = &[
             );
         },
     },
+    // gsd-core >= 1.20.1's `milestone-prefixed` convention (#5675 / #5676). Both
+    // fixtures share one tree; the oracle is measured to emit
+    // `/gsd-execute-phase 3-01` for the M-NN phase and `/gsd-discuss-phase 3`
+    // for the bare one (which borrows no sibling's plans). They need an oracle
+    // >= 1.20.1, which quick-261105-e7u pins for CI and the pre-tag container.
+    Fixture {
+        name: "milestone_prefixed_m_nn_phase",
+        target: "3-01",
+        upstream: Upstream::SameCommand,
+        build: milestone_prefixed_skeleton,
+    },
+    Fixture {
+        name: "milestone_prefixed_bare_phase",
+        target: "3",
+        upstream: Upstream::SameCommand,
+        build: milestone_prefixed_skeleton,
+    },
     Fixture {
         name: "complete",
+        target: TARGET,
         upstream: Upstream::NoAction,
         build: |root| {
             skeleton(root);
@@ -483,11 +556,11 @@ fn the_rust_rule_table_agrees_with_gsd_s_own_router_over_a_fixture_per_state() {
     for fixture in FIXTURES {
         let tree = build(fixture);
         let upstream = oracle
-            .recommended_action(&tree.root)
+            .recommended_action(&tree.root, fixture.target)
             .unwrap_or_else(|err| panic!("fixture `{}`: {err}", fixture.name));
 
         let state = parse_project_state(&tree.root.join(".planning"));
-        let ours = decide(&state, TARGET);
+        let ours = decide(&state, fixture.target);
 
         match fixture.upstream {
             Upstream::SameCommand => {
@@ -697,17 +770,28 @@ fn every_fixture_reaches_the_state_it_is_named_for() {
         let state = parse_project_state(&tree.root.join(".planning"));
         let inference = state
             .phase_disk_statuses
-            .get(TARGET)
+            .get(fixture.target)
             .unwrap_or_else(|| panic!("fixture `{}` produced no inference", fixture.name));
 
         let observed = gsd_meta_manager::driver::router::status_token(inference.status);
         let expected = fixture
             .name
-            .split("_gaps")
-            .next()
-            .and_then(|n| n.split("_human").next())
-            .and_then(|n| n.split("_unparseable").next())
-            .and_then(|n| n.split("_unterminated").next())
+            .strip_prefix("milestone_prefixed_")
+            .map(|shape| match shape {
+                // `03-01-alpha` holds a plan; bare `3` has no directory of
+                // its own and must not borrow `03-02-beta`'s plans.
+                "m_nn_phase" => "planned",
+                _ => "no_directory",
+            })
+            .or_else(|| {
+                fixture
+                    .name
+                    .split("_gaps")
+                    .next()
+                    .and_then(|n| n.split("_human").next())
+                    .and_then(|n| n.split("_unparseable").next())
+                    .and_then(|n| n.split("_unterminated").next())
+            })
             .unwrap_or(fixture.name);
         assert_eq!(
             observed, expected,
