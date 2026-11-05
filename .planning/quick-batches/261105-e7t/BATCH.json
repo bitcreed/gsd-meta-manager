@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "batch_id": "261105-e7t",
+  "created_at": "2026-11-05T16:14:11.434Z",
+  "options": {},
+  "base_revision": "21297593e5ef7a1876f47ceb90fc2cd50d9e2801",
+  "items": [
+    {
+      "quick_id": "261105-e7u",
+      "client_id": null,
+      "description": "Sync baseline to gsd-core 1.20.1: src/state_reader/config_json.rs GSD_CORE_SYNCED_VERSION → 1.20.1, GSD_CORE_SYNCED_COMMIT → v1.20.1, TREE_VERSION → 1.20.1; docs/GSD-CORE-SYNC.md new sha (9385f4618)/date + \"v1.20.1 delta\" section (no config-key changes; milestone-prefixed phase-id grammar made explicit, handled by the sibling phase-id task; dispatch-isolation files + fork-probe cache now under <project>/.gsd/ which the app reads neither; no CLI/routing/codex changes); README.md \"synced against gsd-core\" note → 1.20.1; keep constants↔doc test consistent; DEFAULTS_OPTION_COUNT unchanged. Touches no source file shared with the sibling task.",
+      "status": "pending",
+      "depends_on": [],
+      "planned_files": [
+        "src/state_reader/config_json.rs",
+        "docs/GSD-CORE-SYNC.md",
+        "README.md"
+      ],
+      "directory": null,
+      "worktree": null,
+      "dispatched_worktree": null,
+      "dispatched_branch": null,
+      "dispatched_base": null,
+      "wave": 0,
+      "commit": null,
+      "failure_reason": null
+    },
+    {
+      "quick_id": "261105-e7v",
+      "client_id": null,
+      "description": "Recognise milestone-prefixed phase ids: port upstream grammar from ~/projects/node/gsd-core src/phase-id.cts (commits 30322c042, a195bbc38; fixes #5675/#5676) — token \\d+(?:-\\d+)? e.g. phase 3-01, dir 03-02-beta, gated by config phase_id_convention. Fix roadmap_md.rs PHASE_ID (checklist and heading), parse_depends_on (3-01 not a range), Progress-row cell parsing; disk_status.rs phase_dir_matches (\"3-01\" matches 03-01-x; \"3\" must NOT match 03-02-beta under milestone-prefixed convention) and the test encoding the wrong M1-2 model; phase_num.rs PhaseNum::parse(\"3-01\"); read phase_id_convention so default convention does not regress; add a milestone-prefixed fixture to tests/driver_router_conformance.rs if the oracle supports it. Port rules from upstream source; line numbers approximate. Touches no source file shared with the sibling task.",
+      "status": "pending",
+      "depends_on": [
+        "261105-e7u"
+      ],
+      "planned_files": [
+        "src/state_reader/phase_num.rs",
+        "src/state_reader/mod.rs",
+        "src/state_reader/roadmap_md.rs",
+        "src/state_reader/disk_status.rs",
+        "tests/driver_router_conformance.rs",
+        "tests/state_reader_test.rs",
+        "tests/agents_waves.rs"
+      ],
+      "directory": null,
+      "worktree": null,
+      "dispatched_worktree": null,
+      "dispatched_branch": null,
+      "dispatched_base": null,
+      "wave": 1,
+      "commit": null,
+      "failure_reason": null
+    }
+  ]
+}
