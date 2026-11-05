@@ -4,10 +4,10 @@ milestone: v2.1.0
 current_phase_name: Sandbox Egress & Agent-Channel Isolation
 status: shipped
 stopped_at: v2.1.0 released locally (tag v2.1.0, not pushed) — interim gsd-core 1.20.0 Sync release between milestones
-last_updated: "2026-11-04T04:19:45.347Z"
+last_updated: "2026-11-05T17:48:20.619Z"
 last_activity: 2026-11-03
 last_activity_desc: v2.1.0 released — gsd-core 1.20.0 Sync
-state_head: 2ffc8db459f1de5da81fd5d07159590f9cd180bd
+state_head: a6b9d5140371b15918276e09eb1466322990b199
 progress:
   total_phases: 16
   completed_phases: 16
@@ -46,7 +46,7 @@ Milestone: v2.0 Autonomous Orchestration — SHIPPED 2026-10-29 as v2.0.0
 Phase: — (between milestones; Phases 14-31 archived to `.planning/milestones/v2.0-phases/`)
 Plan: —
 Status: shipped
-Last activity: 2026-11-03 - Completed quick task 261103-ubn: Dispatch a backlog item as a one-off gsd-quick run with one key
+Last activity: 2026-11-05 - Completed quick task 261105-fq6: Close milestone-prefixed phase-id parity gaps (M-0043)
 
 Archive: `.planning/milestones/v2.0-ROADMAP.md`, `v2.0-REQUIREMENTS.md`, `v2.0-MILESTONE-AUDIT.md`.
 Carried forward: five security-adjacent review clusters as todos `2026-10-29-v2-carry-*`;
@@ -537,6 +537,7 @@ Older entries (Phase 19 T-19-* rows, Phase 21 round-13 gaps, Phase 26 risks, 31-
 | 261103-ubn | Dispatch a backlog item as a one-off gsd-quick run with one key | 2026-11-03 | 2ffc8db | [261103-ubn-dispatch-a-backlog-item-as-a-one-off-gsd](./quick/261103-ubn-dispatch-a-backlog-item-as-a-one-off-gsd/) |
 | 261105-e7u | Sync baseline to gsd-core 1.20.1 | 2026-11-05 | f7e6fef | .planning/quick/261105-e7u-sync-baseline-to-gsd-core-1-20-1-src-state-reader-config-jso |
 | 261105-e7v | Recognise milestone-prefixed phase ids | 2026-11-05 | 31f8166 | .planning/quick/261105-e7v-recognise-milestone-prefixed-phase-ids-port-upstream-grammar |
+| 261105-fq6 | Close milestone-prefixed phase-id parity gaps (M-0043) | 2026-11-05 | a6b9d51 | [261105-fq6-close-milestone-prefixed-phase-id-parity](./quick/261105-fq6-close-milestone-prefixed-phase-id-parity/) |
 
 ## Deferred Items
 
