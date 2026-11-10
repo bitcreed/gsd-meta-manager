@@ -14,7 +14,7 @@ see [CONFIGURATION.md](CONFIGURATION.md); for system internals see
 | (Linux only) A C compiler | any | The Linux-only TLS egress dependency (`rustls` with the `ring` provider) compiles a C/asm component. macOS and Windows builds need no C compiler. |
 | Git | any recent | Needed to clone the repository. |
 | A terminal | any | crossterm targets Linux, macOS, and Windows. A truecolor terminal is recommended for the dashboard colors. |
-| (Optional) `tmux` | any | Required only for the "switch to existing Claude session" feature in the TUI. |
+| (Optional) `tmux` or `herdr` | any | Required only for focusing an existing Claude session, or opening a launched one, inside the multiplexer you are running in. |
 | (Optional) An editor on `$PATH` | — | Required only for opening files from the TUI. Fallback chain is `$VISUAL` → `$EDITOR` → `vi`. |
 | (Optional) A gsd-core install | see the README's **GSD compatibility** note | Not needed to read status: the dashboard reads `.planning/` files directly. When one is installed (project-local `.claude/gsd-core` / `.codex/gsd-core`, or global `${CLAUDE_CONFIG_DIR:-~/.claude}/gsd-core` / `${CODEX_HOME:-~/.codex}/gsd-core`), its `VERSION` is only read and compared with the version this build is synced to. |
 | (Optional) A terminal emulator on `$PATH` | — | Required only for launching new Claude sessions from the TUI. Probed in order: `$TERMINAL` → `kitty` → `alacritty` → `gnome-terminal` → `xterm`. |

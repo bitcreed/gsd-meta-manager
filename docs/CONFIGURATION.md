@@ -113,8 +113,11 @@ The binary itself does not require any environment variables to start. It does, 
 |----------|----------|----------|---------|
 | `VISUAL` | Optional | `src/main.rs` (TUI editor launch) | Preferred editor command when opening a file from the TUI. Checked first. |
 | `EDITOR` | Optional | `src/main.rs` (TUI editor launch) | Fallback editor if `$VISUAL` is unset. |
-| `TERMINAL` | Optional | `src/terminal_switch.rs` (`plan_launch`) | Preferred GUI terminal emulator for launching Claude sessions. Inside tmux (`$TMUX` set and a server reachable) a new tmux window is tried first; otherwise `$TERMINAL` is used, then `xdg-terminal-exec`, `x-terminal-emulator`, and finally the first installed of `kitty`, `alacritty`, `ptyxis`, `gnome-terminal`, `xterm` (`FALLBACK_TERMINAL_CANDIDATES` in `src/ui/screens/detail.rs`). |
-| `TMUX` | Optional | `src/terminal_switch.rs` | Presence of `$TMUX` indicates the binary is running inside tmux; required for the "switch to existing Claude session" feature. Absent → tab-switching returns a clear error. |
+| `TERMINAL` | Optional | `src/multiplexer/mod.rs` (`plan_launch`), `src/multiplexer/gui.rs` | Preferred GUI terminal emulator for launching Claude sessions. Inside a multiplexer (tmux with `$TMUX` set, or herdr with `$HERDR_ENV=1` and a reachable socket) a new window or tab in the innermost one is tried first; otherwise `$TERMINAL` is used, then `xdg-terminal-exec`, `x-terminal-emulator`, and finally the first installed of `kitty`, `alacritty`, `ptyxis`, `gnome-terminal`, `xterm` (`FALLBACK_TERMINAL_CANDIDATES` in `src/ui/screens/detail.rs`). |
+| `TMUX` | Optional | `src/multiplexer/tmux.rs` | Presence of `$TMUX` indicates the binary is running inside tmux; required for the "switch to existing Claude session" feature under tmux. Absent and no other multiplexer detected → tab-switching returns a clear error. |
+| `HERDR_ENV` | Optional | `src/multiplexer/herdr.rs` | Must equal exactly `1` for the binary to treat itself as running inside herdr. Any other value (including `0` and `true`) is ignored. herdr sets it in every pane. |
+| `HERDR_SOCKET_PATH` | Optional | `src/multiplexer/herdr.rs` | The herdr server socket. Launching opens a tab with one `layout.apply` request on it, and the herdr CLI calls used for focus (`pane list`, `pane process-info`, `agent focus`, `tab focus`) get it passed explicitly. Inside herdr but without it, herdr is reported as not reachable and the launch falls through to a GUI terminal. |
+| `HERDR_WORKSPACE_ID` | Optional | `src/multiplexer/herdr.rs` | The herdr workspace a launched tab opens in. Unset or empty: herdr uses its focused workspace. |
 | `GSD_HOME` | Optional | `src/state_reader/config_json.rs` (`user_defaults_path`) | Root of the GSD-owned store. GSD user defaults are read from, and the Config tab's global scope writes to, `$GSD_HOME/.gsd/defaults.json`. Unset or empty falls back to `$HOME`, matching gsd-core's own `GSD_HOME \|\| homedir()` rule. Any other value is used as given. |
 | `HOME` | Optional | `src/state_reader/config_json.rs` (`user_defaults_path`) | Fallback root for `$GSD_HOME/.gsd/defaults.json` (the GSD user defaults overlay) when `GSD_HOME` is unset or empty. If neither is set, the defaults file is simply not loaded. |
 | `GSDMM_EXPERIMENTAL_FEATURES` | Optional | `src/experimental.rs` (read once at startup by `App::from_config`) | Turns on the experimental surfaces, which today means the **Driver** tab and everything that leads to it, one-off tasks (`t` / `T`, and `t` on the Backlog tab) included. **Default is OFF.** Accepted truthy values are `1`, `true`, `yes` and `on`, ASCII-case-insensitive with surrounding whitespace trimmed; unset, empty, `0`, `false`, `no`, `off` and any unrecognised value are OFF. |
@@ -635,7 +638,8 @@ Settings that are required only for specific features:
 | Setting | Required for |
 |---------|--------------|
 | `preferences.hooks.pre_create` / `post_create` | Running custom commands around `gsd-meta-manager`'s "create new project" flow (TUI `n` key). |
-| `$TMUX` | Switching to an existing Claude session pane (tab-switching). |
+| `$TMUX` | Switching to an existing Claude session pane (tab-switching) and opening a launched session in a tmux window. |
+| `$HERDR_ENV` (equal to `1`) with `$HERDR_SOCKET_PATH` | Switching to an existing Claude session pane inside herdr, and opening a launched session in a herdr tab. |
 | `$TERMINAL` or one of `kitty`/`alacritty`/`gnome-terminal`/`xterm` on `$PATH` | Launching a new terminal window for a Claude session from the TUI. |
 | `$VISUAL` or `$EDITOR` or `vi` on `$PATH` | Opening files in an external editor from the TUI. |
 
@@ -656,7 +660,7 @@ The defaults declared in source (`src/config.rs`):
 | Session poll interval (TUI) | ~5s (auto-registration of Claude sessions) | `src/main.rs` / README |
 | Render tick interval | 250 ms | `event_bus.spawn_tick(250)` in `src/main.rs` |
 | Editor fallback chain | `$VISUAL` → `$EDITOR` → `vi` | `src/main.rs` |
-| Terminal fallback chain | tmux window (if inside tmux) → `$TERMINAL` → `xdg-terminal-exec` → `x-terminal-emulator` → `kitty` → `alacritty` → `ptyxis` → `gnome-terminal` → `xterm` | `src/terminal_switch.rs` (`plan_launch`), `src/ui/screens/detail.rs` (`FALLBACK_TERMINAL_CANDIDATES`) |
+| Terminal fallback chain | the innermost multiplexer's new window or tab (tmux or herdr, when inside one) → `$TERMINAL` → `xdg-terminal-exec` → `x-terminal-emulator` → `kitty` → `alacritty` → `ptyxis` → `gnome-terminal` → `xterm` | `src/multiplexer/mod.rs` (`plan_launch`), `src/multiplexer/gui.rs` (`rank_gui`), `src/ui/screens/detail.rs` (`FALLBACK_TERMINAL_CANDIDATES`) |
 
 ## Per-environment overrides
 

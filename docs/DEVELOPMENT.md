@@ -204,7 +204,8 @@ src/
   watcher.rs           -- notify FileWatcher wrapper
   session_detector.rs  -- detects active `claude` processes
   registry.rs, config.rs -- registered projects; user config.json
-  archive.rs, browser.rs, change_tracker.rs, project_creator.rs, terminal_switch.rs
+  archive.rs, browser.rs, change_tracker.rs, project_creator.rs
+  multiplexer/         -- tmux / herdr focus and launch behind one backend trait, plus the GUI terminal fallback
   driver_cli.rs, driverctl_cli.rs, task_cli.rs, taskctl_cli.rs, next_cli.rs
                        -- handlers for the driver / driverctl / task / taskctl / next subcommands
   agents/              -- agent, worktree and workstream discovery for the Agents view

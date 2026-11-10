@@ -246,7 +246,11 @@ src/
 ├── launch_target.rs         resolve the CLI's positional <alias|path> target
 ├── watcher.rs               FileWatcher around notify-debouncer-full
 ├── session_detector.rs      /proc scan for active `claude` processes
-├── terminal_switch.rs       tmux pane switching to a detected Claude session
+├── multiplexer/             focus and launch inside a terminal multiplexer, or a GUI terminal
+│   ├── mod.rs               the MultiplexerBackend trait, detection and innermost ordering, the seam
+│   ├── tmux.rs              tmux backend: focus by exact pane tty, new window
+│   ├── herdr.rs             herdr backend: focus by session id / pid / cwd, new tab via the socket
+│   └── gui.rs               GUI terminal fallback chain
 ├── project_creator.rs       Bootstrap a fresh GSD project (used by CreateProjectScreen)
 ├── change_tracker.rs        In-memory change log
 ├── archive.rs               Milestone archive parsing for the Archive sub-view
