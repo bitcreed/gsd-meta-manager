@@ -122,7 +122,7 @@ Requirements: `.planning/REQUIREMENTS.md` (MUX-01..MUX-07).
 **Goal:** Replace the tmux-hardcoded `src/terminal_switch.rs` with a reusable multiplexer backend trait (detect, focus a Claude session, open a new session in a cwd with an argv), migrate tmux onto it, and add a herdr backend, so focus and launch work inside herdr (also nested in or around tmux). The trait is designed against zellij, WezTerm mux, kitty remote control, GNU screen, Rex (Superlogical) and herdr-core/`hc`; those implementations are deferred (MUX-F01..F06).
 **Requirements**: MUX-01, MUX-02, MUX-03, MUX-04, MUX-05, MUX-06, MUX-07
 **Depends on:** Nothing (first phase of v2.3.0)
-**Plans:** 1/2 plans executed
+**Plans:** 2/2 plans executed
 
 **Success Criteria** (what must be TRUE):
 1. Inside a herdr pane (`HERDR_ENV=1`, `$TMUX` unset), focusing a running Claude session lands in its herdr pane, matched on `agent_session.value` from `herdr pane list`; launch/resume opens a new herdr tab in the project cwd instead of a GUI terminal.
@@ -137,7 +137,7 @@ Plans:
 - [x] 33-01-PLAN.md — Seam + ExecArgv sink, tmux moved onto the trait, herdr launch via layout.apply, GUI fallback, all five call sites (wave 1)
 
 **Wave 2** *(blocked on Wave 1 completion)*
-- [ ] 33-02-PLAN.md — Innermost-multiplexer precedence, herdr focus join, design note, corrected docs (wave 2)
+- [x] 33-02-PLAN.md — Innermost-multiplexer precedence, herdr focus join, design note, corrected docs (wave 2)
 
 ---
 
