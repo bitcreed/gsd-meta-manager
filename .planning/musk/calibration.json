@@ -1,123 +1,130 @@
 {
   "version": 1,
-  "generated_at": "2026-10-30T00:45:04.303Z",
+  "generated_at": "2026-11-10T22:27:06.110Z",
   "runtime": "claude-code",
   "transcript_dir": "/home/blk/.claude/projects/-home-blk-projects-rust-gsd-meta-manager",
+  "worktree_transcript_dirs": 0,
   "since": null,
   "min_samples": 5,
   "basis": "harness",
-  "sessions": 26,
-  "subagents": 579,
-  "messages": 20788,
+  "sessions": 20,
+  "subagents": 616,
+  "messages": 23218,
   "totals": {
-    "tokens": 104377090,
-    "cache_read": 3132205446,
-    "attributed_to_phase": 84241341
+    "tokens": 116366771,
+    "cache_read": 3589575363,
+    "attributed_to_phase": 88053605
   },
   "prices": {
     "per_task": {
-      "p25": -9343,
-      "p50": 17384,
-      "p75": 73329,
-      "n": 69,
+      "p25": -6879,
+      "p50": 18685,
+      "p75": 70909,
+      "n": 71,
       "basis": "harness"
     },
     "per_plan_overhead": {
-      "p25": 93904,
-      "p50": 160828,
-      "p75": 299178,
-      "n": 69,
+      "p25": 95964,
+      "p50": 162247,
+      "p75": 296065,
+      "n": 71,
       "basis": "harness"
     },
     "per_phase": {
-      "p25": 4819457,
-      "p50": 7380850,
-      "p75": 11686367,
-      "n": 10,
+      "p25": 1870819,
+      "p50": 6922197,
+      "p75": 11647943,
+      "n": 12,
       "basis": "harness"
     },
     "per_quick_task": {
-      "p25": 278894,
-      "p50": 380336,
-      "p75": 581898,
-      "n": 46,
+      "p25": 301275,
+      "p50": 482249,
+      "p75": 756531,
+      "n": 58,
       "basis": "harness"
     },
     "per_req": {
-      "p25": 1100673,
-      "p50": 1466100,
-      "p75": 3001458,
-      "n": 10,
+      "p25": 331157,
+      "p50": 1371788,
+      "p75": 2168587,
+      "n": 12,
       "basis": "harness"
     }
   },
   "samples": {
-    "per_task": 69,
-    "per_plan_overhead": 69,
-    "per_phase": 10,
-    "per_quick_task": 46,
-    "per_req": 10
+    "per_task": 71,
+    "per_plan_overhead": 71,
+    "per_phase": 12,
+    "per_quick_task": 58,
+    "per_req": 12
   },
   "fit": {
-    "a": 213815,
-    "b": 35046,
-    "r2": 0.011,
-    "n": 69
+    "a": 212074,
+    "b": 35294,
+    "r2": 0.012,
+    "n": 71
   },
   "by_agent_type": {
     "gsd-executor": {
-      "runs": 115,
-      "tokens_total": 27888159,
-      "cache_read_total": 1229016690,
-      "p50_per_run": 202046
+      "runs": 131,
+      "tokens_total": 32818034,
+      "cache_read_total": 1458070359,
+      "p50_per_run": 204401
     },
     "gsd-planner": {
-      "runs": 61,
-      "tokens_total": 18670715,
-      "cache_read_total": 579657834,
-      "p50_per_run": 221318
+      "runs": 74,
+      "tokens_total": 23292326,
+      "cache_read_total": 731022339,
+      "p50_per_run": 234355
     },
     "general-purpose": {
-      "runs": 235,
-      "tokens_total": 8743781,
-      "cache_read_total": 78350307,
-      "p50_per_run": 24993
+      "runs": 237,
+      "tokens_total": 8646429,
+      "cache_read_total": 77599143,
+      "p50_per_run": 25018
     },
     "gsd-code-reviewer": {
-      "runs": 36,
-      "tokens_total": 7583478,
-      "cache_read_total": 155836994,
-      "p50_per_run": 193011
+      "runs": 37,
+      "tokens_total": 7678254,
+      "cache_read_total": 156429401,
+      "p50_per_run": 186074
     },
     "orchestrator:/gsd-execute-phase": {
-      "runs": 34,
-      "tokens_total": 4862009,
-      "cache_read_total": 174321423,
-      "p50_per_run": 118155
+      "runs": 35,
+      "tokens_total": 5004252,
+      "cache_read_total": 179264532,
+      "p50_per_run": 119451
     },
     "main": {
-      "runs": 18,
-      "tokens_total": 4084810,
-      "cache_read_total": 54799307,
-      "p50_per_run": 130458
+      "runs": 17,
+      "tokens_total": 4521415,
+      "cache_read_total": 58806803,
+      "p50_per_run": 174506
     },
     "gsd-verifier": {
-      "runs": 48,
-      "tokens_total": 3933433,
-      "cache_read_total": 51345352,
-      "p50_per_run": 75856
+      "runs": 49,
+      "tokens_total": 3979201,
+      "cache_read_total": 51707908,
+      "p50_per_run": 75722
     },
     "gsd-phase-researcher": {
-      "runs": 9,
-      "tokens_total": 3657317,
-      "cache_read_total": 144081461,
-      "p50_per_run": 419946
+      "runs": 10,
+      "tokens_total": 3962038,
+      "cache_read_total": 154804425,
+      "p50_per_run": 412815
     },
     "orchestrator:/gsd-code-review": {
-      "runs": 42,
-      "tokens_total": 3618639,
-      "cache_read_total": 93154879,
-      "p50_per_run": 89827
+      "runs": 43,
+      "tokens_total": 3699727,
+      "cache_read_total": 96317128,
+      "p50_per_run": 87763
+    },
+    "orchestrator:/gsd-quick": {
+      "runs": 31,
+      "tokens_total": 2580012,
+      "cache_read_total": 73305169,
+      "p50_per_run": 63502
     },
     "gsd-security-auditor": {
       "runs": 9,
@@ -125,29 +132,23 @@
       "cache_read_total": 80484110,
       "p50_per_run": 265944
     },
-    "orchestrator:/gsd-quick": {
-      "runs": 34,
-      "tokens_total": 2077902,
-      "cache_read_total": 49445647,
-      "p50_per_run": 57701
-    },
     "gsd-plan-checker": {
-      "runs": 24,
-      "tokens_total": 1878364,
-      "cache_read_total": 11168314,
-      "p50_per_run": 60335
+      "runs": 25,
+      "tokens_total": 1970252,
+      "cache_read_total": 11211153,
+      "p50_per_run": 62585
     },
     "orchestrator:/gsd-secure-phase": {
-      "runs": 33,
-      "tokens_total": 1810638,
-      "cache_read_total": 39991193,
-      "p50_per_run": 52344
+      "runs": 34,
+      "tokens_total": 1847006,
+      "cache_read_total": 40776215,
+      "p50_per_run": 52093
     },
     "orchestrator:/gsd-plan-phase": {
-      "runs": 13,
-      "tokens_total": 1636366,
-      "cache_read_total": 48030487,
-      "p50_per_run": 116301
+      "runs": 14,
+      "tokens_total": 1755981,
+      "cache_read_total": 51090451,
+      "p50_per_run": 117958
     },
     "gsd-debugger": {
       "runs": 4,
@@ -161,17 +162,29 @@
       "cache_read_total": 9285080,
       "p50_per_run": 64518
     },
+    "gsd-pattern-mapper": {
+      "runs": 9,
+      "tokens_total": 1149146,
+      "cache_read_total": 17919269,
+      "p50_per_run": 98513
+    },
     "gsd-code-fixer": {
       "runs": 4,
       "tokens_total": 1092655,
       "cache_read_total": 43465059,
       "p50_per_run": 266822
     },
-    "gsd-pattern-mapper": {
-      "runs": 8,
-      "tokens_total": 1068989,
-      "cache_read_total": 17600404,
-      "p50_per_run": 102350
+    "orchestrator:/gsd-progress": {
+      "runs": 1,
+      "tokens_total": 1000269,
+      "cache_read_total": 16845056,
+      "p50_per_run": 1000269
+    },
+    "orchestrator:/gsd-discuss-phase": {
+      "runs": 7,
+      "tokens_total": 882747,
+      "cache_read_total": 18216016,
+      "p50_per_run": 136315
     },
     "orchestrator:/gsd-verify-work": {
       "runs": 8,
@@ -179,41 +192,23 @@
       "cache_read_total": 30702978,
       "p50_per_run": 101123
     },
-    "orchestrator:/gsd-discuss-phase": {
+    "orchestrator:/gsd-quick-batch": {
       "runs": 6,
-      "tokens_total": 801613,
-      "cache_read_total": 16852599,
-      "p50_per_run": 136616
-    },
-    "orchestrator:/gsd-progress": {
-      "runs": 1,
-      "tokens_total": 787559,
-      "cache_read_total": 13339609,
-      "p50_per_run": 787559
+      "tokens_total": 815919,
+      "cache_read_total": 39142031,
+      "p50_per_run": 107509
     },
     "orchestrator:/gsd-ui-review": {
-      "runs": 24,
-      "tokens_total": 757604,
-      "cache_read_total": 17106305,
-      "p50_per_run": 25621
-    },
-    "orchestrator:/gsd-quick-batch": {
-      "runs": 5,
-      "tokens_total": 711975,
-      "cache_read_total": 35785844,
-      "p50_per_run": 111073
+      "runs": 25,
+      "tokens_total": 772384,
+      "cache_read_total": 17699232,
+      "p50_per_run": 25546
     },
     "orchestrator:/gsd-spike": {
       "runs": 2,
       "tokens_total": 464103,
       "cache_read_total": 19489968,
       "p50_per_run": 232052
-    },
-    "orchestrator:/gsd-capture": {
-      "runs": 9,
-      "tokens_total": 343377,
-      "cache_read_total": 7005239,
-      "p50_per_run": 25115
     },
     "gsd-ui-researcher": {
       "runs": 1,
@@ -223,9 +218,21 @@
     },
     "orchestrator:/gsd-phase": {
       "runs": 5,
-      "tokens_total": 295079,
-      "cache_read_total": 16924294,
+      "tokens_total": 302497,
+      "cache_read_total": 11666905,
       "p50_per_run": 54503
+    },
+    "orchestrator:/gsd-musk-roadmap": {
+      "runs": 2,
+      "tokens_total": 222519,
+      "cache_read_total": 14540672,
+      "p50_per_run": 111260
+    },
+    "orchestrator:/gsd-capture": {
+      "runs": 7,
+      "tokens_total": 210950,
+      "cache_read_total": 6011311,
+      "p50_per_run": 25115
     },
     "gsd-debug-session-manager": {
       "runs": 4,
@@ -233,29 +240,35 @@
       "cache_read_total": 953772,
       "p50_per_run": 49685
     },
-    "Explore": {
+    "orchestrator:/gsd-audit-milestone": {
       "runs": 2,
-      "tokens_total": 178228,
-      "cache_read_total": 3057575,
-      "p50_per_run": 89114
+      "tokens_total": 194789,
+      "cache_read_total": 4971096,
+      "p50_per_run": 97395
     },
     "orchestrator:/gsd-musk-retro": {
       "runs": 2,
-      "tokens_total": 153123,
-      "cache_read_total": 3142163,
-      "p50_per_run": 76562
+      "tokens_total": 178149,
+      "cache_read_total": 3160956,
+      "p50_per_run": 89075
     },
-    "orchestrator:/gsd-musk-roadmap": {
+    "orchestrator:/gsd-complete-milestone": {
       "runs": 1,
-      "tokens_total": 125070,
-      "cache_read_total": 5794662,
-      "p50_per_run": 125070
+      "tokens_total": 162141,
+      "cache_read_total": 6588317,
+      "p50_per_run": 162141
     },
-    "orchestrator:/gsd-audit-milestone": {
+    "gsd-integration-checker": {
+      "runs": 2,
+      "tokens_total": 156902,
+      "cache_read_total": 2811145,
+      "p50_per_run": 78451
+    },
+    "Explore": {
       "runs": 1,
-      "tokens_total": 120243,
-      "cache_read_total": 3324086,
-      "p50_per_run": 120243
+      "tokens_total": 118013,
+      "cache_read_total": 2733134,
+      "p50_per_run": 118013
     },
     "orchestrator:/gsd-debug": {
       "runs": 3,
@@ -263,23 +276,17 @@
       "cache_read_total": 2380292,
       "p50_per_run": 38853
     },
-    "orchestrator:/gsd-update": {
-      "runs": 2,
-      "tokens_total": 113646,
-      "cache_read_total": 1166899,
-      "p50_per_run": 56823
-    },
     "claude-code-guide": {
       "runs": 1,
       "tokens_total": 110207,
       "cache_read_total": 444638,
       "p50_per_run": 110207
     },
-    "gsd-integration-checker": {
-      "runs": 1,
-      "tokens_total": 110007,
-      "cache_read_total": 2663119,
-      "p50_per_run": 110007
+    "orchestrator:/gsd-update": {
+      "runs": 2,
+      "tokens_total": 79363,
+      "cache_read_total": 837093,
+      "p50_per_run": 39682
     },
     "gsd-ui-checker": {
       "runs": 1,
@@ -289,9 +296,9 @@
     },
     "orchestrator:/gsd-fast": {
       "runs": 1,
-      "tokens_total": 69217,
-      "cache_read_total": 1831347,
-      "p50_per_run": 69217
+      "tokens_total": 70307,
+      "cache_read_total": 8616691,
+      "p50_per_run": 70307
     },
     "orchestrator:/gsd-ui-phase": {
       "runs": 1,
@@ -319,6 +326,24 @@
     }
   },
   "by_phase": {
+    "1": {
+      "tokens_total": 471496,
+      "cache_read_total": 11448034,
+      "by_agent_type": {
+        "gsd-planner": {
+          "runs": 1,
+          "tokens_total": 293739,
+          "cache_read_total": 6619954,
+          "p50_per_run": 293739
+        },
+        "orchestrator:/gsd-quick": {
+          "runs": 2,
+          "tokens_total": 177757,
+          "cache_read_total": 4828080,
+          "p50_per_run": 88879
+        }
+      }
+    },
     "2": {
       "tokens_total": 337762,
       "cache_read_total": 15812936,
@@ -332,14 +357,38 @@
       }
     },
     "3": {
-      "tokens_total": 61449,
-      "cache_read_total": 1490028,
+      "tokens_total": 1134738,
+      "cache_read_total": 31373649,
       "by_agent_type": {
+        "gsd-planner": {
+          "runs": 2,
+          "tokens_total": 670291,
+          "cache_read_total": 20918624,
+          "p50_per_run": 335146
+        },
+        "gsd-executor": {
+          "runs": 2,
+          "tokens_total": 273008,
+          "cache_read_total": 5589853,
+          "p50_per_run": 136504
+        },
+        "orchestrator:/gsd-quick-batch": {
+          "runs": 1,
+          "tokens_total": 103944,
+          "cache_read_total": 3356187,
+          "p50_per_run": 103944
+        },
         "orchestrator:/gsd-quick": {
           "runs": 1,
           "tokens_total": 61449,
           "cache_read_total": 1490028,
           "p50_per_run": 61449
+        },
+        "general-purpose": {
+          "runs": 1,
+          "tokens_total": 26046,
+          "cache_read_total": 18957,
+          "p50_per_run": 26046
         }
       }
     },
@@ -548,44 +597,44 @@
       }
     },
     "25": {
-      "tokens_total": 868115,
-      "cache_read_total": 17408015,
+      "tokens_total": 1178582,
+      "cache_read_total": 23901407,
       "by_agent_type": {
         "gsd-code-reviewer": {
-          "runs": 1,
-          "tokens_total": 264506,
-          "cache_read_total": 5619853,
-          "p50_per_run": 264506
+          "runs": 2,
+          "tokens_total": 359282,
+          "cache_read_total": 6212260,
+          "p50_per_run": 179641
+        },
+        "orchestrator:/gsd-code-review": {
+          "runs": 2,
+          "tokens_total": 198236,
+          "cache_read_total": 5612646,
+          "p50_per_run": 99118
+        },
+        "gsd-verifier": {
+          "runs": 2,
+          "tokens_total": 145843,
+          "cache_read_total": 2236512,
+          "p50_per_run": 72922
         },
         "orchestrator:/gsd-execute-phase": {
           "runs": 2,
-          "tokens_total": 127695,
-          "cache_read_total": 4876784,
-          "p50_per_run": 63848
-        },
-        "orchestrator:/gsd-code-review": {
-          "runs": 1,
-          "tokens_total": 117148,
-          "cache_read_total": 2450397,
-          "p50_per_run": 117148
-        },
-        "gsd-verifier": {
-          "runs": 1,
-          "tokens_total": 100075,
-          "cache_read_total": 1873956,
-          "p50_per_run": 100075
+          "tokens_total": 139744,
+          "cache_read_total": 5856125,
+          "p50_per_run": 69872
         },
         "general-purpose": {
-          "runs": 4,
-          "tokens_total": 99885,
-          "cache_read_total": 75560,
-          "p50_per_run": 24978
+          "runs": 5,
+          "tokens_total": 125523,
+          "cache_read_total": 94450,
+          "p50_per_run": 24982
         },
         "orchestrator:/gsd-secure-phase": {
-          "runs": 1,
-          "tokens_total": 70697,
-          "cache_read_total": 1562196,
-          "p50_per_run": 70697
+          "runs": 2,
+          "tokens_total": 107065,
+          "cache_read_total": 2347218,
+          "p50_per_run": 53533
         },
         "gsd-ui-auditor": {
           "runs": 1,
@@ -594,10 +643,10 @@
           "p50_per_run": 62227
         },
         "orchestrator:/gsd-ui-review": {
-          "runs": 1,
-          "tokens_total": 25882,
-          "cache_read_total": 408506,
-          "p50_per_run": 25882
+          "runs": 2,
+          "tokens_total": 40662,
+          "cache_read_total": 1001433,
+          "p50_per_run": 20331
         }
       }
     },
@@ -1178,8 +1227,8 @@
       }
     },
     "31": {
-      "tokens_total": 11711440,
-      "cache_read_total": 516487361,
+      "tokens_total": 11758335,
+      "cache_read_total": 516635387,
       "by_agent_type": {
         "gsd-executor": {
           "runs": 10,
@@ -1259,6 +1308,12 @@
           "cache_read_total": 7283114,
           "p50_per_run": 226949
         },
+        "orchestrator:/gsd-musk-roadmap": {
+          "runs": 1,
+          "tokens_total": 213214,
+          "cache_read_total": 14375981,
+          "p50_per_run": 213214
+        },
         "gsd-plan-checker": {
           "runs": 2,
           "tokens_total": 162439,
@@ -1277,29 +1332,23 @@
           "cache_read_total": 2563808,
           "p50_per_run": 24353
         },
-        "orchestrator:/gsd-musk-roadmap": {
-          "runs": 1,
-          "tokens_total": 125070,
-          "cache_read_total": 5794662,
-          "p50_per_run": 125070
-        },
         "orchestrator:/gsd-quick": {
           "runs": 2,
           "tokens_total": 119387,
           "cache_read_total": 2561013,
           "p50_per_run": 59694
         },
-        "orchestrator:/gsd-phase": {
-          "runs": 1,
-          "tokens_total": 75289,
-          "cache_read_total": 7768739,
-          "p50_per_run": 75289
-        },
         "orchestrator:/gsd-capture": {
-          "runs": 3,
-          "tokens_total": 60498,
-          "cache_read_total": 1568422,
-          "p50_per_run": 22528
+          "runs": 2,
+          "tokens_total": 47643,
+          "cache_read_total": 755842,
+          "p50_per_run": 23822
+        },
+        "gsd-integration-checker": {
+          "runs": 1,
+          "tokens_total": 46895,
+          "cache_read_total": 148026,
+          "p50_per_run": 46895
         },
         "orchestrator:/gsd-health": {
           "runs": 1,
@@ -1312,6 +1361,72 @@
           "tokens_total": 12673,
           "cache_read_total": 559014,
           "p50_per_run": 12673
+        }
+      }
+    },
+    "33": {
+      "tokens_total": 1910117,
+      "cache_read_total": 52394177,
+      "by_agent_type": {
+        "gsd-executor": {
+          "runs": 2,
+          "tokens_total": 526550,
+          "cache_read_total": 17287391,
+          "p50_per_run": 263275
+        },
+        "gsd-planner": {
+          "runs": 1,
+          "tokens_total": 492559,
+          "cache_read_total": 15413407,
+          "p50_per_run": 492559
+        },
+        "gsd-phase-researcher": {
+          "runs": 1,
+          "tokens_total": 304721,
+          "cache_read_total": 10722964,
+          "p50_per_run": 304721
+        },
+        "orchestrator:/gsd-execute-phase": {
+          "runs": 1,
+          "tokens_total": 130194,
+          "cache_read_total": 3963768,
+          "p50_per_run": 130194
+        },
+        "orchestrator:/gsd-plan-phase": {
+          "runs": 1,
+          "tokens_total": 119615,
+          "cache_read_total": 3059964,
+          "p50_per_run": 119615
+        },
+        "gsd-plan-checker": {
+          "runs": 1,
+          "tokens_total": 91888,
+          "cache_read_total": 42839,
+          "p50_per_run": 91888
+        },
+        "orchestrator:/gsd-discuss-phase": {
+          "runs": 1,
+          "tokens_total": 81134,
+          "cache_read_total": 1363417,
+          "p50_per_run": 81134
+        },
+        "gsd-pattern-mapper": {
+          "runs": 1,
+          "tokens_total": 80157,
+          "cache_read_total": 318865,
+          "p50_per_run": 80157
+        },
+        "general-purpose": {
+          "runs": 3,
+          "tokens_total": 73994,
+          "cache_read_total": 56871,
+          "p50_per_run": 24671
+        },
+        "orchestrator:/gsd-musk-roadmap": {
+          "runs": 1,
+          "tokens_total": 9305,
+          "cache_read_total": 164691,
+          "p50_per_run": 9305
         }
       }
     },
@@ -1434,10 +1549,10 @@
           "p50_per_run": 297770
         },
         "general-purpose": {
-          "runs": 22,
-          "tokens_total": 895744,
-          "cache_read_total": 11270320,
-          "p50_per_run": 25105
+          "runs": 21,
+          "tokens_total": 870718,
+          "cache_read_total": 11251527,
+          "p50_per_run": 25106
         },
         "gsd-code-reviewer": {
           "runs": 3,
@@ -1511,6 +1626,12 @@
           "cache_read_total": 3238559,
           "p50_per_run": 160254
         },
+        "orchestrator:/gsd-musk-retro": {
+          "runs": 2,
+          "tokens_total": 90524,
+          "cache_read_total": 2433754,
+          "p50_per_run": 45262
+        },
         "orchestrator:/gsd-ui-review": {
           "runs": 3,
           "tokens_total": 79771,
@@ -1523,12 +1644,6 @@
           "cache_read_total": 2130715,
           "p50_per_run": 75750
         },
-        "orchestrator:/gsd-musk-retro": {
-          "runs": 1,
-          "tokens_total": 65498,
-          "cache_read_total": 2414961,
-          "p50_per_run": 65498
-        },
         "orchestrator:/gsd-phase": {
           "runs": 1,
           "tokens_total": 54503,
@@ -1539,276 +1654,366 @@
     }
   },
   "injections": {
+    "evidence": true,
     "discuss": [
       {
+        "phase": "33",
+        "ts": "2026-11-10T20:49:54.884Z",
+        "tags": [
+          "musk",
+          "musk_lean",
+          "musk_milestone"
+        ]
+      },
+      {
         "phase": "28.1",
-        "ts": "2026-10-24T18:43:51.475Z"
+        "ts": "2026-10-24T18:43:51.475Z",
+        "tags": [
+          "musk",
+          "musk_lean",
+          "musk_milestone"
+        ]
       },
       {
         "phase": "31",
-        "ts": "2026-10-25T03:01:34.610Z"
+        "ts": "2026-10-25T03:01:34.610Z",
+        "tags": [
+          "musk",
+          "musk_lean",
+          "musk_milestone"
+        ]
       },
       {
         "phase": "27",
-        "ts": "2026-10-18T05:05:04.822Z"
+        "ts": "2026-10-18T05:05:04.822Z",
+        "tags": [
+          "musk",
+          "musk_lean",
+          "musk_milestone"
+        ]
       },
       {
         "phase": "30",
-        "ts": "2026-10-20T15:52:34.235Z"
+        "ts": "2026-10-20T15:52:34.235Z",
+        "tags": [
+          "musk",
+          "musk_lean",
+          "musk_milestone"
+        ]
       },
       {
         "phase": "28",
-        "ts": "2026-10-19T17:12:04.652Z"
+        "ts": "2026-10-19T17:12:04.652Z",
+        "tags": [
+          "musk",
+          "musk_lean",
+          "musk_milestone"
+        ]
       },
       {
         "phase": "29",
-        "ts": "2026-10-20T01:29:25.977Z"
+        "ts": "2026-10-20T01:29:25.977Z",
+        "tags": [
+          "musk",
+          "musk_lean",
+          "musk_milestone"
+        ]
       }
     ],
     "plan": [
       {
         "phase": "31",
-        "ts": "2026-10-27T05:53:27.633Z"
+        "ts": "2026-10-27T05:53:27.633Z",
+        "tags": [
+          "musk"
+        ]
       },
       {
-        "phase": null,
-        "ts": "2026-09-30T01:56:23.652Z"
-      },
-      {
-        "phase": null,
-        "ts": "2026-10-01T03:57:23.455Z"
+        "phase": "33",
+        "ts": "2026-11-10T21:11:45.115Z",
+        "tags": [
+          "musk"
+        ]
       },
       {
         "phase": "28.1",
-        "ts": "2026-10-24T19:26:28.728Z"
+        "ts": "2026-10-24T19:26:28.728Z",
+        "tags": [
+          "musk"
+        ]
       },
       {
         "phase": "31",
-        "ts": "2026-10-25T07:15:18.061Z"
+        "ts": "2026-10-25T07:15:18.061Z",
+        "tags": [
+          "musk"
+        ]
       },
       {
         "phase": "28.1",
-        "ts": "2026-10-25T01:15:32.038Z"
-      },
-      {
-        "phase": "28.1",
-        "ts": "2026-10-25T01:41:58.296Z"
-      },
-      {
-        "phase": "28.1",
-        "ts": "2026-10-24T20:10:29.026Z"
+        "ts": "2026-10-25T01:15:32.038Z",
+        "tags": [
+          "musk"
+        ]
       },
       {
         "phase": "31",
-        "ts": "2026-10-25T03:46:40.620Z"
+        "ts": "2026-10-25T03:46:40.620Z",
+        "tags": [
+          "musk"
+        ]
       },
       {
         "phase": null,
-        "ts": "2026-10-23T23:40:39.416Z"
+        "ts": "2026-10-23T04:39:04.666Z",
+        "tags": [
+          "musk"
+        ]
       },
       {
         "phase": null,
-        "ts": "2026-10-24T03:21:53.930Z"
+        "ts": "2026-10-23T05:07:33.351Z",
+        "tags": [
+          "musk"
+        ]
       },
       {
         "phase": null,
-        "ts": "2026-10-23T04:39:04.666Z"
+        "ts": "2026-10-23T05:07:46.064Z",
+        "tags": [
+          "musk"
+        ]
       },
       {
         "phase": null,
-        "ts": "2026-10-23T23:06:40.898Z"
+        "ts": "2026-10-23T05:08:23.940Z",
+        "tags": [
+          "musk"
+        ]
       },
       {
         "phase": null,
-        "ts": "2026-10-23T05:07:33.351Z"
+        "ts": "2026-10-23T05:08:53.141Z",
+        "tags": [
+          "musk"
+        ]
       },
       {
         "phase": null,
-        "ts": "2026-10-23T05:07:46.064Z"
+        "ts": "2026-10-23T05:07:58.710Z",
+        "tags": [
+          "musk"
+        ]
       },
       {
         "phase": null,
-        "ts": "2026-10-23T05:08:23.940Z"
+        "ts": "2026-10-23T05:08:37.049Z",
+        "tags": [
+          "musk"
+        ]
       },
       {
         "phase": null,
-        "ts": "2026-10-24T00:17:22.161Z"
+        "ts": "2026-10-23T05:08:12.148Z",
+        "tags": [
+          "musk"
+        ]
       },
       {
         "phase": null,
-        "ts": "2026-10-23T05:08:53.141Z"
-      },
-      {
-        "phase": null,
-        "ts": "2026-10-23T05:07:58.710Z"
-      },
-      {
-        "phase": null,
-        "ts": "2026-10-23T05:08:37.049Z"
-      },
-      {
-        "phase": null,
-        "ts": "2026-10-23T05:08:12.148Z"
-      },
-      {
-        "phase": null,
-        "ts": "2026-10-16T15:02:19.057Z"
+        "ts": "2026-10-16T15:02:19.057Z",
+        "tags": [
+          "musk"
+        ]
       },
       {
         "phase": "26.1",
-        "ts": "2026-10-18T00:41:16.629Z"
+        "ts": "2026-10-18T00:41:16.629Z",
+        "tags": [
+          "musk"
+        ]
       },
       {
         "phase": null,
-        "ts": "2026-10-16T15:02:09.091Z"
+        "ts": "2026-10-16T15:02:09.091Z",
+        "tags": [
+          "musk"
+        ]
       },
       {
         "phase": "26.1",
-        "ts": "2026-10-18T02:55:21.852Z"
-      },
-      {
-        "phase": "26.1",
-        "ts": "2026-10-18T03:33:28.016Z"
+        "ts": "2026-10-18T02:55:21.852Z",
+        "tags": [
+          "musk"
+        ]
       },
       {
         "phase": null,
-        "ts": "2026-10-16T15:01:57.227Z"
+        "ts": "2026-10-16T15:01:57.227Z",
+        "tags": [
+          "musk"
+        ]
       },
       {
         "phase": "27",
-        "ts": "2026-10-19T03:25:39.343Z"
+        "ts": "2026-10-19T03:25:39.343Z",
+        "tags": [
+          "musk"
+        ]
       },
       {
         "phase": "26",
-        "ts": "2026-10-17T01:38:59.751Z"
+        "ts": "2026-10-17T01:38:59.751Z",
+        "tags": [
+          "musk"
+        ]
+      },
+      {
+        "phase": null,
+        "ts": "2026-11-04T03:22:03.246Z",
+        "tags": [
+          "musk"
+        ]
+      },
+      {
+        "phase": null,
+        "ts": "2026-11-03T22:23:07.285Z",
+        "tags": [
+          "musk"
+        ]
+      },
+      {
+        "phase": null,
+        "ts": "2026-11-03T16:58:40.841Z",
+        "tags": [
+          "musk"
+        ]
+      },
+      {
+        "phase": null,
+        "ts": "2026-11-03T23:21:49.753Z",
+        "tags": [
+          "musk"
+        ]
+      },
+      {
+        "phase": null,
+        "ts": "2026-11-03T18:56:27.915Z",
+        "tags": [
+          "musk"
+        ]
+      },
+      {
+        "phase": null,
+        "ts": "2026-11-04T03:51:22.233Z",
+        "tags": [
+          "musk"
+        ]
       },
       {
         "phase": "30",
-        "ts": "2026-10-28T21:36:07.536Z"
-      },
-      {
-        "phase": "19",
-        "ts": "2026-10-28T21:35:32.872Z"
-      },
-      {
-        "phase": "28",
-        "ts": "2026-10-28T21:36:48.961Z"
-      },
-      {
-        "phase": "19",
-        "ts": "2026-10-28T21:36:17.809Z"
-      },
-      {
-        "phase": "19",
-        "ts": "2026-10-28T21:35:26.054Z"
-      },
-      {
-        "phase": "30",
-        "ts": "2026-10-29T01:57:57.330Z"
+        "ts": "2026-10-29T01:57:57.330Z",
+        "tags": [
+          "musk"
+        ]
       },
       {
         "phase": "27",
-        "ts": "2026-10-29T01:57:45.170Z"
-      },
-      {
-        "phase": "26.1",
-        "ts": "2026-10-28T21:35:54.085Z"
-      },
-      {
-        "phase": "28",
-        "ts": "2026-10-28T21:36:34.792Z"
+        "ts": "2026-10-29T01:57:45.170Z",
+        "tags": [
+          "musk"
+        ]
       },
       {
         "phase": "28",
-        "ts": "2026-10-29T01:58:09.030Z"
+        "ts": "2026-10-29T01:58:09.030Z",
+        "tags": [
+          "musk"
+        ]
       },
       {
         "phase": "31",
-        "ts": "2026-10-29T06:00:29.857Z"
+        "ts": "2026-10-29T06:00:29.857Z",
+        "tags": [
+          "musk"
+        ]
       },
       {
         "phase": "30",
-        "ts": "2026-10-29T03:23:19.677Z"
-      },
-      {
-        "phase": "19",
-        "ts": "2026-10-28T21:35:46.023Z"
-      },
-      {
-        "phase": null,
-        "ts": "2026-10-19T16:17:38.252Z"
-      },
-      {
-        "phase": null,
-        "ts": "2026-10-19T17:08:39.326Z"
-      },
-      {
-        "phase": "28",
-        "ts": "2026-10-19T17:47:08.971Z"
-      },
-      {
-        "phase": null,
-        "ts": "2026-10-07T03:00:17.609Z"
+        "ts": "2026-10-29T03:23:19.677Z",
+        "tags": [
+          "musk"
+        ]
       },
       {
         "phase": "30",
-        "ts": "2026-10-20T16:30:44.893Z"
-      },
-      {
-        "phase": "28",
-        "ts": "2026-10-21T04:01:04.456Z"
-      },
-      {
-        "phase": "28",
-        "ts": "2026-10-20T15:57:54.791Z"
+        "ts": "2026-10-20T16:30:44.893Z",
+        "tags": [
+          "musk"
+        ]
       },
       {
         "phase": "30",
-        "ts": "2026-10-21T05:43:37.911Z"
+        "ts": "2026-10-21T05:43:37.911Z",
+        "tags": [
+          "musk"
+        ]
       },
       {
         "phase": "29",
-        "ts": "2026-10-20T01:51:14.849Z"
+        "ts": "2026-10-20T01:51:14.849Z",
+        "tags": [
+          "musk"
+        ]
       },
       {
         "phase": "28",
-        "ts": "2026-10-21T05:23:52.502Z"
+        "ts": "2026-10-21T05:23:52.502Z",
+        "tags": [
+          "musk"
+        ]
       },
       {
         "phase": "28",
-        "ts": "2026-10-21T06:05:43.895Z"
+        "ts": "2026-10-19T17:39:23.674Z",
+        "tags": [
+          "musk"
+        ]
       },
       {
         "phase": "30",
-        "ts": "2026-10-20T17:07:07.053Z"
-      },
-      {
-        "phase": "28",
-        "ts": "2026-10-19T17:39:23.674Z"
-      },
-      {
-        "phase": "30",
-        "ts": "2026-10-21T03:28:35.919Z"
-      },
-      {
-        "phase": "30",
-        "ts": "2026-10-21T03:54:35.799Z"
-      },
-      {
-        "phase": "30",
-        "ts": "2026-10-21T06:05:33.702Z"
+        "ts": "2026-10-21T03:28:35.919Z",
+        "tags": [
+          "musk"
+        ]
       },
       {
         "phase": null,
-        "ts": "2026-10-12T19:12:49.553Z"
+        "ts": "2026-10-12T19:12:49.553Z",
+        "tags": [
+          "musk"
+        ]
       },
       {
         "phase": null,
-        "ts": "2026-10-12T19:13:00.768Z"
+        "ts": "2026-10-12T19:13:00.768Z",
+        "tags": [
+          "musk"
+        ]
       },
       {
-        "phase": "15",
-        "ts": "2026-10-14T05:24:14.842Z"
+        "phase": "3",
+        "ts": "2026-11-05T16:14:47.998Z",
+        "tags": [
+          "musk"
+        ]
+      },
+      {
+        "phase": "3",
+        "ts": "2026-11-05T16:15:02.614Z",
+        "tags": [
+          "musk"
+        ]
       }
     ]
   },
