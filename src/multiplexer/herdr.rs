@@ -135,6 +135,13 @@ impl MultiplexerBackend for HerdrBackend {
         })
     }
 
+    /// herdr's client and server share the comm `herdr`, and only the cmdline
+    /// tells them apart. The nearest-first ancestry walk makes that safe: the
+    /// first `herdr` ancestor is what the TUI runs under (research E5).
+    fn is_server_comm(&self, comm: &str) -> bool {
+        comm == "herdr"
+    }
+
     /// Open `argv` in a new herdr tab in `cwd`, through one socket request. The
     /// socket path and workspace come from the snapshot (D-13), never from the
     /// process environment.

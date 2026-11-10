@@ -75,6 +75,13 @@ impl MultiplexerBackend for TmuxBackend {
         })
     }
 
+    /// The tmux server's comm: `tmux: server` on Linux, plain `tmux` where the
+    /// process title is not rewritten. Exact equality. A `tmux: client` is never
+    /// a pane's ancestor, so it must not count (research P8).
+    fn is_server_comm(&self, comm: &str) -> bool {
+        comm == "tmux: server" || comm == "tmux"
+    }
+
     /// Switch the focused tmux pane to the given Claude session. Detection
     /// already gated on `$TMUX`, so there is no `in_tmux` check here. Every
     /// reason string is byte-identical to the one `switch_to_session` produced.

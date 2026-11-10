@@ -295,22 +295,57 @@ pub trait MultiplexerBackend: Sync {
             self.name()
         )))
     }
+
+    /// Is `comm` (a `/proc/<pid>/stat` command name) this backend's server
+    /// process? Used only to order nested multiplexers ([`order_innermost`]).
+    /// Exact equality, never a prefix or substring test. Defaults to `false`:
+    /// a backend that cannot be recognised by its process name never wins the
+    /// ancestry rule and keeps its static rank.
+    fn is_server_comm(&self, _comm: &str) -> bool {
+        false
+    }
 }
 
 /// Every backend, in the static tie-break order: tmux first (D-07, SC2).
 pub static REGISTRY: &[&dyn MultiplexerBackend] = &[&tmux::TMUX, &herdr::HERDR];
 
-/// The backends that detected themselves as "inside", in `registry` order, each
-/// at most once. **Pure.**
+/// The backends that detected themselves as "inside", innermost first, each at
+/// most once. **Pure**: it reads only its arguments.
 ///
 /// Detection returns an ordered list, innermost first, because focus and launch
 /// use the order differently (D-08): focus tries each in turn, launch takes the
 /// first. The detection layer is now shared, superseding the old note that only
 /// `in_tmux()` was shared between focusing and launching (D-04). Two detected
 /// backends are never merged and none is duplicated.
+///
+/// # The rule (MUX-02, D-07)
+///
+/// 1. The candidates are the registry entries whose own `detect` says "inside",
+///    in `registry` order (the static tie-break, tmux first).
+/// 2. `ancestry` is the TUI's own process chain, nearest first (see
+///    [`proc_chain`]). The FIRST entry whose comm is some candidate's
+///    [`MultiplexerBackend::is_server_comm`] names the innermost multiplexer,
+///    and that candidate moves to the front. Nothing else reorders.
+/// 3. An ancestor naming a backend whose env gate failed is ignored: the env
+///    marker decides candidacy, the ancestry only decides order.
+///
+/// # Why both signals
+///
+/// * Env alone cannot order a nesting, because tmux-in-herdr carries both
+///   marker sets: herdr leaves its `HERDR_*` variables in the environment of
+///   the tmux server started from a herdr pane (research E5).
+/// * The walk is nearest-first and first-hit-wins, not "is X anywhere in the
+///   chain", because a freshly started herdr server is a child of its client, so
+///   one chain can hold both multiplexers' servers (E5).
+/// * The static order, tmux first, applies whenever the chain is inconclusive:
+///   empty, unreadable, or naming no candidate. Off Linux the chain is always
+///   empty, so the static order is the only rule there (SC2, D-07's fallback).
+/// * `TERM_PROGRAM` also names the innermost multiplexer in both nestings, but
+///   it is deliberately unused, so as not to invent a second heuristic (D-07).
 pub fn order_innermost(
     registry: &[&'static dyn MultiplexerBackend],
     env: &EnvSnapshot,
+    ancestry: &[(u32, String)],
 ) -> Vec<Detected> {
     let mut found: Vec<Detected> = Vec::new();
     for backend in registry {
@@ -326,14 +361,82 @@ pub fn order_innermost(
             }
         }
     }
+
+    let innermost = ancestry
+        .iter()
+        .find_map(|(_, comm)| found.iter().position(|d| d.backend.is_server_comm(comm)));
+    if let Some(index) = innermost {
+        let winner = found.remove(index);
+        found.insert(0, winner);
+    }
     found
 }
 
-/// Snapshot the process environment and order [`REGISTRY`] over it. **The
-/// impure edge**; only the production seam functions call it.
+/// The comm of a `/proc/<pid>/stat` line: from the first `(` to the LAST `)`,
+/// the kernel's own rule, because the comm may itself contain spaces and `)`.
+/// Sibling of `session_detector::parse_stat_starttime`.
+#[cfg(any(target_os = "linux", test))]
+pub(crate) fn parse_stat_comm(stat: &str) -> Option<&str> {
+    let open = stat.find('(')?;
+    let close = stat.rfind(')')?;
+    stat.get(open + 1..close)
+}
+
+/// The parent pid of a `/proc/<pid>/stat` line: the second whitespace field
+/// after the comm (the first is the state). Truncated, non-numeric or
+/// out-of-range input is `None`.
+#[cfg(any(target_os = "linux", test))]
+pub(crate) fn parse_stat_ppid(stat: &str) -> Option<u32> {
+    let after_comm = stat.rfind(')')?.checked_add(1)?;
+    let rest = stat.get(after_comm..)?;
+    rest.split_whitespace().nth(1)?.parse::<u32>().ok()
+}
+
+/// The longest chain [`proc_chain`] will walk. Bounds a cyclic or absurd chain.
+#[cfg(target_os = "linux")]
+const PROC_CHAIN_MAX: usize = 64;
+
+/// `start` and then each of its ancestors as `(pid, comm)`, nearest first, read
+/// from `/proc/<pid>/stat`. **Facts only**: an empty or short chain means
+/// "could not say", never "no multiplexer".
+///
+/// The walk stops at ppid 0, at the first unreadable or unparsable entry, on a
+/// repeated pid, or after 64 entries, and never guesses past a gap. Off Linux
+/// there is no `/proc`, and a `ps` call would add a spawn site, so the chain is
+/// empty and D-07's fallback clause (the static order) is the only rule there.
+#[cfg(target_os = "linux")]
+pub(crate) fn proc_chain(start: u32) -> Vec<(u32, String)> {
+    let mut chain: Vec<(u32, String)> = Vec::new();
+    let mut pid = start;
+    while chain.len() < PROC_CHAIN_MAX {
+        let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+            break;
+        };
+        let (Some(comm), Some(ppid)) = (parse_stat_comm(&stat), parse_stat_ppid(&stat)) else {
+            break;
+        };
+        chain.push((pid, comm.to_string()));
+        if ppid == 0 || chain.iter().any(|(seen, _)| *seen == ppid) {
+            break;
+        }
+        pid = ppid;
+    }
+    chain
+}
+
+/// Off Linux there is no `/proc`: the chain is always empty.
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn proc_chain(_start: u32) -> Vec<(u32, String)> {
+    Vec::new()
+}
+
+/// Snapshot the process environment and order [`REGISTRY`] over it and the
+/// TUI's own ancestry. **The impure edge**; only the production seam functions
+/// call it.
 pub fn detect_current() -> (EnvSnapshot, Vec<Detected>) {
     let env = EnvSnapshot::from_process();
-    let backends = order_innermost(REGISTRY, &env);
+    let ancestry = proc_chain(std::process::id());
+    let backends = order_innermost(REGISTRY, &env, &ancestry);
     (env, backends)
 }
 
@@ -723,7 +826,7 @@ mod tests {
         } else {
             EnvSnapshot::default()
         };
-        let backends = order_innermost(REGISTRY, &env);
+        let backends = order_innermost(REGISTRY, &env, &[]);
         plan_launch(env, backends, p)
     }
 
@@ -837,7 +940,7 @@ mod tests {
     #[test]
     fn order_innermost_over_env_fixtures() {
         let names = |pairs: &[(&str, &str)]| -> Vec<&'static str> {
-            order_innermost(REGISTRY, &EnvSnapshot::from_pairs(pairs))
+            order_innermost(REGISTRY, &EnvSnapshot::from_pairs(pairs), &[])
                 .iter()
                 .map(|d| d.backend.name())
                 .collect()
@@ -871,9 +974,214 @@ mod tests {
         let env = EnvSnapshot::from_pairs(&[("TMUX", "x")]);
         let doubled: [&'static dyn MultiplexerBackend; 3] =
             [&tmux::TMUX, &tmux::TMUX, &herdr::HERDR];
-        let found = order_innermost(&doubled, &env);
+        let found = order_innermost(&doubled, &env, &[]);
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].backend.name(), "tmux");
+    }
+
+    // ---- nesting precedence (MUX-02, D-07) ---------------------------------
+
+    const TMUX_ENV: (&str, &str) = ("TMUX", "/tmp/tmux-1000/default,1,0");
+    const HERDR_ENV_ON: (&str, &str) = ("HERDR_ENV", "1");
+    const HERDR_SOCK: (&str, &str) = ("HERDR_SOCKET_PATH", "/tmp/h.sock");
+
+    /// A nearest-first chain with synthetic pids.
+    fn chain(comms: &[&str]) -> Vec<(u32, String)> {
+        comms
+            .iter()
+            .enumerate()
+            .map(|(i, c)| (100 + i as u32, (*c).to_string()))
+            .collect()
+    }
+
+    fn ordered(pairs: &[(&str, &str)], comms: &[&str]) -> Vec<&'static str> {
+        order_innermost(REGISTRY, &EnvSnapshot::from_pairs(pairs), &chain(comms))
+            .iter()
+            .map(|d| d.backend.name())
+            .collect()
+    }
+
+    #[test]
+    fn parse_stat_ppid_reads_the_field_after_the_state() {
+        assert_eq!(parse_stat_ppid("123 (bash) S 77 77 77 0"), Some(77));
+        assert_eq!(parse_stat_ppid("5 (tmux: server) S 1 5 5 0"), Some(1));
+    }
+
+    #[test]
+    fn parse_stat_ppid_closes_the_comm_at_the_last_paren() {
+        assert_eq!(parse_stat_ppid("9 (a) b) S 4 9 9 0"), Some(4));
+    }
+
+    #[test]
+    fn parse_stat_ppid_rejects_truncated_and_non_numeric_input() {
+        assert_eq!(parse_stat_ppid(""), None);
+        assert_eq!(parse_stat_ppid("9 (a) S"), None);
+        assert_eq!(parse_stat_ppid("9 (a"), None);
+        assert_eq!(parse_stat_ppid("9 (a) S x 1"), None);
+        assert_eq!(parse_stat_ppid("9 (a) S -3 1"), None);
+        assert_eq!(parse_stat_ppid("9 (a) S 99999999999 1"), None);
+    }
+
+    #[test]
+    fn parse_stat_comm_keeps_spaces_and_colons() {
+        assert_eq!(
+            parse_stat_comm("5 (tmux: server) S 1 5 5 0"),
+            Some("tmux: server")
+        );
+        assert_eq!(parse_stat_comm("9 (a) b) S 4"), Some("a) b"));
+        assert_eq!(parse_stat_comm("no parens"), None);
+    }
+
+    #[test]
+    fn order_innermost_herdr_alone() {
+        assert_eq!(
+            ordered(&[HERDR_ENV_ON, HERDR_SOCK], &["fish", "herdr", "systemd"]),
+            vec!["herdr"]
+        );
+    }
+
+    #[test]
+    fn order_innermost_tmux_in_herdr_picks_tmux() {
+        assert_eq!(
+            ordered(
+                &[TMUX_ENV, HERDR_ENV_ON, HERDR_SOCK],
+                &["sleep", "tmux: server", "systemd"]
+            ),
+            vec!["tmux", "herdr"]
+        );
+    }
+
+    #[test]
+    fn order_innermost_herdr_in_tmux_picks_herdr() {
+        assert_eq!(
+            ordered(
+                &[HERDR_ENV_ON, HERDR_SOCK],
+                &["bash", "herdr", "herdr", "tmux: server"]
+            ),
+            vec!["herdr"],
+            "herdr strips $TMUX from its panes, so only herdr is a candidate"
+        );
+    }
+
+    #[test]
+    fn order_innermost_nearer_herdr_wins_over_tmux() {
+        assert_eq!(
+            ordered(
+                &[TMUX_ENV, HERDR_ENV_ON, HERDR_SOCK],
+                &["bash", "herdr", "tmux: server"]
+            ),
+            vec!["herdr", "tmux"]
+        );
+    }
+
+    #[test]
+    fn order_innermost_empty_chain_keeps_the_static_order() {
+        assert_eq!(
+            ordered(&[TMUX_ENV, HERDR_ENV_ON, HERDR_SOCK], &[]),
+            vec!["tmux", "herdr"]
+        );
+    }
+
+    #[test]
+    fn order_innermost_ignores_an_ancestor_whose_env_gate_fails() {
+        assert_eq!(
+            ordered(&[TMUX_ENV], &["bash", "herdr"]),
+            vec!["tmux"],
+            "the env gate wins over the ancestor"
+        );
+        assert!(
+            ordered(&[], &["bash", "herdr", "tmux: server"]).is_empty(),
+            "ancestry alone never makes a backend a candidate"
+        );
+    }
+
+    #[test]
+    fn order_innermost_never_takes_a_tmux_client_for_a_server() {
+        assert_eq!(
+            ordered(
+                &[TMUX_ENV, HERDR_ENV_ON, HERDR_SOCK],
+                &["bash", "tmux: client"]
+            ),
+            vec!["tmux", "herdr"]
+        );
+        assert_eq!(
+            ordered(
+                &[TMUX_ENV, HERDR_ENV_ON, HERDR_SOCK],
+                &["bash", "tmux: client", "herdr"]
+            ),
+            vec!["herdr", "tmux"],
+            "the client is skipped, the next real server decides"
+        );
+    }
+
+    #[test]
+    fn order_innermost_a_chain_naming_herdr_twice_yields_herdr_once() {
+        assert_eq!(
+            ordered(&[HERDR_ENV_ON, HERDR_SOCK], &["herdr", "herdr"]),
+            vec!["herdr"]
+        );
+        assert_eq!(
+            ordered(
+                &[TMUX_ENV, HERDR_ENV_ON, HERDR_SOCK],
+                &["herdr", "herdr", "tmux: server"]
+            ),
+            vec!["herdr", "tmux"]
+        );
+    }
+
+    /// Env markers and the server comm of every backend. A backend added to
+    /// [`REGISTRY`] without a row here fails the test below: this is what makes
+    /// "add a backend" carry its own detection and nesting fixtures.
+    type BackendFixture = (
+        &'static str,
+        &'static [(&'static str, &'static str)],
+        &'static str,
+    );
+    const BACKEND_FIXTURES: &[BackendFixture] = &[
+        ("tmux", &[TMUX_ENV], "tmux: server"),
+        ("herdr", &[HERDR_ENV_ON, HERDR_SOCK], "herdr"),
+    ];
+
+    #[test]
+    fn every_registered_backend_is_selected_by_its_own_fixtures() {
+        let registry_names: Vec<&str> = REGISTRY.iter().map(|b| b.name()).collect();
+        let fixture_names: Vec<&str> = BACKEND_FIXTURES.iter().map(|f| f.0).collect();
+        for name in &registry_names {
+            assert!(
+                fixture_names.contains(name),
+                "backend {name:?} is registered but has no fixture row"
+            );
+        }
+        for name in &fixture_names {
+            assert!(
+                registry_names.contains(name),
+                "fixture row {name:?} names no registered backend"
+            );
+        }
+
+        let every_marker: Vec<(&str, &str)> = BACKEND_FIXTURES
+            .iter()
+            .flat_map(|f| f.1.iter().copied())
+            .collect();
+        for (name, env, comm) in BACKEND_FIXTURES {
+            let alone = order_innermost(REGISTRY, &EnvSnapshot::from_pairs(env), &[]);
+            assert_eq!(
+                alone.iter().map(|d| d.backend.name()).collect::<Vec<_>>(),
+                vec![*name],
+                "{name}: its own env markers alone must select it"
+            );
+
+            let nested = order_innermost(
+                REGISTRY,
+                &EnvSnapshot::from_pairs(&every_marker),
+                &[(2, (*comm).to_string())],
+            );
+            assert_eq!(
+                nested.first().map(|d| d.backend.name()),
+                Some(*name),
+                "{name}: with every marker set, its server comm must put it first"
+            );
+        }
     }
 
     #[test]
@@ -1230,7 +1538,7 @@ mod tests {
             ("HERDR_SOCKET_PATH", socket.to_str().unwrap()),
             ("HERDR_WORKSPACE_ID", "wT"),
         ]);
-        let backends = order_innermost(REGISTRY, &env);
+        let backends = order_innermost(REGISTRY, &env, &[]);
         assert_eq!(backends.len(), 1, "only herdr is detected");
         LaunchPlan {
             env,
