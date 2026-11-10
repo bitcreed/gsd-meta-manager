@@ -2385,7 +2385,7 @@ const FALLBACK_TERMINAL_CANDIDATES: &[&str] =
 ///
 /// # Not read by the runtime, and pinned so that cannot rot
 ///
-/// The names themselves live in [`crate::terminal_switch::plan_launch`], which
+/// The names themselves live in [`crate::multiplexer::gui::rank_gui`], which
 /// returns them, and in `probe_terminals`, which probes for them. This const is
 /// the REGISTRY the separator guard adjudicates against — the same role
 /// `session_detector`'s `CLAUDE_ARGV_SITES` plays for the option-literal
@@ -2396,18 +2396,23 @@ const FALLBACK_TERMINAL_CANDIDATES: &[&str] =
 #[allow(dead_code)]
 const DISCOVERY_LAUNCHERS: &[&str] = &["xdg-terminal-exec", "x-terminal-emulator"];
 
-/// The launch decision for this build: `plan_launch` over the probes, with this
-/// file's own fallback list.
+/// The launch decision for this build: [`crate::multiplexer::plan_launch`] over
+/// the detected multiplexers and the GUI probes, with this file's own fallback
+/// list.
 ///
 /// **Replaces `find_terminal`**, which tried `$TERMINAL` and then the hardcoded
 /// candidate list and never looked at `$TMUX` at all. The ordering now lives in
-/// [`crate::terminal_switch::plan_launch`], where it is a pure function of
-/// injected probes and can be asserted for environments nobody is running in —
-/// including the exact one the bug was reported from.
-fn resolve_launch_plan() -> crate::terminal_switch::LaunchPlan {
-    crate::terminal_switch::plan_launch(&crate::terminal_switch::probe_terminals(
-        FALLBACK_TERMINAL_CANDIDATES,
-    ))
+/// [`crate::multiplexer::plan_launch`] and [`crate::multiplexer::gui::rank_gui`],
+/// where it is a pure function of injected facts and can be asserted for
+/// environments nobody is running in — including the exact one the bug was
+/// reported from.
+fn resolve_launch_plan() -> crate::multiplexer::LaunchPlan {
+    let (env, backends) = crate::multiplexer::detect_current();
+    crate::multiplexer::plan_launch(
+        env,
+        backends,
+        &crate::multiplexer::gui::probe_terminals(FALLBACK_TERMINAL_CANDIDATES),
+    )
 }
 
 /// The token that separates a terminal emulator's OWN options from the program
@@ -2592,7 +2597,7 @@ fn resume_terminal_argv(term: &str, sid: &Untrusted) -> Vec<String> {
 /// fused `--resume=` element** (T-W0D-02, T-21-31-01, CWE-88).
 ///
 /// Both carriers build from here: the GUI path through
-/// [`resume_terminal_argv`], the tmux path through [`tmux_resume_argv`]. Two
+/// [`resume_terminal_argv`], the multiplexer path through [`mux_resume_argv`]. Two
 /// separate constructions would agree on the day they were written and diverge
 /// on the day one of them is edited — and the entire CWE-88 fix lives in the
 /// bytes of that one element, so a divergence is a silently reopened
@@ -2617,12 +2622,13 @@ fn claude_resume_args(sid: &Untrusted) -> Vec<String> {
 
 /// The program for a NEW session. The sibling of [`claude_resume_args`], and
 /// the same single-site reasoning: [`launch_terminal_argv`] and
-/// [`tmux_launch_argv`] both build from here.
+/// [`mux_launch_argv`] both build from here.
 fn claude_launch_args() -> Vec<String> {
     vec!["claude".to_string()]
 }
 
-/// The program vector handed to `tmux new-window` when resuming (D-03).
+/// The program vector handed to the innermost multiplexer's `open` when
+/// resuming (D-03, D-06).
 ///
 /// # Why it begins with the literal `env`
 ///
@@ -2636,7 +2642,9 @@ fn claude_launch_args() -> Vec<String> {
 /// construction** for every vector, present and future, instead of by a rule
 /// each caller has to remember, and it fixes the head to a literal that
 /// provably does not start with `-`, so tmux's own option parser stops there
-/// rather than consuming part of this vector.
+/// rather than consuming part of this vector. That tmux rule is the origin of
+/// the arity check every backend now inherits through
+/// [`crate::multiplexer::ExecArgv::new`].
 ///
 /// **`env` is not a command interpreter.** It has no program-string mode: it
 /// consumes leading `NAME=VALUE` and option words, then `execvp`s the first
@@ -2647,28 +2655,30 @@ fn claude_launch_args() -> Vec<String> {
 /// flag is provably inert, so that would trade a structural guarantee for a
 /// behaviour change.
 ///
-/// **No separator appears in a tmux vector.** A separator exists to stop an
-/// EMULATOR consuming the resumed program's own options; tmux takes the program
-/// vector directly rather than after an emulator's own options, so there is
-/// nothing here for a separator to protect.
+/// **No separator appears in this vector.** A separator exists to stop an
+/// EMULATOR consuming the resumed program's own options; a multiplexer takes
+/// the program vector directly rather than after an emulator's own options, so
+/// there is nothing here for a separator to protect.
 ///
 /// The working directory does not travel in this vector either: it goes as
-/// `tmux new-window -c <dir>`, an argv element, never as a `cd` written into a
-/// program string (T-W0D-03).
-fn tmux_resume_argv(sid: &Untrusted) -> Vec<String> {
+/// `tmux new-window -c <dir>` or herdr's JSON `cwd` field, never as a `cd`
+/// written into a program string (T-W0D-03).
+fn mux_resume_argv(
+    sid: &Untrusted,
+) -> Result<crate::multiplexer::ExecArgv, crate::multiplexer::MuxError> {
     let mut argv = vec!["env".to_string()];
     argv.extend(claude_resume_args(sid));
-    argv
+    crate::multiplexer::ExecArgv::new(argv)
 }
 
-/// The program vector handed to `tmux new-window` for a NEW session. Same
-/// leading `env` and the same reason — see [`tmux_resume_argv`]. This is the
-/// vector D-03 was actually written about: without the `env` it would be the
-/// single element `claude`, which tmux hands to `sh -c`.
-fn tmux_launch_argv() -> Vec<String> {
+/// The program vector handed to the innermost multiplexer's `open` for a NEW
+/// session. Same leading `env` and the same reason — see [`mux_resume_argv`].
+/// This is the vector D-03 was actually written about: without the `env` it
+/// would be the single element `claude`, which tmux hands to `sh -c`.
+fn mux_launch_argv() -> Result<crate::multiplexer::ExecArgv, crate::multiplexer::MuxError> {
     let mut argv = vec!["env".to_string()];
     argv.extend(claude_launch_args());
-    argv
+    crate::multiplexer::ExecArgv::new(argv)
 }
 
 /// The argv for launching a NEW Claude session. Same shape, same reason — see
@@ -4934,98 +4944,18 @@ impl Screen for DetailScreen {
                             // slice this replaced was a panic.
                             let short_id = shorten_session_id(sid);
                             let plan = resolve_launch_plan();
-                            let mut tmux_err: Option<String> = None;
-                            if plan.try_tmux {
-                                // D-01: the session should appear WHERE THE
-                                // USER IS. `$TERMINAL` says which GUI
-                                // emulator they prefer, not where a session
-                                // belongs, and it is usually exported once
-                                // from a shell profile rather than meant
-                                // per invocation.
-                                match crate::terminal_switch::open_new_window(
-                                    &session.working_dir,
-                                    &tmux_resume_argv(sid),
-                                ) {
-                                    Ok(()) => {
-                                        return ScreenAction::SetStatusMessage(format!(
-                                            "Resumed session {}",
-                                            short_id
-                                        ))
-                                    }
-                                    // Fall through to the GUI rather than
-                                    // failing: no reachable tmux server is
-                                    // exactly when `$TERMINAL` should win.
-                                    Err(e) => tmux_err = Some(e),
-                                }
-                            }
-                            match plan.gui {
-                                Some(term) => {
-                                    // ARGV ELEMENTS, every one of them —
-                                    // the kernel hands them to `execve`
-                                    // unparsed. NOT program fragments,
-                                    // which is what round 9's comment here
-                                    // wrongly claimed they already were:
-                                    // "A SUBPROCESS ARGUMENT: the raw id is
-                                    // what `claude --resume` must receive,
-                                    // and an escaped one would resume
-                                    // nothing." (round 9). The value was a
-                                    // fragment of a program handed to an
-                                    // interpreter through `-c`, so a quote
-                                    // in it ran arbitrary code (CR-01).
-                                    // The INTERPRETER is gone; a parser is
-                                    // not. `claude`'s own option parser
-                                    // reads this argv, and `--resume`
-                                    // takes an OPTIONAL value — so the id
-                                    // travels FUSED as `--resume=<id>`,
-                                    // which binds it as that option's
-                                    // value instead of letting a leading
-                                    // `-` make it an option of its own
-                                    // (CWE-88). The working directory
-                                    // travels through `current_dir`, not
-                                    // as a `cd` written into a program.
-                                    // See `resume_terminal_argv`'s doc for
-                                    // the measurement that chose fusion
-                                    // over a `--` separator.
-                                    match std::process::Command::new(&term)
-                                        .args(resume_terminal_argv(&term, sid))
-                                        .current_dir(&session.working_dir)
-                                        .spawn()
-                                    {
-                                        Ok(_) => {
-                                            // A fall-through is REPORTED
-                                            // rather than silent: the user
-                                            // asked for a session where
-                                            // they are, and got one
-                                            // somewhere else.
-                                            return ScreenAction::SetStatusMessage(
-                                                match tmux_err {
-                                                    Some(e) => {
-                                                        format!("tmux: {} — opened in {}", e, term)
-                                                    }
-                                                    None => format!("Resumed session {}", short_id),
-                                                },
-                                            );
-                                        }
-                                        Err(e) => {
-                                            return ScreenAction::SetStatusMessage(format!(
-                                                "Failed to launch: {}",
-                                                e
-                                            ))
-                                        }
-                                    }
-                                }
-                                None => {
-                                    return ScreenAction::SetStatusMessage(match tmux_err {
-                                        Some(e) => format!(
-                                            "tmux: {e}; no terminal emulator found (set \
-                                             $TERMINAL)"
-                                        ),
-                                        None => {
-                                            "No terminal emulator found (set $TERMINAL)".to_string()
-                                        }
-                                    })
-                                }
-                            }
+                            // D-01 / D-10 / CWE-88: the multiplexer-then-GUI
+                            // order, the argv-element reasoning and the
+                            // reported fall-through are documented on
+                            // `multiplexer::launch_with` and
+                            // `multiplexer::gui::spawn_terminal`.
+                            return ScreenAction::SetStatusMessage(crate::multiplexer::launch(
+                                &plan,
+                                &session.working_dir,
+                                mux_resume_argv(sid),
+                                &|term| resume_terminal_argv(term, sid),
+                                &format!("Resumed session {}", short_id),
+                            ));
                         }
                         ScreenAction::None
                     }
@@ -5481,55 +5411,17 @@ impl Screen for DetailScreen {
             KeyCode::Char('n') if current_view == DetailSubView::Sessions => {
                 if let Some(project) = ctx.config.projects.get(&self.alias) {
                     let plan = resolve_launch_plan();
-                    let mut tmux_err: Option<String> = None;
-                    if plan.try_tmux {
-                        // D-01, same as the resume site: a new session belongs
-                        // where the user is. The working directory travels as
-                        // `tmux new-window -c <dir>`, an argv element, never as
-                        // a `cd` written into a program string.
-                        match crate::terminal_switch::open_new_window(
-                            &project.path,
-                            &tmux_launch_argv(),
-                        ) {
-                            Ok(()) => {
-                                return ScreenAction::SetStatusMessage(
-                                    "Launched new Claude session".to_string(),
-                                )
-                            }
-                            Err(e) => tmux_err = Some(e),
-                        }
-                    }
-                    match plan.gui {
-                        Some(term) => {
-                            // ARGV ELEMENTS, and the working directory travels
-                            // through `current_dir`. Same construction and the
-                            // same reason as the resume site above: the project
-                            // path used to be interpolated into a program
-                            // string an interpreter parsed, so a quote in a
-                            // registered project path was code. See
-                            // `resume_terminal_argv`'s doc for the sink kinds.
-                            match std::process::Command::new(&term)
-                                .args(launch_terminal_argv(&term))
-                                .current_dir(&project.path)
-                                .spawn()
-                            {
-                                Ok(_) => ScreenAction::SetStatusMessage(match tmux_err {
-                                    Some(e) => format!("tmux: {} — opened in {}", e, term),
-                                    None => "Launched new Claude session".to_string(),
-                                }),
-                                Err(e) => ScreenAction::SetStatusMessage(format!(
-                                    "Failed to launch: {}",
-                                    e
-                                )),
-                            }
-                        }
-                        None => ScreenAction::SetStatusMessage(match tmux_err {
-                            Some(e) => {
-                                format!("tmux: {e}; no terminal emulator found (set $TERMINAL)")
-                            }
-                            None => "No terminal emulator found (set $TERMINAL)".to_string(),
-                        }),
-                    }
+                    // Same seam call as the resume site above: a new session
+                    // belongs where the user is (D-01), the project path
+                    // travels as a cwd and never as a `cd` string, and a
+                    // fall-through to the GUI is reported with its reason.
+                    ScreenAction::SetStatusMessage(crate::multiplexer::launch(
+                        &plan,
+                        &project.path,
+                        mux_launch_argv(),
+                        &launch_terminal_argv,
+                        "Launched new Claude session",
+                    ))
                 } else {
                     ScreenAction::None
                 }
@@ -23847,7 +23739,7 @@ mod tests {
     ///
     /// It used to grep the body of `fn find_terminal()` and split on the first
     /// `[`. That function is gone — the ordering now lives in
-    /// [`crate::terminal_switch::plan_launch`] and the two candidate lists were
+    /// [`crate::multiplexer::plan_launch`] and the two candidate lists were
     /// hoisted to [`FALLBACK_TERMINAL_CANDIDATES`] and [`DISCOVERY_LAUNCHERS`]
     /// so this guard could keep its ESSENTIAL property: the table it
     /// adjudicates is DERIVED FROM SOURCE TEXT, so it cannot drift from the
@@ -23969,7 +23861,7 @@ mod tests {
     /// `len() >= 2` is what keeps a command interpreter out of this path — the
     /// same property CR-01 / T-21-27-01 / T-21-27-02 bought at the GUI sites.
     ///
-    /// [`crate::terminal_switch::open_new_window`] refuses a short vector too,
+    /// [`crate::multiplexer::ExecArgv::new`] refuses a short vector too,
     /// and that refusal is the fail-closed sink every future caller inherits.
     /// This assertion lives here *as well* because the builders are the place a
     /// future edit would shorten a vector, and a sink that is never reached with
@@ -23981,7 +23873,9 @@ mod tests {
             format!("{INTERPRETER_COMMAND_FLAG_HEAD}{INTERPRETER_COMMAND_FLAG_TAIL}");
         let sid = Untrusted::from_untrusted_source("abc".to_string());
 
-        for argv in [tmux_launch_argv(), tmux_resume_argv(&sid)] {
+        for built in [mux_launch_argv(), mux_resume_argv(&sid)] {
+            let argv = built.expect("in-tree builders are >= 2 by construction");
+            let argv = argv.as_slice();
             assert!(
                 argv.len() >= 2,
                 "the tmux program vector {argv:?} has fewer than two elements. \
@@ -24004,7 +23898,7 @@ mod tests {
                 "the head of {argv:?} starts with `-`, so tmux's option parser \
                  would consume it instead of treating it as the program"
             );
-            for element in &argv {
+            for element in argv {
                 let stem = element.rsplit('/').next().unwrap_or(element);
                 assert!(
                     !interpreters.iter().any(|binary| binary == stem),
@@ -24041,7 +23935,8 @@ mod tests {
         let mut arities = std::collections::BTreeSet::new();
         for raw in hostile_session_ids() {
             let sid = Untrusted::from_untrusted_source(raw.clone());
-            let argv = tmux_resume_argv(&sid);
+            let argv = mux_resume_argv(&sid).expect("in-tree builders are >= 2 by construction");
+            let argv = argv.as_slice();
             arities.insert(argv.len());
 
             let carried = argv
@@ -24090,16 +23985,20 @@ mod tests {
     /// asserts the answer is a name the registry carries.
     #[test]
     fn the_discovery_consts_name_every_launcher_the_plan_can_actually_return() {
-        use crate::terminal_switch::{plan_launch, TerminalProbes};
+        use crate::multiplexer::gui::TerminalProbes;
+        use crate::multiplexer::{plan_launch, EnvSnapshot};
 
         let at_rank = |xdg: bool, x_term: bool| -> String {
-            plan_launch(&TerminalProbes {
-                in_tmux: false,
-                terminal_env: None,
-                xdg_terminal_exec_ok: xdg,
-                x_terminal_emulator_present: x_term,
-                fallback_present: Vec::new(),
-            })
+            plan_launch(
+                EnvSnapshot::default(),
+                Vec::new(),
+                &TerminalProbes {
+                    terminal_env: None,
+                    xdg_terminal_exec_ok: xdg,
+                    x_terminal_emulator_present: x_term,
+                    fallback_present: Vec::new(),
+                },
+            )
             .gui
             .expect("a discovery rank must resolve to a launcher")
         };
@@ -24130,7 +24029,8 @@ mod tests {
         for raw in hostile_session_ids() {
             let sid = Untrusted::from_untrusted_source(raw.clone());
             let gui = resume_terminal_argv("gnome-terminal", &sid);
-            let tmux = tmux_resume_argv(&sid);
+            let tmux = mux_resume_argv(&sid).expect("in-tree builders are >= 2 by construction");
+            let tmux = tmux.as_slice();
 
             let fused = |argv: &[String]| -> Option<String> {
                 argv.iter()
@@ -24140,7 +24040,7 @@ mod tests {
             let gui_fused = fused(&gui).unwrap_or_else(|| {
                 panic!("the GUI argv {gui:?} carries no fused resume element at all")
             });
-            let tmux_fused = fused(&tmux).unwrap_or_else(|| {
+            let tmux_fused = fused(tmux).unwrap_or_else(|| {
                 panic!("the tmux argv {tmux:?} carries no fused resume element at all")
             });
             assert_eq!(
