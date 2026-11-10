@@ -32,7 +32,6 @@ pub mod project_creator;
 pub mod registry;
 pub mod session_detector;
 pub mod state_reader;
-pub mod terminal_switch;
 /// Shared fixture shape constants; two consts and no behaviour (D-17-5).
 pub mod test_support;
 pub mod text;

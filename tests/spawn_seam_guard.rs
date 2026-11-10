@@ -60,10 +60,9 @@ const SPAWN_ALLOWLIST: &[&str] = &[
     // `which`, `xdg-terminal-exec --print-id`, and the GUI terminal launch. No
     // agent.
     "src/multiplexer/gui.rs",
-    // `tmux new-window`, and its live direct-exec test. No agent.
+    // tmux `new-window`, `list-panes`, `select-window` and `select-pane`, and
+    // the live direct-exec test. No agent.
     "src/multiplexer/tmux.rs",
-    // tmux, for switching the user to an existing session. No agent.
-    "src/terminal_switch.rs",
     // The Phase 28 launcher: `systemd-run` (which runs `bwrap`, which runs the
     // agent), `systemctl`, `git` for the push mirror, `claude setup-token` and
     // `gh`. Every launcher spawn lives in this one file, so this is the one

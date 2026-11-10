@@ -7,8 +7,8 @@
 //!
 //! * [`launch`] opens a new or resumed session where the user is: the
 //!   innermost detected backend, then the GUI terminal chain ([`gui`]).
-//! * `focus_message` (added with the focus half of the seam) focuses an
-//!   existing session through whichever backends are detected.
+//! * [`focus_message`] focuses an existing session: each detected backend is
+//!   tried innermost-first and the first success wins.
 //!
 //! # Pure core, impure edges (D-04)
 //!
@@ -472,6 +472,73 @@ pub fn launch(
     )
 }
 
+/// Focus the pane or tab running `session` and report what happened (D-09).
+/// **Pure over `backends`**: tests pass fakes.
+///
+/// * With no backend detected: `"Tab-switching requires running inside <names>
+///   (none detected)"`, where `<names>` is the [`REGISTRY`] names joined with
+///   `" or "`, so a future backend appears automatically.
+/// * Otherwise each backend is tried innermost-first and **the first success
+///   wins**. Not found is not final: the session may live in an outer
+///   multiplexer. A detection that is `inside` but not `reachable` counts as
+///   that backend's failure with its reason, and its `focus` is not called.
+/// * On success: `"Switched to <label>"`, or `"Switched to <label> (<note>)"`
+///   when the focus landed short of the exact pane. The matched identity goes to
+///   the log only, which keeps the success text byte-identical to the tmux-only
+///   days.
+/// * When all fail: a single tried backend gives its reason verbatim (so tmux
+///   failures are byte-identical); several give `"<name>: <reason>"` joined with
+///   `"; "`, innermost first.
+pub fn focus_with(
+    backends: &[Detected],
+    env: &EnvSnapshot,
+    session: &ClaudeSession,
+    label: &str,
+) -> String {
+    if backends.is_empty() {
+        let names: Vec<&str> = REGISTRY.iter().map(|b| b.name()).collect();
+        return format!(
+            "Tab-switching requires running inside {} (none detected)",
+            names.join(" or ")
+        );
+    }
+
+    let mut failures: Vec<(&'static str, String)> = Vec::new();
+    for detected in backends {
+        let name = detected.backend.name();
+        if let Err(why) = &detected.detection.reachable {
+            failures.push((name, why.clone()));
+            continue;
+        }
+        match detected.backend.focus(env, session) {
+            Ok(outcome) => {
+                tracing::debug!(backend = name, matched_by = ?outcome.by, "focused session");
+                return match outcome.partial {
+                    Some(note) => format!("Switched to {label} ({note})"),
+                    None => format!("Switched to {label}"),
+                };
+            }
+            Err(e) => failures.push((name, e.to_string())),
+        }
+    }
+
+    match failures.as_slice() {
+        [(_, reason)] => reason.clone(),
+        _ => failures
+            .iter()
+            .map(|(name, reason)| format!("{name}: {reason}"))
+            .collect::<Vec<_>>()
+            .join("; "),
+    }
+}
+
+/// [`focus_with`] over the detected process environment. **The
+/// real-environment entry, called only from `normal.rs` and `detail.rs`.**
+pub fn focus_message(session: &ClaudeSession, label: &str) -> String {
+    let (env, backends) = detect_current();
+    focus_with(&backends, &env, session, label)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -484,10 +551,25 @@ mod tests {
         name: &'static str,
         open_result: Result<(), MuxError>,
         opened: Mutex<Vec<(PathBuf, Vec<String>)>>,
+        focus_result: Result<FocusOutcome, MuxError>,
         log: Arc<Mutex<Vec<String>>>,
     }
 
     impl FakeBackend {
+        fn leak_focus(
+            name: &'static str,
+            focus_result: Result<FocusOutcome, MuxError>,
+            log: &Arc<Mutex<Vec<String>>>,
+        ) -> &'static FakeBackend {
+            Box::leak(Box::new(FakeBackend {
+                name,
+                open_result: Ok(()),
+                opened: Mutex::new(Vec::new()),
+                focus_result,
+                log: Arc::clone(log),
+            }))
+        }
+
         fn leak(
             name: &'static str,
             open_result: Result<(), MuxError>,
@@ -497,6 +579,7 @@ mod tests {
                 name,
                 open_result,
                 opened: Mutex::new(Vec::new()),
+                focus_result: Err(MuxError::Unsupported("fake cannot focus".to_string())),
                 log: Arc::clone(log),
             }))
         }
@@ -515,6 +598,17 @@ mod tests {
                 inside: true,
                 reachable: Ok(()),
             })
+        }
+        fn focus(
+            &self,
+            _env: &EnvSnapshot,
+            _session: &ClaudeSession,
+        ) -> Result<FocusOutcome, MuxError> {
+            self.log
+                .lock()
+                .unwrap()
+                .push(format!("focus:{}", self.name));
+            self.focus_result.clone()
         }
         fn open(&self, _env: &EnvSnapshot, cwd: &Path, argv: &ExecArgv) -> Result<(), MuxError> {
             self.log.lock().unwrap().push(format!("open:{}", self.name));
@@ -964,6 +1058,135 @@ mod tests {
             err,
             MuxError::Unsupported("bare cannot open a session".into())
         );
+    }
+
+    // ---- focus (D-09) -------------------------------------------------------
+
+    fn session() -> ClaudeSession {
+        ClaudeSession {
+            pid: 4242,
+            kind: crate::session_detector::SessionKind::Claude,
+            session_id: None,
+            working_dir: PathBuf::from("/work/proj"),
+            start_time: None,
+            tty: Some("pts/3".to_string()),
+        }
+    }
+
+    fn run_focus(backends: &[Detected]) -> String {
+        focus_with(backends, &EnvSnapshot::default(), &session(), "alpha")
+    }
+
+    #[test]
+    fn focus_with_reports_the_none_detected_text() {
+        assert_eq!(
+            run_focus(&[]),
+            "Tab-switching requires running inside tmux or herdr (none detected)"
+        );
+    }
+
+    #[test]
+    fn a_single_backend_failure_is_reported_verbatim() {
+        let log = new_log();
+        let tmux = FakeBackend::leak_focus(
+            "tmux",
+            Err(MuxError::NotFound(
+                "TTY pts/3 not found in any tmux pane (session may have exited)".to_string(),
+            )),
+            &log,
+        );
+        assert_eq!(
+            run_focus(&[detected(tmux)]),
+            "TTY pts/3 not found in any tmux pane (session may have exited)"
+        );
+    }
+
+    #[test]
+    fn focus_tries_the_next_backend_when_the_first_does_not_find_it() {
+        let log = new_log();
+        let herdr = FakeBackend::leak_focus("herdr", Err(MuxError::NotFound("a".into())), &log);
+        let tmux = FakeBackend::leak_focus(
+            "tmux",
+            Ok(FocusOutcome {
+                by: MatchedBy::Tty,
+                partial: None,
+            }),
+            &log,
+        );
+        assert_eq!(
+            run_focus(&[detected(herdr), detected(tmux)]),
+            "Switched to alpha"
+        );
+        assert_eq!(
+            *log.lock().unwrap(),
+            vec!["focus:herdr".to_string(), "focus:tmux".to_string()],
+            "innermost first, and both were called (not found is not final)"
+        );
+    }
+
+    #[test]
+    fn focus_failures_of_several_backends_are_prefixed_with_their_names() {
+        let log = new_log();
+        let herdr = FakeBackend::leak_focus("herdr", Err(MuxError::NotFound("a".into())), &log);
+        let tmux = FakeBackend::leak_focus("tmux", Err(MuxError::NotFound("b".into())), &log);
+        assert_eq!(
+            run_focus(&[detected(herdr), detected(tmux)]),
+            "herdr: a; tmux: b"
+        );
+    }
+
+    #[test]
+    fn a_partial_focus_appends_its_note() {
+        let log = new_log();
+        let herdr = FakeBackend::leak_focus(
+            "herdr",
+            Ok(FocusOutcome {
+                by: MatchedBy::Cwd,
+                partial: Some("tab only".to_string()),
+            }),
+            &log,
+        );
+        assert_eq!(
+            run_focus(&[detected(herdr)]),
+            "Switched to alpha (tab only)"
+        );
+    }
+
+    #[test]
+    fn an_unreachable_detection_reports_its_reason_and_skips_focus() {
+        let log = new_log();
+        let herdr = FakeBackend::leak_focus(
+            "herdr",
+            Ok(FocusOutcome {
+                by: MatchedBy::Pid,
+                partial: None,
+            }),
+            &log,
+        );
+        let msg = run_focus(&[Detected {
+            backend: herdr,
+            detection: Detection {
+                inside: true,
+                reachable: Err("HERDR_SOCKET_PATH is unset".to_string()),
+            },
+        }]);
+        assert_eq!(msg, "HERDR_SOCKET_PATH is unset");
+        assert!(log.lock().unwrap().is_empty(), "focus was not called");
+    }
+
+    #[test]
+    fn a_backend_that_does_not_override_focus_is_unsupported() {
+        struct Bare;
+        impl MultiplexerBackend for Bare {
+            fn name(&self) -> &'static str {
+                "bare"
+            }
+            fn detect(&self, _env: &EnvSnapshot) -> Option<Detection> {
+                None
+            }
+        }
+        static BARE: Bare = Bare;
+        assert_eq!(run_focus(&[detected(&BARE)]), "bare cannot focus a session");
     }
 
     // ---- the tracer's end-to-end check: a fake herdr socket ----------------

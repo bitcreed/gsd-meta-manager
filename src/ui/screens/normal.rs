@@ -837,10 +837,7 @@ impl Screen for NormalScreen {
                         .cloned()
                 });
                 let msg = match session {
-                    Some(s) => match crate::terminal_switch::switch_to_session(&s) {
-                        Ok(()) => format!("Switched to {}", alias),
-                        Err(e) => e,
-                    },
+                    Some(s) => crate::multiplexer::focus_message(&s, &alias),
                     None => no_active_session_status(&alias),
                 };
                 ctx.status_message = Some((msg, std::time::Instant::now()));
