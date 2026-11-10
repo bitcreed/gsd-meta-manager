@@ -68,14 +68,14 @@ See the state of every GSD project at a glance and act on any of them without le
 - ✓ Driver validation — spike 003 re-run proved gap rounds 1+2 and divergence parking on Opus (VALID-01; VALID-02 accepted as ADJUST) — Phase 26.1 / v2.0
 - ✓ Advisory router hint — deterministic `next <project> --json` (Phase 20, kept advisory after the re-plan) — v2.0
 - ✓ Retirement — superseded Phase 19/21/22 envelope and goal-layer code removed or rewired, their threat ids closed as superseded (RETIRE-01..03) — Phase 31 / v2.0
+- ✓ Multiplexer backend seam — `src/terminal_switch.rs` replaced by `MultiplexerBackend` + static `REGISTRY` in `src/multiplexer/` (detect, focus, open with a fail-closed `ExecArgv`); tmux migrated byte-identically; herdr backend (launch via one std-only `layout.apply` socket request, focus joining session id → pid → unique cwd with ambiguity refused); innermost-multiplexer precedence from `/proc` ancestry; GUI-terminal fallback preserved; design note covers zellij/WezTerm/kitty/screen/Rex/hc, implementations deferred MUX-F01..F06 (MUX-01..07) — Phase 33
 - Superseded in v2.0 (not shipped, by re-plan or user decision): CTRL-02/CTRL-03 (dry-run, opt-in gate), CTRL-08, SAFE-02/05/07/08, DRIVE-04, TRANS-01/04/05, STEER-02; moved to future: DRIVE-07, CTNR-01..05. CTRL-05 accepted partial (lock per run dir, not per project). See `.planning/milestones/v2.0-REQUIREMENTS.md`.
 
 ### Active
 
 **v2.3.0 Multiplexer Backends** (started 2026-11-10) — requirements in `.planning/REQUIREMENTS.md`:
 
-- [ ] **MUX-01..MUX-07** — reusable terminal-multiplexer backend trait, tmux migrated onto it,
-  herdr backend, innermost-multiplexer detection for nesting, GUI-terminal fallback preserved.
+- (none open — MUX-01..07 shipped in Phase 33; milestone ready for audit/close)
 
 Carried forward from v2.0 (not in v2.3.0 scope) `[inferred — release 2026-10-29]`:
 
@@ -272,6 +272,8 @@ LLM-goal-layer design, were superseded by spikes 001/002. See Active and Key Dec
 | OQ-R2: driven runs do not see the user's global CLAUDE.md; GSD + rtk hooks kept `[inferred]` | Spike 002 A2.1 default. The driver's rules come from its prompt | ⚠️ Revisit — human to confirm |
 | Phase 29 closed on accepted acceptance outcomes (operator decision 2026-10-20): o1 ADJUST x2 accepted; h2 H2-5 FAIL ruled a rubric setup flaw (item already done at relaunch, so no recovery owed; harness precondition fixed in WR-07, 04a7a40); no re-run | The real-Opus third gaps_found park was never reached live; carried risk is covered by 28-09 d33, h4 and the deterministic reconcile suites. A further paid run would test the model, not the prompt | ✓ Accepted — DRIVE-01 prompt half closed |
 | Fixer progress shown as an estimate (`~F/T`) from REVIEW.md `findings.total` + `fix(NN)` commit ids (Phase 25) | No authoritative fix ledger exists mid-run; labelling it approximate is honest | ⚠️ Revisit — WR-03/WR-04 (wrong REVIEW file, inflated count) open |
+| herdr launch through one `layout.apply` socket request, no shell/`pane run` path even as fallback (Phase 33, D-12 vs D-13) `[inferred — audit]` | Keeps the argv a JSON array end to end, so the fail-closed `ExecArgv` sink is the only argv builder | ✓ Good — live-tested on herdr 0.9.5 |
+| Nested multiplexers: innermost wins by nearest `/proc` ancestor server comm; static order (tmux first) off Linux (Phase 33) | Matches what the user is looking at when herdr runs inside tmux or vice versa | ⚠️ Revisit — WR-01 cwd-only herdr focus tier and WR-03 unused `is_try_next` open in 33-REVIEW-DISPOSITION.md |
 
 ## Evolution
 
@@ -291,4 +293,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-11-10 after starting milestone v2.3.0 Multiplexer Backends*
+*Last updated: 2026-11-10 after Phase 33*

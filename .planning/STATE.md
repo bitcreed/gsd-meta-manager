@@ -21,10 +21,10 @@ progress:
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-10-29)
+See: .planning/PROJECT.md (updated 2026-11-10)
 
 **Core value:** See the state of every GSD project at a glance and act on any of them without leaving the TUI.
-**Current focus:** Phase 33 — Terminal multiplexer backend seam + herdr support
+**Current focus:** Milestone v2.3.0 complete — audit and close
 
 ## Current Position
 
@@ -32,7 +32,7 @@ Phase: 33
 Plan: Not started
 Status: All phases complete
 Last activity: 2026-11-10 — Phase 33 complete
-Next: `/gsd-discuss-phase 33` (or `/gsd-plan-phase 33`)
+Next: `/gsd-musk-retro`, then `/gsd-audit-milestone` / `/gsd-complete-milestone`
 
 ## Deferred Verification
 
@@ -326,6 +326,10 @@ Recent decisions affecting current work:
 - [Phase 31]: 31-09: a stderr tail window cut inside a line never returns that fragment (fixed note instead); redact_captured caps at 512 chars after redaction [inferred - audit]
 - [Phase 31]: [31-07] DriverOutputLine/DriverOutput kept: live via driver_run.rs launcher tail; uuid dropped as a direct dep (MSRV floor unchanged, still transitive); MIN_ASYNC_BODY_LINES stays 800 (measured 2380 to 1229); runtime::claude_command deleted as callerless [inferred - audit]
 
+- [Phase 33]: herdr launch is one std-only `layout.apply` socket request; no shell-based herdr path even as fallback [inferred - audit]
+- [Phase 33]: herdr focus joins session id → pid → unique cwd; ambiguity on any tier refused; `agent focus` with `tab focus` fallback [inferred - audit]
+- [Phase 33]: innermost multiplexer chosen by nearest `/proc` ancestor server; tmux detection keeps "any `$TMUX` value counts" [inferred - audit]
+
 ### Roadmap Evolution
 
 - Phase 33 added (2026-11-10): Terminal multiplexer backend seam + herdr support — sole phase of new milestone v2.3.0 Multiplexer Backends (MUX-01..07; zellij/WezTerm/kitty/screen/Rex/herdr-core deferred as MUX-F01..F07). Milestone started via a condensed `/gsd-new-milestone` because no milestone was open after v2.2.0 (4-researcher fan-out and roadmapper skipped; quick ecosystem scan recorded in REQUIREMENTS.md) [inferred]. Numbered 33, not 32, because "Phase 32" already names the deferred capabilities phase (backlog 999.8) [inferred].
@@ -370,6 +374,7 @@ Older entries (Phase 19 T-19-* rows, Phase 21 round-13 gaps, Phase 26 risks, 31-
   [inferred — release 2026-10-29].
 - [Phase 24] Roadmap footer (91/87 cols) clips `[?]help` at 80 cols.
 - `--bare` is slated to become the `-p` default and is incompatible with subscription auth.
+- [Phase 33 review advisories] 8 open (0 critical, 3 warning, 5 info) in 33-REVIEW-DISPOSITION.md: WR-01 herdr cwd-only focus tier can pick a plain shell pane; WR-02 pid tier gated on exact cwd (symlinked paths → NotFound); WR-03 `MuxError::is_try_next` unused. UI-REVIEW: raw backend error text in status line.
 - Known flake: `editor_race_smoke` (tests/driverctl_race.rs:348), 11/200 in container.
 
 ### Quick Tasks Completed
@@ -572,13 +577,13 @@ non-unique bullets in these narrative logs). Disclosed per file instead [inferre
 
 Last session: 2026-11-10T20:53:16.043Z
 Stopped at: Phase 33 complete — all phases complete
-Resume file: .planning/phases/33-terminal-multiplexer-backend-seam-herdr-support/33-CONTEXT.md
+Resume file: None
 
-Next: `/gsd-new-milestone`.
+Next: `/gsd-musk-retro`, then `/gsd-complete-milestone` (v2.3.0 Multiplexer Backends).
 Earlier (2026-11-03): v2.1.0 released — release commit and annotated tag v2.1.0 created.
 Earlier (2026-10-29): v2.0.0 released locally — milestone v2.0 archived, release commit and annotated tag v2.0.0 created.
 Earlier session history: `.planning/STATE-ARCHIVE.md`.
 
 ## Operator Next Steps
 
-- Start the next milestone with /gsd-new-milestone
+- Run /gsd-musk-retro, then /gsd-complete-milestone for v2.3.0
