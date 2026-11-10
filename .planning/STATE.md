@@ -6,10 +6,10 @@ current_phase: 33
 current_phase_name: Terminal multiplexer backend seam + herdr support
 status: executing
 stopped_at: Phase 33 context gathered
-last_updated: "2026-11-10T21:38:32.471Z"
+last_updated: "2026-11-10T21:39:52.062Z"
 last_activity: 2026-11-10
-last_activity_desc: Milestone v2.3.0 started; Phase 33 added
-state_head: 458b7eb026543491d8e342e6dc693f26e16eb063
+last_activity_desc: Phase 33 execution started
+state_head: 1d155b66b7423495e91a463a7912d6013e0bbf3c
 progress:
   total_phases: 1
   completed_phases: 0
@@ -25,14 +25,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-10-29)
 
 **Core value:** See the state of every GSD project at a glance and act on any of them without leaving the TUI.
-**Current focus:** Planning next milestone — v2.2.0 (gsd-core 1.20.1 Sync & One-off Tasks) shipped; start with `/gsd-new-milestone`
+**Current focus:** Phase 33 — Terminal multiplexer backend seam + herdr support
 
 ## Current Position
 
-Phase: 33 (Terminal multiplexer backend seam + herdr support) — READY TO EXECUTE
-Plan: —
-Status: Ready to execute
-Last activity: 2026-11-10 — Milestone v2.3.0 started; Phase 33 added
+Phase: 33 (Terminal multiplexer backend seam + herdr support) — EXECUTING
+Plan: 1 of 2
+Status: Executing Phase 33
+Last activity: 2026-11-10 — Phase 33 execution started
 Next: `/gsd-discuss-phase 33` (or `/gsd-plan-phase 33`)
 
 ## Deferred Verification
