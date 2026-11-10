@@ -2,11 +2,16 @@
 gsd_state_version: "1.0"
 milestone: v2.3.0
 milestone_name: Multiplexer Backends
+current_phase: 33
+current_phase_name: not planned yet
 status: planning
-last_updated: "2026-11-10T20:47:29.939Z"
+stopped_at: Phase 33 context gathered
+last_updated: "2026-11-10T20:53:16.094Z"
 last_activity: 2026-11-10
+last_activity_desc: Milestone v2.3.0 started; Phase 33 added
+state_head: 0c99f42738dc6d7941b1a28aa6230ac844b2dfd7
 progress:
-  total_phases: 0
+  total_phases: 1
   completed_phases: 0
   total_plans: 0
   completed_plans: 0
@@ -565,9 +570,9 @@ non-unique bullets in these narrative logs). Disclosed per file instead [inferre
 
 ## Session Continuity
 
-Last session: 2026-11-05
-Stopped at: v2.2.0 released (gsd-core 1.20.1 Sync & One-off Tasks, interim, between milestones) — release commit and annotated tag v2.2.0 created and pushed to origin (master + v2.2.0, push approved for this release)
-Resume file: None
+Last session: 2026-11-10T20:53:16.043Z
+Stopped at: Phase 33 context gathered
+Resume file: .planning/phases/33-terminal-multiplexer-backend-seam-herdr-support/33-CONTEXT.md
 
 Next: `/gsd-new-milestone`.
 Earlier (2026-11-03): v2.1.0 released — release commit and annotated tag v2.1.0 created.
