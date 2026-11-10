@@ -24,10 +24,11 @@ See: .planning/PROJECT.md (updated 2026-10-29)
 
 ## Current Position
 
-Phase: Not started (defining requirements)
+Phase: 33 (Terminal multiplexer backend seam + herdr support) — not planned yet
 Plan: —
-Status: Defining requirements
-Last activity: 2026-11-10 — Milestone v2.3.0 started
+Status: Ready to plan
+Last activity: 2026-11-10 — Milestone v2.3.0 started; Phase 33 added
+Next: `/gsd-discuss-phase 33` (or `/gsd-plan-phase 33`)
 
 ## Deferred Verification
 
@@ -322,6 +323,7 @@ Recent decisions affecting current work:
 
 ### Roadmap Evolution
 
+- Phase 33 added (2026-11-10): Terminal multiplexer backend seam + herdr support — sole phase of new milestone v2.3.0 Multiplexer Backends (MUX-01..07; zellij/WezTerm/kitty/screen/Rex/herdr-core deferred as MUX-F01..F07). Milestone started via a condensed `/gsd-new-milestone` because no milestone was open after v2.2.0 (4-researcher fan-out and roadmapper skipped; quick ecosystem scan recorded in REQUIREMENTS.md) [inferred]. Numbered 33, not 32, because "Phase 32" already names the deferred capabilities phase (backlog 999.8) [inferred].
 - Capabilities phase (then numbered 32; now backlog 999.8 since 2026-10-28) added (2026-10-19): GSD Capabilities: Visibility & Per-Project Control — Tier 1 see (per-project list + capabilities × projects matrix), Tier 2 toggle `activationKey` and edit manifest-declared config keys generically; read/write path (direct files vs `gsd-tools capability … --json`) left as an explicit discuss/research decision; gated by the atomic/lock-aware config.json quick fix; placed in v2.0 as the current milestone and marked parallel-safe with no phase dependency [inferred]. Deferred to backlog: 999.5 capability lifecycle, 999.6 registry browsing
 - Phase 25 added (2026-09-25): Running Agents & Live Wave View — TUI-only, read-only view of running GSD agents and executor wave progress (worktrees + `~/.claude/projects/.../subagents/*.meta.json` + transcript mtime + PLAN `wave:`); seed evidence from ttbook in ROADMAP Phase 25 details; landed in v2.0 after the v1.8.0 interim release [inferred — no new milestone, same pattern as Phase 24]; Phase 19/21 left untouched (halted by user decision; since closed by supersession 2026-10-28)
 - Phase 24 added (2026-09-23): Roadmap tab redesign and detail-tab consolidation — TUI-only, no dependency on Phases 15-23; Phase 21 left untouched (stopped by user decision)

@@ -1,7 +1,7 @@
 {
   "contract": "1.0.0",
   "flavor": "core",
-  "milestone": "v2.3.0",
+  "milestone": "v2.3.0 — Multiplexer Backends",
   "phases": [
     {
       "number": "14",
@@ -89,5 +89,5 @@
     "label": "Discuss the first phase",
     "reason": "Project initialized — plan your first phase"
   },
-  "updated_at": "2026-11-10T20:47:29.945Z"
+  "updated_at": "2026-11-10T20:48:51.455Z"
 }
