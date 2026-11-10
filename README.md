@@ -31,18 +31,20 @@ all of them:
 - **Zero-token state reading** -- parses each project's `.planning/` directory on
   disk. No Claude run, no `/gsd-progress`, no API cost required to see status.
 - **Claude session awareness** -- detects which projects have a live `claude`
-  instance, launches or resumes a session on any of them, and auto-registers new
-  projects from active sessions (Linux only -- see
+  instance, launches or resumes a session on any of them (in a new tmux window
+  or herdr tab when the TUI runs inside one, else in a GUI terminal), and
+  auto-registers new projects from active sessions (Linux only -- see
   [Platform support](#platform-support)).
 - **Initial Codex support** -- interactive `codex` sessions are detected and
-  shown alongside Claude sessions (reachable with `Tab` under tmux). Resume stays
+  shown alongside Claude sessions (reachable with `Tab` under tmux or herdr). Resume stays
   Claude-only -- see [Platform support](#platform-support). Next-command
   suggestions also use a Codex-only GSD install (`~/.codex/gsd-core`, or
   `$CODEX_HOME/gsd-core`; a Claude install under `$CLAUDE_CONFIG_DIR/gsd-core`
   is found too). The app does not drive Codex: the experimental driver launcher
   runs Claude only.
-- **tmux focus** -- `Tab`-to-switch straight into a project's running Claude
-  session without hunting through terminal tabs.
+- **tmux and herdr focus** -- `Tab`-to-switch straight into a project's running
+  Claude session, in its tmux pane or its herdr pane, without hunting through
+  terminal tabs. When tmux and herdr are nested, the innermost one is used.
 - **Milestone archive browsing** -- read shipped-milestone artifacts with inline
   markdown rendering in a project's Docs › Milestones sub-tab (`←` `→` inside
   the Docs tab switch Files / Milestones), without leaving the dashboard.
@@ -427,7 +429,7 @@ terminal support.
 Live session detection, for both Claude and Codex, reads the Linux `/proc`
 filesystem, so it works on Linux only. On macOS no running sessions are
 detected: the Sessions tab stays empty, and auto-registration from running
-sessions, tmux `Tab`-to-switch, and resuming a detected session have nothing to
+sessions, tmux or herdr `Tab`-to-switch, and resuming a detected session have nothing to
 act on. The rest of the TUI -- everything read from `.planning/` -- works
 normally.
 
@@ -443,7 +445,7 @@ does, what each missing protection means and which risks stay open are in
 
 Codex session detection is best-effort: it relies on Codex CLI process details
 that may change between releases. Interactive `codex` sessions are shown
-alongside Claude sessions and can be reached with `Tab` under tmux;
+alongside Claude sessions and can be reached with `Tab` under tmux or herdr;
 non-interactive runs such as `codex exec` are not shown. Codex sessions cannot
 be resumed from the TUI -- resume is Claude-only.
 

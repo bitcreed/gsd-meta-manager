@@ -30,10 +30,10 @@
 //! subscriptions, no reconnect, no second method. Reversible: it is one private
 //! function ([`open_over_socket`]).
 //!
-//! # Focus (MUX-04, D-11 as corrected by research) [inferred]
+//! # Focus (MUX-04, D-11 as corrected by research) \[inferred\]
 //!
 //! Focus runs the herdr CLI, never the socket, and only the four read and
-//! focus verbs in [`CLI_VERBS`]. Two corrections to D-11, both adopted from the
+//! focus verbs in `CLI_VERBS`. Two corrections to D-11, both adopted from the
 //! measurements in RESEARCH E2 and E6:
 //!
 //! * herdr exposes **no tty** anywhere (`pane list` has no such field and
@@ -820,6 +820,99 @@ mod tests {
             .open(&env, Path::new("/work"), &argv(&["env", "claude"]))
             .unwrap_err();
         assert!(matches!(err, MuxError::Failed(_)), "{err:?}");
+    }
+
+    // ---- live herdr (ignored): pins the measurements as re-runnable facts ---
+
+    /// The live environment, or `None` (with a printed skip message) when this
+    /// test is not running inside a herdr pane with a reachable socket.
+    fn live_env() -> Option<EnvSnapshot> {
+        let env = EnvSnapshot::from_process();
+        let socket = env.get("HERDR_SOCKET_PATH").filter(|p| !p.is_empty());
+        if env.get("HERDR_ENV") != Some("1") || socket.is_none() {
+            println!("skipped: needs HERDR_ENV=1 and HERDR_SOCKET_PATH (run inside herdr)");
+            return None;
+        }
+        Some(env)
+    }
+
+    /// **The EXEC-DIRECT measurement of RESEARCH E3 Probe B, re-runnable.**
+    ///
+    /// Sends one real `layout.apply` whose command is
+    /// `env touch -- <dir>/<payload>`, where the payload is a hostile string
+    /// with spaces, `;`, `$HOME` and `*`. Exec-direct means a file with exactly
+    /// that name appears and no file named `INJECTED` does. The pane closes when
+    /// `touch` exits, so no tab is left behind, and `focus: false` leaves the
+    /// user's focused tab alone.
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "requires a live herdr server; run inside herdr"]
+    fn the_herdr_layout_apply_exec_direct_boundary_holds_against_a_live_server() {
+        let Some(env) = live_env() else {
+            return;
+        };
+        let dir = tempfile::tempdir().expect("tempdir");
+        let payload = "lit a b;touch INJECTED $HOME *";
+        let argv = argv(&[
+            "env",
+            "touch",
+            "--",
+            &dir.path().join(payload).to_string_lossy(),
+        ]);
+        let workspace = env.get("HERDR_WORKSPACE_ID").filter(|id| !id.is_empty());
+        let request = layout_apply_request(workspace, dir.path(), &argv, false);
+        let mut line = serde_json::to_vec(&request).unwrap();
+        line.push(b'\n');
+        let socket = env.get("HERDR_SOCKET_PATH").unwrap();
+        let reply = exchange(Path::new(socket), &line).expect("herdr answers layout.apply");
+        parse_layout_apply_reply(&reply).expect("herdr accepts layout.apply");
+
+        let literal = dir.path().join(payload);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !literal.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        assert!(
+            literal.exists(),
+            "the payload must arrive as ONE argv element and become one file name"
+        );
+        assert!(
+            !dir.path().join("INJECTED").exists(),
+            "a file named INJECTED means a shell interpreted the payload"
+        );
+    }
+
+    /// Read-only: the JSON field names the focus join depends on, against the
+    /// real server. The pane list must contain this very pane, and its
+    /// process-info must carry a foreground pid and a shell pid.
+    #[test]
+    #[ignore = "requires a live herdr server; run inside herdr"]
+    fn the_live_herdr_pane_list_and_process_info_parse() {
+        let Some(env) = live_env() else {
+            return;
+        };
+        let Ok(own_pane) = std::env::var("HERDR_PANE_ID") else {
+            println!("skipped: needs HERDR_PANE_ID (run inside a herdr pane)");
+            return;
+        };
+        let listing = HERDR
+            .herdr_cli(&env, &["pane", "list"])
+            .expect("herdr pane list");
+        let panes = parse_pane_list(&listing).expect("pane list parses");
+        let own = panes
+            .iter()
+            .find(|p| p.pane_id == own_pane)
+            .unwrap_or_else(|| panic!("pane list must contain {own_pane}"));
+        assert!(own.tab_id.is_some(), "a pane carries its tab id");
+
+        let info = HERDR
+            .process_info(&env, validate_id(&own_pane).unwrap())
+            .expect("herdr pane process-info");
+        assert!(
+            !info.foreground_pids.is_empty(),
+            "at least one foreground pid: {info:?}"
+        );
+        assert!(info.shell_pid.is_some(), "a shell pid: {info:?}");
     }
 
     // ---- focus: parsing ----------------------------------------------------

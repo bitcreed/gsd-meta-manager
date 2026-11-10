@@ -26,9 +26,66 @@
 //! for every backend, present and future, rather than by a rule each one has to
 //! remember.
 //!
-//! The longer design note (backend responsibilities, nesting precedence, the
-//! herdr launch decision) is written alongside the herdr focus work in the
-//! Phase 33 follow-up plan (D-14).
+//! # Design note: the trait against every surveyed tool (MUX-01, D-14)
+//!
+//! This is the canonical copy of the design record. The trait has three
+//! operations, and each column below is what one operation needs from a tool:
+//! **detect** (is the TUI inside it, and is it drivable from here), **focus**
+//! (find the pane that runs a session by some join key, then select it) and
+//! **open** (run a program vector in a directory as a new window or tab).
+//! Confidence tags are research's: \[VERIFIED\] was run on this machine,
+//! \[CITED\] comes from the tool's documentation, \[ASSUMED\] is unconfirmed.
+//!
+//! | Tool | detect (env gate; ancestor comm) | focus (join key) | open in cwd with argv | exec-direct? | status |
+//! |---|---|---|---|---|---|
+//! | tmux | `$TMUX` set; comm `tmux: server` \[VERIFIED\] | `list-panes -a -F '#{pane_tty} ...'`, exact tty, then `select-window` and `select-pane` \[VERIFIED\] | `new-window -c <cwd> <argv...>` | yes with 2 or more args \[CITED: man tmux\] | implemented |
+//! | herdr TUI 0.9.5 | `HERDR_ENV=1` and `HERDR_SOCKET_PATH`; comm `herdr` \[VERIFIED\] | `pane list`, then `agent_session.value`, else pid via `pane process-info`, else unique cwd, then `agent focus <pane_id>` with `tab focus` as fallback \[VERIFIED\] | socket `layout.apply` with `{root:{type:pane,cwd,command:[...]}}` \[VERIFIED\] | `layout.apply` yes; `pane run` no, it types into a shell \[VERIFIED\] | implemented |
+//! | herdr-core / `hc` | Unsupported until verified: a separate server, not the TUI's \[CITED: secondary sources\] | `hc ls --json` \[CITED\] | `hc run --json --cwd <dir> -- <cmd>` \[CITED\] | unknown \[ASSUMED: argv after `--`\] | deferred, MUX-F06 |
+//! | Rex | Unsupported until verified: detection unknown, closed-source public beta | `rex` CLI with `--json` \[CITED: secondary sources\] | the CLI creates sessions and runs commands \[CITED: secondary sources\] | unknown | deferred, MUX-F05 |
+//! | zellij | `$ZELLIJ`, `$ZELLIJ_SESSION_NAME` \[ASSUMED\]; `$ZELLIJ_PANE_ID` \[CITED\] | `zellij action list-panes -j`, then `focus-pane-id <id>` \[CITED\] | `zellij action new-pane --cwd <cwd> -- <argv>` \[CITED\] | likely \[ASSUMED\] | deferred, MUX-F01 |
+//! | WezTerm mux | `$WEZTERM_PANE` \[CITED\] | `wezterm cli list --format json`, then `activate-pane --pane-id` \[ASSUMED\] | `wezterm cli spawn --cwd <cwd> -- <argv>` \[CITED\] | likely \[ASSUMED\] | deferred, MUX-F02 |
+//! | kitty remote control | `$KITTY_WINDOW_ID` \[CITED\]; drivable only with `allow_remote_control` and `KITTY_LISTEN_ON` \[CITED\], so "inside" differs from "reachable" | `kitten @ ls` (id, cwd, pid, cmdline per window), then `focus-window --match id:<n>` \[CITED\] | `kitten @ launch --type=tab --cwd <cwd> <argv>` \[ASSUMED for `--cwd`\] | likely \[ASSUMED\] | deferred, MUX-F03 |
+//! | GNU screen | `$STY` \[CITED: man screen\] | `screen -Q windows` (weak: no tty or pid), then `-X select <n>` | open is Unsupported: `-X chdir` then `-X screen <cmd>` is re-tokenized by screen's own command parser \[ASSUMED\], which would put a parser in the path | no \[ASSUMED\] | deferred, MUX-F04, focus only |
+//!
+//! ## How each trait method maps onto the table
+//!
+//! * [`MultiplexerBackend::detect`] is the "detect" column. It returns
+//!   [`Detection`], which keeps `inside` (the marker is set) apart from
+//!   `reachable` (the tool can be driven from here), because kitty shows the two
+//!   differ and herdr can carry its marker without a socket (D-02). The
+//!   "ancestor comm" half of the column is [`MultiplexerBackend::is_server_comm`],
+//!   used only to order a nesting ([`order_innermost`]).
+//! * [`MultiplexerBackend::focus`] is the "focus" column: the join key is what
+//!   the tool exposes about a pane. tmux exposes a tty, herdr exposes an agent
+//!   session id and pids but no tty, GNU screen exposes neither, which is why
+//!   its focus is weak. A tool that cannot satisfy the join answers
+//!   [`MuxError::Unsupported`], the trait default.
+//! * [`MultiplexerBackend::open`] is the "open" column and takes an
+//!   [`ExecArgv`], so the "exec-direct?" column is enforced for every backend by
+//!   the one sink (D-05). A tool whose only path re-parses text (GNU screen,
+//!   herdr's `pane run`) answers [`MuxError::Unsupported`] or refuses; it is
+//!   never given a quoted command line.
+//!
+//! ## The five call sites that use the seam
+//!
+//! `ui::screens::detail` calls [`launch`] twice (resume and new session) and
+//! [`focus_message`] once, and builds its plan through [`plan_launch`] over
+//! [`detect_current`]; `ui::screens::normal` calls [`focus_message`] once. No UI
+//! code spawns a multiplexer command itself.
+//!
+//! ## Recorded but unused, and superseded
+//!
+//! * `TERM_PROGRAM` names the innermost multiplexer in both nestings
+//!   (`tmux` and `herdr`, measured) and would work off Linux too. It is a
+//!   candidate signal that is deliberately NOT used, so as not to invent a
+//!   second heuristic beside the env gate plus ancestry (D-07). It is also
+//!   fragile: tmux older than 3.2 does not set it.
+//! * D-04 supersedes the old note that only `in_tmux()` was shared between
+//!   focusing and launching: the detection layer is now shared, the command
+//!   runners are not.
+//! * D-11's tty step is replaced by a pid step in herdr's focus, because herdr
+//!   exposes no tty (`herdr.rs` module docs). The exact-match and refuse-on-
+//!   ambiguity rules are unchanged.
 
 pub mod gui;
 pub mod herdr;
@@ -323,7 +380,7 @@ pub static REGISTRY: &[&dyn MultiplexerBackend] = &[&tmux::TMUX, &herdr::HERDR];
 /// 1. The candidates are the registry entries whose own `detect` says "inside",
 ///    in `registry` order (the static tie-break, tmux first).
 /// 2. `ancestry` is the TUI's own process chain, nearest first (see
-///    [`proc_chain`]). The FIRST entry whose comm is some candidate's
+///    `proc_chain`). The FIRST entry whose comm is some candidate's
 ///    [`MultiplexerBackend::is_server_comm`] names the innermost multiplexer,
 ///    and that candidate moves to the front. Nothing else reorders.
 /// 3. An ancestor naming a backend whose env gate failed is ignored: the env
