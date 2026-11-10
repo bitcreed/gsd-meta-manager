@@ -47,13 +47,13 @@ hand it to a shell.
 
 ### Multiplexer seam (MUX)
 
-- [ ] **MUX-01**: A `MultiplexerBackend` trait (name per planning) covers: detect whether the TUI is inside this backend, focus an existing Claude session, and open a new session in a cwd with an argv. It is designed against every tool in the ecosystem scan, and the design records how each would satisfy it.
-- [ ] **MUX-02**: Detection picks the innermost multiplexer when nested (e.g. herdr inside tmux, tmux inside herdr). The precedence rule is deterministic and unit-tested from env-var fixtures, with no live multiplexer.
-- [ ] **MUX-03**: tmux runs on the trait with unchanged behaviour. The fail-closed direct-exec boundary in `open_new_window` (refuse <2-element argv, refuse a `-`-leading head, cwd as the `-c` argv element; D-03, T-W0D-01, T-W0D-03, T-W0D-04) stays enforced on the shared sink, so every backend passes through it, and its tests still pass.
-- [ ] **MUX-04**: Inside herdr, a user can press the existing focus key on a Claude session and land in the herdr pane running it. The join is on `agent_session.value` from `herdr pane list`, with cwd/tty as fallback.
-- [ ] **MUX-05**: Inside herdr, a user can launch or resume a Claude session from the TUI. It opens in a new herdr tab in the project cwd without an interpreter parsing the program vector. If herdr cannot guarantee that, the backend refuses and falls back, with the reason recorded.
-- [ ] **MUX-06**: With no supported multiplexer detected, or when a backend's focus or launch fails, the existing GUI-terminal fallback chain (`$TERMINAL`, `xdg-terminal-exec`, candidates) runs as it does today, and the failure reason reaches the user.
-- [ ] **MUX-07**: All five current call sites go through the seam. No tmux-specific call remains outside the tmux backend.
+- [x] **MUX-01**: A `MultiplexerBackend` trait (name per planning) covers: detect whether the TUI is inside this backend, focus an existing Claude session, and open a new session in a cwd with an argv. It is designed against every tool in the ecosystem scan, and the design records how each would satisfy it.
+- [x] **MUX-02**: Detection picks the innermost multiplexer when nested (e.g. herdr inside tmux, tmux inside herdr). The precedence rule is deterministic and unit-tested from env-var fixtures, with no live multiplexer.
+- [x] **MUX-03**: tmux runs on the trait with unchanged behaviour. The fail-closed direct-exec boundary in `open_new_window` (refuse <2-element argv, refuse a `-`-leading head, cwd as the `-c` argv element; D-03, T-W0D-01, T-W0D-03, T-W0D-04) stays enforced on the shared sink, so every backend passes through it, and its tests still pass.
+- [x] **MUX-04**: Inside herdr, a user can press the existing focus key on a Claude session and land in the herdr pane running it. The join is on `agent_session.value` from `herdr pane list`, with cwd/tty as fallback.
+- [x] **MUX-05**: Inside herdr, a user can launch or resume a Claude session from the TUI. It opens in a new herdr tab in the project cwd without an interpreter parsing the program vector. If herdr cannot guarantee that, the backend refuses and falls back, with the reason recorded.
+- [x] **MUX-06**: With no supported multiplexer detected, or when a backend's focus or launch fails, the existing GUI-terminal fallback chain (`$TERMINAL`, `xdg-terminal-exec`, candidates) runs as it does today, and the failure reason reaches the user.
+- [x] **MUX-07**: All five current call sites go through the seam. No tmux-specific call remains outside the tmux backend.
 
 ## Future Requirements (deferred)
 
@@ -75,10 +75,10 @@ hand it to a shell.
 
 | Requirement | Phase | Status |
 |---|---|---|
-| MUX-01 | Phase 33 | Pending |
-| MUX-02 | Phase 33 | Pending |
-| MUX-03 | Phase 33 | Pending |
-| MUX-04 | Phase 33 | Pending |
-| MUX-05 | Phase 33 | Pending |
-| MUX-06 | Phase 33 | Pending |
-| MUX-07 | Phase 33 | Pending |
+| MUX-01 | Phase 33 | Complete |
+| MUX-02 | Phase 33 | Complete |
+| MUX-03 | Phase 33 | Complete |
+| MUX-04 | Phase 33 | Complete |
+| MUX-05 | Phase 33 | Complete |
+| MUX-06 | Phase 33 | Complete |
+| MUX-07 | Phase 33 | Complete |
