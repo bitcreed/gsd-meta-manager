@@ -60,6 +60,9 @@ const SPAWN_ALLOWLIST: &[&str] = &[
     // `which`, `xdg-terminal-exec --print-id`, and the GUI terminal launch. No
     // agent.
     "src/multiplexer/gui.rs",
+    // herdr CLI reads (pane list, pane process-info) and focus (agent focus, tab
+    // focus); launch goes over the socket, which is not a spawn. No agent.
+    "src/multiplexer/herdr.rs",
     // tmux `new-window`, `list-panes`, `select-window` and `select-pane`, and
     // the live direct-exec test. No agent.
     "src/multiplexer/tmux.rs",
