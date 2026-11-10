@@ -25,13 +25,13 @@ pub mod launch_target;
 /// The sandboxed driver launcher: `driver launch` and what it owns (Phase 28).
 pub mod launcher;
 pub mod main_loop;
+pub mod multiplexer;
 /// One-off sandboxed task dispatch: `task run` and `taskctl report` (quick 261103-f5y).
 pub mod oneoff;
 pub mod project_creator;
 pub mod registry;
 pub mod session_detector;
 pub mod state_reader;
-pub mod terminal_switch;
 /// Shared fixture shape constants; two consts and no behaviour (D-17-5).
 pub mod test_support;
 pub mod text;
