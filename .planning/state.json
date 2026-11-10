@@ -1,7 +1,7 @@
 {
   "contract": "1.0.0",
   "flavor": "core",
-  "milestone": "v2.0 — Autonomous Orchestration",
+  "milestone": "v2.3.0",
   "phases": [
     {
       "number": "14",
@@ -29,29 +29,9 @@
       "status": "complete"
     },
     {
-      "number": "19",
-      "name": "GITSAFE — Git & Blast-Radius Envelope",
-      "status": "pending"
-    },
-    {
       "number": "20",
       "name": "Deterministic Decision Router & Run Bounds",
       "status": "complete"
-    },
-    {
-      "number": "21",
-      "name": "LLM Goal Layer & Prompt-Injection Hardening",
-      "status": "pending"
-    },
-    {
-      "number": "22",
-      "name": "Container Execution Target",
-      "status": "pending"
-    },
-    {
-      "number": "23",
-      "name": "Gate Policy & Auto-Validation",
-      "status": "pending"
     },
     {
       "number": "24",
@@ -66,7 +46,7 @@
     {
       "number": "26",
       "name": "Driver Validation Spike 003",
-      "status": "pending"
+      "status": "complete"
     },
     {
       "number": "26.1",
@@ -81,6 +61,11 @@
     {
       "number": "28",
       "name": "Sandboxed Driver Launcher",
+      "status": "complete"
+    },
+    {
+      "number": "28.1",
+      "name": "Sandbox Egress & Agent-Channel Isolation",
       "status": "complete"
     },
     {
@@ -100,9 +85,9 @@
     }
   ],
   "next": {
-    "command": "/gsd-progress",
-    "label": "Show progress",
-    "reason": "Unsure of state — showing progress"
+    "command": "/gsd-discuss-phase",
+    "label": "Discuss the first phase",
+    "reason": "Project initialized — plan your first phase"
   },
-  "updated_at": "2026-10-30T02:53:42.806Z"
+  "updated_at": "2026-11-10T20:47:29.945Z"
 }

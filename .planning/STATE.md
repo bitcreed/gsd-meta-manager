@@ -1,21 +1,16 @@
 ---
 gsd_state_version: "1.0"
-milestone: v2.2.0
-current_phase_name: Sandbox Egress & Agent-Channel Isolation
-status: shipped
-stopped_at: v2.2.0 released and pushed (master + tag v2.2.0) — interim gsd-core 1.20.1 Sync & One-off Tasks release between milestones
-last_updated: "2026-11-05T20:00:00.000Z"
-last_activity: 2026-11-05
-last_activity_desc: v2.2.0 released — gsd-core 1.20.1 Sync & One-off Tasks
-state_head: a6b9d5140371b15918276e09eb1466322990b199
+milestone: v2.3.0
+milestone_name: Multiplexer Backends
+status: planning
+last_updated: "2026-11-10T20:47:29.939Z"
+last_activity: 2026-11-10
 progress:
-  total_phases: 16
-  completed_phases: 16
-  total_plans: 125
-  completed_plans: 125
-  percent: 100
-milestone_name: gsd-core 1.20.1 Sync & One-off Tasks
-current_phase: "28.1"
+  total_phases: 0
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
+  percent: 0
 ---
 
 # Project State
@@ -29,38 +24,10 @@ See: .planning/PROJECT.md (updated 2026-10-29)
 
 ## Current Position
 
-Status: v2.2.0 shipped 2026-11-05 (interim release between milestones; no milestone archived)
-  gsd-core v1.20.1 sync: quick 261105-e7u (baseline constants 1.20.1 / v1.20.1 / 1.20.1, sync
-  record), 261105-e7v (milestone-prefixed M-NN phase ids) and 261105-fq6 (M-NN parity gaps,
-  M-0043). Experimental one-off task runs: quick 261103-f5y, gt1, hx7, klf, mnr, o2r, p5n, pd7,
-  qqm, ubn; plus 261103-tn4 (editor shell-outs vs the TUI input reader). `cargo update`:
-  finl_unicode 1.5.0 -> 1.5.1. `./scripts/pre-tag-check.sh --container v2.2.0` (docker): gates
-  1-6 PASS, oracle @opengsd/gsd-core@1.20.1; 59 suites, 3645 passed, 0 failed, 17 ignored.
-  Next: `/gsd-new-milestone`.
-
-Earlier (v2.1.0 release, 2026-11-03):
-Status: v2.1.0 shipped 2026-11-03 (interim release between milestones; no milestone archived)
-  gsd-core v1.20.0 sync: quick 261103-em6 (ROADMAP phase-entry grammar #5763 shared across the
-  checklist recognizers, Progress table located by the #5761 owner rule and sliced to the current
-  milestone per #5165) and quick 261103-f5i (baseline constants 1.20.0 / v1.20.0 / 1.20.0, typed
-  planner.stall_threshold_minutes / stall_detect_interval_minutes rows, three Defaults help texts
-  aligned, sync record), plus quick 261103-f5y (one-off sandboxed task dispatch, experimental) and
-  tasks 1-2 of in-progress quick 261103-gt1 (stream-json stdin, inbox injection; live viewer, spend
-  meter and message composer). `cargo update`:
-  no change beyond the crate entry (deps refreshed in 7b25355). `./scripts/pre-tag-check.sh
-  --container v2.1.0` (docker) on the release tree: gates 1-6 PASS, oracle
-  @opengsd/gsd-core@1.20.0. Next: `/gsd-new-milestone`.
-
-Earlier (v2.0.0 release, 2026-10-29):
-Milestone: v2.0 Autonomous Orchestration — SHIPPED 2026-10-29 as v2.0.0
-Phase: — (between milestones; Phases 14-31 archived to `.planning/milestones/v2.0-phases/`)
+Phase: Not started (defining requirements)
 Plan: —
-Status: shipped
-Last activity: 2026-11-05 - Completed quick task 261105-fq6: Close milestone-prefixed phase-id parity gaps (M-0043)
-
-Archive: `.planning/milestones/v2.0-ROADMAP.md`, `v2.0-REQUIREMENTS.md`, `v2.0-MILESTONE-AUDIT.md`.
-Carried forward: five security-adjacent review clusters as todos `2026-10-29-v2-carry-*`;
-CTRL-05 accepted partial; backlog 999.7 and 999.8 (formerly Phase 32) [inferred — release 2026-10-29].
+Status: Defining requirements
+Last activity: 2026-11-10 — Milestone v2.3.0 started
 
 ## Deferred Verification
 

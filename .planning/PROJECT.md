@@ -72,8 +72,12 @@ See the state of every GSD project at a glance and act on any of them without le
 
 ### Active
 
-**Next milestone — not yet defined** (start with `/gsd-new-milestone`). Carried forward from v2.0
-`[inferred — release 2026-10-29]`:
+**v2.3.0 Multiplexer Backends** (started 2026-11-10) — requirements in `.planning/REQUIREMENTS.md`:
+
+- [ ] **MUX-01..MUX-07** — reusable terminal-multiplexer backend trait, tmux migrated onto it,
+  herdr backend, innermost-multiplexer detection for nesting, GUI-terminal fallback preserved.
+
+Carried forward from v2.0 (not in v2.3.0 scope) `[inferred — release 2026-10-29]`:
 
 - **Security-adjacent review findings from v2.0** — five clustered todos in `.planning/todos/pending/`
   (`2026-10-29-v2-carry-*`): capture-pump redaction edge cases, unsupervised child on capture/parent
@@ -157,11 +161,23 @@ across state readers, config schema, and UI).
 
 </details>
 
-## Next Milestone Goals
+## Current Milestone: v2.3.0 Multiplexer Backends
 
-Not yet defined — run `/gsd-new-milestone`. Candidates are the carried-forward items under
-Active: the v2.0 security-adjacent review clusters, CTRL-05, backlog 999.7 and 999.8
-`[inferred — release 2026-10-29]`.
+**Goal:** Focus and launch Claude sessions from the TUI in whatever terminal workspace the user
+runs (tmux today, herdr now, others later) through one reusable backend seam, instead of the
+tmux-hardcoded `src/terminal_switch.rs`.
+
+**Target features:**
+- A `MultiplexerBackend` trait (detect, focus an existing session, open a new session in a cwd with
+  an argv) designed against tmux, herdr, zellij, WezTerm mux, kitty remote control, GNU screen and
+  Rex, with innermost-multiplexer precedence when nested (e.g. herdr inside tmux)
+- tmux migrated onto the trait with its direct-exec safety invariants intact
+- herdr backend joining on `agent_session` (Claude session id) from `herdr pane list`
+- GUI-terminal fallback preserved; other backends recorded as future requirements
+
+**Key context:** started unattended from a user request; the milestone holds a single phase.
+Remaining carried-forward candidates (v2.0 review clusters, CTRL-05, backlog 999.7/999.8) stay
+deferred `[inferred — milestone start 2026-11-10]`.
 
 <details>
 <summary>v2.0 Autonomous Orchestration — milestone goal (shipped 2026-10-29)</summary>
@@ -275,4 +291,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-10-29 after v2.0 milestone (shipped as v2.0.0)*
+*Last updated: 2026-11-10 after starting milestone v2.3.0 Multiplexer Backends*
