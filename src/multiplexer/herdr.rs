@@ -322,6 +322,13 @@ fn open_over_socket(env: &EnvSnapshot, cwd: &Path, argv: &ExecArgv) -> Result<()
 
 /// Longest wait for the connect, and for the reply to arrive after the request
 /// is sent (T-33-05: this runs on the UI thread).
+///
+/// These are three separate bounds, not one: a launch can wait up to
+/// `CONNECT_TIMEOUT` to connect, `CONNECT_TIMEOUT` to write and `REPLY_TIMEOUT`
+/// for the reply, about 9 s in the worst case (review IN-04). The herdr CLI
+/// calls used by focus have no deadline at all, the same exposure the tmux CLI
+/// path has (T-33-13, accepted). A connect that times out leaves its helper
+/// thread blocked in `connect(2)` until the kernel gives up.
 #[cfg(unix)]
 const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 #[cfg(unix)]
