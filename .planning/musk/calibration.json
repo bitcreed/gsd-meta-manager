@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "generated_at": "2026-11-11T01:37:17.451Z",
+  "generated_at": "2026-11-11T01:45:56.189Z",
   "runtime": "claude-code",
   "transcript_dir": "/home/blk/.claude/projects/-home-blk-projects-rust-gsd-meta-manager",
   "worktree_transcript_dirs": 0,
@@ -8,12 +8,12 @@
   "min_samples": 5,
   "basis": "harness",
   "sessions": 20,
-  "subagents": 628,
-  "messages": 23489,
+  "subagents": 629,
+  "messages": 23560,
   "totals": {
-    "tokens": 117924622,
-    "cache_read": 3617901290,
-    "attributed_to_phase": 89516498
+    "tokens": 118151792,
+    "cache_read": 3624975442,
+    "attributed_to_phase": 89743668
   },
   "prices": {
     "per_task": {
@@ -40,7 +40,7 @@
     "per_quick_task": {
       "p25": 304299,
       "p50": 488695,
-      "p75": 731741,
+      "p75": 733485,
       "n": 59,
       "basis": "harness"
     },
@@ -79,10 +79,10 @@
       "p50_per_run": 236800
     },
     "general-purpose": {
-      "runs": 243,
-      "tokens_total": 8795206,
-      "cache_read_total": 77712885,
-      "p50_per_run": 25017
+      "runs": 244,
+      "tokens_total": 8821098,
+      "cache_read_total": 77829635,
+      "p50_per_run": 25018
     },
     "gsd-code-reviewer": {
       "runs": 38,
@@ -91,10 +91,10 @@
       "p50_per_run": 184974
     },
     "orchestrator:/gsd-execute-phase": {
-      "runs": 35,
-      "tokens_total": 5039837,
-      "cache_read_total": 181606232,
-      "p50_per_run": 119451
+      "runs": 36,
+      "tokens_total": 5096110,
+      "cache_read_total": 182540988,
+      "p50_per_run": 118155
     },
     "main": {
       "runs": 17,
@@ -222,6 +222,18 @@
       "cache_read_total": 11666905,
       "p50_per_run": 54503
     },
+    "orchestrator:/gsd-musk-retro": {
+      "runs": 3,
+      "tokens_total": 248847,
+      "cache_read_total": 5852381,
+      "p50_per_run": 70698
+    },
+    "orchestrator:/gsd-complete-milestone": {
+      "runs": 2,
+      "tokens_total": 246222,
+      "cache_read_total": 10067796,
+      "p50_per_run": 123111
+    },
     "orchestrator:/gsd-musk-roadmap": {
       "runs": 2,
       "tokens_total": 222519,
@@ -245,18 +257,6 @@
       "tokens_total": 194789,
       "cache_read_total": 4971096,
       "p50_per_run": 97395
-    },
-    "orchestrator:/gsd-musk-retro": {
-      "runs": 3,
-      "tokens_total": 187923,
-      "cache_read_total": 3309214,
-      "p50_per_run": 65498
-    },
-    "orchestrator:/gsd-complete-milestone": {
-      "runs": 1,
-      "tokens_total": 162141,
-      "cache_read_total": 6588317,
-      "p50_per_run": 162141
     },
     "gsd-integration-checker": {
       "runs": 2,
@@ -1383,8 +1383,8 @@
       }
     },
     "33": {
-      "tokens_total": 2842550,
-      "cache_read_total": 67831650,
+      "tokens_total": 3069720,
+      "cache_read_total": 74905802,
       "by_agent_type": {
         "gsd-executor": {
           "runs": 2,
@@ -1405,10 +1405,16 @@
           "p50_per_run": 304721
         },
         "general-purpose": {
-          "runs": 8,
-          "tokens_total": 197527,
-          "cache_read_total": 151656,
-          "p50_per_run": 24643
+          "runs": 9,
+          "tokens_total": 223419,
+          "cache_read_total": 268406,
+          "p50_per_run": 24671
+        },
+        "orchestrator:/gsd-execute-phase": {
+          "runs": 2,
+          "tokens_total": 222052,
+          "cache_read_total": 7240224,
+          "p50_per_run": 111026
         },
         "gsd-code-reviewer": {
           "runs": 1,
@@ -1421,12 +1427,6 @@
           "tokens_total": 176484,
           "cache_read_total": 4843344,
           "p50_per_run": 176484
-        },
-        "orchestrator:/gsd-execute-phase": {
-          "runs": 1,
-          "tokens_total": 165779,
-          "cache_read_total": 6305468,
-          "p50_per_run": 165779
         },
         "orchestrator:/gsd-code-review": {
           "runs": 2,
@@ -1452,6 +1452,12 @@
           "cache_read_total": 42839,
           "p50_per_run": 91888
         },
+        "orchestrator:/gsd-complete-milestone": {
+          "runs": 1,
+          "tokens_total": 84081,
+          "cache_read_total": 3479479,
+          "p50_per_run": 84081
+        },
         "orchestrator:/gsd-discuss-phase": {
           "runs": 1,
           "tokens_total": 81134,
@@ -1463,6 +1469,12 @@
           "tokens_total": 80157,
           "cache_read_total": 318865,
           "p50_per_run": 80157
+        },
+        "orchestrator:/gsd-musk-retro": {
+          "runs": 1,
+          "tokens_total": 70698,
+          "cache_read_total": 2691425,
+          "p50_per_run": 70698
         },
         "gsd-ui-auditor": {
           "runs": 1,
@@ -1481,12 +1493,6 @@
           "tokens_total": 22487,
           "cache_read_total": 340798,
           "p50_per_run": 22487
-        },
-        "orchestrator:/gsd-musk-retro": {
-          "runs": 1,
-          "tokens_total": 9774,
-          "cache_read_total": 148258,
-          "p50_per_run": 9774
         },
         "orchestrator:/gsd-musk-roadmap": {
           "runs": 1,
