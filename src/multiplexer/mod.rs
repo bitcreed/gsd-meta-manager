@@ -133,6 +133,19 @@ impl MuxError {
         }
     }
 
+    /// A short, human phrase for the launch status line (review UI-01). The
+    /// full [`MuxError`] text can carry socket paths, exit statuses and herdr's
+    /// own error JSON, which a status line should not show; it goes to the log
+    /// instead. The phrase depends on the class only.
+    pub fn launch_phrase(&self) -> &'static str {
+        match self {
+            Self::NotFound(_) => "no target found",
+            Self::Unsupported(_) => "cannot open sessions",
+            Self::RefusedForSafety(_) => "refused for safety",
+            Self::Failed(_) => "could not open a session",
+        }
+    }
+
     /// Should a caller move on to the next backend? True for the two "not
     /// mine / not found" classes.
     pub fn is_try_next(&self) -> bool {
@@ -567,11 +580,16 @@ pub type GuiSpawner<'a> = dyn FnMut(&str, &[String], &Path) -> std::io::Result<(
 ///    error's text as the reason.
 /// 2. Then the GUI: with `plan.gui` set, spawn it with `gui_argv(term)` in
 ///    `cwd`. A fall-through is REPORTED rather than silent, as
-///    `"<backend>: <reason> — opened in <term>"`; the user asked for a session
+///    `"<backend>: <phrase> — opened in <term>"`; the user asked for a session
 ///    where they are and got one somewhere else.
-/// 3. With no GUI, `"<backend>: <reason>; no terminal emulator found (set
+/// 3. With no GUI, `"<backend>: <phrase>; no terminal emulator found (set
 ///    $TERMINAL)"`, or the bare `"No terminal emulator found (set $TERMINAL)"`
 ///    when no backend was involved.
+///
+/// `<phrase>` is a short human phrase for the failure class
+/// ([`MuxError::launch_phrase`], or `"not reachable"` for an unreachable
+/// detection), never the raw reason: that can carry socket paths and herdr's
+/// error JSON, so it is logged at `warn` instead (UI-01) [inferred, for audit].
 pub fn launch_with(
     plan: &LaunchPlan,
     cwd: &Path,
@@ -580,32 +598,39 @@ pub fn launch_with(
     spawn_gui: &mut GuiSpawner<'_>,
     success: &str,
 ) -> String {
-    let mut fallthrough: Option<(&'static str, String)> = None;
+    // The backend's name and the short phrase the status line shows. The full
+    // reason goes to the log (UI-01).
+    let mut fallthrough: Option<(&'static str, &'static str)> = None;
     if let Some(innermost) = plan.backends.first() {
-        let reason = match &innermost.detection.reachable {
-            Err(why) => why.clone(),
+        let (phrase, reason) = match &innermost.detection.reachable {
+            Err(why) => ("not reachable", why.clone()),
             Ok(()) => match &argv {
-                Err(refused) => refused.to_string(),
+                Err(refused) => (refused.launch_phrase(), refused.to_string()),
                 Ok(argv) => match innermost.backend.open(&plan.env, cwd, argv) {
                     Ok(()) => return success.to_string(),
-                    Err(e) => e.to_string(),
+                    Err(e) => (e.launch_phrase(), e.to_string()),
                 },
             },
         };
-        fallthrough = Some((innermost.backend.name(), reason));
+        tracing::warn!(
+            backend = innermost.backend.name(),
+            reason = %reason,
+            "the multiplexer did not open the session; falling back to a GUI terminal"
+        );
+        fallthrough = Some((innermost.backend.name(), phrase));
     }
 
     match &plan.gui {
         Some(term) => match spawn_gui(term, &gui_argv(term), cwd) {
             Ok(()) => match fallthrough {
-                Some((name, reason)) => format!("{name}: {reason} — opened in {term}"),
+                Some((name, phrase)) => format!("{name}: {phrase} — opened in {term}"),
                 None => success.to_string(),
             },
             Err(e) => format!("Failed to launch: {e}"),
         },
         None => match fallthrough {
-            Some((name, reason)) => {
-                format!("{name}: {reason}; no terminal emulator found (set $TERMINAL)")
+            Some((name, phrase)) => {
+                format!("{name}: {phrase}; no terminal emulator found (set $TERMINAL)")
             }
             None => "No terminal emulator found (set $TERMINAL)".to_string(),
         },
@@ -1292,7 +1317,7 @@ mod tests {
         let plan = plan_with(vec![detected(fake)], Some("kitty"));
         let mut spawned = Vec::new();
         let msg = run_launch(&plan, argv_ok(), &mut spawned, Ok(()));
-        assert_eq!(msg, "tmux: boom — opened in kitty");
+        assert_eq!(msg, "tmux: could not open a session — opened in kitty");
         assert_eq!(
             spawned,
             vec![(
@@ -1312,7 +1337,7 @@ mod tests {
         let msg = run_launch(&plan, argv_ok(), &mut spawned, Ok(()));
         assert_eq!(
             msg,
-            "tmux: boom; no terminal emulator found (set $TERMINAL)"
+            "tmux: could not open a session; no terminal emulator found (set $TERMINAL)"
         );
     }
 
@@ -1347,13 +1372,7 @@ mod tests {
         let refused = ExecArgv::new(vec!["claude".to_string()]);
         let mut spawned = Vec::new();
         let msg = run_launch(&plan, refused, &mut spawned, Ok(()));
-        assert!(
-            msg.starts_with(
-                "tmux: refusing to open a tmux window from a 1-element program vector: "
-            ),
-            "{msg}"
-        );
-        assert!(msg.ends_with(" — opened in kitty"), "{msg}");
+        assert_eq!(msg, "tmux: refused for safety — opened in kitty");
         assert_eq!(fake.open_calls(), 0);
     }
 
@@ -1367,7 +1386,7 @@ mod tests {
         let msg = run_launch(&plan, argv_ok(), &mut spawned, Ok(()));
         assert_eq!(
             msg,
-            "herdr: nope; no terminal emulator found (set $TERMINAL)"
+            "herdr: could not open a session; no terminal emulator found (set $TERMINAL)"
         );
         assert_eq!(first.open_calls(), 1);
         assert_eq!(
@@ -1393,8 +1412,27 @@ mod tests {
         );
         let mut spawned = Vec::new();
         let msg = run_launch(&plan, argv_ok(), &mut spawned, Ok(()));
-        assert_eq!(msg, "herdr: HERDR_SOCKET_PATH is unset — opened in kitty");
+        assert_eq!(msg, "herdr: not reachable — opened in kitty");
         assert_eq!(fake.open_calls(), 0);
+    }
+
+    #[test]
+    fn every_error_class_has_a_short_launch_phrase_free_of_the_raw_reason() {
+        let raw =
+            "herdr socket connect: /run/user/1000/herdr.sock: Permission denied (os error 13)";
+        for error in [
+            MuxError::NotFound(raw.into()),
+            MuxError::Unsupported(raw.into()),
+            MuxError::RefusedForSafety(raw.into()),
+            MuxError::Failed(raw.into()),
+        ] {
+            let phrase = error.launch_phrase();
+            assert!(!phrase.is_empty() && phrase.len() <= 32, "{phrase}");
+            assert!(
+                !phrase.contains("socket") && !phrase.contains('/'),
+                "{phrase}"
+            );
+        }
     }
 
     #[test]
@@ -1648,8 +1686,8 @@ mod tests {
         let msg = run_launch(&plan, argv_ok(), &mut spawned, Ok(()));
         handle.join().unwrap();
         assert_eq!(
-            msg,
-            "herdr: herdr layout.apply failed (layout_apply_failed): Unable to spawn env — opened in kitty"
+            msg, "herdr: could not open a session — opened in kitty",
+            "the raw herdr error stays out of the status line"
         );
         assert_eq!(spawned.len(), 1);
     }

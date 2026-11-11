@@ -265,7 +265,7 @@ impl MultiplexerBackend for HerdrBackend {
                     .count();
                 let tab_note = (in_tab != 1).then(|| {
                     format!(
-                        "tab only: herdr tracks no agent in that pane and its tab has {in_tab} panes"
+                        "tab focused, not the pane: herdr tracks no agent in that pane and its tab has {in_tab} panes"
                     )
                 });
                 let partial = match (tab_note, cwd_note) {
