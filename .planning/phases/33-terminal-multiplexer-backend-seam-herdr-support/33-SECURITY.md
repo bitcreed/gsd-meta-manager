@@ -17,6 +17,13 @@ Both SUMMARY files report `## Threat Flags: None` (no unplanned surface). ASVS l
 Verification depth: L1 (grep plus test-name evidence). Per the workflow short-circuit rule
 (threats_open 0, register authored at plan time, ASVS 1), the gsd-security-auditor was not spawned.
 
+Re-audit 2026-11-10 (after the 33-REVIEW-FIX commits 8425be8..bce8ebf touched src/multiplexer/herdr.rs and mod.rs):
+every mitigation re-grepped against current code; citations refreshed to current line numbers. No mitigation was
+weakened. WR-01 tightens T-33-09 (cwd tier no longer focuses a plain shell or a contradicted pane); WR-02's
+canonicalization only affects which panes are probed, not the exact-equality match; WR-03 removed the unused
+`is_try_next` (fall-through on `RefusedForSafety` reuses no refused vector); UI-01 keeps raw backend errors out of the
+status line (logged via tracing only). No new spawn site or CLI verb; no new threat surface.
+
 ---
 
 ## Trust Boundaries
@@ -36,20 +43,20 @@ Verification depth: L1 (grep plus test-name evidence). Per the workflow short-ci
 
 | Threat ID | Category | Component | Severity | Disposition | Mitigation | Status |
 |-----------|----------|-----------|----------|-------------|------------|--------|
-| T-33-01 | Tampering / EoP | herdr launch path | high | mitigate | Launch via one `layout.apply` request with `command` = `ExecArgv` elements (src/multiplexer/herdr.rs:82-103); tests `launch_inside_herdr_opens_a_tab_through_layout_apply` (mod.rs:1612) and `layout_apply_request_carries_a_hostile_element_as_one_array_element` (herdr.rs:702) | closed |
-| T-33-02 | Tampering | ExecArgv sink | high | mitigate | Private tuple field, derives only `Debug, Clone` (no Default/From); `ExecArgv::new` refuses <2 elements and `-` head (mod.rs:198-216); test `exec_argv_refuses_a_vector_tmux_would_hand_to_an_interpreter` (mod.rs:818) | closed |
-| T-33-03 | Tampering | cwd transport | medium | mitigate | tmux `-c` argv element (tmux.rs:147), herdr JSON `cwd` (herdr.rs:103, asserted herdr.rs:715 / mod.rs:1633), GUI `Command::current_dir` (gui.rs:113-115) | closed |
-| T-33-04 | Tampering | herdr JSON encoding | medium | mitigate | Request built with `serde_json::json!` (herdr.rs:95); hostile element `lit a b;touch X $HOME *` round-trips unchanged (herdr.rs:702-718) | closed |
-| T-33-05 | Denial of Service | herdr socket on UI thread | medium | mitigate | Connect on helper thread bounded by `CONNECT_TIMEOUT` 2 s, write timeout, `REPLY_TIMEOUT` 5 s deadline, `MAX_REPLY_BYTES` 1 MiB cap (herdr.rs:303-392); test `a_listener_that_closes_without_a_reply_is_a_failure` (herdr.rs:786) | closed |
+| T-33-01 | Tampering / EoP | herdr launch path | high | mitigate | Launch via one `layout.apply` request with `command` = `ExecArgv` elements (src/multiplexer/herdr.rs:94-113, `open` at 289); tests `launch_inside_herdr_opens_a_tab_through_layout_apply` (mod.rs:1707) and `layout_apply_request_carries_a_hostile_element_as_one_array_element` (herdr.rs:782) | closed |
+| T-33-02 | Tampering | ExecArgv sink | high | mitigate | Private tuple field, derives only `Debug, Clone` (no Default/From); `ExecArgv::new` refuses <2 elements and `-` head (mod.rs:214-235; refusal text made backend-neutral by IN-02, 80e56ad); test `exec_argv_refuses_a_vector_tmux_would_hand_to_an_interpreter` (mod.rs:880) | closed |
+| T-33-03 | Tampering | cwd transport | medium | mitigate | tmux `-c` argv element (tmux.rs:147), herdr JSON `cwd` (herdr.rs:108, asserted herdr.rs:795 / mod.rs:1728), GUI `Command::current_dir` (gui.rs:110-115) | closed |
+| T-33-04 | Tampering | herdr JSON encoding | medium | mitigate | Request built with `serde_json::json!` (herdr.rs:100); hostile element `lit a b;touch X $HOME *` round-trips unchanged (herdr.rs:782-798) | closed |
+| T-33-05 | Denial of Service | herdr socket on UI thread | medium | mitigate | Connect on helper thread (herdr.rs:357) bounded by `CONNECT_TIMEOUT` 2 s, write timeout, `REPLY_TIMEOUT` 5 s deadline, `MAX_REPLY_BYTES` 1 MiB cap (herdr.rs:333-338; worst case ~9 s documented by IN-04, 401f652); test `a_listener_that_closes_without_a_reply_is_a_failure` (herdr.rs:874) | closed |
 | T-33-06 | Tampering | test suite vs real seam | medium | mitigate | `multiplexer::launch(` / `focus_message(` called only from src/ui/screens/detail.rs (4952, 5378, 5415) and src/ui/screens/normal.rs:840; tests inject backends/env/spawner | closed |
 | T-33-07 | Tampering | resume of a Codex row | medium | mitigate | `resumable_session_id` runs before `resolve_launch_plan` (detail.rs:4934-4946); test `resumable_session_id_refuses_every_codex_session` (detail.rs:21869) | closed |
 | T-33-08 | Repudiation | new spawn sites | low | mitigate | tests/spawn_seam_guard.rs `SPAWN_ALLOWLIST` lists src/multiplexer/gui.rs, herdr.rs, tmux.rs (lines 62-68) | closed |
-| T-33-09 | Tampering | herdr focus join | high | mitigate | Exact session-id / integer pid equality, ambiguity refused on every tier (herdr.rs:179-222, 668); tests `pid_tier_never_matches_a_pid_that_is_only_a_prefix` (1095), `the_order_of_panes_never_decides_the_match` (1144), `session_id_tier_refuses_two_panes_with_the_same_value` (1069), `an_ambiguous_cwd_is_refused_and_nothing_is_focused` (1393) | closed |
-| T-33-10 | Tampering (CWE-88) | pane/tab ids into herdr argv | medium | mitigate | `validate_id` refuses empty and `-`-leading ids (herdr.rs:594-595); tests `validate_id_refuses_empty_and_dash_leading_ids` (984), `a_dash_leading_pane_id_is_refused_before_it_reaches_argv` (1466) | closed |
-| T-33-11 | Elevation of Privilege | herdr CLI verbs | high | mitigate | `CLI_VERBS` allowlist (pane list, pane process-info, agent focus, tab focus) checked before `Command::new` (herdr.rs:404-445); test `herdr_cli_refuses_every_verb_outside_the_allowlist` asserts fixture log empty for pane run/send-text/send-keys, agent start (herdr.rs:1479) | closed |
+| T-33-09 | Tampering | herdr focus join | high | mitigate | Exact session-id / integer pid equality, ambiguity refused on every tier (herdr.rs:191-245, 671-771). Post-review: WR-01 (8425be8) narrows the cwd tier to agent panes of the session's kind with unreadable process-info (`cwd_fallback`, herdr.rs:760) and labels it `matched by working directory only`; WR-02 (d947b32) widens candidate selection to canonicalized-equal paths (`same_dir`, herdr.rs:710) but the match itself stays exact pid/session-id. Tests `pid_tier_never_matches_a_pid_that_is_only_a_prefix` (1186), `the_order_of_panes_never_decides_the_match` (1278), `session_id_tier_refuses_two_panes_with_the_same_value` (1160), `an_ambiguous_cwd_is_refused_and_nothing_is_focused` (1544), `a_plain_shell_pane_in_the_same_directory_is_never_focused` (1625), `a_pane_whose_process_info_names_other_processes_is_not_the_session` (1640) | closed |
+| T-33-10 | Tampering (CWE-88) | pane/tab ids into herdr argv | medium | mitigate | `validate_id` refuses empty and `-`-leading ids (herdr.rs:628-636), applied before every id reaches argv (herdr.rs:215, 245, 263); tests `validate_id_refuses_empty_and_dash_leading_ids` (1074), `a_dash_leading_pane_id_is_refused_before_it_reaches_argv` (1656) | closed |
+| T-33-11 | Elevation of Privilege | herdr CLI verbs | high | mitigate | `CLI_VERBS` allowlist (pane list, pane process-info, agent focus, tab focus) checked before `Command::new` (herdr.rs:434-475); test `herdr_cli_refuses_every_verb_outside_the_allowlist` asserts fixture log empty for pane run/send-text/send-keys, agent start (herdr.rs:1669) | closed |
 | T-33-12 | Spoofing | /proc comm ancestry | low | accept | See Accepted Risks Log | closed |
 | T-33-13 | Denial of Service | herdr CLI calls on UI thread | low | accept | See Accepted Risks Log | closed |
-| T-33-14 | Information Disclosure | herdr JSON titles | low | accept | See Accepted Risks Log; `terminal_title` appears only in test fixtures (herdr.rs:931-932), never rendered or logged | closed |
+| T-33-14 | Information Disclosure | herdr JSON titles | low | accept | See Accepted Risks Log; `terminal_title` appears only in test fixtures (herdr.rs:1021-1022), never rendered or logged | closed |
 | T-33-SC (01) | Tampering | package installs | low | accept | See Accepted Risks Log | closed |
 | T-33-SC (02) | Tampering | package installs | low | accept | See Accepted Risks Log | closed |
 
@@ -90,3 +97,11 @@ Verification depth: L1 (grep plus test-name evidence). Per the workflow short-ci
 - [x] `status: verified` set in frontmatter
 
 **Approval:** verified 2026-11-10
+
+## Security Audit 2026-11-11
+
+| Metric | Count |
+|---|---|
+| Threats found | 16 |
+| Closed | 16 |
+| Open | 0 |
