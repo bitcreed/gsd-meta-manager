@@ -117,7 +117,10 @@ pub fn layout_apply_request(
 /// A `result` object is success. An `error` object is [`MuxError::Failed`]
 /// naming its code and message. Empty input, non-JSON, a non-object, or an
 /// object with neither key is also `Failed`, with a reason naming what was
-/// wrong. The error key is checked first, so an ambiguous reply fails closed.
+/// wrong. A non-null error key is checked first, so an ambiguous reply fails
+/// closed; `"error": null` counts as absent. The echoed `id` is not compared:
+/// nothing shows herdr always echoes it, and a mismatch check would turn a
+/// working open into a failure and a second GUI window \[inferred, for audit\].
 pub fn parse_layout_apply_reply(reply: &[u8]) -> Result<(), MuxError> {
     let text = String::from_utf8_lossy(reply);
     let text = text.trim();
@@ -131,7 +134,8 @@ pub fn parse_layout_apply_reply(reply: &[u8]) -> Result<(), MuxError> {
             "herdr reply is not a JSON object".to_string(),
         ));
     };
-    if let Some(error) = object.get("error") {
+    // `"error": null` is "no error", not a failure (review IN-03).
+    if let Some(error) = object.get("error").filter(|e| !e.is_null()) {
         let field = |name: &str| {
             error
                 .get(name)
@@ -814,6 +818,14 @@ mod tests {
             MuxError::Failed(
                 "layout.apply failed (layout_apply_failed): Unable to spawn env".to_string()
             )
+        );
+        assert!(parse_layout_apply_reply(
+            br#"{"id":"gsdmm-open","result":{"type":"layout_apply"},"error":null}"#
+        )
+        .is_ok());
+        assert!(
+            parse_layout_apply_reply(br#"{"id":"x","error":null}"#).is_err(),
+            "a null error with no result is still not a success"
         );
         for bad in [
             &b""[..],
