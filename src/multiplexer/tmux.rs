@@ -6,6 +6,22 @@
 //! running tmux server, find the one whose `#{pane_tty}`, with its leading
 //! "/dev/" stripped, EQUALS the session's TTY (exact equality, never a
 //! substring match), then `select-window` + `select-pane` onto that target.
+//!
+//! # Which tmux server (debug session `herdr-session-focus-from-tmux`)
+//!
+//! Focus follows the SESSION, and the TUI may run outside tmux (inside herdr) or
+//! on another tmux server. The focus environment therefore carries the session's
+//! own `$TMUX` (`<socket>,<server pid>,<session index>`, see
+//! [`super::plan_focus`]), and every focus-side tmux command is addressed with
+//! `tmux -S <socket>` taken from it, so the server is the session's, not
+//! whichever one the TUI's environment happens to name. The socket is used only
+//! when it is an absolute path (`socket_of`); otherwise no `-S` is given and
+//! tmux resolves its server as it always did. `open` (launch) is unchanged: it
+//! targets the TUI's own tmux.
+//!
+//! The same primitive serves the reveal step ([`MultiplexerBackend::focus_tty`]):
+//! once herdr has focused a pane, the pane of this tmux that SHOWS herdr's
+//! client is selected, found by the client's tty.
 
 use super::{
     Detection, EnvSnapshot, ExecArgv, FocusOutcome, MatchedBy, MultiplexerBackend, MuxError,
@@ -13,6 +29,18 @@ use super::{
 use crate::session_detector::ClaudeSession;
 use std::path::Path;
 use std::process::Command;
+
+/// The socket path inside a `$TMUX` value: everything before the first comma,
+/// which is how tmux itself reads `<socket>,<server pid>,<session index>`.
+/// `None` unless it is an absolute path. **Pure.**
+///
+/// The value comes from another process's environment, so a relative path
+/// (which would resolve against THIS process's working directory) and an empty
+/// one are refused rather than handed to `tmux -S`.
+pub(crate) fn socket_of(value: &str) -> Option<&str> {
+    let socket = value.split(',').next()?;
+    Path::new(socket).is_absolute().then_some(socket)
+}
 
 /// Remove exactly one leading `/dev/` from a TTY path, if present.
 fn strip_dev_prefix(tty: &str) -> &str {
@@ -54,11 +82,83 @@ fn find_pane_target<'a>(list_panes_stdout: &'a str, session_tty: &str) -> Option
     None
 }
 
+/// Like [`find_pane_target`] for several candidate ttys: the first
+/// `list-panes` line, in tmux's own order, whose pane tty matches ANY of
+/// `ttys`. The order is the listing's, never the order of `ttys`, so the pick
+/// is deterministic for a given tmux state.
+fn find_pane_target_any<'a>(list_panes_stdout: &'a str, ttys: &[String]) -> Option<&'a str> {
+    list_panes_stdout.lines().find_map(|line| {
+        let (pane_tty, target) = line.split_once(' ')?;
+        ttys.iter()
+            .any(|tty| pane_tty_matches(pane_tty, tty))
+            .then_some(target)
+    })
+}
+
 /// The tmux backend.
-pub struct TmuxBackend;
+pub struct TmuxBackend {
+    /// The CLI program focus runs. The registry entry uses `"tmux"`; a test
+    /// points it at a fixture script. Fixed per instance, never read from the
+    /// environment.
+    program: &'static str,
+}
 
 /// The registry entry for tmux.
-pub static TMUX: TmuxBackend = TmuxBackend;
+pub static TMUX: TmuxBackend = TmuxBackend { program: "tmux" };
+
+impl TmuxBackend {
+    /// A backend that runs `program` instead of `tmux`: a fixture script.
+    #[cfg(test)]
+    pub(crate) fn with_program(program: &'static str) -> Self {
+        Self { program }
+    }
+
+    /// A focus-side tmux command, addressed to the server named by `env`'s
+    /// `$TMUX` when that carries an absolute socket path (`socket_of`).
+    fn focus_command(&self, env: &EnvSnapshot) -> Command {
+        let mut command = Command::new(self.program);
+        if let Some(socket) = env.get("TMUX").and_then(socket_of) {
+            command.arg("-S").arg(socket);
+        }
+        command
+    }
+
+    /// `tmux list-panes -a` as `#{pane_tty} <session:window.pane>` lines.
+    fn list_panes(&self, env: &EnvSnapshot) -> Result<String, MuxError> {
+        let output = self
+            .focus_command(env)
+            .args([
+                "list-panes",
+                "-a",
+                "-F",
+                "#{pane_tty} #{session_name}:#{window_index}.#{pane_index}",
+            ])
+            .output()
+            .map_err(|e| MuxError::Failed(format!("tmux list-panes failed: {e}")))?;
+
+        if !output.status.success() {
+            return Err(MuxError::Failed(format!(
+                "tmux list-panes exited {}: {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    }
+
+    /// Select the window, then the pane, of `target`. Best-effort: even if
+    /// select-pane errors, select-window is the primary effect the user notices.
+    fn select(&self, env: &EnvSnapshot, target: &str) {
+        let _ = self
+            .focus_command(env)
+            .args(["select-window", "-t", target])
+            .output();
+        let _ = self
+            .focus_command(env)
+            .args(["select-pane", "-t", target])
+            .output();
+    }
+}
 
 impl MultiplexerBackend for TmuxBackend {
     fn name(&self) -> &'static str {
@@ -85,40 +185,16 @@ impl MultiplexerBackend for TmuxBackend {
     /// Switch the focused tmux pane to the given Claude session. Detection
     /// already gated on `$TMUX`, so there is no `in_tmux` check here. Every
     /// reason string is byte-identical to the one `switch_to_session` produced.
-    fn focus(&self, _env: &EnvSnapshot, session: &ClaudeSession) -> Result<FocusOutcome, MuxError> {
+    /// The server is the one `env`'s `$TMUX` names (see the module docs).
+    fn focus(&self, env: &EnvSnapshot, session: &ClaudeSession) -> Result<FocusOutcome, MuxError> {
         let tty = session
             .tty
             .as_ref()
             .ok_or_else(|| MuxError::NotFound("Session has no TTY recorded".to_string()))?;
 
-        let output = Command::new("tmux")
-            .args([
-                "list-panes",
-                "-a",
-                "-F",
-                "#{pane_tty} #{session_name}:#{window_index}.#{pane_index}",
-            ])
-            .output()
-            .map_err(|e| MuxError::Failed(format!("tmux list-panes failed: {e}")))?;
-
-        if !output.status.success() {
-            return Err(MuxError::Failed(format!(
-                "tmux list-panes exited {}: {}",
-                output.status,
-                String::from_utf8_lossy(&output.stderr).trim()
-            )));
-        }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stdout = self.list_panes(env)?;
         if let Some(target) = find_pane_target(&stdout, tty) {
-            // Best-effort: even if select-pane errors, select-window
-            // is the primary effect the user notices.
-            let _ = Command::new("tmux")
-                .args(["select-window", "-t", target])
-                .output();
-            let _ = Command::new("tmux")
-                .args(["select-pane", "-t", target])
-                .output();
+            self.select(env, target);
             return Ok(FocusOutcome {
                 by: MatchedBy::Tty,
                 partial: None,
@@ -129,6 +205,25 @@ impl MultiplexerBackend for TmuxBackend {
             "TTY {} not found in any tmux pane (session may have exited)",
             tty
         )))
+    }
+
+    /// Select the pane that shows one of `ttys`: the reveal of a client that
+    /// another multiplexer's server is displayed through. Same exact-tty rule as
+    /// [`TmuxBackend::focus`].
+    fn focus_tty(&self, env: &EnvSnapshot, ttys: &[String]) -> Result<FocusOutcome, MuxError> {
+        let stdout = self.list_panes(env)?;
+        match find_pane_target_any(&stdout, ttys) {
+            Some(target) => {
+                self.select(env, target);
+                Ok(FocusOutcome {
+                    by: MatchedBy::Tty,
+                    partial: None,
+                })
+            }
+            None => Err(MuxError::NotFound(
+                "no tmux pane shows that terminal".to_string(),
+            )),
+        }
     }
 
     /// Open `argv` as a new window on the running tmux server, in `cwd`.
@@ -280,6 +375,194 @@ mod tests {
                 expected,
                 "find_pane_target wrong for the case: {label}"
             );
+        }
+    }
+
+    // ---- which server, and revealing a client's terminal ------------------
+
+    /// `$TMUX` is `<socket>,<server pid>,<session index>`; only an absolute
+    /// socket is believed (it comes from another process's environment).
+    #[test]
+    fn the_tmux_socket_is_the_absolute_path_before_the_first_comma() {
+        let rows: Vec<(&str, &str, Option<&str>)> = vec![
+            (
+                "the measured value",
+                "/tmp/tmux-1000/default,3628116,0",
+                Some("/tmp/tmux-1000/default"),
+            ),
+            (
+                "no suffix",
+                "/tmp/tmux-1000/default",
+                Some("/tmp/tmux-1000/default"),
+            ),
+            (
+                "a path with spaces",
+                "/tmp/a b/sock,1,0",
+                Some("/tmp/a b/sock"),
+            ),
+            ("relative", "tmp/tmux-1000/default,1,0", None),
+            ("dot-relative", "./sock,1,0", None),
+            ("empty", "", None),
+            ("only the suffix", ",1,0", None),
+        ];
+        for (label, value, expected) in rows {
+            assert_eq!(socket_of(value), expected, "{label}: {value:?}");
+        }
+    }
+
+    #[test]
+    fn the_first_pane_in_listing_order_wins_across_several_ttys() {
+        let listing = "/dev/pts/8 0:0.1\n/dev/pts/9 0:1.0\n/dev/pts/13 0:0.0\n";
+        let ttys = |t: &[&str]| t.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            find_pane_target_any(listing, &ttys(&["pts/13", "pts/9"])),
+            Some("0:1.0"),
+            "the listing's order decides, not the order of the candidates"
+        );
+        assert_eq!(
+            find_pane_target_any(listing, &ttys(&["pts/1"])),
+            None,
+            "pts/1 is not pts/13 (exact match, never a prefix)"
+        );
+        assert_eq!(find_pane_target_any(listing, &[]), None);
+        assert_eq!(
+            find_pane_target_any(listing, &ttys(&[""])),
+            None,
+            "an empty tty matches nothing"
+        );
+        assert_eq!(find_pane_target_any("", &ttys(&["pts/13"])), None);
+    }
+
+    #[cfg(unix)]
+    mod cli {
+        use super::*;
+        use crate::multiplexer::fixtures::{
+            claude, tmux_call, World, LIST_PANES_ARGS, TMUX_SOCKET,
+        };
+
+        const LISTING: &str = "/dev/pts/8 0:0.1\n/dev/pts/13 0:0.0\n";
+
+        fn tmux_env(value: &str) -> EnvSnapshot {
+            EnvSnapshot::from_pairs(&[("TMUX", value)])
+        }
+
+        #[test]
+        fn focus_addresses_the_server_the_environment_names() {
+            let world = World::new("", LISTING);
+            let outcome = world
+                .tmux
+                .focus(
+                    &tmux_env("/tmp/tmux-1000/work,4000001,0"),
+                    &claude(1, None, Some("pts/13")),
+                )
+                .unwrap();
+            assert_eq!(outcome.by, MatchedBy::Tty);
+            assert_eq!(
+                world.calls(),
+                vec![
+                    tmux_call(Some("/tmp/tmux-1000/work"), LIST_PANES_ARGS),
+                    tmux_call(Some("/tmp/tmux-1000/work"), "select-window -t 0:0.0"),
+                    tmux_call(Some("/tmp/tmux-1000/work"), "select-pane -t 0:0.0"),
+                ],
+                "-S comes from the environment's $TMUX, so the session's server is the one asked"
+            );
+        }
+
+        #[test]
+        fn focus_without_an_absolute_socket_addresses_no_server_at_all() {
+            for value in ["relative/sock,1,0", ""] {
+                let world = World::new("", LISTING);
+                world
+                    .tmux
+                    .focus(&tmux_env(value), &claude(1, None, Some("pts/13")))
+                    .unwrap();
+                assert_eq!(
+                    world.calls()[0],
+                    tmux_call(None, LIST_PANES_ARGS),
+                    "TMUX={value:?} names no absolute socket: no -S, tmux resolves its server as ever"
+                );
+            }
+            let world = World::new("", LISTING);
+            world
+                .tmux
+                .focus(&EnvSnapshot::default(), &claude(1, None, Some("pts/13")))
+                .unwrap();
+            assert_eq!(world.calls()[0], tmux_call(None, LIST_PANES_ARGS));
+        }
+
+        /// The wording the tmux-only days had, byte for byte, and no select step.
+        #[test]
+        fn focus_keeps_its_failure_texts_and_selects_nothing_when_nothing_matched() {
+            let world = World::new("", LISTING);
+            let err = world
+                .tmux
+                .focus(
+                    &tmux_env(&format!("{TMUX_SOCKET},1,0")),
+                    &claude(1, None, Some("pts/3")),
+                )
+                .unwrap_err();
+            assert_eq!(
+                err,
+                MuxError::NotFound(
+                    "TTY pts/3 not found in any tmux pane (session may have exited)".to_string()
+                )
+            );
+            assert_eq!(
+                world.calls().len(),
+                1,
+                "list-panes only: {:?}",
+                world.calls()
+            );
+
+            let no_tty = world
+                .tmux
+                .focus(&EnvSnapshot::default(), &claude(1, None, None))
+                .unwrap_err();
+            assert_eq!(
+                no_tty,
+                MuxError::NotFound("Session has no TTY recorded".to_string())
+            );
+            assert_eq!(world.calls().len(), 1, "no tty: tmux is not even asked");
+        }
+
+        #[test]
+        fn a_missing_tmux_program_is_a_failed_not_a_panic() {
+            let backend = TmuxBackend::with_program("/nonexistent/tmux");
+            let err = backend
+                .focus(&EnvSnapshot::default(), &claude(1, None, Some("pts/3")))
+                .unwrap_err();
+            assert!(
+                matches!(&err, MuxError::Failed(m) if m.starts_with("tmux list-panes failed: ")),
+                "{err:?}"
+            );
+        }
+
+        #[test]
+        fn the_reveal_selects_the_first_pane_showing_one_of_the_ttys() {
+            let world = World::new("", LISTING);
+            let env = tmux_env(&format!("{TMUX_SOCKET},3628116,0"));
+            let ttys = vec!["pts/20".to_string(), "pts/13".to_string()];
+            let outcome = world.tmux.focus_tty(&env, &ttys).unwrap();
+            assert_eq!(outcome.by, MatchedBy::Tty);
+            assert_eq!(
+                world.calls(),
+                vec![
+                    tmux_call(Some(TMUX_SOCKET), LIST_PANES_ARGS),
+                    tmux_call(Some(TMUX_SOCKET), "select-window -t 0:0.0"),
+                    tmux_call(Some(TMUX_SOCKET), "select-pane -t 0:0.0"),
+                ]
+            );
+        }
+
+        #[test]
+        fn the_reveal_of_a_terminal_in_no_pane_is_not_found_and_selects_nothing() {
+            let world = World::new("", LISTING);
+            let err = world
+                .tmux
+                .focus_tty(&EnvSnapshot::default(), &["pts/99".to_string()])
+                .unwrap_err();
+            assert!(matches!(err, MuxError::NotFound(_)), "{err:?}");
+            assert_eq!(world.calls().len(), 1, "{:?}", world.calls());
         }
     }
 

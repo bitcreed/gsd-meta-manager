@@ -58,12 +58,19 @@
 //! would let one session's focus key send the operator's keystrokes into an
 //! unrelated pane.
 //!
+//! The server is the one the SESSION lives under: the focus environment carries
+//! the session's own `HERDR_SOCKET_PATH`, so a TUI that runs outside herdr (in
+//! tmux) focuses a herdr session through the same session-id join. After a
+//! focus, `client_ttys_from` names the terminals of the herdr CLIENTS that
+//! display the server, so the multiplexer around the client (tmux) can bring
+//! that pane forward (the reveal step in `super`).
+//!
 //! This file spawns the herdr CLI for those reads and focuses, so it is on the
 //! spawn-seam allowlist. Launching a session never goes through the CLI.
 
 use super::{
     proc_chain, Detection, EnvSnapshot, ExecArgv, FocusOutcome, MatchedBy, MultiplexerBackend,
-    MuxError,
+    MuxError, ProcEntry, ProcScan,
 };
 use crate::session_detector::{ClaudeSession, SessionKind};
 use serde::Deserialize;
@@ -80,6 +87,14 @@ pub struct HerdrBackend {
 
 /// The registry entry for herdr.
 pub static HERDR: HerdrBackend = HerdrBackend { program: "herdr" };
+
+impl HerdrBackend {
+    /// A backend that runs `program` instead of `herdr`: a fixture script.
+    #[cfg(test)]
+    pub(crate) fn with_program(program: &'static str) -> Self {
+        Self { program }
+    }
+}
 
 /// The request id; herdr echoes it in the reply.
 const REQUEST_ID: &str = "gsdmm-open";
@@ -182,7 +197,15 @@ impl MultiplexerBackend for HerdrBackend {
     /// tells them apart. The nearest-first ancestry walk makes that safe: the
     /// first `herdr` ancestor is what the TUI runs under (research E5).
     fn is_server_comm(&self, comm: &str) -> bool {
-        comm == "herdr"
+        comm == COMM
+    }
+
+    /// The terminals of the herdr CLIENT processes that display the server
+    /// (reveal step, see [`MultiplexerBackend::client_ttys`]). The pane focus
+    /// above is a server-side fact; the user sees it only through a client, and
+    /// that client commonly sits in a tmux pane.
+    fn client_ttys(&self, scan: &ProcScan<'_>) -> Option<Vec<String>> {
+        Some(client_ttys_from(&scan(COMM)))
     }
 
     /// Focus the herdr pane running `session`: list the panes, join on session
@@ -426,6 +449,55 @@ fn exchange(socket: &Path, line: &[u8]) -> Result<Vec<u8>, MuxError> {
 
 // ---- focus: the herdr CLI edge and the pane join ----------------------------
 
+/// herdr's process name, for the server and for every client and CLI call.
+const COMM: &str = "herdr";
+
+/// Is `entry` a herdr CLIENT: the long-lived process that displays a server in a
+/// terminal? **Pure** over the process facts.
+///
+/// herdr's client, its server and its short-lived CLI calls all have the comm
+/// `herdr`, so the argv and the stdin decide:
+///
+/// * stdin must be a terminal. The server (stdin `/dev/null`) and every
+///   `Command::output()` child (stdin null) are not on one.
+/// * The arguments after `argv[0]` must be exactly one of `herdr` (attach to the
+///   default session), `herdr session attach <name>` or `herdr --session <name>`.
+///   `herdr server`, `herdr pane list`, `herdr agent focus ...` (this TUI's own
+///   calls included) and `herdr api ...` are not clients.
+/// * `--remote` and `--machine` clients never count: they display a server on
+///   another machine, so nothing they show can be a pane focused here.
+///
+/// An argv shape this does not recognise is NOT a client. The cost of a miss is
+/// a note ("no herdr client is attached"); the cost of a false hit would be to
+/// select the wrong tmux pane, so the rule errs on the side of the note.
+pub(crate) fn is_client(entry: &ProcEntry) -> bool {
+    if entry.comm != COMM || entry.tty.is_none() {
+        return false;
+    }
+    let args: Vec<&str> = entry.argv.iter().skip(1).map(String::as_str).collect();
+    match args.as_slice() {
+        [] => true,
+        ["session", "attach", name] | ["--session", name] => {
+            !name.is_empty() && !name.starts_with('-')
+        }
+        _ => false,
+    }
+}
+
+/// The terminals of the clients among `procs`: sorted, without duplicates.
+/// Several clients are all returned (several people or several terminals can
+/// attach); the caller picks deterministically from them.
+pub(crate) fn client_ttys_from(procs: &[ProcEntry]) -> Vec<String> {
+    let mut ttys: Vec<String> = procs
+        .iter()
+        .filter(|entry| is_client(entry))
+        .filter_map(|entry| entry.tty.clone())
+        .collect();
+    ttys.sort();
+    ttys.dedup();
+    ttys
+}
+
 /// The only `(group, verb)` pairs the CLI edge will run: two reads and two
 /// focuses. The verbs that type into a pane's shell (`pane run`,
 /// `pane send-text`, `pane send-keys`, `agent start`) are absent on purpose, so
@@ -445,8 +517,9 @@ impl HerdrBackend {
     /// * A `(args[0], args[1])` pair outside [`CLI_VERBS`] is refused BEFORE any
     ///   process is spawned.
     /// * `HERDR_SOCKET_PATH` comes from the snapshot and is passed explicitly
-    ///   (D-13, research E7), so the call reaches the server the TUI was
-    ///   detected in, and the edge is testable without a live server.
+    ///   (D-13, research E7), so the call reaches the server the snapshot names
+    ///   (for focus, the SESSION's own server, see `plan_focus`), and the edge
+    ///   is testable without a live server.
     /// * A spawn error is `Failed("herdr <group> <verb> failed: <e>")`. A
     ///   non-zero exit is `Failed("herdr <group> <verb> exited <status>:
     ///   <stderr>")`, which keeps herdr's JSON error reachable by
@@ -846,6 +919,173 @@ mod tests {
             let err = parse_layout_apply_reply(bad).unwrap_err();
             assert!(matches!(err, MuxError::Failed(_)), "{bad:?} -> {err:?}");
         }
+    }
+
+    // ---- which processes are herdr CLIENTS (the reveal step) ---------------
+
+    fn proc_entry(pid: u32, comm: &str, argv: &[&str], tty: Option<&str>) -> ProcEntry {
+        ProcEntry {
+            pid,
+            comm: comm.to_string(),
+            argv: argv.iter().map(|a| (*a).to_string()).collect(),
+            tty: tty.map(str::to_string),
+        }
+    }
+
+    /// Every process of the live machine's shape, and the near misses a looser
+    /// rule would count. A false hit selects the wrong tmux pane; a miss only
+    /// costs a note, so unknown shapes are NOT clients.
+    #[test]
+    fn only_a_long_lived_local_client_on_a_terminal_is_a_herdr_client() {
+        let rows: Vec<(&str, ProcEntry, bool)> = vec![
+            (
+                "the measured client",
+                proc_entry(
+                    3630647,
+                    "herdr",
+                    &["herdr", "session", "attach", "default"],
+                    Some("pts/13"),
+                ),
+                true,
+            ),
+            (
+                "a bare herdr (the default session)",
+                proc_entry(1, "herdr", &["herdr"], Some("pts/1")),
+                true,
+            ),
+            (
+                "a path in argv[0]",
+                proc_entry(1, "herdr", &["/home/blk/.local/bin/herdr"], Some("pts/1")),
+                true,
+            ),
+            (
+                "--session <name>",
+                proc_entry(1, "herdr", &["herdr", "--session", "work"], Some("pts/1")),
+                true,
+            ),
+            (
+                "the headless server (stdin /dev/null)",
+                proc_entry(671927, "herdr", &["herdr", "server"], None),
+                false,
+            ),
+            (
+                "the server even on a terminal",
+                proc_entry(1, "herdr", &["herdr", "server"], Some("pts/1")),
+                false,
+            ),
+            (
+                "a client with no terminal on stdin",
+                proc_entry(1, "herdr", &["herdr", "session", "attach", "default"], None),
+                false,
+            ),
+            (
+                "this TUI's own pane list call",
+                proc_entry(1, "herdr", &["herdr", "pane", "list"], Some("pts/1")),
+                false,
+            ),
+            (
+                "agent focus",
+                proc_entry(
+                    1,
+                    "herdr",
+                    &["herdr", "agent", "focus", "w2:p1"],
+                    Some("pts/1"),
+                ),
+                false,
+            ),
+            (
+                "a --session CLI call with a subcommand",
+                proc_entry(
+                    1,
+                    "herdr",
+                    &["herdr", "--session", "work", "pane", "list"],
+                    Some("pts/1"),
+                ),
+                false,
+            ),
+            (
+                "a remote client displays another machine",
+                proc_entry(1, "herdr", &["herdr", "--remote", "host"], Some("pts/1")),
+                false,
+            ),
+            (
+                "a remote client of a named session",
+                proc_entry(
+                    1,
+                    "herdr",
+                    &["herdr", "--remote", "host", "--session", "x"],
+                    Some("pts/1"),
+                ),
+                false,
+            ),
+            (
+                "a machine call",
+                proc_entry(
+                    1,
+                    "herdr",
+                    &["herdr", "--machine", "m", "pane", "list"],
+                    Some("pts/1"),
+                ),
+                false,
+            ),
+            (
+                "session attach with no name",
+                proc_entry(1, "herdr", &["herdr", "session", "attach"], Some("pts/1")),
+                false,
+            ),
+            (
+                "session attach with an option as the name",
+                proc_entry(
+                    1,
+                    "herdr",
+                    &["herdr", "session", "attach", "--x"],
+                    Some("pts/1"),
+                ),
+                false,
+            ),
+            (
+                "another program that mentions herdr",
+                proc_entry(1, "herdr-notes", &["herdr-notes"], Some("pts/1")),
+                false,
+            ),
+        ];
+        for (label, entry, expected) in rows {
+            assert_eq!(is_client(&entry), expected, "{label}: {entry:?}");
+        }
+    }
+
+    #[test]
+    fn client_terminals_are_sorted_unique_and_clients_only() {
+        let procs = vec![
+            proc_entry(5, "herdr", &["herdr", "server"], None),
+            proc_entry(
+                9,
+                "herdr",
+                &["herdr", "session", "attach", "default"],
+                Some("pts/9"),
+            ),
+            proc_entry(8, "herdr", &["herdr"], Some("pts/13")),
+            proc_entry(7, "herdr", &["herdr", "--session", "work"], Some("pts/13")),
+            proc_entry(6, "herdr", &["herdr", "pane", "list"], Some("pts/2")),
+        ];
+        assert_eq!(client_ttys_from(&procs), vec!["pts/13", "pts/9"]);
+        assert!(client_ttys_from(&[]).is_empty());
+    }
+
+    #[test]
+    fn the_backend_reports_clients_through_the_scan_it_is_handed() {
+        let asked = std::cell::RefCell::new(Vec::new());
+        let ttys = HERDR.client_ttys(&|comm| {
+            asked.borrow_mut().push(comm.to_string());
+            vec![proc_entry(9, "herdr", &["herdr"], Some("pts/13"))]
+        });
+        assert_eq!(ttys, Some(vec!["pts/13".to_string()]));
+        assert_eq!(*asked.borrow(), vec!["herdr".to_string()]);
+        assert_eq!(
+            HERDR.client_ttys(&|_| Vec::new()),
+            Some(Vec::new()),
+            "herdr has the concept; no client is attached"
+        );
     }
 
     #[test]
@@ -1302,15 +1542,12 @@ mod tests {
         use crate::session_detector::SessionKind;
         use crate::text::Untrusted;
         use std::os::unix::fs::PermissionsExt;
-        use std::sync::Mutex;
 
-        /// Serialises writing the fixture script and running it. A fork on
-        /// another test thread inherits a just-written script's write
-        /// descriptor until it execs, which fails OUR exec with ETXTBSY
-        /// ("Text file busy"); the script is therefore written and every
-        /// process that runs it exits inside this lock, and a residual ETXTBSY
-        /// is retried (the established pattern in tests/launcher_config_dir.rs).
-        static EXEC_LOCK: Mutex<()> = Mutex::new(());
+        // The one lock every fixture-script test in this crate takes (see
+        // `fixtures::EXEC_LOCK`): ETXTBSY comes from a fork on ANY other test
+        // thread, so a lock of its own would not cover the tests of the other
+        // modules.
+        use crate::multiplexer::fixtures::EXEC_LOCK;
 
         const SOCKET: &str = "/run/fake/herdr.sock";
 
