@@ -130,7 +130,9 @@ What it never touches:
 - Queue management: create, edit, delete, and reorder items
 - New project creation from within the TUI
 - Session detection -- shows which projects have a live Claude instance
-  (Codex best-effort, no resume); see [Platform support](#platform-support)
+  (Codex best-effort, no resume); see [Platform support](#platform-support).
+  Each Sessions row shows the session's tmux or herdr location, see
+  [Terminal multiplexers](#terminal-multiplexers)
 - Running agents -- for each project, which GSD agents are running right now,
   read from git worktrees and Claude Code's subagent metadata without invoking
   Claude: the dashboard Status cell summarises the live wave (e.g. `w2/11 13run`,
@@ -583,6 +585,34 @@ that may change between releases. Interactive `codex` sessions are shown
 alongside Claude sessions and can be reached with `Tab` under tmux or herdr;
 non-interactive runs such as `codex exec` are not shown. Codex sessions cannot
 be resumed from the TUI -- resume is Claude-only.
+
+### Terminal multiplexers
+
+tmux and herdr are supported today.
+
+`Tab` on a session focuses it in the multiplexer it actually runs in. That is
+decided from the session's own environment and process ancestry, not from where
+the TUI runs, so a TUI in one multiplexer can focus a session in the other.
+With nested multiplexers the innermost wins, and a herdr session shown through
+a herdr client in a tmux pane is focused in herdr, then that tmux pane is
+selected. New and resumed sessions open as a new tmux window or herdr tab when
+the TUI runs inside one, and in a GUI terminal otherwise.
+
+The Sessions tab ends every row with the session's location, for example
+`tmux 0:1.2` or `herdr w2:p1 (via tmux 0:0.0)`. A trailing `?` on a herdr pane
+means it was matched by working directory only, `—` means no multiplexer
+finds the session, and `⋯` shows until the session poll (about 5 s) has
+resolved it. Like session detection itself, this is Linux-only.
+
+The `MultiplexerBackend` trait in `src/multiplexer/mod.rs` was designed with
+zellij, WezTerm, kitty, GNU screen, Rex and herdr-core in mind. The design table
+in that module's docs records how each would detect, focus and open. Support
+for them is possible but not implemented.
+
+Pull requests adding a backend are welcome if they are well tested. That means
+fixture-script tests in the style of the tmux and herdr ones (no real
+multiplexer needed), exact-match focus that refuses to guess, and launches only
+through `ExecArgv` (no shell). See [Contributing](#contributing).
 
 ### Compatibility
 
