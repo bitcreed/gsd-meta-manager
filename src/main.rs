@@ -2,6 +2,7 @@ mod driver_cli;
 mod driverctl_cli;
 mod event;
 mod next_cli;
+mod status_cli;
 mod task_cli;
 mod taskctl_cli;
 mod tui;
@@ -92,6 +93,11 @@ fn main() -> anyhow::Result<()> {
             target_phase.as_deref(),
             cli.config.clone(),
         )),
+        // `status` is the read-only query for scripts and agents (quick 261110-qap):
+        // before `init_tracing` for the same reason as `next`, it writes no log file.
+        Some(Commands::Status { projects, .. }) => {
+            std::process::exit(status_cli::run(&projects, cli.config.clone()))
+        }
         other => cli.command = other,
     }
 
@@ -381,6 +387,12 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
         Some(Commands::Next { .. }) => {
             return Err(anyhow::anyhow!(
                 "next is dispatched in `main` before tracing and the async runtime exist"
+            ));
+        }
+        // And `status`, dispatched at the same early point as `next`.
+        Some(Commands::Status { .. }) => {
+            return Err(anyhow::anyhow!(
+                "status is dispatched in `main` before tracing and the async runtime exist"
             ));
         }
         Some(Commands::Envelope { action }) => match action {

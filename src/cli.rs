@@ -232,6 +232,23 @@ pub enum Commands {
         #[arg(long, required = true)]
         json: bool,
     },
+    // The query half for scripts and agents (quick 261110-qap). Read-only like
+    // `next`: it needs no registry write, no lock, no journal and no log file, so
+    // `main` dispatches it before `init_tracing`. The positional is NOT named
+    // `alias`: `tests/spawn_seam_guard.rs` counts argv fields that read exactly
+    // `alias: String,`.
+    //
+    // `--json` is required (not defaulted) so a human-readable form can be added
+    // later without a breaking change (D10).
+    /// Status of every registered project, or the named ones, as one JSON document (read-only)
+    Status {
+        /// Aliases of registered projects, or paths to directories containing .planning/
+        /// (default: every registered project)
+        projects: Vec<String>,
+        /// Print the status as one JSON document on stdout
+        #[arg(long, required = true)]
+        json: bool,
+    },
 }
 
 /// The verbs of `driver`.
@@ -1046,6 +1063,39 @@ mod tests {
         let err = match checked(&["next", "p"]) {
             Err(err) => err,
             Ok(_) => panic!("`next` without --json must be refused"),
+        };
+        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+        assert_eq!(err.exit_code(), 2, "argparse parity: usage errors exit 2");
+    }
+
+    // ── The read-only `status` query (quick 261110-qap) ──────────────────
+
+    #[test]
+    fn status_parses_without_targets() {
+        let cli = checked(&["status", "--json"]).expect("parses");
+        match cli.command {
+            Some(Commands::Status { projects, json }) => {
+                assert!(projects.is_empty());
+                assert!(json);
+            }
+            _ => panic!("did not resolve to Commands::Status"),
+        }
+    }
+
+    #[test]
+    fn status_parses_several_targets_in_argv_order() {
+        let cli = checked(&["status", "b", "a", "--json"]).expect("parses");
+        match cli.command {
+            Some(Commands::Status { projects, .. }) => assert_eq!(projects, ["b", "a"]),
+            _ => panic!("did not resolve to Commands::Status"),
+        }
+    }
+
+    #[test]
+    fn status_without_json_is_a_usage_error() {
+        let err = match checked(&["status", "p"]) {
+            Err(err) => err,
+            Ok(_) => panic!("`status` without --json must be refused"),
         };
         assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
         assert_eq!(err.exit_code(), 2, "argparse parity: usage errors exit 2");
