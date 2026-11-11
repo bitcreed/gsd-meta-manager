@@ -1163,7 +1163,7 @@ impl RoadmapView<'_> {
             None if !p.planned => spans.push(Span::raw(format!("{DOT}plans TBD"))),
             None => {}
         }
-        // `◒k`: plans of this phase finished on a worktree, not yet merged
+        // `∆k`: plans of this phase finished on a worktree, not yet merged
         // (quick 260929-szq, I-11); detail status line only.
         if p.unmerged > 0 {
             spans.push(Span::styled(

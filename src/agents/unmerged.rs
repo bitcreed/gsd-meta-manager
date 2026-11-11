@@ -28,8 +28,8 @@ use super::{worktrees, AgentLiveness, AgentRow};
 use crate::state_reader::disk_status;
 use crate::text::Untrusted;
 
-/// The glyph every surface draws for unmerged work (U+25D0, one cell).
-pub const GLYPH_UNMERGED: &str = "\u{25D2}";
+/// The glyph every surface draws for unmerged work (U+2206 INCREMENT, one cell).
+pub const GLYPH_UNMERGED: &str = "\u{2206}";
 /// The word every surface pairs with [`GLYPH_UNMERGED`].
 pub const LABEL_UNMERGED: &str = "unmerged";
 /// The word the Waves pane appends when the holder worktree is still in use

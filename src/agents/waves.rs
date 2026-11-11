@@ -545,7 +545,7 @@ fn derive_scope(
 }
 
 /// Wrap an active ladder with the unmerged count (I-7): the widest form gains
-/// ` · ◒N unmerged`, then every form gains ` · ◒N`, then the narrowest form
+/// ` · ∆N unmerged`, then every form gains ` · ∆N`, then the narrowest form
 /// stands bare. `n == 0` returns `forms` unchanged.
 fn with_unmerged(forms: Vec<String>, n: u32) -> Vec<String> {
     if n == 0 || forms.is_empty() {
@@ -599,7 +599,7 @@ impl AgentView {
     }
 
     /// Every unmerged item the scan listed — plans and quick tasks, in both
-    /// states (I-7): the dashboard's `◒N`.
+    /// states (I-7): the dashboard's `∆N`.
     pub fn pending_unmerged(&self) -> u32 {
         u32::try_from(self.unmerged.len()).unwrap_or(u32::MAX)
     }
@@ -677,9 +677,9 @@ impl AgentView {
     /// a live worktree-less agent never picks the ladder.
     ///
     /// Unmerged worktree work (N = [`Self::pending_unmerged`], I-7) wraps any
-    /// active ladder: `forms[0] · ◒N unmerged`, then each form `· ◒N`, then
-    /// the narrowest form bare. An inactive view yields `◒N unmerged`, `◒N`;
-    /// with S stalled rows `◒N unmerged · S stalled`, `◒N · S stalled`,
+    /// active ladder: `forms[0] · ∆N unmerged`, then each form `· ∆N`, then
+    /// the narrowest form bare. An inactive view yields `∆N unmerged`, `∆N`;
+    /// with S stalled rows `∆N unmerged · S stalled`, `∆N · S stalled`,
     /// `S stalled` (the yellow `ends_with("stalled")` rule still holds); with
     /// only stalled rows `S stalled`; with neither, no forms, and the cell is
     /// left alone.
@@ -705,14 +705,16 @@ impl AgentView {
                 .iter()
                 .filter(|r| r.liveness == AgentLiveness::Stalled)
                 .count();
-            let g = GLYPH_UNMERGED;
             return match (n, stalled) {
                 (0, 0) => Vec::new(),
                 (0, s) => vec![format!("{s} stalled")],
-                (n, 0) => vec![format!("{g}{n} {LABEL_UNMERGED}"), format!("{g}{n}")],
+                (n, 0) => vec![
+                    format!("{GLYPH_UNMERGED}{n} {LABEL_UNMERGED}"),
+                    format!("{GLYPH_UNMERGED}{n}"),
+                ],
                 (n, s) => vec![
-                    format!("{g}{n} {LABEL_UNMERGED} \u{b7} {s} stalled"),
-                    format!("{g}{n} \u{b7} {s} stalled"),
+                    format!("{GLYPH_UNMERGED}{n} {LABEL_UNMERGED} \u{b7} {s} stalled"),
+                    format!("{GLYPH_UNMERGED}{n} \u{b7} {s} stalled"),
                     format!("{s} stalled"),
                 ],
             };
@@ -757,7 +759,7 @@ impl AgentView {
             .unwrap_or_default();
         let r = self.running;
         // Main only (UX-SPEC (d)): work finished on a worktree is the separate
-        // `◒N` segment, never folded into `done`.
+        // `∆N` segment, never folded into `done`.
         let d = self.done;
         let t = self.plan_total;
         match (self.current_wave, self.max_wave) {
@@ -1141,7 +1143,7 @@ mod tests {
         assert_eq!(view.running, 11);
         assert_eq!(view.done, 8, "finished is never folded into done");
         // Quick 260929-szq (UX-SPEC (d)): `d` counts main only; unmerged work
-        // is its own `◒N` segment, driven by the scan's unmerged list.
+        // is its own `∆N` segment, driven by the scan's unmerged list.
         assert_eq!(
             view.summary_forms()[0],
             format!("P13 {DOT} w2/11 {DOT} 11 run {DOT} 8/35 done")
@@ -1417,7 +1419,7 @@ mod tests {
 
     // --- unmerged worktree work (quick 260929-szq) -----------------------
 
-    const HALF: &str = "\u{25D2}";
+    const DELTA: &str = "\u{2206}";
 
     fn unmerged_item(
         key: UnmergedKey,
@@ -1456,12 +1458,12 @@ mod tests {
         };
         let forms = view.summary_forms();
         assert!(
-            forms[0].ends_with(&format!("4/9 done {DOT} {HALF}1 unmerged")),
+            forms[0].ends_with(&format!("4/9 done {DOT} {DELTA}1 unmerged")),
             "{forms:?}"
         );
         let (last, middle) = forms[1..].split_last().expect("more than one form");
         for form in middle {
-            assert!(form.ends_with(&format!(" {DOT} {HALF}1")), "{forms:?}");
+            assert!(form.ends_with(&format!(" {DOT} {DELTA}1")), "{forms:?}");
         }
         assert_eq!(last, "1run", "the last form is the bare narrowest one");
         for pair in forms.windows(2) {
@@ -1483,8 +1485,8 @@ mod tests {
         assert_eq!(
             view.summary_forms(),
             vec![
-                format!("{HALF}2 unmerged {DOT} 1 stalled"),
-                format!("{HALF}2 {DOT} 1 stalled"),
+                format!("{DELTA}2 unmerged {DOT} 1 stalled"),
+                format!("{DELTA}2 {DOT} 1 stalled"),
                 "1 stalled".to_string(),
             ]
         );
@@ -1507,7 +1509,7 @@ mod tests {
         );
         assert_eq!(
             idle.summary_forms(),
-            vec![format!("{HALF}2 unmerged"), format!("{HALF}2")]
+            vec![format!("{DELTA}2 unmerged"), format!("{DELTA}2")]
         );
     }
 

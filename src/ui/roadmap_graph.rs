@@ -408,7 +408,7 @@ pub enum PhaseStatus {
 }
 
 impl PhaseStatus {
-    /// The status glyph (`◍` `◉` `◦` `◌` `◒`).
+    /// The status glyph (`◍` `◉` `◦` `◌` `∆`).
     pub fn glyph(self) -> &'static str {
         match self {
             PhaseStatus::Done => GLYPH_DONE,

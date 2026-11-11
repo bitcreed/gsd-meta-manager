@@ -64,8 +64,8 @@ pub const CIRCLE_FILLED: &str = "\u{25CD}";
 /// Unlaunched, pending, queued, roadmap ready, planned, succeeded-no-changes,
 /// git merge. `U+25E6` WHITE BULLET. Was `U+25CB`.
 pub const CIRCLE_OPEN: &str = "\u{25E6}";
-/// Unmerged, delivered. `U+25D2` CIRCLE WITH LOWER HALF BLACK. Was `U+25D0`.
-pub const CIRCLE_HALF: &str = "\u{25D2}";
+/// Unmerged, delivered. `U+2206` INCREMENT. Was `U+25D2`, before that `U+25D0`.
+pub const INCREMENT: &str = "\u{2206}";
 /// Roadmap active. `U+25C9` FISHEYE.
 pub const FISHEYE: &str = "\u{25C9}";
 /// Roadmap blocked. `U+25CC` DOTTED CIRCLE.
@@ -111,7 +111,7 @@ pub const ALL: &[(&str, &str)] = &[
     ("BLACK_RECT", BLACK_RECT),
     ("CIRCLE_FILLED", CIRCLE_FILLED),
     ("CIRCLE_OPEN", CIRCLE_OPEN),
-    ("CIRCLE_HALF", CIRCLE_HALF),
+    ("INCREMENT", INCREMENT),
     ("FISHEYE", FISHEYE),
     ("CIRCLE_DOTTED", CIRCLE_DOTTED),
     ("CLOCK", CLOCK),
@@ -141,7 +141,7 @@ mod tests {
     const FORMER: &[char] = &[
         '\u{25C6}', '\u{25C8}', '\u{25C7}', '\u{2016}', '\u{2691}', '\u{25A0}', '\u{25CF}',
         '\u{25CB}', '\u{25D0}', '\u{25B6}', '\u{25BC}', '\u{2191}', '\u{2193}', '\u{00B7}',
-        '\u{2026}', '\u{23F8}', '\u{23F3}',
+        '\u{2026}', '\u{23F8}', '\u{23F3}', '\u{25D2}',
     ];
 
     /// One reason per failed check; empty means width-safe.
@@ -226,6 +226,14 @@ mod tests {
                 // in ALL, and replaced because older Unicode data and terminals
                 // treat it as emoji-capable). See
                 // `the_property_check_carries_weight_the_widths_cannot`.
+                continue;
+            }
+            if c == '\u{25D2}' {
+                // Deviation, measured (quick 261111-ixj): U+25D2 is EAW Neutral
+                // and one cell under both widths, so this predicate accepts it.
+                // It is FORMER because Ubuntu Sans Mono has no U+25D2 and the
+                // proportional DejaVu Sans fallback draws it 1.56 cells wide,
+                // over the character after it. See `FLUSH_SAFE`.
                 continue;
             }
             assert!(
@@ -469,7 +477,7 @@ mod tests {
 
     #[test]
     fn glyphs_defined_outside_ui_are_registry_glyphs() {
-        assert_eq!(crate::agents::unmerged::GLYPH_UNMERGED, CIRCLE_HALF);
+        assert_eq!(crate::agents::unmerged::GLYPH_UNMERGED, INCREMENT);
         assert_eq!(
             crate::state_reader::git_ops::GRAPH_COMMIT.to_string(),
             CIRCLE_FILLED
