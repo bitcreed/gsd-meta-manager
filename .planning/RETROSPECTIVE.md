@@ -143,6 +143,37 @@
 - Spike 003: $7.81 of a $60 ceiling for the first attempt; Opus re-run in 26.1
 - Notable: the two superseded gap loops were the largest single cost of the milestone
 
+## Milestone: v2.3.0 — Multiplexer Backends
+
+**Shipped:** 2026-11-10 (v2.3.0; v2.1.0 and v2.2.0 were interim releases cut without a milestone close)
+**Phases:** 1 (33) | **Plans:** 2 | **Tasks:** 5 | **Quick tasks:** 1 (261110-qap)
+
+### What Was Built
+- `MultiplexerBackend` trait and static `REGISTRY` in `src/multiplexer/` replace the tmux-hardcoded `src/terminal_switch.rs`. tmux moved onto it unchanged. A herdr backend launches through one `layout.apply` socket request and focuses by session id, then pid, then a unique cwd. Precedence is innermost-wins. The fail-closed `ExecArgv` sink is shared (MUX-01..07, Phase 33)
+- `gsd-meta-manager status --json` (schema v1) and a `--skill` agent-skill output (quick 261110-qap)
+
+### What Worked
+- Research facts about herdr (it exposes no tty; `layout.apply` is atomic) let three planned tasks be cut on evidence, with nothing added back
+- Code review caught two real herdr focus mis-targets (WR-01 cwd tier guessing, WR-02 symlinked paths). UI review caught a raw backend error in the status line (UI-01), on a phase with no UI. Both gates earned their cost
+- The milestone pass ran unattended and correctly cut nothing from a one-phase, user-requested milestone
+
+### What Was Inefficient
+- Review fixes landed after the verifier ran, so VERIFICATION.md went stale and had to be re-run before the close
+- Two agents reported different full-suite counts (3755 and 3743) for the same tree. A re-run at HEAD gave 3755, and the 3743 run was never traced. A count is evidence only with its command and revision
+- The v2.0 archived deferred-items logs still produce 241 audit hits that the acknowledge writer cannot anchor (table rows, or `no deferred item matched`)
+
+### Patterns Established
+- Backend seams start from an ecosystem scan. The trait is designed against every candidate tool, and only the ones needed now are implemented
+- Unused dependencies are removed in the release dep pass, not in the fix that made them unused (musk cut M-0040, reinstated in 1f5f404)
+
+### Key Lessons
+- Re-run verification after review fixes that touch covered files, not only at phase end
+- Record the exact command and revision next to any test count you hand off
+
+### Cost Observations
+- Phase 33 measured 1.91M tokens (+52.4M cache read) for 2 plans and 5 tasks, at the low end of this project's per-phase range (p25 1.75M)
+- Musk net savings this milestone: p50 55k (basis harness, n=4). See `.planning/musk/RETRO-v2.3.0.md`
+
 ## Cross-Milestone Trends
 
 ### Process Evolution
@@ -153,6 +184,7 @@
 | v1.1 | 79 | 5 | Screen trait refactor, 7-tab detail view, disk-based inference |
 | v1.2 | 41 | 4 | Autonomous mode, archive browser, paused detection, queue execution design |
 | v2.0 | ~2,300 | 20 | Sandboxed autonomous driver; spike-first re-plan; interim point releases |
+| v2.3.0 | ~55 | 1 | Multiplexer backend seam + herdr; unattended single-phase milestone |
 
 ### Cumulative Quality
 
@@ -162,6 +194,7 @@
 | v1.1 | 6,319 | 20 integration | Screen trait arch, 7 tabs |
 | v1.2 | 7,630 | 25 integration | Zero warnings, 8 tabs, 9/9 requirements |
 | v2.0 | ~198K (src+tests) | ~3,200 | Requirements 70/71 (1 accepted partial), 0 critical review findings |
+| v2.3.0 | ~234K (src+tests) | 3,755 passed / 19 ignored | Requirements 7/7, review 0 critical / 3 warning / 5 info, all fixed |
 
 ### Top Lessons (Verified Across Milestones)
 
