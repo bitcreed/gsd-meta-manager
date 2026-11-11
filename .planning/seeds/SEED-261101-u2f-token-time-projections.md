@@ -5,6 +5,10 @@ planted: 2026-11-01
 planted_during: v2.0 Autonomous Orchestration (shipped; between milestones)
 trigger_when: "when scoping the next milestone after v2.0, or when cost/time visibility, token usage, or forecasting becomes a priority"  # inferred (human unavailable) — narrow via --enrich
 scope: large  # inferred from the 5-phase outline below — a full milestone
+audit_acknowledged:
+  milestone: v2.3.0
+  at: 2026-11-10
+  status: dormant
 ---
 
 # SEED-261101-u2f: Token & time projections

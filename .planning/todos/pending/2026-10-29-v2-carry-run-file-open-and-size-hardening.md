@@ -9,6 +9,9 @@ findings: [27 WR-10, 27 WR-06, 27 WR-11]
 related_todos: [2026-10-29-driverctl-log-values-unredacted.md]
 files:
   - src/driverctl/
+audit_acknowledged:
+  milestone: v2.3.0
+  at: 2026-11-10
 ---
 
 ## Problem

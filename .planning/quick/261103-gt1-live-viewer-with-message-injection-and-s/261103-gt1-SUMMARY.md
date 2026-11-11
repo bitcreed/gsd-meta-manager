@@ -9,7 +9,7 @@ provides:
   - stream-json stdin for one-off agents (prompt = first message, end-of-turn lifecycle)
   - host-only inbox + injections.jsonl, `task send`
   - runtime-neutral StreamEvent classifier, tail, renderer, spend estimate, follower
-  - `v` live viewer with meter, rate limit, composer (`i`) and soft-cap input (`b`)
+  - "`v` live viewer with meter, rate limit, composer (`i`) and soft-cap input (`b`)"
   - soft spend cap (wrap-up + grace + over_budget stop), `task budget`, `task attach`
 key-files:
   created:
@@ -45,6 +45,10 @@ actuals:
   commits: 3
 plan_head_before: 41ce9f80690ccb67a99af400ef398d79eb859d7f
 plan_head_after: a65de2d9afa1fccff069757c1e296ba1d074639b
+audit_acknowledged:
+  milestone: v2.3.0
+  at: 2026-11-10
+  status: complete
 ---
 
 # Quick 261103-gt1: live viewer, message injection and spend meter for one-off runs

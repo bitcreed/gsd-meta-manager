@@ -8,6 +8,9 @@ source: .planning/milestones/v2.0-MILESTONE-AUDIT.md tech_debt.security_relevant
 findings: [28 WR-10 = 29 WR-10 = 31 WR-03, 30 WR-14, 30 WR-15]
 files:
   - src/launcher/config_dir.rs (managed_settings)
+audit_acknowledged:
+  milestone: v2.3.0
+  at: 2026-11-10
 ---
 
 ## Problem

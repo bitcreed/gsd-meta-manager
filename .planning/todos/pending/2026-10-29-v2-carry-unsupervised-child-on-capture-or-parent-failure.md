@@ -8,6 +8,9 @@ source: .planning/milestones/v2.0-MILESTONE-AUDIT.md tech_debt.security_relevant
 findings: [28 WR-14 = 29 WR-15 = 31 WR-02, 30 WR-16]
 files:
   - src/launcher/process.rs (116-129 capture-thread spawn; 93-95 die-with-parent comment)
+audit_acknowledged:
+  milestone: v2.3.0
+  at: 2026-11-10
 ---
 
 ## Problem

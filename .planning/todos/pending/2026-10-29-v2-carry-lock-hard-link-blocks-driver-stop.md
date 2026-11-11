@@ -8,6 +8,9 @@ source: .planning/milestones/v2.0-MILESTONE-AUDIT.md tech_debt.security_relevant
 findings: [29 WR-08]
 files:
   - src/driver/lock.rs
+audit_acknowledged:
+  milestone: v2.3.0
+  at: 2026-11-10
 ---
 
 ## Problem
