@@ -20711,6 +20711,7 @@ mod tests {
         (screen, ctx, td, rx)
     }
 
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn assert_dispatched_for_item_999_1(
         rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::action::Action>,
     ) {

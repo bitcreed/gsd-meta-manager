@@ -60,7 +60,12 @@ jobs:
   # helpers that were dead code under the macOS/Windows cfg are now gated to the
   # cfg of their callers (quick 261021-0jg), so a new one fails this gate.
   #
-  # scripts/pre-tag-check.sh does not mirror this gate yet; that is a follow-up.
+  # scripts/pre-tag-check.sh gate 7 mirrors this job in bare and --container mode.
+  # It reads the include entries (target, check_args, clippy) from this file,
+  # refuses any other matrix key, and refuses unless this job's Check, its
+  # `if: matrix.clippy` and its Clippy lines still match what it runs. So
+  # changing those lines or adding a matrix key means updating gate 7 too.
+  # (Quick 261110-tbn added it after v2.2.0 and v2.3.0 failed here.)
   cross-target-check:
     name: Check non-Linux targets compile (${{ matrix.target }})
     runs-on: ubuntu-24.04

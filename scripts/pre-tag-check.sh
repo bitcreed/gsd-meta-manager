@@ -4,7 +4,8 @@
 # BEFORE the `v*` tag exists.
 #
 # It reproduces the gates that workflow runs on a tag push (tag/version match,
-# MSRV compile, release build, test, clippy, package verify) so a release can be rehearsed
+# MSRV compile, release build, test, clippy, package verify, and the
+# cross-target check + clippy matrix) so a release can be rehearsed
 # locally instead of discovered broken after the tag is already pushed.
 #
 # GATE ORDER IS DELIBERATELY INVERTED relative to the CI job graph. In
@@ -70,7 +71,7 @@
 # Usage: ./scripts/pre-tag-check.sh [--container] [--clean] [vX.Y.Z]
 
 # `set -u` only, on purpose:
-#   - no `set -e`: gates 2-6 must ALL run and report, so the operator gets the
+#   - no `set -e`: gates 2-7 must ALL run and report, so the operator gets the
 #     whole picture from one invocation rather than one failure at a time.
 #   - no `pipefail`: the constant-extraction pipelines end in `head -1`, whose
 #     SIGPIPE would be misread as a pipeline failure.
@@ -94,6 +95,19 @@ Gates (run order):
                                 the publish job's `cargo publish --locked` does
                                 before uploading. It never publishes and needs no
                                 token.
+  7  cross-target check+clippy  runs release.yml's cross-target-check job for
+                                every target its matrix lists: `cargo check
+                                --locked --target T <check_args>` and, when the
+                                entry says clippy: true, `cargo clippy --locked
+                                --target T --all-targets -- -D warnings`. The
+                                target list is READ from release.yml at run time
+                                (never copied here), and the gate refuses
+                                (FAILED) a matrix or job it cannot model. A bare
+                                run needs each target installed with rustup
+                                (`rustup target add T`); a missing one is
+                                SKIPPED, never installed for you. Inside
+                                --container a missing target is FAILED, because
+                                the image is built with exactly that list.
 
   TAG          optional, e.g. v1.7.1. When given, gate 1 asserts it matches the
                Cargo.toml version and hard-stops on disagreement. When omitted,
@@ -190,10 +204,171 @@ RULE="==========================================================================
 THIN="--------------------------------------------------------------------------------"
 
 # ===========================================================================
+# release.yml cross-target-check MATRIX PARSER (gate 7, and the --container
+# build arg)
+#
+# WHY THIS EXISTS. The v2.2.0 and v2.3.0 tags both died in release.yml's
+# `cross-target-check` job: on x86_64-pc-windows-gnu clippy rejected a test
+# helper as dead code, and no local gate could see it, because every other gate
+# lints the HOST target only.
+#
+# DERIVE, NEVER COPY. The target list is READ from release.yml at run time. A
+# copy kept in this script (or in the Dockerfile) would be a second source of
+# truth that drifts the first time someone adds a target, and a drifted gate is
+# a false certificate. The --container dispatch hands the same parsed list to
+# the image build as a build arg, so the image cannot drift either.
+#
+# THE SYNC GUARD. Deriving the list is not enough: if CI's COMMANDS change (a
+# new flag, a dropped --all-targets) or the matrix grows a key this gate does not
+# model (exclude:, features:, os:), then the gate keeps passing while it no longer
+# mirrors the job. So the parser REFUSES unless the job still contains, as fixed
+# non-comment lines, exactly the three lines gate 7 models (Check run, the
+# `if: matrix.clippy` condition, Clippy run), and REFUSES any matrix key other
+# than the `include` entries' target / check_args / clippy. The gate is then
+# updated deliberately, never silently stale. Comment lines are skipped
+# everywhere, so a quoted copy in a comment can never satisfy the guard.
+#
+# Resolved from this script's OWN location, never cwd: the container dispatch
+# runs before any cwd check, and the inner run may be started from anywhere.
+#
+# awk/grep/sed only: yq and python are not guaranteed in the image. Structure is
+# checked in awk (portable to mawk, so no regex intervals there); value syntax is
+# checked in bash below, where [[ =~ ]] has intervals.
+# ===========================================================================
+XT_SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+XT_WORKFLOW="$XT_SCRIPT_DIR/../.github/workflows/release.yml"
+XT_CHECK_LINE='run: cargo check --locked --target "${{ matrix.target }}" ${{ matrix.check_args }}'
+XT_IF_LINE='if: matrix.clippy'
+XT_CLIPPY_LINE='run: cargo clippy --locked --target "${{ matrix.target }}" --all-targets -- -D warnings'
+
+# Prints one `target<TAB>check_args<TAB>clippy` line per include entry on stdout.
+# On refusal prints the reason on stderr and returns non-zero. An absent
+# check_args is empty and an absent clippy is false: exactly how CI's
+# `${{ matrix.check_args }}` and `if: matrix.clippy` treat a missing key.
+xt_parse_matrix() {
+	local yml="$1"
+	if [ ! -f "$yml" ]; then
+		echo "cannot read $yml" >&2
+		return 1
+	fi
+	awk -v CHECK="$XT_CHECK_LINE" -v IFL="$XT_IF_LINE" -v CLIP="$XT_CLIPPY_LINE" '
+function trim(s) { gsub(/^[ \t\r]+|[ \t\r]+$/, "", s); return s }
+function unq(s) {
+	s = trim(s)
+	if (length(s) >= 2 && substr(s, 1, 1) == "\"" && substr(s, length(s), 1) == "\"") {
+		s = substr(s, 2, length(s) - 2)
+	}
+	return s
+}
+function refuse(msg) { print "release.yml cross-target-check: " msg > "/dev/stderr"; failed = 1; exit 1 }
+BEGIN { injob = 0; seen = 0; inmatrix = 0; inc = 0; n = 0; nchk = 0; nif = 0; nclip = 0; mchild = -1; failed = 0 }
+{
+	t = trim($0)
+	if (t == "" || substr(t, 1, 1) == "#") next
+	match($0, /^ */); ind = RLENGTH
+	if (!injob) {
+		if (!seen && $0 ~ /^  cross-target-check:[ \t\r]*$/) { injob = 1; seen = 1 }
+		next
+	}
+	# The job ends at the next 2-space-indent (or shallower) non-comment key.
+	if (ind <= 2) { injob = 0; inmatrix = 0; inc = 0; next }
+
+	if (t == CHECK) nchk++
+	else if (t == IFL) nif++
+	else if (t == CLIP) nclip++
+
+	if (t == "matrix:") { inmatrix = 1; mind = ind; mchild = -1; inc = 0; next }
+	if (inmatrix && ind <= mind) { inmatrix = 0; inc = 0 }
+	if (inmatrix) {
+		if (mchild < 0) mchild = ind
+		if (ind == mchild) {
+			k = t; sub(/:.*$/, "", k)
+			if (k != "include") refuse("matrix key \"" k "\" is not modelled by gate 7 (only include is)")
+			inc = 1
+			next
+		}
+		if (inc) {
+			if (substr(t, 1, 2) == "- ") { body = trim(substr(t, 3)); fresh = 1 } else { body = t; fresh = 0 }
+			c = index(body, ":")
+			if (c == 0) refuse("unparseable include line: " t)
+			k = trim(substr(body, 1, c - 1)); v = unq(substr(body, c + 1))
+			if (fresh) {
+				if (k != "target") refuse("include entry starts with key \"" k "\", expected \"- target:\"")
+				n++; tgt[n] = v; chk[n] = ""; clp[n] = "false"
+			} else {
+				if (n == 0) refuse("key \"" k "\" appears before any \"- target:\" entry")
+				if (k == "check_args") chk[n] = v
+				else if (k == "clippy") clp[n] = v
+				else refuse("matrix key \"" k "\" is not modelled by gate 7 (only target, check_args, clippy are)")
+			}
+		}
+	}
+}
+END {
+	if (failed) exit 1
+	if (!seen) refuse("no cross-target-check job found")
+	if (n == 0) refuse("zero matrix include entries found")
+	if (nchk != 1) refuse("the job no longer has exactly one Check line gate 7 models: " CHECK)
+	if (nif != 1) refuse("the job no longer has exactly one condition line gate 7 models: " IFL)
+	if (nclip != 1) refuse("the job no longer has exactly one Clippy line gate 7 models: " CLIP)
+	for (i = 1; i <= n; i++) printf "%s\t%s\t%s\n", tgt[i], chk[i], clp[i]
+}
+' "$yml"
+}
+
+# Parses AND validates, filling XT_TARGETS / XT_ARGS / XT_CLIPPY (parallel
+# arrays). Values reach cargo argv and a docker build arg, so each one is
+# validated against a strict shape; a refusal is a refusal, never a fallback.
+xt_load() {
+	XT_TARGETS=()
+	XT_ARGS=()
+	XT_CLIPPY=()
+	local out line tgt rest chk clp tok toks
+	local tgt_re='^[a-z0-9_]+(-[a-z0-9_.]+){2,3}$'
+	local flag_re='^--?[A-Za-z0-9][A-Za-z0-9_-]*$'
+	if ! out=$(xt_parse_matrix "$XT_WORKFLOW"); then
+		return 1
+	fi
+	while IFS= read -r line; do
+		[ -n "$line" ] || continue
+		# Split by parameter expansion, not `read`: an empty check_args between two
+		# tabs would collapse under IFS=tab and shift the fields.
+		tgt=${line%%$'\t'*}
+		rest=${line#*$'\t'}
+		chk=${rest%%$'\t'*}
+		clp=${rest#*$'\t'}
+		if ! [[ $tgt =~ $tgt_re ]]; then
+			echo "release.yml cross-target-check: invalid target \"$tgt\"" >&2
+			return 1
+		fi
+		toks=()
+		read -ra toks <<<"$chk"
+		for tok in "${toks[@]}"; do
+			if ! [[ $tok =~ $flag_re ]]; then
+				echo "release.yml cross-target-check: invalid check_args token \"$tok\" for $tgt" >&2
+				return 1
+			fi
+		done
+		if [ "$clp" != "true" ] && [ "$clp" != "false" ]; then
+			echo "release.yml cross-target-check: clippy must be true or false for $tgt, got \"$clp\"" >&2
+			return 1
+		fi
+		XT_TARGETS+=("$tgt")
+		XT_ARGS+=("$chk")
+		XT_CLIPPY+=("$clp")
+	done <<<"$out"
+	if [ "${#XT_TARGETS[@]}" -eq 0 ]; then
+		echo "release.yml cross-target-check: zero matrix entries" >&2
+		return 1
+	fi
+	return 0
+}
+
+# ===========================================================================
 # --container DISPATCH
 #
 # PLACEMENT IS DELIBERATE: after RULE/THIN (this block shouts with them) and
-# BEFORE the EXIT trap is installed further down. That trap prints a six-gate
+# BEFORE the EXIT trap is installed further down. That trap prints a seven-gate
 # summary describing gates that never ran in THIS process — on a container
 # dispatch every line of it would read NOT REACHED, a confusing lie stapled to
 # the end of a real run. The INNER run prints its own banner and its own
@@ -256,6 +431,27 @@ if [ "$CONTAINER" -eq 1 ] || [ "$CLEAN" -eq 1 ]; then
 		# "wipe every run": du of even an empty volume is more than 0 bytes.
 		CACHE_MAX_GB=$((10#$CACHE_MAX_GB_RAW))
 		CACHE_CAP_BYTES=$((CACHE_MAX_GB * 1000000000))
+	fi
+
+	# --- 1c. CROSS-TARGET MATRIX -------------------------------------------
+	# Gate 7 runs inside the container against rustup targets baked into the
+	# image, and the image gets its target list from release.yml through a build
+	# arg. So the matrix must be derived (and found modelable) BEFORE any side
+	# effect: a refusal here is a HARD ERROR, because building an image around a
+	# matrix this script cannot model would hand back a green run that certifies
+	# nothing about the cross-target-check job (the v2.2.0/v2.3.0 failure).
+	if [ "$CONTAINER" -eq 1 ]; then
+		if ! xt_load; then
+			echo "$RULE" >&2
+			echo "HARD ERROR: could not derive the cross-target matrix from release.yml (see above)." >&2
+			echo "THIS RUN HAS CERTIFIED NOTHING. No gate ran." >&2
+			echo "$THIN" >&2
+			echo "Gate 7 refuses a matrix or job it cannot model: update gate 7 in" >&2
+			echo "scripts/pre-tag-check.sh together with release.yml, then re-run." >&2
+			echo "$RULE" >&2
+			exit 1
+		fi
+		CONTAINER_CROSS_TARGETS="${XT_TARGETS[*]}"
 	fi
 
 	# --- 2. RUNTIME RESOLUTION ---------------------------------------------
@@ -391,6 +587,7 @@ if [ "$CONTAINER" -eq 1 ] || [ "$CLEAN" -eq 1 ]; then
 	echo "  dockerfile : $CONTAINER_SCRIPT_DIR/pre-tag-check.Dockerfile"
 	echo "  repo       : $CONTAINER_REPO_ROOT -> /work"
 	echo "  cache cap  : $CACHE_MAX_GB GB per volume (PRE_TAG_CONTAINER_CACHE_MAX_GB)"
+	echo "  cross tgts : $CONTAINER_CROSS_TARGETS (from release.yml cross-target-check)"
 	echo "$THIN"
 	echo "  The gates below run inside an ubuntu-24.04 lookalike, after the SAME"
 	echo "  scripts/install-conformance-oracle.sh the publish job calls has"
@@ -404,9 +601,14 @@ if [ "$CONTAINER" -eq 1 ] || [ "$CLEAN" -eq 1 ]; then
 	# near-instant, and a stale image is a lie about what was tested.
 	# The build context is scripts/ and the Dockerfile copies nothing from it:
 	# the repo arrives as a bind mount at run time, not as an image layer.
-	echo "+ $RUNTIME build --label $CONTAINER_LABEL -t $CONTAINER_IMAGE -f pre-tag-check.Dockerfile $CONTAINER_SCRIPT_DIR"
+	#
+	# PRE_TAG_CROSS_TARGETS is the list step 1c derived from release.yml. The
+	# Dockerfile keeps no copy of it, so the image installs exactly the targets
+	# gate 7 will ask for; the layer cache keys on the arg value.
+	echo "+ $RUNTIME build --label $CONTAINER_LABEL --build-arg PRE_TAG_CROSS_TARGETS=\"$CONTAINER_CROSS_TARGETS\" -t $CONTAINER_IMAGE -f pre-tag-check.Dockerfile $CONTAINER_SCRIPT_DIR"
 	if ! "$RUNTIME" build \
 		--label "$CONTAINER_LABEL" \
+		--build-arg "PRE_TAG_CROSS_TARGETS=$CONTAINER_CROSS_TARGETS" \
 		-t "$CONTAINER_IMAGE" \
 		-f "$CONTAINER_SCRIPT_DIR/pre-tag-check.Dockerfile" \
 		"$CONTAINER_SCRIPT_DIR"; then
@@ -583,12 +785,14 @@ G3_STATUS="NOT REACHED"
 G4_STATUS="NOT REACHED"
 G5_STATUS="NOT REACHED"
 G6_STATUS="NOT REACHED"
+G7_STATUS="NOT REACHED"
 G1_NOTE=""
 G2_NOTE=""
 G3_NOTE=""
 G4_NOTE=""
 G5_NOTE=""
 G6_NOTE=""
+G7_NOTE=""
 
 LOG_DIR=""
 
@@ -612,6 +816,7 @@ print_summary() {
 	gate_line 4 "cargo test" "$G4_STATUS" "$G4_NOTE"
 	gate_line 5 "cargo clippy -D warnings" "$G5_STATUS" "$G5_NOTE"
 	gate_line 6 "cargo package --locked" "$G6_STATUS" "$G6_NOTE"
+	gate_line 7 "cross-target check+clippy" "$G7_STATUS" "$G7_NOTE"
 	echo "$THIN"
 	if [ -n "$LOG_DIR" ]; then
 		echo "  gate logs: $LOG_DIR"
@@ -850,8 +1055,89 @@ else
 	echo "          worktree seen from inside the container). Verdict unchanged."
 fi
 
+# ---------------------------------------------------------------------------
+# GATE 7 — cross-target check + clippy (release.yml `cross-target-check` job)
+#
+# WHY. v2.2.0 and v2.3.0 both died in that job, on a Windows-only dead-code lint
+# in a test helper whose callers were gated to linux/macos. Gates 3-5 lint the
+# HOST target only, so nothing local could see it. This gate runs the job's two
+# commands verbatim for every target in its matrix.
+#
+# DERIVED, NOT COPIED, AND GUARDED. The target list, each entry's check_args and
+# its clippy flag come from release.yml through xt_load (see the parser comment
+# above), which also refuses any matrix or job it cannot model. A refusal is
+# FAILED: a gate that cannot say what CI runs must not say PASS.
+#
+# NEVER INSTALLS. Like gate 2, detection is read-only (`rustup target list
+# --installed`); `rustup target add` mutates the developer's toolchain, and an
+# auto-install would also hide an image that drifted from release.yml.
+#   - bare run, target missing   -> SKIPPED, with the exact `rustup target add`.
+#   - --container, target missing -> FAILED: the image is built with exactly the
+#     release.yml list, so a gap means the image drifted and the certificate
+#     would be a lie. (PRE_TAG_CHECK_IN_CONTAINER is the dispatch's marker.)
+#
+# CLIPPY IS SKIPPED AFTER A FAILED CHECK. CI's Clippy step carries `if:
+# matrix.clippy`, which has an implicit success(), so a failed Check skips it
+# there too; the same rule here keeps one root cause from being reported twice.
+# check_args is split with `read -ra` (no globbing, no eval) and every value is
+# passed to cargo as its own argv element.
+# ---------------------------------------------------------------------------
+section "GATE 7 — cross-target check + clippy (release.yml cross-target-check matrix)"
+if ! xt_load; then
+	G7_STATUS="FAILED"
+	G7_NOTE="could not derive the matrix from release.yml"
+	echo "FAILED: release.yml's cross-target-check job could not be modelled (see the"
+	echo "        reason above), so this gate cannot say what CI runs and certifies nothing."
+elif ! command -v rustup >/dev/null 2>&1; then
+	G7_STATUS="SKIPPED"
+	G7_NOTE="rustup not on PATH"
+	echo "SKIPPED: rustup is not on PATH, so installed targets cannot be listed."
+else
+	XT_INSTALLED=$(rustup target list --installed 2>/dev/null)
+	G7_FAILED=""
+	G7_SKIPPED=""
+	for i in "${!XT_TARGETS[@]}"; do
+		xt="${XT_TARGETS[$i]}"
+		echo
+		echo ">>> target $xt (check_args: ${XT_ARGS[$i]:-<none>}; clippy: ${XT_CLIPPY[$i]})"
+		if ! printf '%s\n' "$XT_INSTALLED" | grep -Fxq -- "$xt"; then
+			if [ -n "${PRE_TAG_CHECK_IN_CONTAINER:-}" ]; then
+				G7_FAILED="$G7_FAILED $xt(not installed: image drifted from release.yml)"
+				echo "FAILED: $xt is not installed in this image. The image is built with"
+				echo "        exactly release.yml's target list, so it has drifted; rebuild it."
+			else
+				G7_SKIPPED="$G7_SKIPPED $xt"
+				echo "  >>> SKIPPED — THIS TARGET DID NOT PASS. <<<"
+				echo "  $xt is not installed. Nothing was installed (deliberately). To run it:"
+				echo "      rustup target add $xt"
+			fi
+			continue
+		fi
+		xt_args=()
+		read -ra xt_args <<<"${XT_ARGS[$i]}"
+		if ! run_gate "gate7-$xt-check.log" cargo check --locked --target "$xt" ${xt_args[@]+"${xt_args[@]}"}; then
+			G7_FAILED="$G7_FAILED $xt(check)"
+			echo "  (clippy not run for $xt: CI skips its Clippy step after a failed Check)"
+		elif [ "${XT_CLIPPY[$i]}" = "true" ]; then
+			if ! run_gate "gate7-$xt-clippy.log" cargo clippy --locked --target "$xt" --all-targets -- -D warnings; then
+				G7_FAILED="$G7_FAILED $xt(clippy)"
+			fi
+		fi
+	done
+	if [ -n "$G7_FAILED" ]; then
+		G7_STATUS="FAILED"
+		G7_NOTE="failed:${G7_FAILED}"
+	elif [ -n "$G7_SKIPPED" ]; then
+		G7_STATUS="SKIPPED"
+		G7_NOTE="not installed, rustup target add:${G7_SKIPPED}"
+	else
+		G7_STATUS="PASS"
+		G7_NOTE="${#XT_TARGETS[@]} targets"
+	fi
+fi
+
 OVERALL_RC=0
-for st in "$G1_STATUS" "$G2_STATUS" "$G3_STATUS" "$G4_STATUS" "$G5_STATUS" "$G6_STATUS"; do
+for st in "$G1_STATUS" "$G2_STATUS" "$G3_STATUS" "$G4_STATUS" "$G5_STATUS" "$G6_STATUS" "$G7_STATUS"; do
 	if [ "$st" = "FAILED" ]; then
 		OVERALL_RC=1
 	fi
