@@ -1098,6 +1098,33 @@ mod tests {
         assert_eq!(found[0].backend.name(), "tmux");
     }
 
+    /// IN-01: `inside` is a deliberate part of [`Detection`] (D-02: a backend may
+    /// have something to say about the environment without the TUI being inside
+    /// it), but no in-tree backend returns `inside: false`. This fixture is the
+    /// one that exercises the branch, so it cannot rot unnoticed.
+    #[test]
+    fn order_innermost_skips_a_backend_that_is_not_inside() {
+        struct Elsewhere;
+        impl MultiplexerBackend for Elsewhere {
+            fn name(&self) -> &'static str {
+                "elsewhere"
+            }
+            fn detect(&self, _env: &EnvSnapshot) -> Option<Detection> {
+                Some(Detection {
+                    inside: false,
+                    reachable: Ok(()),
+                })
+            }
+        }
+        static ELSEWHERE: Elsewhere = Elsewhere;
+
+        let env = EnvSnapshot::from_pairs(&[("TMUX", "x")]);
+        let registry: [&'static dyn MultiplexerBackend; 2] = [&ELSEWHERE, &tmux::TMUX];
+        let found = order_innermost(&registry, &env, &[]);
+        let names: Vec<&str> = found.iter().map(|d| d.backend.name()).collect();
+        assert_eq!(names, vec!["tmux"]);
+    }
+
     // ---- nesting precedence (MUX-02, D-07) ---------------------------------
 
     const TMUX_ENV: (&str, &str) = ("TMUX", "/tmp/tmux-1000/default,1,0");
