@@ -227,23 +227,28 @@ impl MultiplexerBackend for TmuxBackend {
         })
     }
 
-    /// Select the pane that shows one of `ttys`: the reveal of a client that
-    /// another multiplexer's server is displayed through. Same exact-tty rule as
-    /// [`TmuxBackend::focus`].
-    fn focus_tty(&self, env: &EnvSnapshot, ttys: &[String]) -> Result<FocusOutcome, MuxError> {
+    /// Find the pane that shows one of `ttys` and select nothing: the lookup
+    /// [`TmuxBackend::focus_tty`] runs. Same exact-tty rule as
+    /// [`TmuxBackend::locate_session`].
+    fn locate_tty(&self, env: &EnvSnapshot, ttys: &[String]) -> Result<Untrusted, MuxError> {
         let stdout = self.list_panes(env)?;
         match find_pane_target_any(&stdout, ttys) {
-            Some(target) => {
-                self.select(env, target);
-                Ok(FocusOutcome {
-                    by: MatchedBy::Tty,
-                    partial: None,
-                })
-            }
+            Some(target) => Ok(Untrusted::from_untrusted_source(target.to_string())),
             None => Err(MuxError::NotFound(
                 "no tmux pane shows that terminal".to_string(),
             )),
         }
+    }
+
+    /// Select the pane that shows one of `ttys`: the reveal of a client that
+    /// another multiplexer's server is displayed through.
+    fn focus_tty(&self, env: &EnvSnapshot, ttys: &[String]) -> Result<FocusOutcome, MuxError> {
+        let target = self.locate_tty(env, ttys)?;
+        self.select(env, target.as_raw_for_logic_only());
+        Ok(FocusOutcome {
+            by: MatchedBy::Tty,
+            partial: None,
+        })
     }
 
     /// Open `argv` as a new window on the running tmux server, in `cwd`.

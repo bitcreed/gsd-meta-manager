@@ -541,6 +541,11 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
             app.active_sessions = initial_sessions.clone();
             app.ctx.active_sessions = initial_sessions;
             app.auto_register_new_sessions();
+            // Where those sessions live in a multiplexer: same reason, the first
+            // resolution would otherwise wait for the first ~5s poll. Off the
+            // render thread (spawn_blocking); the rows show a pending glyph until
+            // it lands.
+            app.dispatch_session_locations();
 
             // The launch target opens through the overview's own Enter path,
             // after every piece of startup state is in place, so the first

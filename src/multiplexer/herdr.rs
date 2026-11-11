@@ -65,14 +65,18 @@
 //! display the server, so the multiplexer around the client (tmux) can bring
 //! that pane forward (the reveal step in `super`).
 //!
+//! The join is shared with `locate_session`, which stops before `agent focus`:
+//! the Sessions tab's location column names the pane focus would act on.
+//!
 //! This file spawns the herdr CLI for those reads and focuses, so it is on the
 //! spawn-seam allowlist. Launching a session never goes through the CLI.
 
 use super::{
     proc_chain, Detection, EnvSnapshot, ExecArgv, FocusOutcome, MatchedBy, MultiplexerBackend,
-    MuxError, ProcEntry, ProcScan,
+    MuxError, PaneLocation, ProcEntry, ProcScan,
 };
 use crate::session_detector::{ClaudeSession, SessionKind};
+use crate::text::Untrusted;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -209,62 +213,30 @@ impl MultiplexerBackend for HerdrBackend {
         Some(client_ttys_from(&scan(COMM)))
     }
 
-    /// Focus the herdr pane running `session`: list the panes, join on session
-    /// id, then pid, then working directory, then `agent focus` the match with
-    /// `tab focus` as the fallback. See the module docs for why each step.
+    /// Find the herdr pane running `session` and select nothing: the join
+    /// [`HerdrBackend::focus`] runs (see `join_session`). A pane id herdr's CLI
+    /// would refuse (empty, or read as an option) is refused here too, so a
+    /// location shown is always one focus could act on.
+    fn locate_session(
+        &self,
+        env: &EnvSnapshot,
+        session: &ClaudeSession,
+    ) -> Result<PaneLocation, MuxError> {
+        let (panes, index, by) = self.join_session(env, session)?;
+        let pane_id = validate_id(&panes[index].pane_id)?;
+        Ok(PaneLocation {
+            backend: self.name(),
+            target: Untrusted::from_untrusted_source(pane_id.to_string()),
+            by,
+        })
+    }
+
+    /// Focus the herdr pane running `session`: join it (`join_session`), then
+    /// `agent focus` the match with `tab focus` as the fallback. See the module
+    /// docs for why each step.
     fn focus(&self, env: &EnvSnapshot, session: &ClaudeSession) -> Result<FocusOutcome, MuxError> {
-        let listing = self.herdr_cli(env, &["pane", "list"])?;
-        let panes = parse_pane_list(&listing)?;
-
-        let session_id = session
-            .session_id
-            .as_ref()
-            .map(|id| id.as_raw_for_logic_only());
-        let (pane, by) = match join_by_session_id(&panes, session_id) {
-            Tier::One(pane) => (pane, MatchedBy::SessionId),
-            Tier::Ambiguous(n) => return Err(ambiguous(n, "session id")),
-            Tier::None => {
-                let candidates = cwd_candidates(&panes, &session.working_dir);
-
-                // The session pid itself counts as a chain pid, so the join
-                // still works where `/proc` cannot be read.
-                let mut chain_pids = vec![session.pid];
-                chain_pids.extend(proc_chain(session.pid).into_iter().map(|(pid, _)| pid));
-                let mut probed: Vec<(&HerdrPane, ProcessInfo)> = Vec::new();
-                // Candidates whose process-info could not be read. Only these
-                // may still be matched by directory (see `cwd_fallback`).
-                let mut unprobed: Vec<&HerdrPane> = Vec::new();
-                for candidate in &candidates {
-                    let Ok(id) = validate_id(&candidate.pane_id) else {
-                        unprobed.push(candidate);
-                        continue;
-                    };
-                    match self.process_info(env, id) {
-                        Ok(info) => probed.push((*candidate, info)),
-                        // One dead pane must not block focusing the others.
-                        Err(e) => {
-                            tracing::debug!(pane = id, error = %e, "herdr process-info failed");
-                            unprobed.push(candidate);
-                        }
-                    }
-                }
-
-                match join_by_pid(&probed, session.pid, &chain_pids) {
-                    Tier::One(pane) => (pane, MatchedBy::Pid),
-                    Tier::Ambiguous(n) => return Err(ambiguous(n, "pid")),
-                    Tier::None => match join_by_cwd(&cwd_fallback(&unprobed, session.kind)) {
-                        Tier::One(pane) => (pane, MatchedBy::Cwd),
-                        Tier::Ambiguous(n) => return Err(ambiguous(n, "working directory")),
-                        Tier::None => {
-                            return Err(MuxError::NotFound(
-                                "no herdr pane runs this session (session may have exited)"
-                                    .to_string(),
-                            ))
-                        }
-                    },
-                }
-            }
-        };
+        let (panes, index, by) = self.join_session(env, session)?;
+        let pane = &panes[index];
 
         let pane_id = validate_id(&pane.pane_id)?;
         // A directory-only match is a guess the user should hear about.
@@ -566,6 +538,79 @@ impl HerdrBackend {
     fn process_info(&self, env: &EnvSnapshot, id: &str) -> Result<ProcessInfo, MuxError> {
         let out = self.herdr_cli(env, &["pane", "process-info", "--pane", id])?;
         parse_process_info(&out)
+    }
+
+    /// Find the pane running `session`: list the panes, then join on session id,
+    /// then pid, then working directory. **Read-only** (`pane list` and
+    /// `pane process-info` only), and shared by `focus` and `locate_session`, so
+    /// the pane a location names is the pane focus would act on.
+    ///
+    /// Returns the whole listing (focus's tab fallback counts the panes of a tab)
+    /// and the index of the matched pane in it.
+    fn join_session(
+        &self,
+        env: &EnvSnapshot,
+        session: &ClaudeSession,
+    ) -> Result<(Vec<HerdrPane>, usize, MatchedBy), MuxError> {
+        let listing = self.herdr_cli(env, &["pane", "list"])?;
+        let panes = parse_pane_list(&listing)?;
+
+        let session_id = session
+            .session_id
+            .as_ref()
+            .map(|id| id.as_raw_for_logic_only());
+        let (pane, by) = match join_by_session_id(&panes, session_id) {
+            Tier::One(pane) => (pane, MatchedBy::SessionId),
+            Tier::Ambiguous(n) => return Err(ambiguous(n, "session id")),
+            Tier::None => {
+                let candidates = cwd_candidates(&panes, &session.working_dir);
+
+                // The session pid itself counts as a chain pid, so the join
+                // still works where `/proc` cannot be read.
+                let mut chain_pids = vec![session.pid];
+                chain_pids.extend(proc_chain(session.pid).into_iter().map(|(pid, _)| pid));
+                let mut probed: Vec<(&HerdrPane, ProcessInfo)> = Vec::new();
+                // Candidates whose process-info could not be read. Only these
+                // may still be matched by directory (see `cwd_fallback`).
+                let mut unprobed: Vec<&HerdrPane> = Vec::new();
+                for candidate in &candidates {
+                    let Ok(id) = validate_id(&candidate.pane_id) else {
+                        unprobed.push(candidate);
+                        continue;
+                    };
+                    match self.process_info(env, id) {
+                        Ok(info) => probed.push((*candidate, info)),
+                        // One dead pane must not block focusing the others.
+                        Err(e) => {
+                            tracing::debug!(pane = id, error = %e, "herdr process-info failed");
+                            unprobed.push(candidate);
+                        }
+                    }
+                }
+
+                match join_by_pid(&probed, session.pid, &chain_pids) {
+                    Tier::One(pane) => (pane, MatchedBy::Pid),
+                    Tier::Ambiguous(n) => return Err(ambiguous(n, "pid")),
+                    Tier::None => match join_by_cwd(&cwd_fallback(&unprobed, session.kind)) {
+                        Tier::One(pane) => (pane, MatchedBy::Cwd),
+                        Tier::Ambiguous(n) => return Err(ambiguous(n, "working directory")),
+                        Tier::None => {
+                            return Err(MuxError::NotFound(
+                                "no herdr pane runs this session (session may have exited)"
+                                    .to_string(),
+                            ))
+                        }
+                    },
+                }
+            }
+        };
+        let index = panes
+            .iter()
+            .position(|candidate| std::ptr::eq(candidate, pane))
+            .ok_or_else(|| {
+                MuxError::Failed("the matched herdr pane is not in the listing".to_string())
+            })?;
+        Ok((panes, index, by))
     }
 }
 

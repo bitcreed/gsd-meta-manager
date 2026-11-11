@@ -80,7 +80,8 @@
 //!   the select: the join that finds the pane, used by the Sessions tab's
 //!   location column ([`location`]). `focus` is built on it.
 //! * [`MultiplexerBackend::client_ttys`] and [`MultiplexerBackend::focus_tty`]
-//!   are the reveal step after a focus: a headless server's pane (herdr) is on
+//!   (whose lookup half is [`MultiplexerBackend::locate_tty`]) are the reveal
+//!   step after a focus: a headless server's pane (herdr) is on
 //!   a terminal only its CLIENT process shows, and that terminal is usually a
 //!   pane of another multiplexer (tmux), found by tty. Defaults: no client
 //!   concept, and [`MuxError::Unsupported`].
@@ -512,6 +513,21 @@ pub trait MultiplexerBackend: Sync {
     /// client is attached. The list is sorted and holds no duplicates.
     fn client_ttys(&self, _scan: &ProcScan<'_>) -> Option<Vec<String>> {
         None
+    }
+
+    /// Find the pane that shows one of `ttys` and select nothing: the reveal
+    /// step's lookup ([`MultiplexerBackend::focus_tty`]) without the select. The
+    /// Sessions tab's `via` part is built on it. Returns the pane's address in
+    /// this backend's own terms. The default is [`MuxError::Unsupported`].
+    fn locate_tty(
+        &self,
+        _env: &EnvSnapshot,
+        _ttys: &[String],
+    ) -> Result<crate::text::Untrusted, MuxError> {
+        Err(MuxError::Unsupported(format!(
+            "{} cannot locate a client terminal",
+            self.name()
+        )))
     }
 
     /// Bring forward the pane that shows one of `ttys`. **Reveal step, part 2**,
@@ -1092,6 +1108,30 @@ pub(crate) fn focus_with_procs(
     }
 }
 
+/// The head of the reveal step, shared by `reveal_client` (which then selects)
+/// and the location column (which only looks): the OTHER reachable backends, and
+/// the terminals of the `winner`'s clients.
+///
+/// `None` when there is no other reachable backend (decided BEFORE any `/proc`
+/// walk) or when the winner has no client concept. Otherwise `others` in plan
+/// order and the client ttys, which may be empty (no client attached).
+fn reveal_targets<'a>(
+    winner: &Detected,
+    backends: &'a [Detected],
+    procfs: &ProcFs,
+) -> Option<(Vec<&'a Detected>, Vec<String>)> {
+    let winner_name = winner.backend.name();
+    let others: Vec<&Detected> = backends
+        .iter()
+        .filter(|d| d.backend.name() != winner_name && d.detection.reachable.is_ok())
+        .collect();
+    if others.is_empty() {
+        return None;
+    }
+    let ttys = winner.backend.client_ttys(&|comm| procfs.scan(comm))?;
+    Some((others, ttys))
+}
+
 /// After `winner` focused the session, bring forward the terminal that shows
 /// it. **Best effort: it can add a note to `outcome`, never an error.**
 ///
@@ -1120,14 +1160,7 @@ fn reveal_client(
     mut outcome: FocusOutcome,
 ) -> FocusOutcome {
     let winner_name = winner.backend.name();
-    let others: Vec<&Detected> = backends
-        .iter()
-        .filter(|d| d.backend.name() != winner_name && d.detection.reachable.is_ok())
-        .collect();
-    if others.is_empty() {
-        return outcome;
-    }
-    let Some(ttys) = winner.backend.client_ttys(&|comm| procfs.scan(comm)) else {
+    let Some((others, ttys)) = reveal_targets(winner, backends, procfs) else {
         return outcome;
     };
 
@@ -3396,6 +3429,49 @@ mod tests {
             );
             assert_eq!(label, "-", "no multiplexer finds it");
             assert!(calls.is_empty(), "nothing was spawned: {calls:?}");
+        }
+
+        /// The user's exact topology: the session under a sibling herdr server,
+        /// the herdr client in tmux pane 0:0.0, the TUI in tmux pane 0:0.1. The
+        /// herdr pane and the tmux pane that shows its client are found with one
+        /// `pane list` and one `list-panes`, and nothing is focused.
+        #[test]
+        fn locate_a_herdr_session_names_its_pane_and_the_tmux_pane_showing_its_client() {
+            let proc = measured_topology();
+            let world = World::new(&herdr_panes(), "/dev/pts/13 0:0.0\n/dev/pts/8 0:0.1\n");
+            let (label, calls) = located(
+                &proc,
+                &world,
+                &tmux_tui_env(),
+                TUI_PID_IN_TMUX,
+                &claude(672012, Some(SID_P1), Some("pts/3")),
+            );
+            assert_eq!(label, "herdr w2:p1 (via tmux 0:0.0)");
+            assert_eq!(
+                calls,
+                vec![
+                    herdr_call("pane list"),
+                    tmux_call(Some(TMUX_SOCKET), LIST_PANES_ARGS),
+                ]
+            );
+            assert_reads_only(&calls);
+        }
+
+        /// A herdr client in a terminal no tmux pane shows: the pane is still
+        /// known, there is just no outer pane to name.
+        #[test]
+        fn locate_a_herdr_client_outside_tmux_has_no_via() {
+            let proc = measured_topology();
+            let world = World::new(&herdr_panes(), "/dev/pts/8 0:0.1\n");
+            let (label, calls) = located(
+                &proc,
+                &world,
+                &tmux_tui_env(),
+                TUI_PID_IN_TMUX,
+                &claude(672012, Some(SID_P1), Some("pts/3")),
+            );
+            assert_eq!(label, "herdr w2:p1");
+            assert_reads_only(&calls);
         }
 
         /// The herdr client runs in a terminal that is not a tmux pane (a plain

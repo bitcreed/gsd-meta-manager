@@ -12,7 +12,10 @@
 //! `spawn_blocking` and stores the result in a PID-keyed
 //! [`SessionLocationCache`]. The Sessions tab only reads that cache.
 
-use super::{plan_focus, Detected, EnvSnapshot, MatchedBy, MultiplexerBackend, ProcFs, REGISTRY};
+use super::{
+    plan_focus, reveal_targets, Detected, EnvSnapshot, MatchedBy, MultiplexerBackend, ProcFs,
+    REGISTRY,
+};
 use crate::session_detector::ClaudeSession;
 use crate::text::Untrusted;
 use std::collections::HashMap;
@@ -119,7 +122,7 @@ pub(crate) fn locate_with_procs(
     backends: &[Detected],
     env: &EnvSnapshot,
     session: &ClaudeSession,
-    _procfs: &ProcFs,
+    procfs: &ProcFs,
 ) -> Option<SessionLocation> {
     for detected in backends {
         let name = detected.backend.name();
@@ -128,13 +131,49 @@ pub(crate) fn locate_with_procs(
             continue;
         }
         match detected.backend.locate_session(env, session) {
-            Ok(pane) => return Some(SessionLocation { pane, via: None }),
+            Ok(pane) => {
+                let via = locate_via(detected, backends, env, procfs);
+                return Some(SessionLocation { pane, via });
+            }
             Err(e) => {
                 tracing::debug!(backend = name, reason = %e, "location: session not found");
             }
         }
     }
     None
+}
+
+/// The pane of ANOTHER multiplexer that shows the `winner`'s client: the reveal
+/// step's lookup, without the select. The same `reveal_targets` head, then the
+/// first other backend (plan order) whose `locate_tty` answers. No client
+/// terminal, no other backend, or no pane showing it: no `via`.
+fn locate_via(
+    winner: &Detected,
+    backends: &[Detected],
+    env: &EnvSnapshot,
+    procfs: &ProcFs,
+) -> Option<PaneLocation> {
+    let (others, ttys) = reveal_targets(winner, backends, procfs)?;
+    if ttys.is_empty() {
+        return None;
+    }
+    others
+        .iter()
+        .find_map(|other| match other.backend.locate_tty(env, &ttys) {
+            Ok(target) => Some(PaneLocation {
+                backend: other.backend.name(),
+                target,
+                by: MatchedBy::Tty,
+            }),
+            Err(e) => {
+                tracing::debug!(
+                    backend = other.backend.name(),
+                    reason = %e,
+                    "location: client terminal not found"
+                );
+                None
+            }
+        })
 }
 
 /// [`locate_sessions`] with its inputs explicit: the `/proc` to read, the
