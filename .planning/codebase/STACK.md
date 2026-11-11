@@ -31,7 +31,7 @@ last_mapped_at: 2026-11-03
 
 **Core:**
 - ratatui 0.30 (features `crossterm`, `unstable-rendered-line-info`) - terminal UI rendering. Screens in `src/ui/screens/`.
-- crossterm 0.29 (feature `event-stream`) - terminal backend and async input events.
+- crossterm 0.29 - terminal backend; input is polled on a blocking reader thread (no `event-stream` since quick-261103-tn4).
 - tokio 1 (feature `full`) - async runtime for the event loop.
 - clap 4 (feature `derive`) - CLI parsing (`src/cli.rs`, `src/driver_cli.rs`, `src/driverctl_cli.rs`, `src/taskctl_cli.rs`, `src/next_cli.rs`).
 
@@ -63,7 +63,7 @@ last_mapped_at: 2026-11-03
 
 **Infrastructure / supporting:**
 - `clap`, `anyhow` 1, `color-eyre` 0.6, `tracing` 0.1, `tracing-subscriber` 0.3 (feature `env-filter`), `tracing-appender` 0.2 - error reporting and file logging (`src/main.rs`, `src/error.rs`).
-- `futures` 0.3, `tempfile` 3 (runtime use as well as tests).
+- `tempfile` 3 (runtime use as well as tests).
 
 **Native build requirement:**
 - `ring` compiles C/asm via `cc`, so a C compiler is required to build on Linux. macOS and Windows builds do not pull the TLS crates (see `Cargo.toml` comments).
