@@ -393,6 +393,141 @@ Remove a project from the registry:
 gsd-meta-manager remove my-app
 ```
 
+### Scripting and agents
+
+`gsd-meta-manager status --json [project...]` prints the state of every registered
+project, or only the named aliases or paths, as ONE JSON document on one line.
+It is read-only: it takes no lock, writes no log file or journal and does not
+touch the registry, so it is safe to run while GSD sessions are active. `--json`
+is required. A named project is a registered alias, a path inside a registered
+project, or a directory containing `.planning/`.
+
+```bash
+gsd-meta-manager status --json                 # every registered project, as `list` orders them
+gsd-meta-manager status --json my-app ~/p/api  # just these two, in this order
+```
+
+Exit codes: `0` the document was printed, including entries that carry an
+`error` (an unknown alias, a registered folder that is gone, a folder without
+`.planning/`); `1` the registry could not be loaded or parsed (nothing on stdout,
+one `status: ...` line on stderr); `2` a usage error, such as a missing `--json`.
+
+Schema version 1:
+
+```json
+{
+  "schema": "gsd-meta-manager/status",
+  "schema_version": 1,
+  "sessions_supported": true,
+  "projects": [
+    {
+      "target": null,
+      "alias": "my-app",
+      "path": "/home/me/projects/my-app",
+      "error": null,
+      "milestone": {"version": "v1.2", "name": "Search", "status": "in_progress"},
+      "phase": {"id": "4", "name": "Index builder", "status": "executed", "verification": "human_needed", "uat": "missing"},
+      "progress": {"phases_done": 3, "phases_total": 6},
+      "attention": [{"kind": "verification_human_needed", "phase": "4", "workstream": null, "status": null}],
+      "sessions": [{"agent": "claude", "pid": 4242, "session_id": "0f3c9a", "cwd": "/home/me/projects/my-app", "tty": "pts/3"}],
+      "next": {"advisory": true, "source": "phase-20-router", "project": "/home/me/projects/my-app", "target_phase": "4", "decision": "park", "command": null, "reason": "gate_verification_human_needed", "detail": "human_needed"},
+      "warnings": []
+    },
+    {
+      "target": "gone-app",
+      "alias": null,
+      "path": null,
+      "error": {"kind": "unresolved", "message": "gone-app is neither a directory containing .planning/ nor a registered project"},
+      "milestone": null,
+      "phase": null,
+      "progress": null,
+      "attention": [],
+      "sessions": [],
+      "next": null,
+      "warnings": []
+    }
+  ]
+}
+```
+
+| Path | Type | Meaning |
+|---|---|---|
+| `schema` | string | always `gsd-meta-manager/status` |
+| `schema_version` | integer | `1`. Bumped on any rename, removal or type change; new keys may be added without a bump |
+| `sessions_supported` | bool | `true` on Linux. When false, `sessions` is always empty |
+| `projects` | array | registry order (as `list`) with no names, else the order named |
+| `projects[].target` | string or null | the name you passed (escaped); null when listing the registry |
+| `projects[].alias` | string or null | registry alias (escaped); null for an unregistered path or an unresolved name |
+| `projects[].path` | string or null | canonical project root, equal to `next.project`; null when unresolved |
+| `projects[].error` | object or null | null on success |
+| `projects[].error.kind` | string | `unresolved` / `folder_missing` / `no_planning` |
+| `projects[].error.message` | string | one sentence, with names escaped |
+| `projects[].milestone` | object or null | null only on error |
+| `projects[].milestone.version` | string or null | STATE.md `milestone` |
+| `projects[].milestone.name` | string or null | STATE.md `milestone_name` |
+| `projects[].milestone.status` | string or null | STATE.md `status` |
+| `projects[].phase` | object or null | the active phase; null on error or when no source names one |
+| `projects[].phase.id` | string | the active phase number |
+| `projects[].phase.name` | string or null | roadmap phase name, else STATE.md `current_phase_name` |
+| `projects[].phase.status` | string or null | disk status of the phase (`discussed`, `planned`, `executed`, `complete`, ...) |
+| `projects[].phase.verification` | string or null | VERIFICATION.md status (`passed`, `gaps_found`, `human_needed`, `missing`, ...) |
+| `projects[].phase.uat` | string or null | UAT.md status (`pending`, `partial`, `missing`, ...) |
+| `projects[].progress` | object or null | null only on error |
+| `projects[].progress.phases_done` | integer | phases done in the current milestone |
+| `projects[].progress.phases_total` | integer | phases in the current milestone |
+| `projects[].attention` | array | pending human/UAT items, root first, then each workstream; empty on error |
+| `projects[].attention[].kind` | string | `paused`, `external_job_waiting`, `continue_here`, `verification_human_needed`, `uat_outstanding`, `continue_here_blocking`, `deferred_verification` |
+| `projects[].attention[].phase` | string or null | phase id for per-phase kinds |
+| `projects[].attention[].workstream` | string or null | workstream name, null for the project root |
+| `projects[].attention[].status` | string or null | the UAT status for `uat_outstanding`, else null |
+| `projects[].sessions` | array | live agent processes in this project; empty on error |
+| `projects[].sessions[].agent` | string | `claude` / `codex` |
+| `projects[].sessions[].pid` | integer | process id |
+| `projects[].sessions[].session_id` | string or null | escaped |
+| `projects[].sessions[].cwd` | string | the process's working directory |
+| `projects[].sessions[].tty` | string or null | e.g. `pts/3` |
+| `projects[].next` | object or null | exactly what `gsd-meta-manager next <path> --json` prints; null only on error |
+| `projects[].next.advisory` | bool | always true |
+| `projects[].next.source` | string | `phase-20-router` |
+| `projects[].next.project` | string | the project root |
+| `projects[].next.target_phase` | string or null | the phase routed |
+| `projects[].next.decision` | string | `run` / `park` / `goal_met` / `no_rule` / `none` |
+| `projects[].next.command` | string or null | the advisory `/gsd-*` command when `decision` is `run` |
+| `projects[].next.reason` | string | router token |
+| `projects[].next.detail` | string or null | router token |
+| `projects[].warnings` | array of strings | `state_md_unreadable`, `state_md_recovered` |
+
+A session belongs to the deepest project root that contains its working
+directory, so `cd src && claude` still counts for the project. Text a project
+authored (names, ids) is escaped for terminals and cut at 200 characters;
+artifact prose (goals, descriptions, handoff notes) never appears.
+
+Stability: a rename, removal or type change of any path above bumps
+`schema_version`; new keys may appear without a bump, so consumers should ignore
+keys they do not know.
+
+Recipes:
+
+```bash
+# Projects that need a human right now.
+gsd-meta-manager status --json | jq -r '.projects[] | select(.attention | length > 0) | "\(.alias): \([.attention[].kind] | join(", "))"'
+
+# The advisory next command per project.
+gsd-meta-manager status --json | jq -r '.projects[] | select(.next.decision == "run") | "\(.alias): \(.next.command)"'
+
+# Projects with a live Claude or Codex session.
+gsd-meta-manager status --json | jq -r '.projects[] | select(.sessions | length > 0) | .alias'
+```
+
+`gsd-meta-manager --skill` prints a short agent skill (markdown) that teaches a
+model to use `list`, `status --json`, `next --json` and jq. Install it for
+Claude Code with:
+
+```bash
+mkdir -p ~/.claude/skills/gsd-meta-manager
+gsd-meta-manager --skill > ~/.claude/skills/gsd-meta-manager/SKILL.md
+```
+
 ### Configuration
 
 User configuration is stored at:
