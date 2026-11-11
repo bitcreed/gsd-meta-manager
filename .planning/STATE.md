@@ -1,19 +1,20 @@
 ---
 gsd_state_version: "1.0"
 milestone: v2.3.1
-milestone_name: Multiplexer Backends (publish fix)
+current_phase_name: v2.3.1 shipped; no milestone open
 status: shipped
 stopped_at: v2.3.1 released locally (release commit + annotated tag v2.3.1, not pushed) — publish fix for v2.2.0/v2.3.0
-last_updated: "2026-11-11T03:53:31.518Z"
+last_updated: "2026-11-11T18:58:37.030Z"
 last_activity: 2026-11-10
 last_activity_desc: v2.3.1 released — Multiplexer Backends (publish fix)
-state_head: 24494e156a5086b2cad52da8d9d38bee111551c2
+state_head: 029f69dde78a87b5969430d8e9f470b784281437
 progress:
   total_phases: 1
   completed_phases: 1
   total_plans: 2
   completed_plans: 2
   percent: 100
+milestone_name: Multiplexer Backends (publish fix)
 current_phase: 33
 ---
 
@@ -31,7 +32,7 @@ See: .planning/PROJECT.md (updated 2026-11-10)
 Phase: — (v2.3.1 shipped; no milestone open)
 Plan: —
 Status: Shipped v2.3.1 Multiplexer Backends (publish fix) — release commit and annotated tag v2.3.1 created locally; not pushed (pushing the tag triggers the crates.io publish). v2.2.0 and v2.3.0 tags exist but their Release workflow failed on Windows clippy, so crates.io is still at 2.1.0; 2.3.1 is the first publish since.
-Last activity: 2026-11-10 — v2.3.1 released (herdr focus fix a8c71b8 + its Windows cfg-gate 5d393f0, quick 261110-tbn Windows clippy fix + pre-tag gate 7)
+Last activity: 2026-11-11 - Completed quick task 261111-h9f: Sessions panel multiplexer location column + README multiplexer support section
 
 ## Deferred Verification
 
@@ -528,6 +529,7 @@ Older entries (Phase 19 T-19-* rows, Phase 21 round-13 gaps, Phase 26 risks, 31-
 | 261105-fq6 | Close milestone-prefixed phase-id parity gaps (M-0043) | 2026-11-05 | a6b9d51 | [261105-fq6-close-milestone-prefixed-phase-id-parity](./quick/261105-fq6-close-milestone-prefixed-phase-id-parity/) |
 | 261110-qap | status --json query CLI + --skill agent-skill output | 2026-11-10 | c81159d | [261110-qap-add-status-json-query-cli-and-skill-agen](./quick/261110-qap-add-status-json-query-cli-and-skill-agen/) |
 | 261110-tbn | Fix Windows-only dead-code clippy error and add non-Linux clippy pre-tag gate | 2026-11-10 | 24494e1 | [261110-tbn-fix-windows-only-dead-code-clippy-error-](./quick/261110-tbn-fix-windows-only-dead-code-clippy-error-/) |
+| 261111-h9f | Sessions panel multiplexer location column + README multiplexer support section | 2026-11-11 | 029f69d | [261111-h9f-sessions-panel-multiplexer-location-colu](./quick/261111-h9f-sessions-panel-multiplexer-location-colu/) |
 
 ## Deferred Items
 
