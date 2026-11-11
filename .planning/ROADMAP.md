@@ -10,7 +10,7 @@
 - ✅ **v1.5.0 Sub-phase Artifact Detection** - 2 quick tasks (shipped 2026-05-15)
 - ✅ **v1.6.0 GSD 1.8.0 Catch-up** - 1 quick task + 2 fast tasks (shipped 2026-07-22)
 - ✅ **v2.0 Autonomous Orchestration** - Phases 14-31 (shipped 2026-10-29 as v2.0.0; Phases 19, 21, 22, 23 closed by supersession; Phase 32 deferred to backlog 999.8)
-- 🚧 **v2.3.0 Multiplexer Backends** - Phase 33 (in progress; number 32 skipped, it names the deferred v2.0 phase now backlog 999.8, started 2026-11-10)
+- ✅ **v2.3.0 Multiplexer Backends** - Phase 33 (shipped 2026-11-10 as v2.3.0; number 32 skipped, it names the deferred v2.0 phase now backlog 999.8)
 
 ## Phases
 
@@ -113,31 +113,15 @@ Requirements: `.planning/milestones/v2.0-REQUIREMENTS.md`. Audit: `.planning/mil
 
 </details>
 
-### 🚧 v2.3.0 Multiplexer Backends (In Progress)
+<details>
+<summary>✅ v2.3.0 Multiplexer Backends (Phase 33) - SHIPPED 2026-11-10 (v2.3.0)</summary>
 
-Requirements: `.planning/REQUIREMENTS.md` (MUX-01..MUX-07).
+Full phase details: `.planning/milestones/v2.3.0-ROADMAP.md`. Phase artifacts: `.planning/milestones/v2.3.0-phases/`.
+Requirements: `.planning/milestones/v2.3.0-REQUIREMENTS.md` (MUX-01..07, all Complete). Also shipped: quick 261110-qap (`status --json` + `--skill`).
 
-### Phase 33: Terminal multiplexer backend seam + herdr support
+- [x] **Phase 33: Terminal multiplexer backend seam + herdr support** - `MultiplexerBackend` seam replacing `terminal_switch.rs`, tmux migrated, herdr launch and focus, innermost-wins nesting (2/2 plans; completed 2026-11-10, re-verified after review fixes)
 
-**Goal:** Replace the tmux-hardcoded `src/terminal_switch.rs` with a reusable multiplexer backend trait (detect, focus a Claude session, open a new session in a cwd with an argv), migrate tmux onto it, and add a herdr backend, so focus and launch work inside herdr (also nested in or around tmux). The trait is designed against zellij, WezTerm mux, kitty remote control, GNU screen, Rex (Superlogical) and herdr-core/`hc`; those implementations are deferred (MUX-F01..F06).
-**Requirements**: MUX-01, MUX-02, MUX-03, MUX-04, MUX-05, MUX-06, MUX-07
-**Depends on:** Nothing (first phase of v2.3.0)
-**Plans:** 2/2 plans complete
-
-**Success Criteria** (what must be TRUE):
-1. Inside a herdr pane (`HERDR_ENV=1`, `$TMUX` unset), focusing a running Claude session lands in its herdr pane, matched on `agent_session.value` from `herdr pane list`; launch/resume opens a new herdr tab in the project cwd instead of a GUI terminal.
-2. Inside tmux, focus and launch behave exactly as before, and the direct-exec refusals (<2-element argv, `-`-leading head, cwd as an argv element) are enforced on the shared sink for every backend, with the existing tests green.
-3. With nested multiplexers the innermost one is chosen, and with none (or on backend failure) the GUI-terminal fallback chain runs with the reason surfaced. Both are covered by env-fixture unit tests that need no live multiplexer.
-4. The trait's design note maps each surveyed tool (zellij, WezTerm, kitty, screen, Rex, herdr-core) onto its methods, and the five current call sites (`normal.rs:840`, `detail.rs:2407/4938/5448/5485`) all go through the seam.
-
-**Open questions for research** [inferred]: does `herdr pane run <PANE_ID> <COMMAND>...` exec directly or type into a shell (MUX-05 refuses rather than regress the no-interpreter invariant); how herdr focus composes workspace → tab → pane; whether the herdr server under systemd needs `HERDR_SOCKET_PATH` passed explicitly.
-
-Plans:
-**Wave 1**
-- [x] 33-01-PLAN.md — Seam + ExecArgv sink, tmux moved onto the trait, herdr launch via layout.apply, GUI fallback, all five call sites (wave 1)
-
-**Wave 2** *(blocked on Wave 1 completion)*
-- [x] 33-02-PLAN.md — Innermost-multiplexer precedence, herdr focus join, design note, corrected docs (wave 2)
+</details>
 
 ---
 

@@ -68,16 +68,19 @@ See the state of every GSD project at a glance and act on any of them without le
 - ✓ Driver validation — spike 003 re-run proved gap rounds 1+2 and divergence parking on Opus (VALID-01; VALID-02 accepted as ADJUST) — Phase 26.1 / v2.0
 - ✓ Advisory router hint — deterministic `next <project> --json` (Phase 20, kept advisory after the re-plan) — v2.0
 - ✓ Retirement — superseded Phase 19/21/22 envelope and goal-layer code removed or rewired, their threat ids closed as superseded (RETIRE-01..03) — Phase 31 / v2.0
-- ✓ Multiplexer backend seam — `src/terminal_switch.rs` replaced by `MultiplexerBackend` + static `REGISTRY` in `src/multiplexer/` (detect, focus, open with a fail-closed `ExecArgv`); tmux migrated byte-identically; herdr backend (launch via one std-only `layout.apply` socket request, focus joining session id → pid → unique cwd with ambiguity refused); innermost-multiplexer precedence from `/proc` ancestry; GUI-terminal fallback preserved; design note covers zellij/WezTerm/kitty/screen/Rex/hc, implementations deferred MUX-F01..F06 (MUX-01..07) — Phase 33
+- ✓ Multiplexer backend seam — `src/terminal_switch.rs` replaced by `MultiplexerBackend` + static `REGISTRY` in `src/multiplexer/` (detect, focus, open with a fail-closed `ExecArgv`); tmux migrated byte-identically; herdr backend (launch via one std-only `layout.apply` socket request, focus joining session id → pid → unique cwd with ambiguity refused); innermost-multiplexer precedence from `/proc` ancestry; GUI-terminal fallback preserved; design note covers zellij/WezTerm/kitty/screen/Rex/hc, implementations deferred MUX-F01..F06 (MUX-01..07) — Phase 33 / v2.3.0
+- ✓ Agent-facing status query — `gsd-meta-manager status --json` (schema v1: path/registry/alias targets, attention, sessions) and `--skill` agent-skill output — quick 261110-qap / v2.3.0
 - Superseded in v2.0 (not shipped, by re-plan or user decision): CTRL-02/CTRL-03 (dry-run, opt-in gate), CTRL-08, SAFE-02/05/07/08, DRIVE-04, TRANS-01/04/05, STEER-02; moved to future: DRIVE-07, CTNR-01..05. CTRL-05 accepted partial (lock per run dir, not per project). See `.planning/milestones/v2.0-REQUIREMENTS.md`.
 
 ### Active
 
-**v2.3.0 Multiplexer Backends** (started 2026-11-10) — requirements in `.planning/REQUIREMENTS.md`:
+No milestone is open (v2.3.0 shipped 2026-11-10). Next: `/gsd-new-milestone`.
 
-- (none open — MUX-01..07 shipped in Phase 33; milestone ready for audit/close)
+Candidates carried forward:
 
-Carried forward from v2.0 (not in v2.3.0 scope) `[inferred — release 2026-10-29]`:
+- **Further multiplexer backends** — zellij, WezTerm mux, kitty remote control, GNU screen, Rex, herdr-core/`hc` (MUX-F01..F06 in `.planning/milestones/v2.3.0-REQUIREMENTS.md`). Phase 33 IN-06 (`same_dir` canonicalize per herdr pane on the UI thread) is open at info.
+
+Carried forward from v2.0 `[inferred — release 2026-10-29]`:
 
 - **Security-adjacent review findings from v2.0** — five clustered todos in `.planning/todos/pending/`
   (`2026-10-29-v2-carry-*`): capture-pump redaction edge cases, unsupervised child on capture/parent
@@ -140,6 +143,16 @@ Phases 26-31 replace them.*
 
 ## Current State
 
+Shipped v2.3.0 Multiplexer Backends (2026-11-10): Phase 33 plus quick task 261110-qap. Focus and launch
+go through a `MultiplexerBackend` seam (tmux and herdr implemented, innermost wins when nested, GUI-terminal
+fallback kept), and `status --json` / `--skill` give agents a machine-readable view. v2.1.0 (gsd-core 1.20.0
+sync) and v2.2.0 (gsd-core 1.20.1 sync and experimental one-off tasks) were interim releases between the
+v2.0 and v2.3.0 milestone closes. Archive: `.planning/milestones/v2.3.0-ROADMAP.md`,
+`v2.3.0-REQUIREMENTS.md`, `v2.3.0-phases/`.
+
+<details>
+<summary>v2.0.0 close</summary>
+
 Shipped v2.0.0 Autonomous Orchestration (2026-10-29): Phases 14-31 (20 phases incl. 26.1 and
 28.1; 19/21/22/23 closed by supersession, 26 superseded by 26.1) plus 109 quick tasks and 1 fast task, with interim
 releases v1.7.0 through v1.15.0 cut along the way. The tool now runs GSD projects as well as
@@ -148,6 +161,8 @@ a sandboxed launcher with hard caps, and a Driver tab that steers through DIRECT
 verdict tech_debt (70/71 requirements, 1 accepted partial; 123 open/deferred review entries, none
 critical). Archive: `.planning/milestones/v2.0-ROADMAP.md`, `v2.0-REQUIREMENTS.md`,
 `v2.0-MILESTONE-AUDIT.md`, `v2.0-phases/`.
+
+</details>
 
 <details>
 <summary>Before v2.0</summary>
@@ -161,7 +176,7 @@ across state readers, config schema, and UI).
 
 </details>
 
-## Current Milestone: v2.3.0 Multiplexer Backends
+## Last Milestone: v2.3.0 Multiplexer Backends (shipped 2026-11-10)
 
 **Goal:** Focus and launch Claude sessions from the TUI in whatever terminal workspace the user
 runs (tmux today, herdr now, others later) through one reusable backend seam, instead of the
@@ -201,10 +216,11 @@ LLM-goal-layer design, were superseded by spikes 001/002. See Active and Key Dec
 
 ## Context
 
-- Shipped v2.0.0; ~166K lines Rust in `src/` plus ~32K in `tests/`, across 8 milestones, distributed via crates.io
+- Shipped v2.3.0; ~197K lines Rust in `src/` plus ~37K in `tests/`, across 9 milestones, distributed via crates.io
+- `src/multiplexer/` (v2.3.0): `MultiplexerBackend` trait + static `REGISTRY` (tmux, herdr, GUI fallback), fail-closed `ExecArgv` sink; herdr talks to its socket with std only
 - v2.0 driver stack: `src/driverctl/` (single writer), `src/launcher/` (bwrap + `systemd-run --user --scope`, egress proxy, push step), `src/driver/` (DIRECTION.md, lock), embedded master prompt; Linux sandboxed, macOS degraded `--unsandboxed`
 - Known technical debt: 123 open/deferred review entries across Phases 24-31 (see `*-REVIEW-DISPOSITION.md` in `.planning/milestones/v2.0-phases/`); security-adjacent clusters tracked as todos
-- Tech stack: Rust, ratatui 0.30, crossterm 0.29, tokio, notify-debouncer-full
+- Tech stack: Rust, ratatui 0.30, crossterm 0.29 (no `event-stream`; app-owned input thread), tokio, notify-debouncer-full
 - `src/driverctl/` + `src/driver/direction.rs` (Phase 27): run-store, unix-socket server, client/hook, DIRECTION.md splice and run lock
 - Screen trait architecture; detail view is 8 tabs + Driver since Phase 24 (Archive lives under Docs › Milestones; Sessions › Agents since Phase 25)
 - Running-agent scan (`src/agents/`) rides the 5 s session poll in `spawn_blocking`; read-only, no locks taken in agent worktrees
@@ -273,7 +289,7 @@ LLM-goal-layer design, were superseded by spikes 001/002. See Active and Key Dec
 | Phase 29 closed on accepted acceptance outcomes (operator decision 2026-10-20): o1 ADJUST x2 accepted; h2 H2-5 FAIL ruled a rubric setup flaw (item already done at relaunch, so no recovery owed; harness precondition fixed in WR-07, 04a7a40); no re-run | The real-Opus third gaps_found park was never reached live; carried risk is covered by 28-09 d33, h4 and the deterministic reconcile suites. A further paid run would test the model, not the prompt | ✓ Accepted — DRIVE-01 prompt half closed |
 | Fixer progress shown as an estimate (`~F/T`) from REVIEW.md `findings.total` + `fix(NN)` commit ids (Phase 25) | No authoritative fix ledger exists mid-run; labelling it approximate is honest | ⚠️ Revisit — WR-03/WR-04 (wrong REVIEW file, inflated count) open |
 | herdr launch through one `layout.apply` socket request, no shell/`pane run` path even as fallback (Phase 33, D-12 vs D-13) `[inferred — audit]` | Keeps the argv a JSON array end to end, so the fail-closed `ExecArgv` sink is the only argv builder | ✓ Good — live-tested on herdr 0.9.5 |
-| Nested multiplexers: innermost wins by nearest `/proc` ancestor server comm; static order (tmux first) off Linux (Phase 33) | Matches what the user is looking at when herdr runs inside tmux or vice versa | ⚠️ Revisit — WR-01 cwd-only herdr focus tier and WR-03 unused `is_try_next` open in 33-REVIEW-DISPOSITION.md |
+| Nested multiplexers: innermost wins by nearest `/proc` ancestor server comm; static order (tmux first) off Linux (Phase 33) | Matches what the user is looking at when herdr runs inside tmux or vice versa | ✓ Good — WR-01 (cwd tier restricted), WR-02 (resolved paths) and WR-03 (`is_try_next` deleted) fixed before close; re-review 0 warnings, IN-06 open at info |
 
 ## Evolution
 
@@ -293,4 +309,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-11-10 after Phase 33*
+*Last updated: 2026-11-10 after v2.3.0 milestone*

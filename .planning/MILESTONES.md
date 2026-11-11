@@ -1,5 +1,22 @@
 # Milestones
 
+## v2.3.0 Multiplexer Backends (Shipped: 2026-11-10)
+
+**Released as:** v2.3.0 (follows interim releases v2.1.0 and v2.2.0, which were cut without a milestone close)
+**Phases completed:** 1 phase (33), 2 plans, 5 tasks, plus 1 quick task (261110-qap)
+**Verification:** Phase 33 passed 7/7 requirements (MUX-01..07), 20/20 plan truths. It was re-verified after the code-review fixes (acc3f4f). No milestone audit was run: one phase, verified, every requirement Complete `[inferred — release 2026-11-10]`
+**Review:** 0 critical / 3 warning / 5 info, all fixed (WR-01..03, IN-01..05, UI-01). The re-review left 1 open info (IN-06, `same_dir` canonicalize on the UI thread)
+**Git range:** v2.2.0..v2.3.0, ~60 commits; src+tests ~234K lines Rust
+
+**Key accomplishments:**
+- A `src/multiplexer/` backend seam replaces the tmux-hardcoded `terminal_switch`; inside herdr, `n` and resume open a tab through one exec-direct `layout.apply` socket request, tmux behaves and reports exactly as before, and every other failure falls through to the GUI chain with `<backend>: <reason>` on the status line.
+- The innermost multiplexer now wins when tmux and herdr are nested (env gate decides candidacy, the nearest server in the TUI's own /proc ancestry decides order), `Tab` inside herdr lands in the session's pane through a never-guess three-tier join, and the trait's design is recorded against eight tools next to the code.
+- `gsd-meta-manager status --json` (schema v1: path, registry and alias targets, attention, sessions) and `--skill`, which prints an agent skill (quick 261110-qap)
+
+**Closeout:** override_closeout. Known verification overrides: 7 newly acknowledged (5 pending todos `2026-10-29-v2-carry-*`, seed SEED-261101-u2f, quick 261103-gt1), 91 carried forward from a prior close (see STATE.md Deferred Items). The 241 `deferred_items` hits in the archived v2.0 Phase 19/21/25 `deferred-items.md` logs still cannot be anchored by the acknowledge writer, as disclosed at the v2.0 close `[inferred — release 2026-11-10]`.
+
+---
+
 ## v2.0 Autonomous Orchestration (Shipped: 2026-10-29)
 
 **Released as:** v2.0.0 (interim releases v1.7.0 through v1.15.0 shipped during the milestone)
