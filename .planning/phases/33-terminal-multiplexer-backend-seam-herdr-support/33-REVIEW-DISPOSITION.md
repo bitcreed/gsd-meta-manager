@@ -5,53 +5,53 @@ titles: json
 findings:
   - id: WR-01
     severity: warning
-    disposition: open
+    disposition: fixed
     title: "herdr cwd-only tier can focus a pane that does not run the session, and it pre-empts tmux's exact tty match"
   - id: WR-02
     severity: warning
-    disposition: open
+    disposition: fixed
     title: "herdr pid tier is gated behind a byte-exact cwd comparison, so it never runs for symlinked or non-canonical project paths"
   - id: WR-03
     severity: warning
-    disposition: open
+    disposition: fixed
     title: "`MuxError::is_try_next` and the documented error classes are not applied by either seam function"
   - id: IN-01
     severity: info
-    disposition: open
+    disposition: fixed
     title: "`Detection.inside` can never be false, so `order_innermost`'s `inside` check guards nothing"
   - id: IN-02
     severity: info
-    disposition: open
+    disposition: fixed
     title: "`ExecArgv` refusals name \"a tmux window\" when raised on the herdr path"
   - id: IN-03
     severity: info
-    disposition: open
+    disposition: fixed
     title: "`parse_layout_apply_reply` treats `\"error\": null` as a failure and never checks the echoed id"
   - id: IN-04
     severity: info
-    disposition: open
+    disposition: fixed
     title: "Blocking bounds are uneven, and an abandoned connect thread is leaked per timeout"
   - id: IN-05
     severity: info
-    disposition: open
+    disposition: fixed
     title: "Test listeners in `mod.rs` and `herdr.rs` can hang the suite if the client never connects"
-open: 8
+open: 0
 total: 8
-recorded: 2026-11-10T22:30:53.764Z
+recorded: 2026-11-11T01:36:36.984Z
 ---
 
 # Phase 33: Code Review Disposition
 
 | Finding | Severity | Disposition | Source |
 |---------|----------|-------------|--------|
-| WR-01 | warning | open | - |
-| WR-02 | warning | open | - |
-| WR-03 | warning | open | - |
-| IN-01 | info | open | - |
-| IN-02 | info | open | - |
-| IN-03 | info | open | - |
-| IN-04 | info | open | - |
-| IN-05 | info | open | - |
+| WR-01 | warning | fixed | 33-REVIEW-FIX.md |
+| WR-02 | warning | fixed | 33-REVIEW-FIX.md |
+| WR-03 | warning | fixed | 33-REVIEW-FIX.md |
+| IN-01 | info | fixed | 33-REVIEW-FIX.md |
+| IN-02 | info | fixed | 33-REVIEW-FIX.md |
+| IN-03 | info | fixed | 33-REVIEW-FIX.md |
+| IN-04 | info | fixed | 33-REVIEW-FIX.md |
+| IN-05 | info | fixed | 33-REVIEW-FIX.md |
 
 Dispositions: `open` (recorded, not yet triaged), `fixed`, `skipped`, `deferred`.
 Set `deferred` by hand and put the reason in the Source cell; both are preserved. A `|` in the reason is kept as prose and escaped on the next run.
