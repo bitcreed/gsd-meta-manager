@@ -25,7 +25,7 @@ All commits are local; nothing was pushed. `src/cli.rs` and `src/main.rs` were n
 
 ## Fixed Issues
 
-### WR-01: herdr cwd-only tier can focus a pane that does not run the session
+### WR-01: herdr cwd-only tier can focus a pane that does not run the session, and it pre-empts tmux's exact tty match
 
 **Files modified:** `src/multiplexer/herdr.rs`
 **Commit:** 8425be8
@@ -40,7 +40,7 @@ All commits are local; nothing was pushed. `src/cli.rs` and `src/main.rs` were n
 - [inferred, for audit] `SessionKind::Codex` maps to herdr agent name `"codex"`. Only `"claude"` is measured in research. A wrong guess costs a missed directory match for Codex (the pid tier still works), never a wrong focus.
 - Residual: a Claude-agent pane in the same directory with unreadable process-info can still be focused by directory, with the approximate-match note, and then pre-empts an outer backend. This needs process-info to fail for that pane.
 
-### WR-02: herdr pid tier gated behind a byte-exact cwd comparison
+### WR-02: herdr pid tier is gated behind a byte-exact cwd comparison, so it never runs for symlinked or non-canonical project paths
 
 **Files modified:** `src/multiplexer/herdr.rs`
 **Commit:** d947b32
@@ -63,7 +63,7 @@ All commits are local; nothing was pushed. `src/cli.rs` and `src/main.rs` were n
 **Status:** fixed
 **Applied fix:** The directory-only path says `(matched by working directory only)` (see WR-01). The jargon note `tab only: ...` became `tab focused, not the pane: herdr tracks no agent in that pane and its tab has N panes`.
 
-### WR-03: `MuxError::is_try_next` and the documented classes are not applied
+### WR-03: `MuxError::is_try_next` and the documented error classes are not applied by either seam function
 
 **Files modified:** `src/multiplexer/mod.rs`
 **Commit:** 0a3a0ea
@@ -71,35 +71,35 @@ All commits are local; nothing was pushed. `src/cli.rs` and `src/main.rs` were n
 **Applied fix:** Deleted `is_try_next` and its test; rewrote the `MuxError` docs to say the classes describe why a backend did not act, and that both seam functions treat every error alike (report, try the next step, first success wins). The doc records why falling through on `RefusedForSafety` is safe (no later step reuses the refused vector).
 - [inferred, for audit] Chose "delete and document" over "implement": `33-VERIFICATION.md` states that falling through to the GUI chain on a refusal is exactly what MUX-05/MUX-06 require, and a herdr ambiguity refusal falling through to an outer backend's own exact join is the designed D-09 behavior.
 
-### IN-02: neutral wording for `ExecArgv` refusals and the layout.apply error
+### IN-02: `ExecArgv` refusals name "a tmux window" when raised on the herdr path
 
 **Files modified:** `src/multiplexer/mod.rs`, `src/multiplexer/herdr.rs`
 **Commit:** 80e56ad
 **Status:** fixed
 **Applied fix:** Refusals now say "a new window" and "the multiplexer's own option parser"; the pinned substrings `directly` and `option` are kept. The reply error reads `layout.apply failed (code): message` (no doubled "herdr"). The old "still name tmux" rationale doc was rewritten.
 
-### IN-03: `"error": null` treated as a failure
+### IN-03: `parse_layout_apply_reply` treats `"error": null` as a failure and never checks the echoed id
 
 **Files modified:** `src/multiplexer/herdr.rs`
 **Commit:** 0bafda2
 **Status:** fixed
 **Applied fix:** `object.get("error").filter(|e| !e.is_null())`; tests cover a success with `"error":null` and a null error with no result (still a failure). The echoed-id check was NOT added [inferred, for audit]: nothing shows herdr always echoes the id, and a strict check would turn a working open into a failure plus a second GUI window.
 
-### IN-05: test listeners can hang the suite
+### IN-05: Test listeners in `mod.rs` and `herdr.rs` can hang the suite if the client never connects
 
 **Files modified:** `src/multiplexer/mod.rs`, `src/multiplexer/herdr.rs`
 **Commit:** c7a5478
 **Status:** fixed
 **Applied fix:** A test-only `accept_within` (non-blocking accept polled for up to 10 s, plus a read timeout on the accepted stream) replaces the blocking `accept()` in `serve_once` and in the closing-listener test, so a client that never connects fails the test instead of hanging it.
 
-### IN-01: `Detection.inside` can never be false (necessity)
+### IN-01: `Detection.inside` can never be false, so `order_innermost`'s `inside` check guards nothing
 
 **Files modified:** `src/multiplexer/mod.rs`
 **Commit:** 67d2854
 **Status:** fixed: requires human verification (reviewer's second option; no code removed)
 **Applied fix:** Kept the field and added `order_innermost_skips_a_backend_that_is_not_inside`, a fixture backend returning `inside: false`. Removal was not done [inferred, for audit]: `inside` vs `reachable` is a locked design decision (D-02) recorded in the trait's design note, and the deferred kitty backend (MUX-F03) is the stated case that needs it. The reviewer offered the fixture as the alternative.
 
-### IN-04: uneven blocking bounds, leaked connect thread
+### IN-04: Blocking bounds are uneven, and an abandoned connect thread is leaked per timeout
 
 **Files modified:** `src/multiplexer/herdr.rs`
 **Commit:** 401f652
