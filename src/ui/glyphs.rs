@@ -10,7 +10,11 @@
 //! * exactly 1 cell under both `unicode-width` measures (`width` and
 //!   `width_cjk`), and
 //! * covered by DejaVu Sans Mono (the base of Menlo and Hack), so no terminal
-//!   has to fall back to a second font for it.
+//!   has to fall back to a second font for it. Coverage in one font does not
+//!   prevent fallback in another: Ubuntu Sans Mono lacks several of these.
+//! * drawn directly before a non-space character only if it is in
+//!   [`FLUSH_SAFE`]: a fallback glyph wider than a cell covers the next
+//!   character.
 //!
 //! # Why
 //!
@@ -31,6 +35,11 @@
 //!   inside composed text (separators, truncation, ranges, key hints, scroll
 //!   indicators). Replacing them means an ASCII fallback mode, which is new
 //!   config and so a follow-up (see the pending todo).
+//! * Known limitation: a dozen registry glyphs and the four TYPOGRAPHY arrows
+//!   fall back to a proportional font on some setups and overflow their cell.
+//!   They are drawn before a space or at the end of a cell, so the overflow
+//!   lands on blank space. See
+//!   `.planning/todos/pending/2026-11-11-registry-glyphs-overflow-under-font-fallback.md`.
 //!
 //! # Adding a glyph
 //!
@@ -127,6 +136,40 @@ pub const ALL: &[(&str, &str)] = &[
     ("ANGLE_RIGHT", ANGLE_RIGHT),
     ("GUILLEMET_RIGHT", GUILLEMET_RIGHT),
     ("RETURN_SYMBOL", RETURN_SYMBOL),
+];
+
+/// The registry glyphs that may be drawn directly before a non-space
+/// character (a digit, a letter, an interpolation).
+///
+/// The rule: a registry glyph drawn directly before a non-space character must
+/// be in this list. The reason: a glyph the terminal font lacks is drawn from a
+/// fallback font, often a proportional one, and a fallback glyph wider than one
+/// cell covers the character after it. Measured: `U+25D2` at 1.56 cells covered
+/// the count in the Status cell (`U+25D2` + `1`).
+///
+/// Provenance: the reference setup is Ubuntu Sans Mono 11 (the Ptyxis system
+/// monospace font) with fontconfig fallback to DejaVu Sans. Measured 2026-11-11
+/// with `fc-list ':file=<font>:charset=<hex>'` and `hmtx` advances (one cell is
+/// 0.56 em). Group 1 is covered by both Ubuntu Sans Mono and DejaVu Sans Mono.
+/// Group 2 is missing from Ubuntu Sans Mono, but the DejaVu Sans fallback is
+/// narrower than a cell. Re-measure when a glyph is added to [`ALL`] or drawn
+/// flush against text.
+pub const FLUSH_SAFE: &[&str] = &[
+    // Group 1: covered by the primary font, 1.00 cell.
+    LOZENGE_WHITE,
+    DOUBLE_BAR,
+    CIRCLE_DOTTED,
+    BULLET_OPERATOR,
+    CHECK,
+    ANGLE_LEFT,
+    ANGLE_RIGHT,
+    GUILLEMET_RIGHT,
+    INCREMENT,
+    // Group 2: fallback glyph narrower than a cell.
+    LOZENGE_BLACK,        // 0.88
+    BLACK_RECT,           // 0.98
+    TRIANGLE_RIGHT_SMALL, // 0.90
+    TRIANGLE_DOWN_SMALL,  // 0.90
 ];
 
 #[cfg(test)]
@@ -295,19 +338,17 @@ mod tests {
         }
     }
 
-    /// The `(line, char)` pairs production code draws: `\u{HEX}` escapes and
-    /// literal non-ASCII chars, outside comments and outside the first
-    /// `#[cfg(test)] mod`, minus the Cc and Cf sanitizer data.
-    fn drawn_codepoints(src: &str) -> Vec<(usize, char)> {
+    /// The production lines of `src` with their 1-based numbers: everything
+    /// before the first `#[cfg(test)] mod`, minus comment lines and trailing
+    /// comments (unless the `//` sits inside a string).
+    fn production_lines(src: &str) -> Vec<(usize, &str)> {
         let lines: Vec<&str> = src.lines().collect();
         let cut = (0..lines.len())
             .find(|&i| i + 1 < lines.len() && is_cfg_test_mod_decl(lines[i], lines[i + 1]))
             .unwrap_or(lines.len());
-        let category = CodePointMapData::<GeneralCategory>::new();
         let mut out = Vec::new();
         for (idx, raw) in lines[..cut].iter().enumerate() {
-            let trimmed = raw.trim_start();
-            if trimmed.starts_with("//") {
+            if raw.trim_start().starts_with("//") {
                 continue;
             }
             let mut line = *raw;
@@ -316,6 +357,18 @@ mod tests {
                     line = &line[..pos];
                 }
             }
+            out.push((idx + 1, line));
+        }
+        out
+    }
+
+    /// The `(line, char)` pairs production code draws: `\u{HEX}` escapes and
+    /// literal non-ASCII chars, outside comments and outside the first
+    /// `#[cfg(test)] mod`, minus the Cc and Cf sanitizer data.
+    fn drawn_codepoints(src: &str) -> Vec<(usize, char)> {
+        let category = CodePointMapData::<GeneralCategory>::new();
+        let mut out = Vec::new();
+        for (lineno, line) in production_lines(src) {
             let mut found: Vec<char> = Vec::new();
             let bytes = line.as_bytes();
             let mut i = 0;
@@ -347,7 +400,66 @@ mod tests {
                 if gc == GeneralCategory::Control || gc == GeneralCategory::Format {
                     continue;
                 }
-                out.push((idx + 1, c));
+                out.push((lineno, c));
+            }
+        }
+        out
+    }
+
+    /// Every registry glyph production code draws directly before an ASCII
+    /// alphanumeric or an opening brace: `(line, glyph)`. Three spellings are
+    /// recognised: a `\u{HEX}` escape (hex case-insensitive), a literal
+    /// registry char, and a `{NAME}` interpolation where NAME is an [`ALL`] name
+    /// or `GLYPH_UNMERGED`. A glyph that ends the line, a string, or is followed
+    /// by a space or punctuation is not flush against text.
+    fn flush_draws(src: &str) -> Vec<(usize, &'static str)> {
+        let by_char = |c: char| ALL.iter().find(|(_, g)| g.starts_with(c));
+        let flush =
+            |next: Option<char>| next.is_some_and(|n| n.is_ascii_alphanumeric() || n == '{');
+        let mut out = Vec::new();
+        for (lineno, line) in production_lines(src) {
+            let mut i = 0;
+            while i < line.len() {
+                let rest = &line[i..];
+                if let Some(esc) = rest.strip_prefix("\\u{") {
+                    if let Some((hex, after)) = esc.split_once('}') {
+                        if (1..=6).contains(&hex.len())
+                            && hex.chars().all(|c| c.is_ascii_hexdigit())
+                        {
+                            let c = u32::from_str_radix(hex, 16).ok().and_then(char::from_u32);
+                            if let Some((_, g)) = c.and_then(by_char) {
+                                if flush(after.chars().next()) {
+                                    out.push((lineno, *g));
+                                }
+                            }
+                            i += 3 + hex.len() + 1;
+                            continue;
+                        }
+                    }
+                }
+                if let Some(interp) = rest.strip_prefix('{') {
+                    if let Some((name, after)) = interp.split_once('}') {
+                        let glyph = if name == "GLYPH_UNMERGED" {
+                            Some(INCREMENT)
+                        } else {
+                            ALL.iter().find(|(n, _)| *n == name).map(|(_, g)| *g)
+                        };
+                        if let Some(g) = glyph {
+                            if flush(after.chars().next()) {
+                                out.push((lineno, g));
+                            }
+                            i += 1 + name.len() + 1;
+                            continue;
+                        }
+                    }
+                }
+                let c = rest.chars().next().unwrap_or(' ');
+                if let Some((_, g)) = by_char(c).filter(|_| !c.is_ascii()) {
+                    if flush(rest[c.len_utf8()..].chars().next()) {
+                        out.push((lineno, *g));
+                    }
+                }
+                i += c.len_utf8();
             }
         }
         out
@@ -368,9 +480,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn production_ui_code_draws_only_registry_or_exempt_glyphs() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    /// The files the production scans read: `src/ui`, three extra files, and
+    /// not the `render_escape_guard` test module.
+    fn production_scan_files() -> (PathBuf, Vec<PathBuf>) {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let mut files = Vec::new();
         collect_rs(&root.join("src/ui"), &mut files);
         for extra in [
@@ -388,6 +501,13 @@ mod tests {
             "render_escape_guard must stay declared under #[cfg(test)]"
         );
         files.retain(|p| !p.ends_with("src/ui/screens/render_escape_guard.rs"));
+        (root, files)
+    }
+
+    #[test]
+    fn production_ui_code_draws_only_registry_or_exempt_glyphs() {
+        let (root, files) = production_scan_files();
+        let root = root.as_path();
 
         let registry: Vec<u32> = ALL
             .iter()
@@ -486,5 +606,131 @@ mod tests {
             crate::state_reader::git_ops::GRAPH_MERGE.to_string(),
             CIRCLE_OPEN
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Flush safety (quick 261111-ixj)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn flush_safe_is_a_measured_subset_of_the_registry() {
+        let all: Vec<&str> = ALL.iter().map(|(_, g)| *g).collect();
+        for (i, g) in FLUSH_SAFE.iter().enumerate() {
+            assert!(all.contains(g), "{g:?} is not a registry glyph");
+            assert!(!FLUSH_SAFE[i + 1..].contains(g), "{g:?} is listed twice");
+        }
+        assert_eq!(FLUSH_SAFE.len(), 13, "the measured list has 13 entries");
+        assert!(FLUSH_SAFE.contains(&INCREMENT));
+        // Measured to overflow their cell under the reference font fallback.
+        let overflow = [
+            CIRCLE_FILLED,
+            FISHEYE,
+            CLOCK,
+            BALLOT_X,
+            ATTENTION,
+            ARROW_UP_DASHED,
+            ARROW_DOWN_DASHED,
+            RETURN_SYMBOL,
+            MIDLINE_ELLIPSIS,
+            DIAMOND_HALF_BLACK,
+            POINTER_RIGHT,
+            CIRCLE_OPEN,
+            "\u{25D2}",
+        ];
+        assert_eq!(overflow.len(), 13);
+        for g in overflow {
+            assert!(!FLUSH_SAFE.contains(&g), "{g:?} overflows its cell");
+        }
+    }
+
+    /// Negative control: the scanner must flag a synthetic flush draw, or the
+    /// real scan below could pass vacuously.
+    #[test]
+    fn the_flush_scanner_flags_a_glyph_touching_text() {
+        // Built line by line so no synthetic line sits at column zero (the
+        // spawn-seam guard reads this file for column-zero `mod tests {`).
+        let src = [
+            r#"let a = "\u{2717}1";"#,
+            r#"let b = format!("{BALLOT_X}1");"#,
+            r#"let c = format!("{GLYPH_UNMERGED}{n}");"#,
+            r#"let d = "\u{2717} x";"#,
+            r#"// a comment \u{2717}1"#,
+            r#"let e = 1; // a trailing comment \u{2717}1"#,
+            r#"let f = "x\u{2717}";"#,
+            r#"let g = "\u{2B16}x";"#,
+            r#"let h = "✗2";"#,
+            "#[cfg(test)]",
+            "mod tests {",
+            r#"    const T: &str = "\u{2717}1";"#,
+            "}",
+        ]
+        .join("\n");
+        let got = flush_draws(&src);
+        assert_eq!(
+            got,
+            vec![
+                (1, BALLOT_X),
+                (2, BALLOT_X),
+                (3, INCREMENT),
+                (8, DIAMOND_HALF_BLACK),
+                (9, BALLOT_X),
+            ],
+            "{got:?}"
+        );
+    }
+
+    #[test]
+    fn registry_glyphs_drawn_flush_against_text_are_flush_safe() {
+        let (root, files) = production_scan_files();
+        let mut seen = 0;
+        let mut unsafe_draws = Vec::new();
+        for f in &files {
+            let src = std::fs::read_to_string(f).unwrap_or_else(|e| panic!("{}: {e}", f.display()));
+            for (line, g) in flush_draws(&src) {
+                seen += 1;
+                if !FLUSH_SAFE.contains(&g) {
+                    unsafe_draws.push(format!(
+                        "{}:{line}: U+{:04X} is drawn flush against text but is not in FLUSH_SAFE",
+                        f.strip_prefix(&root).unwrap_or(f).display(),
+                        g.chars().next().map_or(0, |c| c as u32)
+                    ));
+                }
+            }
+        }
+        assert!(
+            seen >= 3,
+            "only {seen} flush draws seen: the scan is vacuous"
+        );
+        assert!(unsafe_draws.is_empty(), "{}", unsafe_draws.join("\n"));
+    }
+
+    /// The Status cell is a fixed-width table cell: its ladders draw registry
+    /// glyphs only, never a TYPOGRAPHY or STRUCTURAL code point (U+00B7 is
+    /// East Asian Ambiguous).
+    #[test]
+    fn the_status_cell_source_draws_no_typography() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/agents/waves.rs");
+        let src = std::fs::read_to_string(&path).expect("waves.rs");
+        let registry: Vec<u32> = ALL
+            .iter()
+            .flat_map(|(_, g)| g.chars().map(|c| c as u32))
+            .collect();
+        let mut registry_seen = false;
+        let mut bad = Vec::new();
+        for (line, c) in drawn_codepoints(&src) {
+            if registry.contains(&(c as u32)) {
+                registry_seen = true;
+            } else {
+                bad.push(format!(
+                    "src/agents/waves.rs:{line}: U+{:04X} {c:?}",
+                    c as u32
+                ));
+            }
+        }
+        assert!(
+            registry_seen,
+            "no registry glyph seen in waves.rs: the scan is vacuous"
+        );
+        assert!(bad.is_empty(), "{}", bad.join("\n"));
     }
 }

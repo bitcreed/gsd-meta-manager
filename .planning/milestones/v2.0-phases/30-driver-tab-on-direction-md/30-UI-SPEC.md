@@ -895,6 +895,10 @@ the former glyphs), and a production source scan over `src/ui/**`, `src/agents/{
 2.3.0 does not list U+2691 as `Extended_Pictographic` (the Unicode 13 data does), so the control witnesses the
 property check with U+23F8 instead; U+2691 is replaced regardless.
 
+> Amended by quick 261111-ixj (2026-11-11): coverage in DejaVu Sans Mono did not prevent fallback in Ubuntu Sans
+> Mono; glyphs drawn flush against text must be in `glyphs::FLUSH_SAFE`. `CIRCLE_HALF` U+25D2 (EAW Neutral, not
+> in Ubuntu Sans Mono, drawn 1.56 cells wide from the DejaVu Sans fallback) became `INCREMENT` U+2206.
+
 **Swap table** (one old codepoint maps to one new codepoint everywhere it is a status glyph):
 
 | Registry name | New | Replaces | Meaning |
@@ -907,7 +911,7 @@ property check with U+23F8 instead; U+2691 is replaced regardless.
 | `BLACK_RECT` | `▮` U+25AE | U+25A0 | stopped / killed |
 | `CIRCLE_FILLED` | `◍` U+25CD | U+25CF | done / succeeded / acted on / roadmap done / git commit / selected option |
 | `CIRCLE_OPEN` | `◦` U+25E6 | U+25CB | unlaunched / pending / queued / roadmap ready / planned / git merge |
-| `CIRCLE_HALF` | `◒` U+25D2 | U+25D0 | unmerged / delivered |
+| `INCREMENT` | `∆` U+2206 | U+25D2 (before that U+25D0) | unmerged / delivered |
 | `POINTER_RIGHT` | `►` U+25BA | U+25B6 | session / roadmap selected / Waves running |
 | `TRIANGLE_DOWN_SMALL` | `▾` U+25BE | U+25BC (roadmap widget) | open / expanded |
 | `ARROW_UP_DASHED` / `ARROW_DOWN_DASHED` | `⇡` U+21E1 / `⇣` U+21E3 | U+2191 / U+2193 as markers | roadmap dependency / unblocks |

@@ -1513,6 +1513,152 @@ mod tests {
         );
     }
 
+    /// Quick 261111-ixj: the Status cell is a fixed-width table cell, and a
+    /// glyph the terminal font lacks falls back to a font that may draw it
+    /// wider than a cell, over the character after it. Every form of every
+    /// ladder branch draws only ASCII and registry glyphs, no U+00B7, and a
+    /// non-ASCII char touches text only if it is `FLUSH_SAFE`.
+    #[test]
+    fn every_status_cell_form_is_width_safe_and_flush_safe() {
+        use super::super::fixers::FixerEstimate;
+        use super::super::unmerged::UnmergedState;
+        use super::super::worktree_phases::{WorktreePhase, WorktreeStage};
+        use crate::ui::glyphs::{ALL, FLUSH_SAFE, INCREMENT};
+
+        let live = |plan: Option<&str>| row("/wt/a", AgentLiveness::Live, plan);
+        let fixer_row = |n: u32| AgentRow {
+            agent_type: Some(Untrusted::from_untrusted_source("gsd-code-fixer".into())),
+            ..row(&format!("/wt/f{n}"), AgentLiveness::Live, None)
+        };
+        let unmerged = vec![plan_item("13-03", UnmergedState::AwaitingMerge)];
+        let ghost = WorktreePhase {
+            id: "14".to_string(),
+            name: Untrusted::from_untrusted_source("new-work".to_string()),
+            stage: WorktreeStage::Context,
+            plans_done: 0,
+            plans_total: 0,
+            worktree: PathBuf::from("/x"),
+            short_ref: Untrusted::from_untrusted_source("a8f61b1".to_string()),
+            state: UnmergedState::AwaitingMerge,
+        };
+        let executor = AgentView {
+            active_phase: PhaseNum::parse("13"),
+            current_wave: Some(2),
+            max_wave: Some(3),
+            plan_total: 9,
+            done: 4,
+            running: 1,
+            agents: vec![live(Some("13-05"))],
+            ..AgentView::default()
+        };
+        let views = [
+            // Active executor with waves, plus unmerged.
+            AgentView {
+                unmerged: unmerged.clone(),
+                ..executor.clone()
+            },
+            // Active executor without waves.
+            AgentView {
+                current_wave: None,
+                max_wave: None,
+                ..executor.clone()
+            },
+            // The 999 extreme.
+            AgentView {
+                active_phase: PhaseNum::parse("999.12"),
+                current_wave: Some(99),
+                max_wave: Some(99),
+                plan_total: 999,
+                done: 998,
+                running: 99,
+                agents: vec![live(Some("999.12-01"))],
+                ..AgentView::default()
+            },
+            // Fixers with counts, plus unmerged.
+            AgentView {
+                agents: (0..3).map(fixer_row).collect(),
+                fixers: Some(FixerEstimate {
+                    fixers: 3,
+                    phase: PhaseNum::parse("12"),
+                    fixed: Some(5),
+                    total: Some(48),
+                }),
+                unmerged: unmerged.clone(),
+                ..AgentView::default()
+            },
+            // `N agents`.
+            AgentView {
+                agents: vec![fixer_row(0), fixer_row(1)],
+                ..AgentView::default()
+            },
+            // Idle: unmerged only, unmerged plus stalled, stalled only.
+            AgentView {
+                unmerged: unmerged.clone(),
+                ..AgentView::default()
+            },
+            AgentView {
+                agents: vec![row("/wt/s", AgentLiveness::Stalled, None)],
+                unmerged: unmerged.clone(),
+                ..AgentView::default()
+            },
+            AgentView {
+                agents: vec![row("/wt/s", AgentLiveness::Stalled, None)],
+                ..AgentView::default()
+            },
+            // The worktree-phase tag, in front of a ladder and alone.
+            AgentView {
+                worktree_phases: vec![ghost.clone()],
+                ..executor.clone()
+            },
+            AgentView {
+                worktree_phases: vec![ghost.clone(), ghost],
+                ..AgentView::default()
+            },
+        ];
+
+        let registry: Vec<char> = ALL.iter().flat_map(|(_, g)| g.chars()).collect();
+        let flush_safe: Vec<char> = FLUSH_SAFE.iter().flat_map(|g| g.chars()).collect();
+        let (mut increment_before_digit, mut separator_between_spaces) = (false, false);
+        for (n, view) in views.iter().enumerate() {
+            let forms = view.summary_forms();
+            assert!(!forms.is_empty(), "view {n} yields no forms");
+            for form in forms {
+                assert!(!form.contains('\u{b7}'), "view {n}: U+00B7 in {form:?}");
+                let chars: Vec<char> = form.chars().collect();
+                for (i, &c) in chars.iter().enumerate() {
+                    if c.is_ascii() {
+                        continue;
+                    }
+                    assert!(
+                        registry.contains(&c),
+                        "view {n}: U+{:04X} in {form:?} is neither ASCII nor a registry glyph",
+                        c as u32
+                    );
+                    if chars.get(i + 1).is_some_and(|&next| next != ' ') {
+                        assert!(
+                            flush_safe.contains(&c),
+                            "view {n}: U+{:04X} touches text in {form:?} but is not FLUSH_SAFE",
+                            c as u32
+                        );
+                    }
+                }
+                increment_before_digit |= form
+                    .split(INCREMENT)
+                    .skip(1)
+                    .any(|rest| rest.starts_with(|c: char| c.is_ascii_digit()));
+                separator_between_spaces |= form.contains(&format!(" {SEP} "));
+            }
+        }
+        assert!(
+            increment_before_digit,
+            "no form draws INCREMENT then a digit"
+        );
+        assert!(
+            separator_between_spaces,
+            "no form draws the U+2219 separator"
+        );
+    }
+
     #[test]
     fn a_listed_plan_is_finished_unless_main_summarized_it() {
         use super::super::unmerged::UnmergedState;
