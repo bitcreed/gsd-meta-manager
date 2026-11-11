@@ -98,18 +98,27 @@ use std::path::Path;
 
 /// Why a backend did not do what it was asked (D-03).
 ///
-/// The four variants fall into three classes:
+/// The four variants fall into three classes. **The class describes why the
+/// backend did not act; it does not decide what the seam does next.** Both seam
+/// functions treat every error alike: a failing backend is reported and the next
+/// step is tried ([`focus_with`] moves on to the next detected backend,
+/// [`launch_with`] falls through to the GUI terminal chain), and the first
+/// success wins [inferred, for audit: review WR-03 found the previous docs
+/// promising retry rules the seam never applied].
 ///
 /// * **Not mine / not found** ([`MuxError::NotFound`], [`MuxError::Unsupported`]):
-///   this backend has nothing to act on, so the caller tries the next one
-///   ([`MuxError::is_try_next`]).
+///   this backend has nothing to act on.
 /// * **Refused for safety** ([`MuxError::RefusedForSafety`]): the request itself
-///   would put a command interpreter in the path. It is never retried through a
-///   path that adds one.
+///   would put a command interpreter in the path, or the backend would have to
+///   guess. Falling through is safe because no later step reuses the refused
+///   vector: the GUI argv is built separately, and a later backend runs its own
+///   join. A future step that did reuse it would have to stop here instead.
 /// * **Failed** ([`MuxError::Failed`]): the backend tried and the attempt broke.
 ///
 /// `Display` prints only the inner reason, so the reasons tmux already produced
-/// stay byte-identical in status lines. The backend name is added by the caller.
+/// stay byte-identical in focus status lines (the launch line shows
+/// [`MuxError::launch_phrase`] instead). The backend name is added by the
+/// caller.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MuxError {
     /// The thing to act on does not exist here (no pane, no tty recorded).
@@ -144,12 +153,6 @@ impl MuxError {
             Self::RefusedForSafety(_) => "refused for safety",
             Self::Failed(_) => "could not open a session",
         }
-    }
-
-    /// Should a caller move on to the next backend? True for the two "not
-    /// mine / not found" classes.
-    pub fn is_try_next(&self) -> bool {
-        matches!(self, Self::NotFound(_) | Self::Unsupported(_))
     }
 }
 
@@ -1433,14 +1436,6 @@ mod tests {
                 "{phrase}"
             );
         }
-    }
-
-    #[test]
-    fn mux_error_classes_map_to_try_next() {
-        assert!(MuxError::NotFound("x".into()).is_try_next());
-        assert!(MuxError::Unsupported("x".into()).is_try_next());
-        assert!(!MuxError::RefusedForSafety("x".into()).is_try_next());
-        assert!(!MuxError::Failed("x".into()).is_try_next());
     }
 
     #[test]
