@@ -48,6 +48,11 @@
 //!
 //! The join tiers run in order (session id, pid, working directory), and a tier
 //! with two or more matches is **refused**, never guessed (D-11, T-33-09). The
+//! working-directory tier is a last resort that cannot guess (review WR-01): it
+//! considers only panes herdr reports as running this session's kind of agent
+//! whose process-info could not be read, so a plain shell in the same directory
+//! is never focused and a pane known to run other processes never pre-empts an
+//! outer backend's exact match. A success by directory carries a note saying so. The
 //! order of panes in herdr's output never decides anything. The matching is
 //! exact for the reason `tmux::pane_tty_matches` is: a prefix or substring test
 //! would let one session's focus key send the operator's keystrokes into an
@@ -60,7 +65,7 @@ use super::{
     proc_chain, Detection, EnvSnapshot, ExecArgv, FocusOutcome, MatchedBy, MultiplexerBackend,
     MuxError,
 };
-use crate::session_detector::ClaudeSession;
+use crate::session_detector::{ClaudeSession, SessionKind};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -112,7 +117,10 @@ pub fn layout_apply_request(
 /// A `result` object is success. An `error` object is [`MuxError::Failed`]
 /// naming its code and message. Empty input, non-JSON, a non-object, or an
 /// object with neither key is also `Failed`, with a reason naming what was
-/// wrong. The error key is checked first, so an ambiguous reply fails closed.
+/// wrong. A non-null error key is checked first, so an ambiguous reply fails
+/// closed; `"error": null` counts as absent. The echoed `id` is not compared:
+/// nothing shows herdr always echoes it, and a mismatch check would turn a
+/// working open into a failure and a second GUI window \[inferred, for audit\].
 pub fn parse_layout_apply_reply(reply: &[u8]) -> Result<(), MuxError> {
     let text = String::from_utf8_lossy(reply);
     let text = text.trim();
@@ -126,7 +134,8 @@ pub fn parse_layout_apply_reply(reply: &[u8]) -> Result<(), MuxError> {
             "herdr reply is not a JSON object".to_string(),
         ));
     };
-    if let Some(error) = object.get("error") {
+    // `"error": null` is "no error", not a failure (review IN-03).
+    if let Some(error) = object.get("error").filter(|e| !e.is_null()) {
         let field = |name: &str| {
             error
                 .get(name)
@@ -135,7 +144,7 @@ pub fn parse_layout_apply_reply(reply: &[u8]) -> Result<(), MuxError> {
                 .to_string()
         };
         return Err(MuxError::Failed(format!(
-            "herdr layout.apply failed ({}): {}",
+            "layout.apply failed ({}): {}",
             field("code"),
             field("message")
         )));
@@ -198,15 +207,20 @@ impl MultiplexerBackend for HerdrBackend {
                 let mut chain_pids = vec![session.pid];
                 chain_pids.extend(proc_chain(session.pid).into_iter().map(|(pid, _)| pid));
                 let mut probed: Vec<(&HerdrPane, ProcessInfo)> = Vec::new();
+                // Candidates whose process-info could not be read. Only these
+                // may still be matched by directory (see `cwd_fallback`).
+                let mut unprobed: Vec<&HerdrPane> = Vec::new();
                 for candidate in &candidates {
                     let Ok(id) = validate_id(&candidate.pane_id) else {
+                        unprobed.push(candidate);
                         continue;
                     };
                     match self.process_info(env, id) {
                         Ok(info) => probed.push((*candidate, info)),
                         // One dead pane must not block focusing the others.
                         Err(e) => {
-                            tracing::debug!(pane = id, error = %e, "herdr process-info failed")
+                            tracing::debug!(pane = id, error = %e, "herdr process-info failed");
+                            unprobed.push(candidate);
                         }
                     }
                 }
@@ -214,7 +228,7 @@ impl MultiplexerBackend for HerdrBackend {
                 match join_by_pid(&probed, session.pid, &chain_pids) {
                     Tier::One(pane) => (pane, MatchedBy::Pid),
                     Tier::Ambiguous(n) => return Err(ambiguous(n, "pid")),
-                    Tier::None => match join_by_cwd(&candidates) {
+                    Tier::None => match join_by_cwd(&cwd_fallback(&unprobed, session.kind)) {
                         Tier::One(pane) => (pane, MatchedBy::Cwd),
                         Tier::Ambiguous(n) => return Err(ambiguous(n, "working directory")),
                         Tier::None => {
@@ -229,8 +243,13 @@ impl MultiplexerBackend for HerdrBackend {
         };
 
         let pane_id = validate_id(&pane.pane_id)?;
+        // A directory-only match is a guess the user should hear about.
+        let cwd_note = (by == MatchedBy::Cwd).then(|| CWD_ONLY_NOTE.to_string());
         match self.herdr_cli(env, &["agent", "focus", pane_id]) {
-            Ok(_) => Ok(FocusOutcome { by, partial: None }),
+            Ok(_) => Ok(FocusOutcome {
+                by,
+                partial: cwd_note,
+            }),
             Err(MuxError::Failed(message))
                 if error_code(&message).as_deref() == Some("agent_not_found") =>
             {
@@ -248,11 +267,15 @@ impl MultiplexerBackend for HerdrBackend {
                     .iter()
                     .filter(|p| p.tab_id.as_deref() == Some(tab_id))
                     .count();
-                let partial = (in_tab != 1).then(|| {
+                let tab_note = (in_tab != 1).then(|| {
                     format!(
-                        "tab only: herdr tracks no agent in that pane and its tab has {in_tab} panes"
+                        "tab focused, not the pane: herdr tracks no agent in that pane and its tab has {in_tab} panes"
                     )
                 });
+                let partial = match (tab_note, cwd_note) {
+                    (Some(tab), Some(cwd)) => Some(format!("{tab}; {cwd}")),
+                    (tab, cwd) => tab.or(cwd),
+                };
                 Ok(FocusOutcome { by, partial })
             }
             Err(e) => Err(e),
@@ -478,6 +501,10 @@ struct HerdrPane {
     cwd: Option<PathBuf>,
     #[serde(default)]
     foreground_cwd: Option<PathBuf>,
+    /// The agent herdr detected in the pane (`"claude"`, ...). Absent on a
+    /// pane herdr tracks no agent in, such as a plain shell.
+    #[serde(default)]
+    agent: Option<String>,
     #[serde(default)]
     agent_session: Option<AgentSession>,
 }
@@ -650,17 +677,35 @@ fn join_by_session_id<'a>(panes: &'a [HerdrPane], session_id: Option<&str>) -> T
     )
 }
 
-/// The panes whose `cwd` or `foreground_cwd` equals `working_dir` as a path (no
-/// canonicalization). Not restricted by agent kind, so a Codex session is
-/// focusable too [inferred].
+/// The panes whose `cwd` or `foreground_cwd` is `working_dir`. Not restricted by
+/// agent kind, so a Codex session is focusable too [inferred]; the narrowing to
+/// an agent happens only in the last-resort tier ([`cwd_fallback`]).
+///
+/// The session's `working_dir` is the resolved `/proc/<pid>/cwd`, while herdr
+/// may report the path as it was entered (through a symlink), so two paths are
+/// the same directory when they are equal as written or resolve to the same
+/// place ([`same_dir`], review WR-02).
 fn cwd_candidates<'a>(panes: &'a [HerdrPane], working_dir: &Path) -> Vec<&'a HerdrPane> {
     panes
         .iter()
         .filter(|pane| {
-            pane.cwd.as_deref() == Some(working_dir)
-                || pane.foreground_cwd.as_deref() == Some(working_dir)
+            [pane.cwd.as_deref(), pane.foreground_cwd.as_deref()]
+                .into_iter()
+                .flatten()
+                .any(|dir| same_dir(dir, working_dir))
         })
         .collect()
+}
+
+/// Equal as written, or both resolvable and resolving to the same path. A path
+/// that cannot be resolved (it no longer exists, or lives on another machine's
+/// view of the filesystem) only ever matches by exact equality.
+fn same_dir(a: &Path, b: &Path) -> bool {
+    a == b
+        || matches!(
+            (std::fs::canonicalize(a), std::fs::canonicalize(b)),
+            (Ok(a), Ok(b)) if a == b
+        )
 }
 
 /// Tier 2: a candidate whose foreground processes include `session_pid`, or
@@ -683,6 +728,34 @@ fn join_by_pid<'a>(
             .map(|(pane, _)| *pane)
             .collect(),
     )
+}
+
+/// The note on a focus that was matched by directory alone.
+const CWD_ONLY_NOTE: &str = "matched by working directory only";
+
+/// The name herdr gives the agent of a `kind` session in `pane list`'s `agent`
+/// field. `"claude"` is measured (research E2); `"codex"` is [inferred] and
+/// only ever narrows the last-resort tier, so a wrong name costs a missed
+/// directory match, never a wrong focus.
+fn agent_name(kind: SessionKind) -> &'static str {
+    match kind {
+        SessionKind::Claude => "claude",
+        SessionKind::Codex => "codex",
+    }
+}
+
+/// The panes the last-resort directory tier may choose among: `unverified`
+/// (candidates whose process-info could not be read, so nothing contradicts
+/// them) that herdr reports as running this session's kind of agent. A plain
+/// shell pane in the same directory is never one of them (WR-01), and neither
+/// is a pane whose process-info was read and named other processes: that pane
+/// is positively not running this session.
+fn cwd_fallback<'a>(unverified: &[&'a HerdrPane], kind: SessionKind) -> Vec<&'a HerdrPane> {
+    unverified
+        .iter()
+        .copied()
+        .filter(|pane| pane.agent.as_deref() == Some(agent_name(kind)))
+        .collect()
 }
 
 /// Tier 3: the one candidate left when the working directory is the only fact.
@@ -743,8 +816,16 @@ mod tests {
         assert_eq!(
             err,
             MuxError::Failed(
-                "herdr layout.apply failed (layout_apply_failed): Unable to spawn env".to_string()
+                "layout.apply failed (layout_apply_failed): Unable to spawn env".to_string()
             )
+        );
+        assert!(parse_layout_apply_reply(
+            br#"{"id":"gsdmm-open","result":{"type":"layout_apply"},"error":null}"#
+        )
+        .is_ok());
+        assert!(
+            parse_layout_apply_reply(br#"{"id":"x","error":null}"#).is_err(),
+            "a null error with no result is still not a success"
         );
         for bad in [
             &b""[..],
@@ -791,7 +872,9 @@ mod tests {
         let path = dir.path().join("h.sock");
         let listener = UnixListener::bind(&path).unwrap();
         let handle = std::thread::spawn(move || {
-            let (stream, _) = listener.accept().unwrap();
+            let stream =
+                crate::multiplexer::accept_within(&listener, std::time::Duration::from_secs(10))
+                    .expect("a client connects within 10 s");
             let mut line = String::new();
             BufReader::new(&stream).read_line(&mut line).unwrap();
         });
@@ -1005,6 +1088,7 @@ mod tests {
             tab_id: Some(tab.to_string()),
             cwd: Some(PathBuf::from(cwd)),
             foreground_cwd: None,
+            agent: None,
             agent_session: session.map(|(kind, value)| AgentSession {
                 kind: kind.to_string(),
                 value: value.to_string(),
@@ -1133,6 +1217,49 @@ mod tests {
     }
 
     #[test]
+    fn the_cwd_fallback_only_considers_panes_running_the_sessions_agent() {
+        let shell = pane("shell", "t", "/work/proj", None);
+        let mut claude = pane("claude", "t", "/work/proj", None);
+        claude.agent = Some("claude".to_string());
+        let mut codex = pane("codex", "t", "/work/proj", None);
+        codex.agent = Some("codex".to_string());
+        let all = [&shell, &claude, &codex];
+
+        let ids = |kind| -> Vec<String> {
+            cwd_fallback(&all, kind)
+                .iter()
+                .map(|p| p.pane_id.clone())
+                .collect()
+        };
+        assert_eq!(ids(SessionKind::Claude), vec!["claude"]);
+        assert_eq!(ids(SessionKind::Codex), vec!["codex"]);
+        assert!(cwd_fallback(&[&shell], SessionKind::Claude).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_pane_reporting_a_symlinked_path_is_a_candidate_for_the_resolved_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let other = dir.path().join("other");
+        std::fs::create_dir(&other).unwrap();
+
+        let panes = vec![
+            pane("via-link", "t", link.to_str().unwrap(), None),
+            pane("elsewhere", "t", other.to_str().unwrap(), None),
+        ];
+        let ids: Vec<&str> = cwd_candidates(&panes, &std::fs::canonicalize(&real).unwrap())
+            .iter()
+            .map(|p| p.pane_id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["via-link"]);
+        assert!(cwd_candidates(&panes, &dir.path().join("missing")).is_empty());
+    }
+
+    #[test]
     fn cwd_candidates_also_read_the_foreground_cwd() {
         let mut p = pane("a", "t", "/shell/dir", None);
         p.foreground_cwd = Some(PathBuf::from("/work/proj"));
@@ -1215,6 +1342,23 @@ mod tests {
                         None => String::new(),
                     };
                     format!(r#"{{"pane_id":"{id}","tab_id":"{tab}","cwd":"{cwd}"{agent}}}"#)
+                })
+                .collect();
+            format!(
+                r#"{{"id":"cli:pane:list","result":{{"panes":[{}]}}}}"#,
+                rows.join(",")
+            )
+        }
+
+        /// Panes herdr reports as running a Claude agent but with no
+        /// `agent_session` record: `(pane id, tab id, cwd)`.
+        fn claude_pane_list_json(panes: &[(&str, &str, &str)]) -> String {
+            let rows: Vec<String> = panes
+                .iter()
+                .map(|(id, tab, cwd)| {
+                    format!(
+                        r#"{{"pane_id":"{id}","tab_id":"{tab}","cwd":"{cwd}","agent":"claude"}}"#
+                    )
                 })
                 .collect();
             format!(
@@ -1351,12 +1495,12 @@ mod tests {
             let panes = pane_list_json(&[("w1:p2", "w1:t2", "/work/proj", None)]);
             let (result, log) = focus_with_fixture(
                 &panes,
-                &process_info_json(1, 2),
+                &process_info_json(4242, 2),
                 AGENT_FOCUS_NOT_FOUND,
                 &session(4242, None, "/work/proj"),
             );
             let outcome = result.unwrap();
-            assert_eq!(outcome.by, MatchedBy::Cwd, "no pid fact, one cwd candidate");
+            assert_eq!(outcome.by, MatchedBy::Pid);
             assert_eq!(outcome.partial, None);
             assert_eq!(
                 log.last().map(String::as_str),
@@ -1391,13 +1535,14 @@ mod tests {
 
         #[test]
         fn an_ambiguous_cwd_is_refused_and_nothing_is_focused() {
-            let panes = pane_list_json(&[
-                ("w1:p2", "w1:t2", "/work/proj", None),
-                ("w1:p3", "w1:t3", "/work/proj", None),
+            let panes = claude_pane_list_json(&[
+                ("w1:p2", "w1:t2", "/work/proj"),
+                ("w1:p3", "w1:t3", "/work/proj"),
             ]);
+            // process-info is unreadable, so only the directory is left.
             let (result, log) = focus_with_fixture(
                 &panes,
-                &process_info_json(1, 2),
+                "not json",
                 AGENT_FOCUS_OK,
                 &session(4242, None, "/work/proj"),
             );
@@ -1449,17 +1594,55 @@ mod tests {
         }
 
         #[test]
-        fn a_failing_process_info_does_not_block_the_cwd_tier() {
+        fn a_claude_pane_in_the_same_directory_is_focused_when_process_info_is_unreadable() {
             // `process_info.json` is not JSON, so the pid tier sees no
-            // candidate, and the unique cwd match still focuses.
-            let panes = pane_list_json(&[("w1:p2", "w1:t2", "/work/proj", None)]);
-            let (result, _) = focus_with_fixture(
+            // candidate, and the one Claude pane in the directory is focused,
+            // with a note that the match was by directory.
+            let panes = claude_pane_list_json(&[("w1:p2", "w1:t2", "/work/proj")]);
+            let (result, log) = focus_with_fixture(
                 &panes,
                 "not json",
                 AGENT_FOCUS_OK,
                 &session(4242, None, "/work/proj"),
             );
-            assert_eq!(result.unwrap().by, MatchedBy::Cwd);
+            let outcome = result.unwrap();
+            assert_eq!(outcome.by, MatchedBy::Cwd);
+            assert_eq!(outcome.partial.as_deref(), Some(CWD_ONLY_NOTE));
+            assert_eq!(
+                log.last().map(String::as_str),
+                Some(sock("agent focus w1:p2").as_str())
+            );
+        }
+
+        #[test]
+        fn a_plain_shell_pane_in_the_same_directory_is_never_focused() {
+            // WR-01: no agent in the pane, process-info unreadable.
+            let panes = pane_list_json(&[("w1:p2", "w1:t2", "/work/proj", None)]);
+            let (result, log) = focus_with_fixture(
+                &panes,
+                "not json",
+                AGENT_FOCUS_OK,
+                &session(4242, None, "/work/proj"),
+            );
+            assert!(matches!(result, Err(MuxError::NotFound(_))), "{result:?}");
+            assert!(!log.iter().any(|l| l.starts_with("agent focus")), "{log:?}");
+            assert!(!log.iter().any(|l| l.starts_with("tab focus")), "{log:?}");
+        }
+
+        #[test]
+        fn a_pane_whose_process_info_names_other_processes_is_not_the_session() {
+            // WR-01: another Claude runs in this directory (herdr reports
+            // foreground pid 777, not the session's 4242). It must not be
+            // focused on the strength of the directory alone.
+            let panes = claude_pane_list_json(&[("w1:p2", "w1:t2", "/work/proj")]);
+            let (result, log) = focus_with_fixture(
+                &panes,
+                &process_info_json(777, 2),
+                AGENT_FOCUS_OK,
+                &session(4242, None, "/work/proj"),
+            );
+            assert!(matches!(result, Err(MuxError::NotFound(_))), "{result:?}");
+            assert!(!log.iter().any(|l| l.starts_with("agent focus")), "{log:?}");
         }
 
         #[test]

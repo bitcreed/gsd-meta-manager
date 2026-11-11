@@ -98,18 +98,27 @@ use std::path::Path;
 
 /// Why a backend did not do what it was asked (D-03).
 ///
-/// The four variants fall into three classes:
+/// The four variants fall into three classes. **The class describes why the
+/// backend did not act; it does not decide what the seam does next.** Both seam
+/// functions treat every error alike: a failing backend is reported and the next
+/// step is tried ([`focus_with`] moves on to the next detected backend,
+/// [`launch_with`] falls through to the GUI terminal chain), and the first
+/// success wins \[inferred, for audit: review WR-03 found the previous docs
+/// promising retry rules the seam never applied\].
 ///
 /// * **Not mine / not found** ([`MuxError::NotFound`], [`MuxError::Unsupported`]):
-///   this backend has nothing to act on, so the caller tries the next one
-///   ([`MuxError::is_try_next`]).
+///   this backend has nothing to act on.
 /// * **Refused for safety** ([`MuxError::RefusedForSafety`]): the request itself
-///   would put a command interpreter in the path. It is never retried through a
-///   path that adds one.
+///   would put a command interpreter in the path, or the backend would have to
+///   guess. Falling through is safe because no later step reuses the refused
+///   vector: the GUI argv is built separately, and a later backend runs its own
+///   join. A future step that did reuse it would have to stop here instead.
 /// * **Failed** ([`MuxError::Failed`]): the backend tried and the attempt broke.
 ///
 /// `Display` prints only the inner reason, so the reasons tmux already produced
-/// stay byte-identical in status lines. The backend name is added by the caller.
+/// stay byte-identical in focus status lines (the launch line shows
+/// [`MuxError::launch_phrase`] instead). The backend name is added by the
+/// caller.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MuxError {
     /// The thing to act on does not exist here (no pane, no tty recorded).
@@ -133,10 +142,17 @@ impl MuxError {
         }
     }
 
-    /// Should a caller move on to the next backend? True for the two "not
-    /// mine / not found" classes.
-    pub fn is_try_next(&self) -> bool {
-        matches!(self, Self::NotFound(_) | Self::Unsupported(_))
+    /// A short, human phrase for the launch status line (review UI-01). The
+    /// full [`MuxError`] text can carry socket paths, exit statuses and herdr's
+    /// own error JSON, which a status line should not show; it goes to the log
+    /// instead. The phrase depends on the class only.
+    pub fn launch_phrase(&self) -> &'static str {
+        match self {
+            Self::NotFound(_) => "no target found",
+            Self::Unsupported(_) => "cannot open sessions",
+            Self::RefusedForSafety(_) => "refused for safety",
+            Self::Failed(_) => "could not open a session",
+        }
     }
 }
 
@@ -187,13 +203,14 @@ impl std::error::Error for MuxError {}
 /// element**, as herdr's JSON `cwd` field, or through the GUI spawn's
 /// `current_dir`; never as a `cd` written into a program string (T-W0D-03).
 ///
-/// # Why the messages still name tmux [inferred]
+/// # Why the messages are backend-neutral \[inferred, for audit\]
 ///
-/// The refusals used to live on tmux's `open_new_window` and now sit on a type
-/// every backend's `open` must take (D-05). The message text deliberately keeps
-/// naming "a tmux window": it is byte-identical for SC2, and the arity rule
-/// originates in tmux. The substrings `directly` and `option` that the tests
-/// pin are unchanged.
+/// The refusals used to live on tmux's `open_new_window` and named "a tmux
+/// window". They now sit on a type every backend's `open` must take (D-05), and
+/// `launch_with` adds the backend name itself, so a herdr launch would have read
+/// `herdr: refusing to open a tmux window ...` (review IN-02). The text now says
+/// "a new window"; the substrings `directly` and `option` that the tests pin are
+/// unchanged, and the tmux status line no longer shows this text anyway (UI-01).
 #[derive(Debug, Clone)]
 pub struct ExecArgv(Vec<String>);
 
@@ -202,17 +219,17 @@ impl ExecArgv {
     pub fn new(argv: Vec<String>) -> Result<ExecArgv, MuxError> {
         if argv.len() < 2 {
             return Err(MuxError::RefusedForSafety(format!(
-                "refusing to open a tmux window from a {}-element program vector: \
-                 tmux execs a shell-command given as MULTIPLE arguments directly, \
-                 but hands a SINGLE argument to a command interpreter — which would \
+                "refusing to open a new window from a {}-element program vector: \
+                 a multiplexer execs a shell-command given as MULTIPLE arguments directly, \
+                 but may hand a SINGLE argument to a command interpreter — which would \
                  put a parser back in a path that deliberately has none",
                 argv.len()
             )));
         }
         if argv[0].starts_with('-') {
             return Err(MuxError::RefusedForSafety(format!(
-                "refusing to open a tmux window whose program vector begins with \
-                 {:?}: tmux's own option parser would consume it as one of its \
+                "refusing to open a new window whose program vector begins with \
+                 {:?}: the multiplexer's own option parser would consume it as one of its \
                  options instead of treating it as the program",
                 argv[0]
             )));
@@ -567,11 +584,16 @@ pub type GuiSpawner<'a> = dyn FnMut(&str, &[String], &Path) -> std::io::Result<(
 ///    error's text as the reason.
 /// 2. Then the GUI: with `plan.gui` set, spawn it with `gui_argv(term)` in
 ///    `cwd`. A fall-through is REPORTED rather than silent, as
-///    `"<backend>: <reason> — opened in <term>"`; the user asked for a session
+///    `"<backend>: <phrase> — opened in <term>"`; the user asked for a session
 ///    where they are and got one somewhere else.
-/// 3. With no GUI, `"<backend>: <reason>; no terminal emulator found (set
+/// 3. With no GUI, `"<backend>: <phrase>; no terminal emulator found (set
 ///    $TERMINAL)"`, or the bare `"No terminal emulator found (set $TERMINAL)"`
 ///    when no backend was involved.
+///
+/// `<phrase>` is a short human phrase for the failure class
+/// ([`MuxError::launch_phrase`], or `"not reachable"` for an unreachable
+/// detection), never the raw reason: that can carry socket paths and herdr's
+/// error JSON, so it is logged at `warn` instead (UI-01) \[inferred, for audit\].
 pub fn launch_with(
     plan: &LaunchPlan,
     cwd: &Path,
@@ -580,32 +602,39 @@ pub fn launch_with(
     spawn_gui: &mut GuiSpawner<'_>,
     success: &str,
 ) -> String {
-    let mut fallthrough: Option<(&'static str, String)> = None;
+    // The backend's name and the short phrase the status line shows. The full
+    // reason goes to the log (UI-01).
+    let mut fallthrough: Option<(&'static str, &'static str)> = None;
     if let Some(innermost) = plan.backends.first() {
-        let reason = match &innermost.detection.reachable {
-            Err(why) => why.clone(),
+        let (phrase, reason) = match &innermost.detection.reachable {
+            Err(why) => ("not reachable", why.clone()),
             Ok(()) => match &argv {
-                Err(refused) => refused.to_string(),
+                Err(refused) => (refused.launch_phrase(), refused.to_string()),
                 Ok(argv) => match innermost.backend.open(&plan.env, cwd, argv) {
                     Ok(()) => return success.to_string(),
-                    Err(e) => e.to_string(),
+                    Err(e) => (e.launch_phrase(), e.to_string()),
                 },
             },
         };
-        fallthrough = Some((innermost.backend.name(), reason));
+        tracing::warn!(
+            backend = innermost.backend.name(),
+            reason = %reason,
+            "the multiplexer did not open the session; falling back to a GUI terminal"
+        );
+        fallthrough = Some((innermost.backend.name(), phrase));
     }
 
     match &plan.gui {
         Some(term) => match spawn_gui(term, &gui_argv(term), cwd) {
             Ok(()) => match fallthrough {
-                Some((name, reason)) => format!("{name}: {reason} — opened in {term}"),
+                Some((name, phrase)) => format!("{name}: {phrase} — opened in {term}"),
                 None => success.to_string(),
             },
             Err(e) => format!("Failed to launch: {e}"),
         },
         None => match fallthrough {
-            Some((name, reason)) => {
-                format!("{name}: {reason}; no terminal emulator found (set $TERMINAL)")
+            Some((name, phrase)) => {
+                format!("{name}: {phrase}; no terminal emulator found (set $TERMINAL)")
             }
             None => "No terminal emulator found (set $TERMINAL)".to_string(),
         },
@@ -697,6 +726,39 @@ pub fn focus_with(
 pub fn focus_message(session: &ClaudeSession, label: &str) -> String {
     let (env, backends) = detect_current();
     focus_with(&backends, &env, session, label)
+}
+
+/// Accept one connection on `listener`, giving up after `limit`. For the test
+/// listeners only: a blocking `accept` hangs the whole suite when the client
+/// under test fails before it connects, so a regression would look like a CI
+/// timeout (review IN-05). The accepted stream gets a read timeout for the same
+/// reason.
+#[cfg(all(test, unix))]
+pub(crate) fn accept_within(
+    listener: &std::os::unix::net::UnixListener,
+    limit: std::time::Duration,
+) -> std::io::Result<std::os::unix::net::UnixStream> {
+    let deadline = std::time::Instant::now() + limit;
+    listener.set_nonblocking(true)?;
+    loop {
+        match listener.accept() {
+            Ok((stream, _)) => {
+                stream.set_nonblocking(false)?;
+                stream.set_read_timeout(Some(limit))?;
+                return Ok(stream);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                if std::time::Instant::now() >= deadline {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "no client connected to the test listener",
+                    ));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            Err(e) => return Err(e),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -835,7 +897,7 @@ mod tests {
             .expect_err("a program vector whose head starts with `-` must be refused");
         assert!(
             err.to_string().contains("option"),
-            "the refusal must name tmux's own option parser as the reason; got {err:?}"
+            "the refusal must name the multiplexer's own option parser as the reason; got {err:?}"
         );
 
         let ok = vec!["env".to_string(), "claude".to_string()];
@@ -1292,7 +1354,7 @@ mod tests {
         let plan = plan_with(vec![detected(fake)], Some("kitty"));
         let mut spawned = Vec::new();
         let msg = run_launch(&plan, argv_ok(), &mut spawned, Ok(()));
-        assert_eq!(msg, "tmux: boom — opened in kitty");
+        assert_eq!(msg, "tmux: could not open a session — opened in kitty");
         assert_eq!(
             spawned,
             vec![(
@@ -1312,7 +1374,7 @@ mod tests {
         let msg = run_launch(&plan, argv_ok(), &mut spawned, Ok(()));
         assert_eq!(
             msg,
-            "tmux: boom; no terminal emulator found (set $TERMINAL)"
+            "tmux: could not open a session; no terminal emulator found (set $TERMINAL)"
         );
     }
 
@@ -1347,13 +1409,7 @@ mod tests {
         let refused = ExecArgv::new(vec!["claude".to_string()]);
         let mut spawned = Vec::new();
         let msg = run_launch(&plan, refused, &mut spawned, Ok(()));
-        assert!(
-            msg.starts_with(
-                "tmux: refusing to open a tmux window from a 1-element program vector: "
-            ),
-            "{msg}"
-        );
-        assert!(msg.ends_with(" — opened in kitty"), "{msg}");
+        assert_eq!(msg, "tmux: refused for safety — opened in kitty");
         assert_eq!(fake.open_calls(), 0);
     }
 
@@ -1367,7 +1423,7 @@ mod tests {
         let msg = run_launch(&plan, argv_ok(), &mut spawned, Ok(()));
         assert_eq!(
             msg,
-            "herdr: nope; no terminal emulator found (set $TERMINAL)"
+            "herdr: could not open a session; no terminal emulator found (set $TERMINAL)"
         );
         assert_eq!(first.open_calls(), 1);
         assert_eq!(
@@ -1393,16 +1449,27 @@ mod tests {
         );
         let mut spawned = Vec::new();
         let msg = run_launch(&plan, argv_ok(), &mut spawned, Ok(()));
-        assert_eq!(msg, "herdr: HERDR_SOCKET_PATH is unset — opened in kitty");
+        assert_eq!(msg, "herdr: not reachable — opened in kitty");
         assert_eq!(fake.open_calls(), 0);
     }
 
     #[test]
-    fn mux_error_classes_map_to_try_next() {
-        assert!(MuxError::NotFound("x".into()).is_try_next());
-        assert!(MuxError::Unsupported("x".into()).is_try_next());
-        assert!(!MuxError::RefusedForSafety("x".into()).is_try_next());
-        assert!(!MuxError::Failed("x".into()).is_try_next());
+    fn every_error_class_has_a_short_launch_phrase_free_of_the_raw_reason() {
+        let raw =
+            "herdr socket connect: /run/user/1000/herdr.sock: Permission denied (os error 13)";
+        for error in [
+            MuxError::NotFound(raw.into()),
+            MuxError::Unsupported(raw.into()),
+            MuxError::RefusedForSafety(raw.into()),
+            MuxError::Failed(raw.into()),
+        ] {
+            let phrase = error.launch_phrase();
+            assert!(!phrase.is_empty() && phrase.len() <= 32, "{phrase}");
+            assert!(
+                !phrase.contains("socket") && !phrase.contains('/'),
+                "{phrase}"
+            );
+        }
     }
 
     #[test]
@@ -1575,7 +1642,8 @@ mod tests {
         let listener = UnixListener::bind(&path).expect("bind");
         let (tx, rx) = std::sync::mpsc::channel();
         let handle = std::thread::spawn(move || {
-            let (stream, _) = listener.accept().expect("accept");
+            let stream = accept_within(&listener, std::time::Duration::from_secs(10))
+                .expect("a client connects within 10 s");
             let mut line = String::new();
             BufReader::new(&stream).read_line(&mut line).expect("read");
             tx.send(line).ok();
@@ -1648,8 +1716,8 @@ mod tests {
         let msg = run_launch(&plan, argv_ok(), &mut spawned, Ok(()));
         handle.join().unwrap();
         assert_eq!(
-            msg,
-            "herdr: herdr layout.apply failed (layout_apply_failed): Unable to spawn env — opened in kitty"
+            msg, "herdr: could not open a session — opened in kitty",
+            "the raw herdr error stays out of the status line"
         );
         assert_eq!(spawned.len(), 1);
     }
