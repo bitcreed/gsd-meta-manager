@@ -1,12 +1,12 @@
 ---
 gsd_state_version: "1.0"
-milestone: v2.3.1
-current_phase_name: v2.3.1 shipped; no milestone open
+milestone: v2.4.0
+current_phase_name: v2.4.0 shipped; no milestone open
 status: shipped
-stopped_at: v2.3.1 released locally (release commit + annotated tag v2.3.1, not pushed) — publish fix for v2.2.0/v2.3.0
+stopped_at: v2.4.0 released locally (release commit + annotated tag v2.4.0, not pushed) — Sessions multiplexer location column + glyph overflow fix
 last_updated: "2026-11-11T20:12:44.280Z"
 last_activity: 2026-11-11
-last_activity_desc: v2.3.1 released — Multiplexer Backends (publish fix)
+last_activity_desc: v2.4.0 released — Session Locations
 state_head: ac9214e3b3afbef3ab8852c5a6bf6a94f1e188ad
 progress:
   total_phases: 1
@@ -14,7 +14,7 @@ progress:
   total_plans: 2
   completed_plans: 2
   percent: 100
-milestone_name: Multiplexer Backends (publish fix)
+milestone_name: Session Locations
 current_phase: 33
 ---
 
@@ -25,13 +25,13 @@ current_phase: 33
 See: .planning/PROJECT.md (updated 2026-11-10)
 
 **Core value:** See the state of every GSD project at a glance and act on any of them without leaving the TUI.
-**Current focus:** Planning next milestone (v2.3.1 shipped 2026-11-10)
+**Current focus:** Planning next milestone (v2.4.0 shipped 2026-11-11)
 
 ## Current Position
 
-Phase: — (v2.3.1 shipped; no milestone open)
+Phase: — (v2.4.0 shipped; no milestone open)
 Plan: —
-Status: Shipped v2.3.1 Multiplexer Backends (publish fix) — release commit and annotated tag v2.3.1 created locally; not pushed (pushing the tag triggers the crates.io publish). v2.2.0 and v2.3.0 tags exist but their Release workflow failed on Windows clippy, so crates.io is still at 2.1.0; 2.3.1 is the first publish since.
+Status: Shipped v2.4.0 Session Locations — release commit and annotated tag v2.4.0 created locally; not pushed (pushing the tag triggers the crates.io publish). v2.3.1 is on crates.io.
 Last activity: 2026-11-11 - Completed quick task 261111-ixj: Unmerged glyph U+25D2 -> U+2206 (font-fallback overflow), Status-cell separator -> U+2219, flush-safe glyph guard
 
 ## Deferred Verification
@@ -586,11 +586,12 @@ non-unique bullets in these narrative logs). Disclosed per file instead [inferre
 
 ## Session Continuity
 
-Last session: 2026-11-10T20:53:16.043Z
-Stopped at: v2.3.1 released locally — herdr focus fix, quick 261110-tbn (Windows clippy fix + pre-tag gate 7), release commit and annotated tag v2.3.1; nothing pushed
+Last session: 2026-11-11
+Stopped at: v2.4.0 released locally — quick 261111-h9f (Sessions location column + README multiplexer section), quick 261111-ixj (glyph font-fallback overflow fix), release commit and annotated tag v2.4.0; nothing pushed
 Resume file: None
 
-Next: push master + tag v2.3.1 (tag push publishes to crates.io); then `/gsd-new-milestone`.
+Next: push master + tag v2.4.0 (tag push publishes to crates.io); then `/gsd-new-milestone`.
+Earlier (2026-11-11): v2.3.1 released and published to crates.io — Multiplexer Backends (publish fix).
 Earlier (2026-11-10): v2.3.0 released — Multiplexer Backends (Release workflow failed: Windows clippy dead-code; never published).
 Earlier (2026-11-05): v2.2.0 released — interim gsd-core 1.20.1 Sync & One-off Tasks (never published, same Windows clippy failure).
 Earlier (2026-11-03): v2.1.0 released — release commit and annotated tag v2.1.0 created.
