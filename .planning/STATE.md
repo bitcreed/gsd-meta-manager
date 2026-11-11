@@ -1,19 +1,20 @@
 ---
 gsd_state_version: "1.0"
 milestone: v2.3.0
-milestone_name: Multiplexer Backends
+current_phase_name: milestone v2.3.0 shipped; no milestone open
 status: shipped
 stopped_at: v2.3.0 released locally (release commit + annotated tag v2.3.0, not pushed) — Multiplexer Backends milestone closed
-last_updated: "2026-11-11T02:01:15.610Z"
+last_updated: "2026-11-11T03:53:31.518Z"
 last_activity: 2026-11-10
 last_activity_desc: v2.3.0 released — Multiplexer Backends
-state_head: 43249dc18a54544d06fd285e2b79beb4b4ef35b8
+state_head: 24494e156a5086b2cad52da8d9d38bee111551c2
 progress:
   total_phases: 1
   completed_phases: 1
   total_plans: 2
   completed_plans: 2
   percent: 100
+milestone_name: Multiplexer Backends
 current_phase: 33
 ---
 
@@ -527,6 +528,7 @@ Older entries (Phase 19 T-19-* rows, Phase 21 round-13 gaps, Phase 26 risks, 31-
 | 261105-e7v | Recognise milestone-prefixed phase ids | 2026-11-05 | 31f8166 | .planning/quick/261105-e7v-recognise-milestone-prefixed-phase-ids-port-upstream-grammar |
 | 261105-fq6 | Close milestone-prefixed phase-id parity gaps (M-0043) | 2026-11-05 | a6b9d51 | [261105-fq6-close-milestone-prefixed-phase-id-parity](./quick/261105-fq6-close-milestone-prefixed-phase-id-parity/) |
 | 261110-qap | status --json query CLI + --skill agent-skill output | 2026-11-10 | c81159d | [261110-qap-add-status-json-query-cli-and-skill-agen](./quick/261110-qap-add-status-json-query-cli-and-skill-agen/) |
+| 261110-tbn | Fix Windows-only dead-code clippy error and add non-Linux clippy pre-tag gate | 2026-11-10 | 24494e1 | [261110-tbn-fix-windows-only-dead-code-clippy-error-](./quick/261110-tbn-fix-windows-only-dead-code-clippy-error-/) |
 
 ## Deferred Items
 
