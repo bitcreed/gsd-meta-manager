@@ -54,3 +54,9 @@ for the operator.
 2. An opt-in ASCII mode, merged with `2026-10-21-ambiguous-wide-typography-borders-and-darkgray`, which already
    asks for an ASCII border-and-typography set.
 3. Leave as is and rely on `FLUSH_SAFE` to keep any new flush draw safe.
+
+## Decision (2026-11-11)
+
+Operator decision: no plain-ASCII mode (option 2 rejected) and no blanket ASCII set (option 1 rejected). Keep the
+Unicode glyphs and rely on `FLUSH_SAFE` (option 3). Still open: the confirm-popup `←/→` hint, where the arrow draws
+over the slash — fix it locally (e.g. a space or a different separator), not via an ASCII mode.
