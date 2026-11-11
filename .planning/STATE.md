@@ -1,12 +1,12 @@
 ---
 gsd_state_version: "1.0"
-milestone: v2.3.0
-current_phase_name: milestone v2.3.0 shipped; no milestone open
+milestone: v2.3.1
+milestone_name: Multiplexer Backends (publish fix)
 status: shipped
-stopped_at: v2.3.0 released locally (release commit + annotated tag v2.3.0, not pushed) — Multiplexer Backends milestone closed
+stopped_at: v2.3.1 released locally (release commit + annotated tag v2.3.1, not pushed) — publish fix for v2.2.0/v2.3.0
 last_updated: "2026-11-11T03:53:31.518Z"
 last_activity: 2026-11-10
-last_activity_desc: v2.3.0 released — Multiplexer Backends
+last_activity_desc: v2.3.1 released — Multiplexer Backends (publish fix)
 state_head: 24494e156a5086b2cad52da8d9d38bee111551c2
 progress:
   total_phases: 1
@@ -14,7 +14,6 @@ progress:
   total_plans: 2
   completed_plans: 2
   percent: 100
-milestone_name: Multiplexer Backends
 current_phase: 33
 ---
 
@@ -25,14 +24,14 @@ current_phase: 33
 See: .planning/PROJECT.md (updated 2026-11-10)
 
 **Core value:** See the state of every GSD project at a glance and act on any of them without leaving the TUI.
-**Current focus:** Planning next milestone (v2.3.0 shipped 2026-11-10)
+**Current focus:** Planning next milestone (v2.3.1 shipped 2026-11-10)
 
 ## Current Position
 
-Phase: — (milestone v2.3.0 shipped; no milestone open)
+Phase: — (v2.3.1 shipped; no milestone open)
 Plan: —
-Status: Shipped v2.3.0 Multiplexer Backends — release commit and annotated tag v2.3.0 created locally; not pushed (pushing the tag triggers the crates.io publish, awaiting the user)
-Last activity: 2026-11-10 — v2.3.0 released (Phase 33 + review fixes, quick 261110-qap)
+Status: Shipped v2.3.1 Multiplexer Backends (publish fix) — release commit and annotated tag v2.3.1 created locally; not pushed (pushing the tag triggers the crates.io publish). v2.2.0 and v2.3.0 tags exist but their Release workflow failed on Windows clippy, so crates.io is still at 2.1.0; 2.3.1 is the first publish since.
+Last activity: 2026-11-10 — v2.3.1 released (herdr focus fix a8c71b8 + its Windows cfg-gate 5d393f0, quick 261110-tbn Windows clippy fix + pre-tag gate 7)
 
 ## Deferred Verification
 
@@ -585,11 +584,12 @@ non-unique bullets in these narrative logs). Disclosed per file instead [inferre
 ## Session Continuity
 
 Last session: 2026-11-10T20:53:16.043Z
-Stopped at: v2.3.0 released locally — musk retro, milestone close (archive in `.planning/milestones/v2.3.0-*`), release commit and annotated tag v2.3.0; nothing pushed
+Stopped at: v2.3.1 released locally — herdr focus fix, quick 261110-tbn (Windows clippy fix + pre-tag gate 7), release commit and annotated tag v2.3.1; nothing pushed
 Resume file: None
 
-Next: user decides on pushing master + tag v2.3.0 (tag push publishes to crates.io); then `/gsd-new-milestone`.
-Earlier (2026-11-05): v2.2.0 released — interim gsd-core 1.20.1 Sync & One-off Tasks.
+Next: push master + tag v2.3.1 (tag push publishes to crates.io); then `/gsd-new-milestone`.
+Earlier (2026-11-10): v2.3.0 released — Multiplexer Backends (Release workflow failed: Windows clippy dead-code; never published).
+Earlier (2026-11-05): v2.2.0 released — interim gsd-core 1.20.1 Sync & One-off Tasks (never published, same Windows clippy failure).
 Earlier (2026-11-03): v2.1.0 released — release commit and annotated tag v2.1.0 created.
 Earlier (2026-10-29): v2.0.0 released locally — milestone v2.0 archived, release commit and annotated tag v2.0.0 created.
 Earlier session history: `.planning/STATE-ARCHIVE.md`.
