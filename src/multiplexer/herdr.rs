@@ -89,8 +89,9 @@ pub struct HerdrBackend {
 pub static HERDR: HerdrBackend = HerdrBackend { program: "herdr" };
 
 impl HerdrBackend {
-    /// A backend that runs `program` instead of `herdr`: a fixture script.
-    #[cfg(test)]
+    /// A backend that runs `program` instead of `herdr`: a fixture script
+    /// (unix-only, like every fixture-script test).
+    #[cfg(all(test, unix))]
     pub(crate) fn with_program(program: &'static str) -> Self {
         Self { program }
     }

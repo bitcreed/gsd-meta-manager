@@ -110,7 +110,9 @@
 //!   exposes no tty (`herdr.rs` module docs). The exact-match and refuse-on-
 //!   ambiguity rules are unchanged.
 
-#[cfg(test)]
+// Every user of these fixtures is a `#[cfg(unix)]` test module (they run
+// `#!/bin/sh` scripts), so the module is gated to exactly that cfg.
+#[cfg(all(test, unix))]
 pub(crate) mod fixtures;
 pub mod gui;
 pub mod herdr;
@@ -639,8 +641,8 @@ impl ProcFs {
         }
     }
 
-    /// A procfs laid out under `root`.
-    #[cfg(test)]
+    /// A procfs laid out under `root` (only the unix-only fixtures use it).
+    #[cfg(all(test, unix))]
     pub(crate) fn at(root: &Path) -> Self {
         Self {
             root: Some(root.to_path_buf()),

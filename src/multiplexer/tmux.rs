@@ -107,8 +107,9 @@ pub struct TmuxBackend {
 pub static TMUX: TmuxBackend = TmuxBackend { program: "tmux" };
 
 impl TmuxBackend {
-    /// A backend that runs `program` instead of `tmux`: a fixture script.
-    #[cfg(test)]
+    /// A backend that runs `program` instead of `tmux`: a fixture script
+    /// (unix-only, like every fixture-script test).
+    #[cfg(all(test, unix))]
     pub(crate) fn with_program(program: &'static str) -> Self {
         Self { program }
     }
