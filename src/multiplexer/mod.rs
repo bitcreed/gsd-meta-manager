@@ -728,6 +728,39 @@ pub fn focus_message(session: &ClaudeSession, label: &str) -> String {
     focus_with(&backends, &env, session, label)
 }
 
+/// Accept one connection on `listener`, giving up after `limit`. For the test
+/// listeners only: a blocking `accept` hangs the whole suite when the client
+/// under test fails before it connects, so a regression would look like a CI
+/// timeout (review IN-05). The accepted stream gets a read timeout for the same
+/// reason.
+#[cfg(all(test, unix))]
+pub(crate) fn accept_within(
+    listener: &std::os::unix::net::UnixListener,
+    limit: std::time::Duration,
+) -> std::io::Result<std::os::unix::net::UnixStream> {
+    let deadline = std::time::Instant::now() + limit;
+    listener.set_nonblocking(true)?;
+    loop {
+        match listener.accept() {
+            Ok((stream, _)) => {
+                stream.set_nonblocking(false)?;
+                stream.set_read_timeout(Some(limit))?;
+                return Ok(stream);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                if std::time::Instant::now() >= deadline {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "no client connected to the test listener",
+                    ));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1609,7 +1642,8 @@ mod tests {
         let listener = UnixListener::bind(&path).expect("bind");
         let (tx, rx) = std::sync::mpsc::channel();
         let handle = std::thread::spawn(move || {
-            let (stream, _) = listener.accept().expect("accept");
+            let stream = accept_within(&listener, std::time::Duration::from_secs(10))
+                .expect("a client connects within 10 s");
             let mut line = String::new();
             BufReader::new(&stream).read_line(&mut line).expect("read");
             tx.send(line).ok();

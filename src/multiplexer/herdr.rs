@@ -872,7 +872,9 @@ mod tests {
         let path = dir.path().join("h.sock");
         let listener = UnixListener::bind(&path).unwrap();
         let handle = std::thread::spawn(move || {
-            let (stream, _) = listener.accept().unwrap();
+            let stream =
+                crate::multiplexer::accept_within(&listener, std::time::Duration::from_secs(10))
+                    .expect("a client connects within 10 s");
             let mut line = String::new();
             BufReader::new(&stream).read_line(&mut line).unwrap();
         });
