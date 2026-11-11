@@ -7923,12 +7923,25 @@ impl DetailScreen {
                     .start_time
                     .map(|_| "active".to_string())
                     .unwrap_or_else(|| "active".to_string());
+                // The location cell is the LAST cell: it is the only
+                // variable-length one, so a narrow pane truncates it and not
+                // the status word. It READS the PID-keyed cache; resolution
+                // runs on a blocking task, never here. The label's targets are
+                // tool output and are already escaped (`Untrusted::shown`).
+                let location_display = match ctx.session_locations.lookup(session) {
+                    crate::multiplexer::LocationLookup::Pending => {
+                        crate::ui::glyphs::MIDLINE_ELLIPSIS.to_string()
+                    }
+                    crate::multiplexer::LocationLookup::Absent => "\u{2014}".to_string(),
+                    crate::multiplexer::LocationLookup::At(location) => location.label(),
+                };
                 ListItem::new(Line::from(format!(
-                    "  PID {} | {} | Session: {} | {}",
+                    "  PID {} | {} | Session: {} | {} | {}",
                     session.pid,
                     session.kind.label(),
                     sid_display,
-                    time_display
+                    time_display,
+                    location_display
                 )))
             })
             .collect();
@@ -19941,6 +19954,7 @@ mod tests {
             input_buffer: String::new(),
             needs_redraw: false,
             active_sessions: Vec::new(),
+            session_locations: Default::default(),
             archive_cache: crate::archive::ArchiveCache::default(),
             // Fixtures default the experimental flag ON, so every driver test
             // written before 260917-fko keeps asserting what it always did;
@@ -21942,6 +21956,68 @@ mod tests {
         assert!(codex_row.contains("Codex"), "{codex_row}");
         assert!(codex_row.contains("unknown"), "{codex_row}");
         assert!(!codex_row.contains("new session"), "{codex_row}");
+    }
+
+    /// The row's last cell is the session's multiplexer location, read from the
+    /// PID-keyed cache: the pending glyph until a resolution lands, a dash when
+    /// none finds it, the label when one does. A reused PID reads as pending.
+    #[test]
+    fn sessions_tab_location_column_shows_label_dash_or_pending() {
+        use crate::multiplexer::{LocatedEntry, PaneLocation, SessionLocation};
+
+        let row_of = |screen: &DetailScreen, ctx: &AppContext| -> String {
+            render_detail_to_text(screen, ctx)
+                .lines()
+                .find(|line| line.contains("PID 4242"))
+                .expect("the row renders")
+                .to_string()
+        };
+        let pending = format!("| active | {}", crate::ui::glyphs::MIDLINE_ELLIPSIS);
+
+        let (screen, mut ctx) = sessions_fixture("abc12345");
+        let row = row_of(&screen, &ctx);
+        assert!(row.contains(&pending), "empty cache is pending: {row}");
+
+        ctx.session_locations.entries.insert(
+            4242,
+            LocatedEntry {
+                start_time: Some(1),
+                location: None,
+            },
+        );
+        let row = row_of(&screen, &ctx);
+        assert!(
+            row.contains("| active | \u{2014}"),
+            "absent is a dash: {row}"
+        );
+
+        ctx.session_locations.entries.insert(
+            4242,
+            LocatedEntry {
+                start_time: Some(1),
+                location: Some(SessionLocation {
+                    pane: PaneLocation {
+                        backend: "tmux",
+                        target: Untrusted::from_untrusted_source("0:1.2".to_string()),
+                        by: crate::multiplexer::MatchedBy::Tty,
+                    },
+                    via: None,
+                }),
+            },
+        );
+        let row = row_of(&screen, &ctx);
+        assert!(row.contains("| active | tmux 0:1.2"), "{row}");
+
+        ctx.session_locations
+            .entries
+            .get_mut(&4242)
+            .unwrap()
+            .start_time = Some(2);
+        let row = row_of(&screen, &ctx);
+        assert!(
+            row.contains(&pending) && !row.contains("tmux 0:1.2"),
+            "a reused pid is pending: {row}"
+        );
     }
 
     #[test]

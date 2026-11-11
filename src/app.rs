@@ -953,6 +953,7 @@ impl App {
             input_buffer: String::new(),
             needs_redraw: true,
             active_sessions: Vec::new(),
+            session_locations: Default::default(),
             archive_cache: crate::archive::ArchiveCache::default(),
             // The ONE production read of `GSDMM_EXPERIMENTAL_FEATURES`, at
             // startup, resolved into the one field every gate point reads
@@ -2504,6 +2505,32 @@ impl App {
         self.needs_redraw = true;
     }
 
+    /// Resolve where every detected session lives in a terminal multiplexer, off
+    /// the render path (quick 261111-h9f). The result arrives as
+    /// `Action::SessionLocationsResolved` and lands in `ctx.session_locations`.
+    ///
+    /// At most one resolution runs at a time: `in_flight` is set BEFORE the
+    /// spawn and cleared first in the handler, and `catch_unwind` makes the send
+    /// unconditional, so a wedged tmux or herdr CLI delays the next result but
+    /// can never stack blocking threads (the `agents_scan_in_flight` pattern).
+    pub fn dispatch_session_locations(&mut self) {
+        if self.ctx.session_locations.in_flight {
+            return;
+        }
+        let Some(tx) = self.ctx.event_tx.clone() else {
+            return;
+        };
+        let sessions = self.ctx.active_sessions.clone();
+        self.ctx.session_locations.in_flight = true;
+        tokio::task::spawn_blocking(move || {
+            let locations = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                crate::multiplexer::locate_sessions(&sessions)
+            }))
+            .unwrap_or_default();
+            let _ = tx.send(Action::SessionLocationsResolved { locations });
+        });
+    }
+
     /// Auto-register any active agent sessions (Claude or Codex) whose working_dir is an
     /// unregistered GSD project. Persists config, starts the file watcher,
     /// loads initial project state, and surfaces a status message per
@@ -2849,7 +2876,17 @@ impl App {
                 self.active_sessions = sessions.clone();
                 self.ctx.active_sessions = sessions;
                 self.auto_register_new_sessions();
+                self.dispatch_session_locations();
                 self.needs_redraw = true;
+            }
+            Action::SessionLocationsResolved { locations } => {
+                // First and unconditionally: whatever the payload holds, the
+                // resolution that was in flight has ended.
+                self.ctx.session_locations.in_flight = false;
+                if self.ctx.session_locations.entries != locations {
+                    self.ctx.session_locations.entries = locations;
+                    self.needs_redraw = true;
+                }
             }
             Action::CreateProjectResult {
                 alias,
@@ -5783,6 +5820,8 @@ mod tests {
             input_buffer: _,
             needs_redraw: _,
             active_sessions: _,
+            // PID-keyed (a session's multiplexer location), not per alias.
+            session_locations: _,
         } = &app.ctx;
 
         assert!(!view_cache.contains_key(GONE), "view_cache leaked");
@@ -6907,6 +6946,65 @@ mod tests {
                 assert!(markers.is_empty(), "no launcher scan with the flag off");
             }
         }
+    }
+
+    /// `SessionsDetected` starts one off-thread location resolution; the result
+    /// arrives as `SessionLocationsResolved`, whose handler ends the run.
+    #[tokio::test]
+    async fn session_locations_resolve_after_sessions_detected_and_clear_the_in_flight_flag() {
+        let mut app = App::new_for_test();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        app.ctx.event_tx = Some(tx);
+
+        app.update(Action::SessionsDetected { sessions: vec![] });
+        assert!(app.ctx.session_locations.in_flight, "set before the spawn");
+
+        let resolved = loop {
+            match tokio::time::timeout(std::time::Duration::from_secs(10), rx.recv())
+                .await
+                .expect("a SessionLocationsResolved arrives")
+                .expect("the channel stays open")
+            {
+                Action::SessionLocationsResolved { locations } => break locations,
+                _ => continue,
+            }
+        };
+        assert!(resolved.is_empty());
+        app.update(Action::SessionLocationsResolved {
+            locations: resolved,
+        });
+        assert!(
+            !app.ctx.session_locations.in_flight,
+            "cleared by the handler"
+        );
+    }
+
+    /// While a resolution is in flight a second `SessionsDetected` starts none,
+    /// so a wedged multiplexer CLI cannot stack blocking threads.
+    #[tokio::test]
+    async fn session_locations_do_not_stack_while_one_is_in_flight() {
+        let mut app = App::new_for_test();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        app.ctx.event_tx = Some(tx);
+        app.ctx.session_locations.in_flight = true;
+
+        app.update(Action::SessionsDetected { sessions: vec![] });
+
+        let got = tokio::time::timeout(std::time::Duration::from_millis(200), async {
+            loop {
+                match rx.recv().await {
+                    Some(Action::SessionLocationsResolved { .. }) => return true,
+                    Some(_) => continue,
+                    None => return false,
+                }
+            }
+        })
+        .await;
+        assert!(got.is_err(), "no resolution was dispatched");
+        assert!(
+            app.ctx.session_locations.in_flight,
+            "the flag is left alone"
+        );
     }
 
     /// A `DriverRun` event for a project whose Driver tab is not on top is answered by

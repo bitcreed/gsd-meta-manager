@@ -25,8 +25,10 @@
 
 use super::{
     Detection, EnvSnapshot, ExecArgv, FocusOutcome, MatchedBy, MultiplexerBackend, MuxError,
+    PaneLocation,
 };
 use crate::session_detector::ClaudeSession;
+use crate::text::Untrusted;
 use std::path::Path;
 use std::process::Command;
 
@@ -183,11 +185,15 @@ impl MultiplexerBackend for TmuxBackend {
         comm == "tmux: server" || comm == "tmux"
     }
 
-    /// Switch the focused tmux pane to the given Claude session. Detection
-    /// already gated on `$TMUX`, so there is no `in_tmux` check here. Every
-    /// reason string is byte-identical to the one `switch_to_session` produced.
-    /// The server is the one `env`'s `$TMUX` names (see the module docs).
-    fn focus(&self, env: &EnvSnapshot, session: &ClaudeSession) -> Result<FocusOutcome, MuxError> {
+    /// Find the tmux pane whose tty is the session's, and select nothing: the
+    /// join [`TmuxBackend::focus`] runs. Every reason string is byte-identical to
+    /// the one `switch_to_session` produced. The server is the one `env`'s
+    /// `$TMUX` names (see the module docs).
+    fn locate_session(
+        &self,
+        env: &EnvSnapshot,
+        session: &ClaudeSession,
+    ) -> Result<PaneLocation, MuxError> {
         let tty = session
             .tty
             .as_ref()
@@ -195,10 +201,10 @@ impl MultiplexerBackend for TmuxBackend {
 
         let stdout = self.list_panes(env)?;
         if let Some(target) = find_pane_target(&stdout, tty) {
-            self.select(env, target);
-            return Ok(FocusOutcome {
+            return Ok(PaneLocation {
+                backend: self.name(),
+                target: Untrusted::from_untrusted_source(target.to_string()),
                 by: MatchedBy::Tty,
-                partial: None,
             });
         }
 
@@ -206,6 +212,19 @@ impl MultiplexerBackend for TmuxBackend {
             "TTY {} not found in any tmux pane (session may have exited)",
             tty
         )))
+    }
+
+    /// Switch the focused tmux pane to the given Claude session: locate it, then
+    /// select. Detection already gated on `$TMUX`, so there is no `in_tmux`
+    /// check here.
+    fn focus(&self, env: &EnvSnapshot, session: &ClaudeSession) -> Result<FocusOutcome, MuxError> {
+        let location = self.locate_session(env, session)?;
+        // Question 2 of `Untrusted`'s doc: the target becomes an argv element.
+        self.select(env, location.target.as_raw_for_logic_only());
+        Ok(FocusOutcome {
+            by: location.by,
+            partial: None,
+        })
     }
 
     /// Select the pane that shows one of `ttys`: the reveal of a client that

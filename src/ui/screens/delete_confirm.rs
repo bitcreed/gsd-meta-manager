@@ -264,6 +264,7 @@ mod tests {
             input_buffer: String::new(),
             needs_redraw: false,
             active_sessions: Vec::new(),
+            session_locations: Default::default(),
             archive_cache: crate::archive::ArchiveCache::default(),
             // Fixtures default the experimental flag ON, so every driver test
             // written before 260917-fko keeps asserting what it always did;

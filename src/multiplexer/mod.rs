@@ -76,6 +76,9 @@
 //!   session id and pids but no tty, GNU screen exposes neither, which is why
 //!   its focus is weak. A tool that cannot satisfy the join answers
 //!   [`MuxError::Unsupported`], the trait default.
+//! * [`MultiplexerBackend::locate_session`] is the same "focus" column without
+//!   the select: the join that finds the pane, used by the Sessions tab's
+//!   location column ([`location`]). `focus` is built on it.
 //! * [`MultiplexerBackend::client_ttys`] and [`MultiplexerBackend::focus_tty`]
 //!   are the reveal step after a focus: a headless server's pane (herdr) is on
 //!   a terminal only its CLIENT process shows, and that terminal is usually a
@@ -116,7 +119,13 @@
 pub(crate) mod fixtures;
 pub mod gui;
 pub mod herdr;
+pub mod location;
 pub mod tmux;
+
+pub use location::{
+    locate_sessions, LocatedEntry, LocationLookup, PaneLocation, ResolvedLocations,
+    SessionLocation, SessionLocationCache,
+};
 
 use crate::session_detector::ClaudeSession;
 use std::collections::BTreeMap;
@@ -461,6 +470,22 @@ pub trait MultiplexerBackend: Sync {
     ) -> Result<FocusOutcome, MuxError> {
         Err(MuxError::Unsupported(format!(
             "{} cannot focus a session",
+            self.name()
+        )))
+    }
+
+    /// Find the pane running `session` and select nothing: `focus`'s join
+    /// without the act. The Sessions tab's location column is built on it, and
+    /// `focus` is rebuilt on the same join, so the two cannot disagree. Like
+    /// `focus`, it answers [`MuxError::NotFound`] when the session is not here
+    /// and [`MuxError::Unsupported`] by default.
+    fn locate_session(
+        &self,
+        _env: &EnvSnapshot,
+        _session: &ClaudeSession,
+    ) -> Result<PaneLocation, MuxError> {
+        Err(MuxError::Unsupported(format!(
+            "{} cannot locate a session",
             self.name()
         )))
     }
@@ -3266,6 +3291,111 @@ mod tests {
                 calls.contains(&tmux_call(Some(TMUX_SOCKET), "select-pane -t 0:1.0")),
                 "the first matching pane in tmux's listing order: {calls:?}"
             );
+        }
+
+        // ---- locate: the Sessions tab's location column, read-only ------------
+        //
+        // `locate_sessions_in` is the location twin of `focus_message_in`: the
+        // same process table, the same fixture programs, the same routing. The
+        // call log of every test here may hold only the read verbs.
+
+        /// The label of `session`'s location (`-` when none), through the real
+        /// `locate_sessions_in`, with the fixture programs' call log.
+        fn located(
+            proc: &FakeProc,
+            world: &World,
+            tui_env: &EnvSnapshot,
+            tui_pid: u32,
+            session: &ClaudeSession,
+        ) -> (String, Vec<String>) {
+            world.run(|| {
+                let found = location::locate_sessions_in(
+                    &proc.procfs(),
+                    &world.registry(),
+                    tui_env,
+                    tui_pid,
+                    std::slice::from_ref(session),
+                );
+                found
+                    .get(&session.pid)
+                    .and_then(|entry| entry.location.as_ref())
+                    .map_or_else(|| "-".to_string(), |location| location.label())
+            })
+        }
+
+        fn assert_reads_only(calls: &[String]) {
+            for call in calls {
+                assert!(
+                    !call.contains("agent focus")
+                        && !call.contains("tab focus")
+                        && !call.contains("select-"),
+                    "locating must not act: {calls:?}"
+                );
+            }
+        }
+
+        /// A tmux session: claude under a fish under the tmux server, on its
+        /// own pts, with `$TMUX` in its environment.
+        fn tmux_session_topology() -> FakeProc {
+            let p = measured_topology();
+            let tmux_env = format!("TMUX={TMUX_VALUE}");
+            p.process(
+                3700000,
+                "fish",
+                3628116,
+                &["fish"],
+                &[],
+                Some("/dev/pts/21"),
+            )
+            .process(
+                3700001,
+                "claude",
+                3700000,
+                &["claude"],
+                &[tmux_env.as_str()],
+                Some("/dev/pts/21"),
+            );
+            p
+        }
+
+        #[test]
+        fn locate_a_tmux_session_reads_list_panes_and_selects_nothing() {
+            let proc = tmux_session_topology();
+            let world = World::new(&herdr_panes(), "/dev/pts/8 0:0.1\n/dev/pts/21 0:1.2\n");
+            let (label, calls) = located(
+                &proc,
+                &world,
+                &tmux_tui_env(),
+                TUI_PID_IN_TMUX,
+                &claude(3700001, None, Some("pts/21")),
+            );
+            assert_eq!(label, "tmux 0:1.2");
+            assert_eq!(
+                calls,
+                vec![tmux_call(Some(TMUX_SOCKET), LIST_PANES_ARGS)],
+                "one read-only list-panes on the session's own server"
+            );
+            assert_reads_only(&calls);
+        }
+
+        #[test]
+        fn locate_a_session_outside_any_multiplexer_is_absent_and_spawns_nothing() {
+            let plain = FakeProc::new();
+            plain
+                .process(1, "systemd", 0, &["/sbin/init"], &[], None)
+                .process(5000, "fish", 1, &["fish"], &[], Some("/dev/pts/30"))
+                .process(5001, "claude", 5000, &["claude"], &[], Some("/dev/pts/30"))
+                .process(5100, "gsd-meta-manager", 1, &[], &[], Some("/dev/pts/31"));
+            let world = World::new(&herdr_panes(), "/dev/pts/30 0:0.0\n");
+            let (label, calls) = located(
+                &plain,
+                &world,
+                &EnvSnapshot::default(),
+                5100,
+                &claude(5001, None, Some("pts/30")),
+            );
+            assert_eq!(label, "-", "no multiplexer finds it");
+            assert!(calls.is_empty(), "nothing was spawned: {calls:?}");
         }
 
         /// The herdr client runs in a terminal that is not a tmux pane (a plain

@@ -70,6 +70,12 @@ pub enum Action {
     SessionsDetected {
         sessions: Vec<crate::session_detector::ClaudeSession>,
     },
+    /// Where each detected session lives in a terminal multiplexer. Computed on
+    /// `spawn_blocking` from the `SessionsDetected` handler; replaces the
+    /// PID-keyed cache wholesale.
+    SessionLocationsResolved {
+        locations: crate::multiplexer::ResolvedLocations,
+    },
     ArchiveMilestonesDiscovered {
         alias: String,
         milestones: Vec<String>,

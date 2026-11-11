@@ -1388,6 +1388,10 @@ pub struct AppContext {
     pub input_buffer: String,
     pub needs_redraw: bool,
     pub active_sessions: Vec<crate::session_detector::ClaudeSession>,
+    /// Where each session lives in a terminal multiplexer: PID-keyed, written
+    /// only by the `SessionLocationsResolved` handler, read by the Sessions tab,
+    /// never resolved at render time.
+    pub session_locations: crate::multiplexer::SessionLocationCache,
     /// Parsed milestone archives, keyed alias first, milestone second — see
     /// [`crate::archive::ArchiveCache`] for why that is a type.
     pub archive_cache: crate::archive::ArchiveCache,
@@ -2431,6 +2435,7 @@ mod tests {
             input_buffer: String::new(),
             needs_redraw: false,
             active_sessions: Vec::new(),
+            session_locations: Default::default(),
             archive_cache: crate::archive::ArchiveCache::default(),
             // Fixtures default the experimental flag ON so every driver test
             // written before 260917-fko keeps asserting what it always did;
