@@ -34,7 +34,12 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use gsd_meta_manager::config::{load_config, Config};
 use gsd_meta_manager::driver::router;
+use gsd_meta_manager::launch_target::resolve_launch_target;
+use gsd_meta_manager::registry::list_projects;
+use gsd_meta_manager::session_detector::{detect_sessions, ClaudeSession, SessionKind};
+use gsd_meta_manager::state_reader::disk_status::VerificationStatus;
 use gsd_meta_manager::state_reader::{parse_project_state, ProjectState};
 use gsd_meta_manager::text::{render_for_terminal, Rendered};
 use serde_json::{json, Value};
@@ -134,8 +139,101 @@ fn warnings_json(state: &ProjectState) -> Vec<&'static str> {
     warnings
 }
 
-/// The entry for a readable project: all eleven keys of the schema.
-fn project_entry(target: Option<&str>, alias: Option<&str>, root: &Path) -> Value {
+/// One attention item (D6). All four keys are always present.
+fn attention_item(
+    kind: &str,
+    phase: Option<&str>,
+    workstream: Option<&str>,
+    status: Option<String>,
+) -> Value {
+    json!({
+        "kind": kind,
+        "phase": phase.map(text),
+        "workstream": workstream.map(text),
+        "status": status,
+    })
+}
+
+/// The pending human/UAT items of the root and of every workstream (D6).
+///
+/// Per scope, in order: the scope-wide flags, then each roadmap phase's disk
+/// verdicts in roadmap order, then the deferred-verification rows. Prose
+/// (`pause_context`, goals, descriptions) is never read.
+fn attention_json(state: &ProjectState) -> Vec<Value> {
+    let mut items = Vec::new();
+    for (workstream, scope) in state.scopes() {
+        let ws = workstream.map(|w| w.name.as_str());
+        if scope.paused {
+            items.push(attention_item("paused", None, ws, None));
+        }
+        if scope.external_job_waiting {
+            items.push(attention_item("external_job_waiting", None, ws, None));
+        }
+        if scope.continue_here_present {
+            items.push(attention_item("continue_here", None, ws, None));
+        }
+        for phase in &scope.phases {
+            let Some(disk) = scope.disk_status_for(&phase.number) else {
+                continue;
+            };
+            let id = Some(phase.number.as_str());
+            if disk.verification_status == VerificationStatus::HumanNeeded {
+                items.push(attention_item("verification_human_needed", id, ws, None));
+            }
+            if disk.uat_status.is_outstanding() {
+                items.push(attention_item(
+                    "uat_outstanding",
+                    id,
+                    ws,
+                    Some(text(disk.uat_status.as_str())),
+                ));
+            }
+            if disk.continue_here_blocking {
+                items.push(attention_item("continue_here_blocking", id, ws, None));
+            }
+        }
+        for row in &scope.deferred_verification_phases {
+            items.push(attention_item("deferred_verification", Some(row), ws, None));
+        }
+    }
+    items
+}
+
+/// One live agent process (D4, D5).
+fn session_json(session: &ClaudeSession) -> Value {
+    let agent = match session.kind {
+        SessionKind::Claude => "claude",
+        SessionKind::Codex => "codex",
+    };
+    json!({
+        "agent": agent,
+        "pid": session.pid,
+        "session_id": session.session_id.as_ref().map(|id| cap(id.shown())),
+        "cwd": session.working_dir.display().to_string(),
+        "tty": session.tty,
+    })
+}
+
+/// The deepest of `roots` that `cwd` is, or lies under (D4).
+///
+/// `Path::starts_with` compares whole components, never a string prefix, so
+/// `/x/foo` can never claim `/x/foobar`. When roots nest, the deepest wins, the
+/// rule `resolve_launch_target` applies.
+fn owning_root<'a>(cwd: &Path, roots: &'a [PathBuf]) -> Option<&'a Path> {
+    roots
+        .iter()
+        .filter(|root| cwd.starts_with(root))
+        .max_by_key(|root| root.components().count())
+        .map(PathBuf::as_path)
+}
+
+/// A readable project's entry: all eleven keys of the schema.
+fn project_entry(
+    target: Option<&str>,
+    alias: Option<&str>,
+    root: &Path,
+    sessions: Vec<Value>,
+) -> Value {
     let state = parse_project_state(&root.join(".planning"));
     json!({
         "target": target.map(text),
@@ -145,8 +243,8 @@ fn project_entry(target: Option<&str>, alias: Option<&str>, root: &Path) -> Valu
         "milestone": milestone_json(&state),
         "phase": phase_json(&state),
         "progress": progress_json(&state),
-        "attention": Vec::<Value>::new(),
-        "sessions": Vec::<Value>::new(),
+        "attention": attention_json(&state),
+        "sessions": sessions,
         "next": next_cli::hint_for(root, &state),
         "warnings": warnings_json(&state),
     })
@@ -176,28 +274,166 @@ fn error_entry(
     })
 }
 
-/// Resolve one argv target to an entry.
-fn target_entry(target: &str) -> Value {
+/// What one requested project resolved to, before its state is read.
+enum Slot {
+    /// A root that exists and holds `.planning/`.
+    Project {
+        target: Option<String>,
+        alias: Option<String>,
+        root: PathBuf,
+    },
+    /// Resolution failed; the finished error entry.
+    Failed(Value),
+}
+
+fn canon_or_raw(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// A registered (or resolved) root, checked before its state is parsed.
+fn checked_slot(target: Option<&str>, alias: Option<&str>, root: PathBuf) -> Slot {
+    if !root.is_dir() {
+        let message = format!(
+            "the folder {} does not exist",
+            text(&root.display().to_string())
+        );
+        return Slot::Failed(error_entry(
+            target,
+            alias,
+            Some(&root),
+            "folder_missing",
+            &message,
+        ));
+    }
+    if !root.join(".planning").is_dir() {
+        let message = format!(
+            "{} has no .planning/ directory",
+            text(&root.display().to_string())
+        );
+        return Slot::Failed(error_entry(
+            target,
+            alias,
+            Some(&root),
+            "no_planning",
+            &message,
+        ));
+    }
+    Slot::Project {
+        target: target.map(str::to_owned),
+        alias: alias.map(str::to_owned),
+        root,
+    }
+}
+
+/// The registry alias whose canonical root is `root`; ties go to the
+/// lexicographically smallest alias, because `projects` is a `HashMap`.
+fn alias_of_root(config: &Config, root: &Path) -> Option<String> {
+    config
+        .projects
+        .iter()
+        .filter(|(_, project)| canon_or_raw(&project.path) == root)
+        .map(|(alias, _)| alias.clone())
+        .min()
+}
+
+/// Resolve one argv target (D2, D3): a directory holding `.planning/`, else a
+/// registered alias or a path inside a registered root, else unresolved.
+fn resolve_target(config: &Config, cwd: &Path, target: &str) -> Slot {
     let path = Path::new(target);
     if path.join(".planning").is_dir() {
-        let root = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-        return project_entry(Some(target), None, &root);
+        let root = canon_or_raw(path);
+        let alias = alias_of_root(config, &root);
+        return checked_slot(Some(target), alias.as_deref(), root);
     }
-    error_entry(
+    if let Ok(alias) = resolve_launch_target(config, target, cwd) {
+        if let Some(project) = config.projects.get(&alias) {
+            return checked_slot(Some(target), Some(&alias), canon_or_raw(&project.path));
+        }
+    }
+    let message = format!(
+        "{} is neither a directory containing .planning/ nor a registered project",
+        text(target)
+    );
+    Slot::Failed(error_entry(
         Some(target),
         None,
         None,
         "unresolved",
-        &format!(
-            "{} is neither a directory containing .planning/ nor a registered project",
-            text(target)
-        ),
-    )
+        &message,
+    ))
+}
+
+/// Write the one `status: ...` stderr line of a failed run.
+fn fail(message: &str) -> i32 {
+    let mut stderr = std::io::stderr().lock();
+    let _ = writeln!(stderr, "status: {}", render_for_terminal(message));
+    1
 }
 
 /// Run `status` and return the process exit code.
-pub fn run(targets: &[String], _config: Option<PathBuf>) -> i32 {
-    let projects: Vec<Value> = targets.iter().map(|t| target_entry(t)).collect();
+pub fn run(targets: &[String], config: Option<PathBuf>) -> i32 {
+    let config_path = config.unwrap_or_else(Config::default_path);
+    let config = match load_config(&config_path) {
+        Ok(config) => config,
+        Err(error) => return fail(&format!("{error:#}")),
+    };
+    let cwd = match std::env::current_dir() {
+        Ok(cwd) => cwd,
+        Err(error) => return fail(&format!("cannot read the working directory: {error}")),
+    };
+
+    let slots: Vec<Slot> = if targets.is_empty() {
+        list_projects(&config)
+            .into_iter()
+            .map(|(alias, project)| checked_slot(None, Some(alias), canon_or_raw(&project.path)))
+            .collect()
+    } else {
+        targets
+            .iter()
+            .map(|target| resolve_target(&config, &cwd, target))
+            .collect()
+    };
+
+    // One detection per run, and only when some project can own a session. A
+    // session goes to the deepest root among every registered and listed one.
+    let any_project = slots
+        .iter()
+        .any(|slot| matches!(slot, Slot::Project { .. }));
+    let sessions = if any_project {
+        detect_sessions()
+    } else {
+        Vec::new()
+    };
+    let mut roots: Vec<PathBuf> = config
+        .projects
+        .values()
+        .map(|project| canon_or_raw(&project.path))
+        .collect();
+    roots.extend(slots.iter().filter_map(|slot| match slot {
+        Slot::Project { root, .. } => Some(root.clone()),
+        Slot::Failed(_) => None,
+    }));
+
+    let projects: Vec<Value> = slots
+        .into_iter()
+        .map(|slot| match slot {
+            Slot::Failed(entry) => entry,
+            Slot::Project {
+                target,
+                alias,
+                root,
+            } => {
+                let mut mine: Vec<&ClaudeSession> = sessions
+                    .iter()
+                    .filter(|s| owning_root(&s.working_dir, &roots) == Some(root.as_path()))
+                    .collect();
+                mine.sort_by_key(|s| s.pid);
+                let mine = mine.into_iter().map(session_json).collect();
+                project_entry(target.as_deref(), alias.as_deref(), &root, mine)
+            }
+        })
+        .collect();
+
     let document = json!({
         "schema": SCHEMA,
         "schema_version": SCHEMA_VERSION,
@@ -206,4 +442,101 @@ pub fn run(targets: &[String], _config: Option<PathBuf>) -> i32 {
     });
     out_line(&document.to_string());
     0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gsd_meta_manager::text::Untrusted;
+
+    fn roots(paths: &[&str]) -> Vec<PathBuf> {
+        paths.iter().map(PathBuf::from).collect()
+    }
+
+    #[test]
+    fn owning_root_matches_an_exact_root_and_a_descendant() {
+        let roots = roots(&["/work/app"]);
+        assert_eq!(
+            owning_root(Path::new("/work/app"), &roots),
+            Some(Path::new("/work/app"))
+        );
+        assert_eq!(
+            owning_root(Path::new("/work/app/src/deep"), &roots),
+            Some(Path::new("/work/app"))
+        );
+    }
+
+    #[test]
+    fn owning_root_prefers_the_deepest_of_nested_roots() {
+        let roots = roots(&["/work", "/work/app", "/work/app/sub"]);
+        assert_eq!(
+            owning_root(Path::new("/work/app/sub/x"), &roots),
+            Some(Path::new("/work/app/sub"))
+        );
+        assert_eq!(
+            owning_root(Path::new("/work/app/y"), &roots),
+            Some(Path::new("/work/app"))
+        );
+    }
+
+    #[test]
+    fn owning_root_never_claims_a_string_prefix_sibling_or_a_stranger() {
+        let roots = roots(&["/x/foo"]);
+        assert_eq!(owning_root(Path::new("/x/foobar"), &roots), None);
+        assert_eq!(owning_root(Path::new("/elsewhere"), &roots), None);
+    }
+
+    fn session(kind: SessionKind, id: Option<&str>) -> ClaudeSession {
+        ClaudeSession {
+            pid: 4242,
+            kind,
+            session_id: id.map(|id| Untrusted::from_untrusted_source(id.to_string())),
+            working_dir: PathBuf::from("/work/app"),
+            start_time: Some(1),
+            tty: Some("pts/3".to_string()),
+        }
+    }
+
+    #[test]
+    fn session_json_has_exactly_the_documented_keys() {
+        let value = session_json(&session(SessionKind::Claude, Some("abc")));
+        let mut keys: Vec<&str> = value
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(keys, ["agent", "cwd", "pid", "session_id", "tty"]);
+        assert_eq!(value["agent"], "claude");
+        assert_eq!(value["pid"], 4242);
+        assert_eq!(value["cwd"], "/work/app");
+        assert_eq!(value["tty"], "pts/3");
+    }
+
+    #[test]
+    fn session_json_maps_codex_and_a_missing_id() {
+        let value = session_json(&session(SessionKind::Codex, None));
+        assert_eq!(value["agent"], "codex");
+        assert!(value["session_id"].is_null());
+    }
+
+    #[test]
+    fn session_json_escapes_a_hostile_session_id() {
+        let value = session_json(&session(SessionKind::Claude, Some("a\u{202e}b\u{1b}[0m")));
+        let id = value["session_id"].as_str().unwrap();
+        assert!(!id.contains('\u{202e}') && !id.contains('\u{1b}'), "{id:?}");
+    }
+
+    #[test]
+    fn cap_cuts_a_long_value_and_leaves_a_short_one_alone() {
+        let long = cap_string("y".repeat(500));
+        assert_eq!(long.chars().count(), MAX_TEXT_CHARS + 1);
+        assert!(long.ends_with('\u{2026}'));
+        assert_eq!(cap_string("short".to_string()), "short");
+        assert_eq!(
+            cap_string("z".repeat(MAX_TEXT_CHARS)).chars().count(),
+            MAX_TEXT_CHARS
+        );
+    }
 }
