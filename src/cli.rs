@@ -68,6 +68,10 @@ pub struct Cli {
     /// opened by its path instead, such as `gsd-meta-manager ./list` or the
     /// absolute path.
     pub target: Option<String>,
+
+    /// Print an agent skill (markdown) that teaches a model to query this tool, then exit
+    #[arg(long, conflicts_with = "target")]
+    pub skill: bool,
 }
 
 // The post-parse conflict check below is what replaces
@@ -90,6 +94,11 @@ impl Cli {
                  instead (e.g. `./list`)",
                 crate::text::render_for_terminal(target)
             );
+            return Err(<Self as clap::CommandFactory>::command()
+                .error(clap::error::ErrorKind::ArgumentConflict, msg));
+        }
+        if cli.skill && cli.command.is_some() {
+            let msg = "--skill prints the agent skill and cannot be combined with a subcommand";
             return Err(<Self as clap::CommandFactory>::command()
                 .error(clap::error::ErrorKind::ArgumentConflict, msg));
         }
@@ -229,6 +238,23 @@ pub enum Commands {
         #[arg(long)]
         target_phase: Option<String>,
         /// Print the hint as one JSON object on stdout
+        #[arg(long, required = true)]
+        json: bool,
+    },
+    // The query half for scripts and agents (quick 261110-qap). Read-only like
+    // `next`: it needs no registry write, no lock, no journal and no log file, so
+    // `main` dispatches it before `init_tracing`. The positional is NOT named
+    // `alias`: `tests/spawn_seam_guard.rs` counts argv fields that read exactly
+    // `alias: String,`.
+    //
+    // `--json` is required (not defaulted) so a human-readable form can be added
+    // later without a breaking change (D10).
+    /// Status of every registered project, or the named ones, as one JSON document (read-only)
+    Status {
+        /// Aliases of registered projects, or paths to directories containing .planning/
+        /// (default: every registered project)
+        projects: Vec<String>,
+        /// Print the status as one JSON document on stdout
         #[arg(long, required = true)]
         json: bool,
     },
@@ -1046,6 +1072,65 @@ mod tests {
         let err = match checked(&["next", "p"]) {
             Err(err) => err,
             Ok(_) => panic!("`next` without --json must be refused"),
+        };
+        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+        assert_eq!(err.exit_code(), 2, "argparse parity: usage errors exit 2");
+    }
+
+    // ── The read-only `status` query (quick 261110-qap) ──────────────────
+
+    #[test]
+    fn skill_alone_parses_with_the_flag_set() {
+        let cli = checked(&["--skill"]).expect("parses");
+        assert!(cli.skill);
+        assert!(cli.command.is_none() && cli.target.is_none());
+    }
+
+    #[test]
+    fn skill_with_a_subcommand_is_an_argument_conflict() {
+        let err = match checked(&["--skill", "list"]) {
+            Err(err) => err,
+            Ok(_) => panic!("`--skill list` must be refused"),
+        };
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+        assert_eq!(err.exit_code(), 2);
+    }
+
+    #[test]
+    fn skill_with_a_target_is_a_usage_error() {
+        let err = match checked(&["--skill", "some-target"]) {
+            Err(err) => err,
+            Ok(_) => panic!("`--skill some-target` must be refused"),
+        };
+        assert_eq!(err.exit_code(), 2);
+    }
+
+    #[test]
+    fn status_parses_without_targets() {
+        let cli = checked(&["status", "--json"]).expect("parses");
+        match cli.command {
+            Some(Commands::Status { projects, json }) => {
+                assert!(projects.is_empty());
+                assert!(json);
+            }
+            _ => panic!("did not resolve to Commands::Status"),
+        }
+    }
+
+    #[test]
+    fn status_parses_several_targets_in_argv_order() {
+        let cli = checked(&["status", "b", "a", "--json"]).expect("parses");
+        match cli.command {
+            Some(Commands::Status { projects, .. }) => assert_eq!(projects, ["b", "a"]),
+            _ => panic!("did not resolve to Commands::Status"),
+        }
+    }
+
+    #[test]
+    fn status_without_json_is_a_usage_error() {
+        let err = match checked(&["status", "p"]) {
+            Err(err) => err,
+            Ok(_) => panic!("`status` without --json must be refused"),
         };
         assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
         assert_eq!(err.exit_code(), 2, "argparse parity: usage errors exit 2");

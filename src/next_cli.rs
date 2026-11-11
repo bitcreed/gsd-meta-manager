@@ -23,6 +23,9 @@
 //!    resolved, has no `.planning/`, or `--target-phase` is not a plain
 //!    component (one `next: ...` line on stderr, nothing on stdout); `2` is clap's
 //!    usage error, including a missing `--json`.
+//! 4. **`status` reuses the hint.** `projects[].next` in `gsd-meta-manager status
+//!    --json` is built by [`hint_for`], the one default-target router hint, so the
+//!    two commands cannot disagree.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -143,6 +146,17 @@ fn hint_json(root: &Path, target: Option<&str>, decision: Option<&Decision>) -> 
     })
 }
 
+/// The router hint for the default target (the first unfinished current-milestone
+/// phase), exactly what `next <root> --json` prints without `--target-phase`.
+///
+/// Shared with `status_cli`, so `status`'s `projects[].next` and `next --json`
+/// cannot drift apart.
+pub(crate) fn hint_for(root: &Path, state: &ProjectState) -> Value {
+    let target = default_target(state);
+    let decision = target.as_deref().map(|phase| router::decide(state, phase));
+    hint_json(root, target.as_deref(), decision.as_ref())
+}
+
 /// Run `next` and return the process exit code.
 pub fn run(project: &str, target_phase: Option<&str>, config: Option<PathBuf>) -> i32 {
     if let Some(target) = target_phase {
@@ -167,13 +181,16 @@ pub fn run(project: &str, target_phase: Option<&str>, config: Option<PathBuf>) -
         }
     };
     let state = parse_project_state(&root.join(".planning"));
-    let target = target_phase
-        .map(str::to_owned)
-        .or_else(|| default_target(&state));
-    // No target left (every current-milestone phase is goal-met, or the roadmap
-    // names none): an honest "nothing to route", not an error (D-20).
-    let decision = target.as_deref().map(|phase| router::decide(&state, phase));
-    out_line(&hint_json(&root, target.as_deref(), decision.as_ref()).to_string());
+    let hint = match target_phase {
+        Some(phase) => {
+            let decision = router::decide(&state, phase);
+            hint_json(&root, Some(phase), Some(&decision))
+        }
+        // No target left (every current-milestone phase is goal-met, or the roadmap
+        // names none): an honest "nothing to route", not an error (D-20).
+        None => hint_for(&root, &state),
+    };
+    out_line(&hint.to_string());
     0
 }
 

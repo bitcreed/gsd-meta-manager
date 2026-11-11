@@ -2,9 +2,14 @@ mod driver_cli;
 mod driverctl_cli;
 mod event;
 mod next_cli;
+mod status_cli;
 mod task_cli;
 mod taskctl_cli;
 mod tui;
+
+/// The agent skill `--skill` prints (quick 261110-qap). Under `src/`, so Cargo.toml's
+/// anchored `exclude` keeps it in the packaged crate.
+const AGENT_SKILL: &str = include_str!("agent_skill.md");
 
 use event::EventBus;
 use gsd_meta_manager::app::App;
@@ -55,6 +60,12 @@ fn init_tracing() {
 /// control, so `driverctl_cli::run` returns it and this function exits with it.
 fn main() -> anyhow::Result<()> {
     let mut cli = Cli::parse_checked();
+    // `--skill` is read-only like `next`: before `init_tracing`, so it writes no log
+    // file. A closed pipe is ignored.
+    if cli.skill {
+        let _ = std::io::Write::write_all(&mut std::io::stdout().lock(), AGENT_SKILL.as_bytes());
+        std::process::exit(0);
+    }
     match cli.command.take() {
         Some(Commands::Driverctl { action }) => std::process::exit(driverctl_cli::run(action)),
         // The one-off agent's report CLI (quick 261103-f5y): before `init_tracing`
@@ -92,6 +103,11 @@ fn main() -> anyhow::Result<()> {
             target_phase.as_deref(),
             cli.config.clone(),
         )),
+        // `status` is the read-only query for scripts and agents (quick 261110-qap):
+        // before `init_tracing` for the same reason as `next`, it writes no log file.
+        Some(Commands::Status { projects, .. }) => {
+            std::process::exit(status_cli::run(&projects, cli.config.clone()))
+        }
         other => cli.command = other,
     }
 
@@ -381,6 +397,12 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
         Some(Commands::Next { .. }) => {
             return Err(anyhow::anyhow!(
                 "next is dispatched in `main` before tracing and the async runtime exist"
+            ));
+        }
+        // And `status`, dispatched at the same early point as `next`.
+        Some(Commands::Status { .. }) => {
+            return Err(anyhow::anyhow!(
+                "status is dispatched in `main` before tracing and the async runtime exist"
             ));
         }
         Some(Commands::Envelope { action }) => match action {
