@@ -19288,7 +19288,7 @@ mod tests {
         let (screen, ctx) = on_agents(Some(two_wave_view()));
         let text = render_detail_to_text(&screen, &ctx);
         assert!(
-            text.contains("P13 \u{b7} w2/2 \u{b7} 1 run \u{b7} 1/2 done"),
+            text.contains("P13 \u{2219} w2/2 \u{2219} 1 run \u{2219} 1/2 done"),
             "{text}"
         );
         // Quick 260926-2l4: ONE strip line, not a row per wave.
@@ -19714,7 +19714,7 @@ mod tests {
         let (screen, ctx) = on_agents(Some(thirteen_executors_view()));
         let three = render_detail_to_text_at(&screen, &ctx, 80, 24);
         assert!(
-            three.contains("P13 \u{b7} w2/11 \u{b7} 13 run \u{b7} 8/35 done"),
+            three.contains("P13 \u{2219} w2/11 \u{2219} 13 run \u{2219} 8/35 done"),
             "{three}"
         );
         assert!(
@@ -30055,7 +30055,7 @@ mod tests {
         let lines: Vec<&str> = text.lines().collect();
         let summary = lines
             .iter()
-            .position(|l| l.contains("P13 \u{b7} w2/2"))
+            .position(|l| l.contains("P13 \u{2219} w2/2"))
             .unwrap_or_else(|| panic!("no summary: {text}"));
         assert!(
             lines[summary + 1].contains("w1\u{2713}  \u{25b8}w2 1 running"),

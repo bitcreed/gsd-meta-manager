@@ -216,7 +216,7 @@ fn a_code_fixer_run_shows_an_estimated_fixed_over_total() {
     let view = derive(&agents, &ProjectState::default());
     assert_eq!(
         view.summary_forms().first().map(String::as_str),
-        Some("1 fixer \u{b7} ~4/48 fixed")
+        Some("1 fixer \u{2219} ~4/48 fixed")
     );
 }
 
@@ -248,8 +248,8 @@ fn finding_ids_dedupe_across_worktrees_and_main() {
     assert_eq!(
         derive(&agents, &ProjectState::default()).summary_forms(),
         vec![
-            "3 fixers \u{b7} ~2/48 fixed".to_string(),
-            "3 fixers \u{b7} ~2/48".to_string(),
+            "3 fixers \u{2219} ~2/48 fixed".to_string(),
+            "3 fixers \u{2219} ~2/48".to_string(),
             "3fix ~2/48".to_string(),
             "3fix".to_string(),
         ]
@@ -296,7 +296,7 @@ fn a_leftover_review_fix_report_does_not_hide_a_running_estimate() {
             .summary_forms()
             .first()
             .map(String::as_str),
-        Some("3 fixers \u{b7} ~3/48 fixed")
+        Some("3 fixers \u{2219} ~3/48 fixed")
     );
 }
 

@@ -545,7 +545,7 @@ fn derive_scope(
 }
 
 /// Wrap an active ladder with the unmerged count (I-7): the widest form gains
-/// ` · ∆N unmerged`, then every form gains ` · ∆N`, then the narrowest form
+/// ` ∙ ∆N unmerged`, then every form gains ` ∙ ∆N`, then the narrowest form
 /// stands bare. `n == 0` returns `forms` unchanged.
 fn with_unmerged(forms: Vec<String>, n: u32) -> Vec<String> {
     if n == 0 || forms.is_empty() {
@@ -553,13 +553,13 @@ fn with_unmerged(forms: Vec<String>, n: u32) -> Vec<String> {
     }
     let mut out = Vec::with_capacity(forms.len() + 2);
     out.push(format!(
-        "{} \u{b7} {GLYPH_UNMERGED}{n} {LABEL_UNMERGED}",
+        "{} \u{2219} {GLYPH_UNMERGED}{n} {LABEL_UNMERGED}",
         forms[0]
     ));
     out.extend(
         forms
             .iter()
-            .map(|f| format!("{f} \u{b7} {GLYPH_UNMERGED}{n}")),
+            .map(|f| format!("{f} \u{2219} {GLYPH_UNMERGED}{n}")),
     );
     out.extend(forms.last().cloned());
     out
@@ -659,12 +659,12 @@ impl AgentView {
     /// Pattern 6). The renderer takes the first form that fits its cell.
     ///
     /// Reads only this view's fields, so a UI test can build the view as a
-    /// literal. `·` is U+00B7, one cell wide.
+    /// literal. `∙` is U+2219 BULLET OPERATOR, EAW Neutral and one cell wide.
     ///
     /// `P13` is the FIRST segment dropped [inferred — RESEARCH A3, deviating
     /// from D-C14's "drop from the right"]: the Phase column beside the cell
     /// already shows the phase, and at the common 13-cell width a right-drop
-    /// would keep `P13 · w2/11` and hide the running count, which is the point.
+    /// would keep `P13 ∙ w2/11` and hide the running count, which is the point.
     ///
     /// A running view ([`Self::is_active`], CR-01) picks a ladder.
     /// Executor mode (the active phase has plans, and some Live or Idle row is
@@ -677,9 +677,9 @@ impl AgentView {
     /// a live worktree-less agent never picks the ladder.
     ///
     /// Unmerged worktree work (N = [`Self::pending_unmerged`], I-7) wraps any
-    /// active ladder: `forms[0] · ∆N unmerged`, then each form `· ∆N`, then
+    /// active ladder: `forms[0] ∙ ∆N unmerged`, then each form `∙ ∆N`, then
     /// the narrowest form bare. An inactive view yields `∆N unmerged`, `∆N`;
-    /// with S stalled rows `∆N unmerged · S stalled`, `∆N · S stalled`,
+    /// with S stalled rows `∆N unmerged ∙ S stalled`, `∆N ∙ S stalled`,
     /// `S stalled` (the yellow `ends_with("stalled")` rule still holds); with
     /// only stalled rows `S stalled`; with neither, no forms, and the cell is
     /// left alone.
@@ -690,7 +690,7 @@ impl AgentView {
             let tag = format!("{w} wt phase{}", if w == 1 { "" } else { "s" });
             match forms.first().cloned() {
                 // A wider form in front; every narrower form is untouched.
-                Some(first) => forms.insert(0, format!("{first} \u{b7} {tag}")),
+                Some(first) => forms.insert(0, format!("{first} \u{2219} {tag}")),
                 None => forms.push(tag),
             }
         }
@@ -713,8 +713,8 @@ impl AgentView {
                     format!("{GLYPH_UNMERGED}{n}"),
                 ],
                 (n, s) => vec![
-                    format!("{GLYPH_UNMERGED}{n} {LABEL_UNMERGED} \u{b7} {s} stalled"),
-                    format!("{GLYPH_UNMERGED}{n} \u{b7} {s} stalled"),
+                    format!("{GLYPH_UNMERGED}{n} {LABEL_UNMERGED} \u{2219} {s} stalled"),
+                    format!("{GLYPH_UNMERGED}{n} \u{2219} {s} stalled"),
                     format!("{s} stalled"),
                 ],
             };
@@ -764,17 +764,17 @@ impl AgentView {
         let t = self.plan_total;
         match (self.current_wave, self.max_wave) {
             (Some(c), Some(m)) => vec![
-                format!("P{p} \u{b7} w{c}/{m} \u{b7} {r} run \u{b7} {d}/{t} done"),
-                format!("w{c}/{m} \u{b7} {r} run \u{b7} {d}/{t} done"),
-                format!("w{c}/{m} \u{b7} {r} run \u{b7} {d}/{t}"),
-                format!("w{c}/{m} \u{b7} {r} run"),
+                format!("P{p} \u{2219} w{c}/{m} \u{2219} {r} run \u{2219} {d}/{t} done"),
+                format!("w{c}/{m} \u{2219} {r} run \u{2219} {d}/{t} done"),
+                format!("w{c}/{m} \u{2219} {r} run \u{2219} {d}/{t}"),
+                format!("w{c}/{m} \u{2219} {r} run"),
                 format!("w{c}/{m} {r}run"),
                 format!("{r}run"),
             ],
             _ => vec![
-                format!("P{p} \u{b7} {r} run \u{b7} {d}/{t} done"),
-                format!("{r} run \u{b7} {d}/{t} done"),
-                format!("{r} run \u{b7} {d}/{t}"),
+                format!("P{p} \u{2219} {r} run \u{2219} {d}/{t} done"),
+                format!("{r} run \u{2219} {d}/{t} done"),
+                format!("{r} run \u{2219} {d}/{t}"),
                 format!("{r}run"),
             ],
         }
@@ -783,7 +783,7 @@ impl AgentView {
     /// The fixer ladder (AGENT-07, D-C12, D-C14), widest first, or `None`
     /// when there is no estimate or it counts no fixer.
     ///
-    /// With both counts: `3 fixers · ~5/48 fixed`, `3 fixers · ~5/48`,
+    /// With both counts: `3 fixers ∙ ~5/48 fixed`, `3 fixers ∙ ~5/48`,
     /// `3fix ~5/48`, `3fix`. Without: `3 fixers`, `3fix`. `fixer` is singular
     /// for one. The count is an estimate and every form carrying it says so
     /// with `~`; the widest keeps the word `fixed` (T-25-26).
@@ -793,8 +793,8 @@ impl AgentView {
         let noun = if n == 1 { "fixer" } else { "fixers" };
         Some(match (est.fixed, est.total) {
             (Some(f), Some(t)) => vec![
-                format!("{n} {noun} \u{b7} ~{f}/{t} fixed"),
-                format!("{n} {noun} \u{b7} ~{f}/{t}"),
+                format!("{n} {noun} \u{2219} ~{f}/{t} fixed"),
+                format!("{n} {noun} \u{2219} ~{f}/{t}"),
                 format!("{n}fix ~{f}/{t}"),
                 format!("{n}fix"),
             ],
@@ -814,7 +814,7 @@ mod tests {
     use std::collections::HashMap;
     use std::path::PathBuf;
 
-    const DOT: &str = "\u{b7}";
+    const SEP: &str = "\u{2219}";
 
     fn pr(id: &str) -> PlanRef {
         PlanRef::from_id(id).unwrap_or_else(|| panic!("{id} is a valid plan id"))
@@ -1069,7 +1069,7 @@ mod tests {
         assert_eq!(view.max_wave, Some(2));
         assert_eq!(
             view.summary_forms()[0],
-            format!("P05 {DOT} w2/2 {DOT} 1 run {DOT} 1/2 done")
+            format!("P05 {SEP} w2/2 {SEP} 1 run {SEP} 1/2 done")
         );
         assert_eq!(view.waves.len(), 2);
         assert!(!view.waves[0].current && view.waves[1].current);
@@ -1123,10 +1123,10 @@ mod tests {
         assert_eq!(
             view.summary_forms(),
             vec![
-                format!("P13 {DOT} w2/11 {DOT} 13 run {DOT} 8/35 done"),
-                format!("w2/11 {DOT} 13 run {DOT} 8/35 done"),
-                format!("w2/11 {DOT} 13 run {DOT} 8/35"),
-                format!("w2/11 {DOT} 13 run"),
+                format!("P13 {SEP} w2/11 {SEP} 13 run {SEP} 8/35 done"),
+                format!("w2/11 {SEP} 13 run {SEP} 8/35 done"),
+                format!("w2/11 {SEP} 13 run {SEP} 8/35"),
+                format!("w2/11 {SEP} 13 run"),
                 "w2/11 13run".to_string(),
                 "13run".to_string(),
             ]
@@ -1146,7 +1146,7 @@ mod tests {
         // is its own `∆N` segment, driven by the scan's unmerged list.
         assert_eq!(
             view.summary_forms()[0],
-            format!("P13 {DOT} w2/11 {DOT} 11 run {DOT} 8/35 done")
+            format!("P13 {SEP} w2/11 {SEP} 11 run {SEP} 8/35 done")
         );
         assert_eq!(view.waves[1].finished, 2);
         assert_eq!(view.current_wave, Some(2));
@@ -1317,7 +1317,7 @@ mod tests {
         assert_eq!((view.current_wave, view.max_wave), (None, None));
         assert_eq!((view.done, view.running), (1, 1));
         let forms = view.summary_forms();
-        assert_eq!(forms[0], format!("P13 {DOT} 1 run {DOT} 1/3 done"));
+        assert_eq!(forms[0], format!("P13 {SEP} 1 run {SEP} 1/3 done"));
         assert!(
             forms.iter().all(|f| !f.contains('w')),
             "no w segment: {forms:?}"
@@ -1365,7 +1365,7 @@ mod tests {
         assert!(view.waves.iter().all(|w| !w.current));
         assert_eq!(
             view.summary_forms()[0],
-            format!("P13 {DOT} 1 run {DOT} 1/2 done")
+            format!("P13 {SEP} 1 run {SEP} 1/2 done")
         );
     }
 
@@ -1414,7 +1414,7 @@ mod tests {
         let forms = widest.summary_forms();
         assert_eq!(forms[4], "w99/99 99run");
         assert!(width(&forms[4]) <= 13);
-        assert_eq!(width(DOT), 1, "U+00B7 is one cell");
+        assert_eq!(width(SEP), 1, "U+2219 is one cell");
     }
 
     // --- unmerged worktree work (quick 260929-szq) -----------------------
@@ -1458,12 +1458,12 @@ mod tests {
         };
         let forms = view.summary_forms();
         assert!(
-            forms[0].ends_with(&format!("4/9 done {DOT} {DELTA}1 unmerged")),
+            forms[0].ends_with(&format!("4/9 done {SEP} {DELTA}1 unmerged")),
             "{forms:?}"
         );
         let (last, middle) = forms[1..].split_last().expect("more than one form");
         for form in middle {
-            assert!(form.ends_with(&format!(" {DOT} {DELTA}1")), "{forms:?}");
+            assert!(form.ends_with(&format!(" {SEP} {DELTA}1")), "{forms:?}");
         }
         assert_eq!(last, "1run", "the last form is the bare narrowest one");
         for pair in forms.windows(2) {
@@ -1485,8 +1485,8 @@ mod tests {
         assert_eq!(
             view.summary_forms(),
             vec![
-                format!("{DELTA}2 unmerged {DOT} 1 stalled"),
-                format!("{DELTA}2 {DOT} 1 stalled"),
+                format!("{DELTA}2 unmerged {SEP} 1 stalled"),
+                format!("{DELTA}2 {SEP} 1 stalled"),
                 "1 stalled".to_string(),
             ]
         );

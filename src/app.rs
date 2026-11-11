@@ -6290,11 +6290,11 @@ mod tests {
         // 120 columns: the Status column is 13 cells, so the ladder settles on
         // its fourth form (12 cells); the 17-cell third form does not fit.
         assert!(
-            screen.contains("w2/2 \u{b7} 1 run"),
+            screen.contains("w2/2 \u{2219} 1 run"),
             "the Status cell must carry the fitted agent summary:\n{screen}"
         );
         assert!(
-            !screen.contains("w2/2 \u{b7} 1 run \u{b7}"),
+            !screen.contains("w2/2 \u{2219} 1 run \u{2219}"),
             "a wider form must never be clipped into the cell:\n{screen}"
         );
     }

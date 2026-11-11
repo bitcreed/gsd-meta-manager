@@ -190,7 +190,7 @@ fn a_branch_attributed_executor_drives_the_wave_summary_end_to_end() {
     assert_eq!(view.max_wave, Some(2));
     assert_eq!(
         view.summary_forms().first().map(String::as_str),
-        Some("P13 \u{b7} w2/2 \u{b7} 1 run \u{b7} 1/3 done")
+        Some("P13 \u{2219} w2/2 \u{2219} 1 run \u{2219} 1/3 done")
     );
 }
 
@@ -300,7 +300,7 @@ fn a_summary_committed_in_the_worktree_reads_finished_before_the_merge() {
     assert_eq!((view.done, view.finished, view.running), (1, 1, 1));
     assert_eq!(
         view.summary_forms().first().map(String::as_str),
-        Some("P13 \u{b7} w2/2 \u{b7} 1 run \u{b7} 1/3 done \u{b7} \u{2206}1 unmerged"),
+        Some("P13 \u{2219} w2/2 \u{2219} 1 run \u{2219} 1/3 done \u{2219} \u{2206}1 unmerged"),
         "done shown to the user is main-done only; the unmerged plan is its own segment"
     );
 }

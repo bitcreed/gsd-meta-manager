@@ -509,8 +509,8 @@ const DASHBOARD_HIGHLIGHT_SYMBOL: &str = "> ";
 /// mid-segment. `None` when the view has no forms or none fits, and the cell
 /// then renders exactly as it would without the view.
 ///
-/// Widths are display cells from `Line::width`, never `str::len`: `·` is two
-/// bytes and one cell.
+/// Widths are display cells from `Line::width`, never `str::len`: the `∙`
+/// separator (U+2219) is three bytes and one cell.
 ///
 /// Cyan while agents run; yellow for the all-stalled form. The meaning is
 /// carried by the text (`13run`, `2 stalled`), never by the colour alone.
@@ -3813,7 +3813,7 @@ mod tests {
         for (width, want) in [
             (80u16, "3fix ~5/48"),
             (120, "3fix ~5/48"),
-            (200, "3 fixers \u{b7} ~5/48 fixed"),
+            (200, "3 fixers \u{2219} ~5/48 fixed"),
         ] {
             let mut ctx = ctx_with_aliases(&["orbit"]);
             ctx.agent_views.insert("orbit".to_string(), view.clone());
@@ -3829,19 +3829,19 @@ mod tests {
         }
     }
 
-    /// U+00B7 MIDDLE DOT is one cell under `unicode-width`, which is what
-    /// `Line::width` and ratatui's layout use. It is East-Asian-Ambiguous
-    /// (measured), so a CJK-locale terminal may draw it two cells wide — the
-    /// same class as the `│` borders ratatui already draws on every screen.
-    /// The 13-cell common-case forms (`w2/11 13run`, `13run`) contain no `·`
-    /// at all [inferred — audit].
+    /// U+2219 BULLET OPERATOR, the Status-cell separator, is one cell under
+    /// `unicode-width`, which is what `Line::width` and ratatui's layout use.
+    /// It is East Asian Width Neutral and present in Ubuntu Sans Mono and DejaVu
+    /// Sans Mono. The earlier inference (keep U+00B7 MIDDLE DOT here) was
+    /// reversed by quick 261111-ixj, because U+00B7 is East-Asian-Ambiguous and
+    /// a fixed-width table cell must not hold an Ambiguous char.
     #[test]
-    fn the_middle_dot_is_one_cell() {
-        assert_eq!(Line::from("\u{b7}").width(), 1);
+    fn the_status_cell_separator_is_one_cell() {
+        assert_eq!(Line::from("\u{2219}").width(), 1);
         assert_eq!(
-            "\u{b7}".len(),
-            2,
-            "two bytes, one cell: never measure with len"
+            "\u{2219}".len(),
+            3,
+            "three bytes, one cell: never measure with len"
         );
     }
 
