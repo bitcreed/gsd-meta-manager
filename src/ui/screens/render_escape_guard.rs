@@ -1122,6 +1122,24 @@ fn probe_ctx(identity: &str) -> AppContext {
         start_time: Some(1),
         tty: None,
     }];
+    // The Sessions row's location cell draws tool output (a tmux session name, a
+    // herdr pane id): both targets carry the hostile identity so the guard
+    // checks the cells that draw them (T-261111-h9f-01).
+    let hostile_pane = |backend: &'static str| crate::multiplexer::PaneLocation {
+        backend,
+        target: Untrusted::from_untrusted_source(identity.to_string()),
+        by: crate::multiplexer::MatchedBy::Tty,
+    };
+    ctx.session_locations.entries.insert(
+        4242,
+        crate::multiplexer::LocatedEntry {
+            start_time: Some(1),
+            location: Some(crate::multiplexer::SessionLocation {
+                pane: hostile_pane("herdr"),
+                via: Some(hostile_pane("tmux")),
+            }),
+        },
+    );
 
     // The Archive tab at its PhaseList and FileList depths: both read
     // `ctx.archive_cache`, which is keyed by the project's alias and then the

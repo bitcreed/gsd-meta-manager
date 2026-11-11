@@ -14,6 +14,10 @@
 // would route from the TUI's environment again and the reported bug would come
 // back for that path only, with every test of the other path still green.
 //
+// The Sessions tab's location column follows the same rule: its resolution
+// reaches backends only through `crate::multiplexer::locate_sessions`, called
+// from `src/app.rs` on a blocking task; the render path only reads the cache.
+//
 // Prose cannot enforce that; this file does. Like `spawn_seam_guard.rs` it reads
 // the source tree, so it is an integration test and walks `src/` only.
 // ============================================================================
@@ -37,7 +41,16 @@ const SEAM_INTERNALS: &[&str] = &[
     "REGISTRY",
     "focus_tty",
     "client_ttys",
+    "locate_session",
+    "locate_tty",
+    "locate_with_procs",
+    "locate_sessions_in",
+    "reveal_targets",
 ];
+
+/// The only file allowed to call the location entry: `app.rs` resolves on a
+/// blocking task and stores the result for the Sessions tab to read.
+const LOCATE_CALLERS: &[&str] = &["src/app.rs"];
 
 type SourceFile = (String, Vec<(usize, String)>);
 
@@ -138,6 +151,24 @@ fn the_sessions_panel_and_the_tab_switch_call_the_same_focus_entry() {
         "the files that call crate::multiplexer::focus_message changed. Both focus paths \
          (the Sessions panel and the tab-switch) must call this one function and nobody \
          else may; if a third path is deliberate, add it to FOCUS_CALLERS. Found:{}",
+        render(&callers)
+    );
+}
+
+/// The location column has one resolver entry, called from one file.
+#[test]
+fn the_location_column_resolves_only_through_locate_sessions() {
+    let files = source_files();
+    let callers = hits(&files, "multiplexer::locate_sessions(");
+    let mut paths: Vec<&str> = callers.iter().map(|(path, _, _)| path.as_str()).collect();
+    paths.sort_unstable();
+    paths.dedup();
+    assert_eq!(
+        paths,
+        LOCATE_CALLERS,
+        "the files that call crate::multiplexer::locate_sessions changed. The Sessions tab \
+         location column is resolved on a blocking task in app.rs and only READ at render \
+         time; if a second resolver is deliberate, add it to LOCATE_CALLERS. Found:{}",
         render(&callers)
     );
 }
