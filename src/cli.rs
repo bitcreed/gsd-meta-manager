@@ -68,6 +68,10 @@ pub struct Cli {
     /// opened by its path instead, such as `gsd-meta-manager ./list` or the
     /// absolute path.
     pub target: Option<String>,
+
+    /// Print an agent skill (markdown) that teaches a model to query this tool, then exit
+    #[arg(long, conflicts_with = "target")]
+    pub skill: bool,
 }
 
 // The post-parse conflict check below is what replaces
@@ -90,6 +94,11 @@ impl Cli {
                  instead (e.g. `./list`)",
                 crate::text::render_for_terminal(target)
             );
+            return Err(<Self as clap::CommandFactory>::command()
+                .error(clap::error::ErrorKind::ArgumentConflict, msg));
+        }
+        if cli.skill && cli.command.is_some() {
+            let msg = "--skill prints the agent skill and cannot be combined with a subcommand";
             return Err(<Self as clap::CommandFactory>::command()
                 .error(clap::error::ErrorKind::ArgumentConflict, msg));
         }
@@ -1069,6 +1078,32 @@ mod tests {
     }
 
     // ── The read-only `status` query (quick 261110-qap) ──────────────────
+
+    #[test]
+    fn skill_alone_parses_with_the_flag_set() {
+        let cli = checked(&["--skill"]).expect("parses");
+        assert!(cli.skill);
+        assert!(cli.command.is_none() && cli.target.is_none());
+    }
+
+    #[test]
+    fn skill_with_a_subcommand_is_an_argument_conflict() {
+        let err = match checked(&["--skill", "list"]) {
+            Err(err) => err,
+            Ok(_) => panic!("`--skill list` must be refused"),
+        };
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+        assert_eq!(err.exit_code(), 2);
+    }
+
+    #[test]
+    fn skill_with_a_target_is_a_usage_error() {
+        let err = match checked(&["--skill", "some-target"]) {
+            Err(err) => err,
+            Ok(_) => panic!("`--skill some-target` must be refused"),
+        };
+        assert_eq!(err.exit_code(), 2);
+    }
 
     #[test]
     fn status_parses_without_targets() {

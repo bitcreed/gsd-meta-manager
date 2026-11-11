@@ -690,3 +690,129 @@ fn the_emitted_key_paths_are_exactly_schema_v1_and_every_entry_has_eleven_keys()
         "schema paths never emitted (only session sub-keys may be absent): {missing:?}"
     );
 }
+
+// ── `--skill`, and the documentation drift guards ──
+
+const SKILL: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/agent_skill.md"));
+const README: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md"));
+
+/// The body of the first fenced `json` block in `doc` that contains `needle`
+/// (an empty needle matches the first block), parsed.
+fn json_fence(doc: &str, needle: &str) -> Value {
+    let mut rest = doc;
+    while let Some(start) = rest.find("```json\n") {
+        let body_start = start + "```json\n".len();
+        let body_len = rest[body_start..]
+            .find("\n```")
+            .expect("a json fence is closed");
+        let body = &rest[body_start..body_start + body_len];
+        if body.contains(needle) {
+            return serde_json::from_str(body)
+                .unwrap_or_else(|e| panic!("the json fence parses: {e}\n{body}"));
+        }
+        rest = &rest[body_start + body_len..];
+    }
+    panic!("no json fence containing {needle:?}");
+}
+
+fn schema_set() -> std::collections::BTreeSet<String> {
+    SCHEMA_PATHS.iter().map(|p| (*p).to_string()).collect()
+}
+
+fn skill_cmd(args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_gsd-meta-manager"))
+        .args(args)
+        .output()
+        .expect("the binary runs")
+}
+
+#[test]
+fn skill_prints_the_markdown_file_verbatim_and_exits_zero() {
+    let out = skill_cmd(&["--skill"]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert!(out.stderr.is_empty(), "{out:?}");
+    assert_eq!(out.stdout, SKILL.as_bytes());
+    assert!(
+        SKILL.starts_with("---\nname: gsd-meta-manager\ndescription: "),
+        "frontmatter"
+    );
+}
+
+#[test]
+fn skill_beside_a_subcommand_or_a_target_is_a_usage_error() {
+    for args in [&["--skill", "list"][..], &["--skill", "some-target"][..]] {
+        let out = skill_cmd(args);
+        assert_eq!(out.status.code(), Some(2), "{args:?}: {out:?}");
+        assert!(out.stdout.is_empty(), "{args:?}: {out:?}");
+    }
+}
+
+#[test]
+fn skill_writes_nothing_anywhere() {
+    let homes = tempfile::tempdir().unwrap();
+    let mut dirs = Vec::new();
+    for name in ["home", "data", "state", "config"] {
+        let path = homes.path().join(name);
+        std::fs::create_dir(&path).unwrap();
+        dirs.push((name, path));
+    }
+    let out = Command::new(env!("CARGO_BIN_EXE_gsd-meta-manager"))
+        .arg("--skill")
+        .env_clear()
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .env("HOME", &dirs[0].1)
+        .env("XDG_DATA_HOME", &dirs[1].1)
+        .env("XDG_STATE_HOME", &dirs[2].1)
+        .env("XDG_CONFIG_HOME", &dirs[3].1)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    for (name, path) in &dirs {
+        let entries: Vec<_> = std::fs::read_dir(path).unwrap().collect();
+        assert!(entries.is_empty(), "{name} dir was written to: {entries:?}");
+    }
+}
+
+#[test]
+fn the_skill_skeleton_has_exactly_the_schema_v1_key_paths() {
+    assert_eq!(key_paths(&json_fence(SKILL, "")), schema_set());
+}
+
+#[test]
+fn the_readme_skeleton_has_exactly_the_schema_v1_key_paths() {
+    let doc = json_fence(README, "\"schema\": \"gsd-meta-manager/status\"");
+    assert_eq!(key_paths(&doc), schema_set());
+}
+
+#[test]
+fn the_readme_table_documents_every_schema_v1_path() {
+    for path in SCHEMA_PATHS {
+        assert!(
+            README.contains(&format!("| `{path}` |")),
+            "README.md has no table row for {path}"
+        );
+    }
+}
+
+#[test]
+fn the_skill_teaches_the_three_commands_and_at_least_four_jq_recipes() {
+    let code_lines: Vec<&str> = SKILL
+        .lines()
+        .filter(|l| !l.starts_with('-') && !l.starts_with('#'))
+        .collect();
+    for command in [
+        "gsd-meta-manager status --json",
+        "gsd-meta-manager next ",
+        "gsd-meta-manager list",
+    ] {
+        assert!(
+            code_lines.iter().any(|l| l.starts_with(command)),
+            "no code line starts with {command:?}"
+        );
+    }
+    assert!(
+        SKILL.lines().filter(|l| l.contains("| jq")).count() >= 4,
+        "at least four jq recipes"
+    );
+    assert!(SKILL.lines().count() <= 120, "the skill stays short");
+}

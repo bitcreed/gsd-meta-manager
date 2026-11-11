@@ -7,6 +7,10 @@ mod task_cli;
 mod taskctl_cli;
 mod tui;
 
+/// The agent skill `--skill` prints (quick 261110-qap). Under `src/`, so Cargo.toml's
+/// anchored `exclude` keeps it in the packaged crate.
+const AGENT_SKILL: &str = include_str!("agent_skill.md");
+
 use event::EventBus;
 use gsd_meta_manager::app::App;
 use gsd_meta_manager::cli::{Cli, Commands, EnvelopeAction};
@@ -56,6 +60,12 @@ fn init_tracing() {
 /// control, so `driverctl_cli::run` returns it and this function exits with it.
 fn main() -> anyhow::Result<()> {
     let mut cli = Cli::parse_checked();
+    // `--skill` is read-only like `next`: before `init_tracing`, so it writes no log
+    // file. A closed pipe is ignored.
+    if cli.skill {
+        let _ = std::io::Write::write_all(&mut std::io::stdout().lock(), AGENT_SKILL.as_bytes());
+        std::process::exit(0);
+    }
     match cli.command.take() {
         Some(Commands::Driverctl { action }) => std::process::exit(driverctl_cli::run(action)),
         // The one-off agent's report CLI (quick 261103-f5y): before `init_tracing`
