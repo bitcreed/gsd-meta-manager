@@ -4,10 +4,10 @@ milestone: v2.3.1
 current_phase_name: v2.3.1 shipped; no milestone open
 status: shipped
 stopped_at: v2.3.1 released locally (release commit + annotated tag v2.3.1, not pushed) — publish fix for v2.2.0/v2.3.0
-last_updated: "2026-11-11T18:58:37.030Z"
-last_activity: 2026-11-10
+last_updated: "2026-11-11T20:12:44.280Z"
+last_activity: 2026-11-11
 last_activity_desc: v2.3.1 released — Multiplexer Backends (publish fix)
-state_head: 029f69dde78a87b5969430d8e9f470b784281437
+state_head: ac9214e3b3afbef3ab8852c5a6bf6a94f1e188ad
 progress:
   total_phases: 1
   completed_phases: 1
@@ -32,7 +32,7 @@ See: .planning/PROJECT.md (updated 2026-11-10)
 Phase: — (v2.3.1 shipped; no milestone open)
 Plan: —
 Status: Shipped v2.3.1 Multiplexer Backends (publish fix) — release commit and annotated tag v2.3.1 created locally; not pushed (pushing the tag triggers the crates.io publish). v2.2.0 and v2.3.0 tags exist but their Release workflow failed on Windows clippy, so crates.io is still at 2.1.0; 2.3.1 is the first publish since.
-Last activity: 2026-11-11 - Completed quick task 261111-h9f: Sessions panel multiplexer location column + README multiplexer support section
+Last activity: 2026-11-11 - Completed quick task 261111-ixj: Unmerged glyph U+25D2 -> U+2206 (font-fallback overflow), Status-cell separator -> U+2219, flush-safe glyph guard
 
 ## Deferred Verification
 
@@ -530,6 +530,7 @@ Older entries (Phase 19 T-19-* rows, Phase 21 round-13 gaps, Phase 26 risks, 31-
 | 261110-qap | status --json query CLI + --skill agent-skill output | 2026-11-10 | c81159d | [261110-qap-add-status-json-query-cli-and-skill-agen](./quick/261110-qap-add-status-json-query-cli-and-skill-agen/) |
 | 261110-tbn | Fix Windows-only dead-code clippy error and add non-Linux clippy pre-tag gate | 2026-11-10 | 24494e1 | [261110-tbn-fix-windows-only-dead-code-clippy-error-](./quick/261110-tbn-fix-windows-only-dead-code-clippy-error-/) |
 | 261111-h9f | Sessions panel multiplexer location column + README multiplexer support section | 2026-11-11 | 029f69d | [261111-h9f-sessions-panel-multiplexer-location-colu](./quick/261111-h9f-sessions-panel-multiplexer-location-colu/) |
+| 261111-ixj | Replace the overlapping unmerged glyph U+25D2 (font-fallback overflow) with U+2206, Status-cell separator U+00B7 to U+2219, flush-safe glyph guard | 2026-11-11 | ac9214e | [261111-ixj-replace-east-asian-ambiguous-indicator-g](./quick/261111-ixj-replace-east-asian-ambiguous-indicator-g/) |
 
 ## Deferred Items
 
