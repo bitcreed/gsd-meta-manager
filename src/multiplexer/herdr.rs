@@ -673,17 +673,35 @@ fn join_by_session_id<'a>(panes: &'a [HerdrPane], session_id: Option<&str>) -> T
     )
 }
 
-/// The panes whose `cwd` or `foreground_cwd` equals `working_dir` as a path (no
-/// canonicalization). Not restricted by agent kind, so a Codex session is
-/// focusable too [inferred].
+/// The panes whose `cwd` or `foreground_cwd` is `working_dir`. Not restricted by
+/// agent kind, so a Codex session is focusable too [inferred]; the narrowing to
+/// an agent happens only in the last-resort tier ([`cwd_fallback`]).
+///
+/// The session's `working_dir` is the resolved `/proc/<pid>/cwd`, while herdr
+/// may report the path as it was entered (through a symlink), so two paths are
+/// the same directory when they are equal as written or resolve to the same
+/// place ([`same_dir`], review WR-02).
 fn cwd_candidates<'a>(panes: &'a [HerdrPane], working_dir: &Path) -> Vec<&'a HerdrPane> {
     panes
         .iter()
         .filter(|pane| {
-            pane.cwd.as_deref() == Some(working_dir)
-                || pane.foreground_cwd.as_deref() == Some(working_dir)
+            [pane.cwd.as_deref(), pane.foreground_cwd.as_deref()]
+                .into_iter()
+                .flatten()
+                .any(|dir| same_dir(dir, working_dir))
         })
         .collect()
+}
+
+/// Equal as written, or both resolvable and resolving to the same path. A path
+/// that cannot be resolved (it no longer exists, or lives on another machine's
+/// view of the filesystem) only ever matches by exact equality.
+fn same_dir(a: &Path, b: &Path) -> bool {
+    a == b
+        || matches!(
+            (std::fs::canonicalize(a), std::fs::canonicalize(b)),
+            (Ok(a), Ok(b)) if a == b
+        )
 }
 
 /// Tier 2: a candidate whose foreground processes include `session_pid`, or
@@ -1202,6 +1220,29 @@ mod tests {
         assert_eq!(ids(SessionKind::Claude), vec!["claude"]);
         assert_eq!(ids(SessionKind::Codex), vec!["codex"]);
         assert!(cwd_fallback(&[&shell], SessionKind::Claude).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_pane_reporting_a_symlinked_path_is_a_candidate_for_the_resolved_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let other = dir.path().join("other");
+        std::fs::create_dir(&other).unwrap();
+
+        let panes = vec![
+            pane("via-link", "t", link.to_str().unwrap(), None),
+            pane("elsewhere", "t", other.to_str().unwrap(), None),
+        ];
+        let ids: Vec<&str> = cwd_candidates(&panes, &std::fs::canonicalize(&real).unwrap())
+            .iter()
+            .map(|p| p.pane_id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["via-link"]);
+        assert!(cwd_candidates(&panes, &dir.path().join("missing")).is_empty());
     }
 
     #[test]
