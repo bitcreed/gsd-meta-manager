@@ -292,7 +292,10 @@ per-PR CI jobs, so verification before a PR is on you. Practical guidelines:
   unless GSD's router is available as an oracle; run
   `./scripts/install-conformance-oracle.sh` first on a machine without GSD.
 - Code that is Linux-only must be cfg-gated: the release workflow checks macOS and
-  Windows targets with `cargo clippy --all-targets -- -D warnings`.
+  Windows targets with `cargo clippy --all-targets -- -D warnings`, and
+  `./scripts/pre-tag-check.sh` gate 7 runs the same per-target check locally. A
+  test-only helper whose callers are cfg-gated must carry exactly its callers' cfg;
+  never silence the lint with a blanket `allow(dead_code)`.
 - Update relevant docs in `docs/` when changing user-visible behavior or the
   module layout.
 
@@ -307,8 +310,9 @@ Milestone releases follow the procedure documented in `CLAUDE.md` under
    deferred semver-breaking deps in the release commit body.
 3. Rehearse the release gates: `./scripts/pre-tag-check.sh --container vX.Y.Z` (needs
    `docker` or `podman`; builds an `ubuntu-24.04` lookalike, provisions the conformance
-   oracle, and runs tag/version match, MSRV, release build, tests, clippy and
-   `cargo package --locked`). A bare `./scripts/pre-tag-check.sh vX.Y.Z` runs the same
+   oracle, and runs tag/version match, MSRV, release build, tests, clippy,
+   `cargo package --locked` and the cross-target check + clippy from release.yml's
+   `cross-target-check` matrix, gate 7). A bare `./scripts/pre-tag-check.sh vX.Y.Z` runs the same
    gates on your machine but cannot certify the publish job. It never publishes.
 4. Update `.planning/STATE.md` (milestone, status, position, continuity).
 5. Commit as `chore(release): vX.Y.Z -- <milestone name>` with an itemized body.
