@@ -103,8 +103,8 @@ use std::path::Path;
 /// functions treat every error alike: a failing backend is reported and the next
 /// step is tried ([`focus_with`] moves on to the next detected backend,
 /// [`launch_with`] falls through to the GUI terminal chain), and the first
-/// success wins [inferred, for audit: review WR-03 found the previous docs
-/// promising retry rules the seam never applied].
+/// success wins \[inferred, for audit: review WR-03 found the previous docs
+/// promising retry rules the seam never applied\].
 ///
 /// * **Not mine / not found** ([`MuxError::NotFound`], [`MuxError::Unsupported`]):
 ///   this backend has nothing to act on.
@@ -203,13 +203,14 @@ impl std::error::Error for MuxError {}
 /// element**, as herdr's JSON `cwd` field, or through the GUI spawn's
 /// `current_dir`; never as a `cd` written into a program string (T-W0D-03).
 ///
-/// # Why the messages still name tmux [inferred]
+/// # Why the messages are backend-neutral \[inferred, for audit\]
 ///
-/// The refusals used to live on tmux's `open_new_window` and now sit on a type
-/// every backend's `open` must take (D-05). The message text deliberately keeps
-/// naming "a tmux window": it is byte-identical for SC2, and the arity rule
-/// originates in tmux. The substrings `directly` and `option` that the tests
-/// pin are unchanged.
+/// The refusals used to live on tmux's `open_new_window` and named "a tmux
+/// window". They now sit on a type every backend's `open` must take (D-05), and
+/// `launch_with` adds the backend name itself, so a herdr launch would have read
+/// `herdr: refusing to open a tmux window ...` (review IN-02). The text now says
+/// "a new window"; the substrings `directly` and `option` that the tests pin are
+/// unchanged, and the tmux status line no longer shows this text anyway (UI-01).
 #[derive(Debug, Clone)]
 pub struct ExecArgv(Vec<String>);
 
@@ -218,17 +219,17 @@ impl ExecArgv {
     pub fn new(argv: Vec<String>) -> Result<ExecArgv, MuxError> {
         if argv.len() < 2 {
             return Err(MuxError::RefusedForSafety(format!(
-                "refusing to open a tmux window from a {}-element program vector: \
-                 tmux execs a shell-command given as MULTIPLE arguments directly, \
-                 but hands a SINGLE argument to a command interpreter — which would \
+                "refusing to open a new window from a {}-element program vector: \
+                 a multiplexer execs a shell-command given as MULTIPLE arguments directly, \
+                 but may hand a SINGLE argument to a command interpreter — which would \
                  put a parser back in a path that deliberately has none",
                 argv.len()
             )));
         }
         if argv[0].starts_with('-') {
             return Err(MuxError::RefusedForSafety(format!(
-                "refusing to open a tmux window whose program vector begins with \
-                 {:?}: tmux's own option parser would consume it as one of its \
+                "refusing to open a new window whose program vector begins with \
+                 {:?}: the multiplexer's own option parser would consume it as one of its \
                  options instead of treating it as the program",
                 argv[0]
             )));
@@ -592,7 +593,7 @@ pub type GuiSpawner<'a> = dyn FnMut(&str, &[String], &Path) -> std::io::Result<(
 /// `<phrase>` is a short human phrase for the failure class
 /// ([`MuxError::launch_phrase`], or `"not reachable"` for an unreachable
 /// detection), never the raw reason: that can carry socket paths and herdr's
-/// error JSON, so it is logged at `warn` instead (UI-01) [inferred, for audit].
+/// error JSON, so it is logged at `warn` instead (UI-01) \[inferred, for audit\].
 pub fn launch_with(
     plan: &LaunchPlan,
     cwd: &Path,
@@ -863,7 +864,7 @@ mod tests {
             .expect_err("a program vector whose head starts with `-` must be refused");
         assert!(
             err.to_string().contains("option"),
-            "the refusal must name tmux's own option parser as the reason; got {err:?}"
+            "the refusal must name the multiplexer's own option parser as the reason; got {err:?}"
         );
 
         let ok = vec!["env".to_string(), "claude".to_string()];

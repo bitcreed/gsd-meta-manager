@@ -140,7 +140,7 @@ pub fn parse_layout_apply_reply(reply: &[u8]) -> Result<(), MuxError> {
                 .to_string()
         };
         return Err(MuxError::Failed(format!(
-            "herdr layout.apply failed ({}): {}",
+            "layout.apply failed ({}): {}",
             field("code"),
             field("message")
         )));
@@ -812,7 +812,7 @@ mod tests {
         assert_eq!(
             err,
             MuxError::Failed(
-                "herdr layout.apply failed (layout_apply_failed): Unable to spawn env".to_string()
+                "layout.apply failed (layout_apply_failed): Unable to spawn env".to_string()
             )
         );
         for bad in [
