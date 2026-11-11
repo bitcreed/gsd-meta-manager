@@ -38,7 +38,8 @@ RUN apt-get update -qq \
  && apt-get install -y -qq --no-install-recommends nodejs \
  && rm -rf /var/lib/apt/lists/*
 
-# Rust. `stable` with clippy covers gates 3-5; the 1.89.0 pin is here so gate 2
+# Rust. `stable` with clippy covers gates 3-5 and 7 (gate 7's foreign rustup
+# targets are added in the LAST layer below); the 1.89.0 pin is here so gate 2
 # — the MSRV gate — can actually run in the container instead of SKIPPING.
 # 1.89.0 MIRRORS THE `dtolnay/rust-toolchain@1.89.0` REF in release.yml's msrv
 # job. If the manifest's rust-version floor moves, BOTH move: this line and
@@ -93,3 +94,33 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
  && apt-get update -qq \
  && apt-get install -y -qq --no-install-recommends gh \
  && rm -rf /var/lib/apt/lists/*
+
+# The rustup targets gate 7 needs, and ONLY those: this MIRRORS the "Install
+# stable toolchain with the target" step of release.yml's cross-target-check job
+# (dtolnay/rust-toolchain@stable with `targets: ${{ matrix.target }}`), which
+# adds rust-std for each matrix target to stable.
+#
+# THE LIST IS NOT WRITTEN HERE. `./scripts/pre-tag-check.sh --container` reads it
+# from release.yml and passes it in as this build arg, so the image cannot drift
+# from the matrix; a copy in this file would be a second source of truth. It is
+# also why the layer is LAST: changing the list rebuilds only this layer.
+#
+# v2.2.0 and v2.3.0 both died in that job on a Windows-only dead-code lint that
+# no other gate could see. Without these targets the gate has nothing to lint.
+#
+# The RUN refuses an empty arg (a bare `docker build` of this file would
+# silently produce an image gate 7 then FAILS in), and re-checks the charset
+# because the value is deliberately left UNQUOTED so the shell splits it into
+# one rustup argument per target. chmod re-applies the toolchain layer's
+# a+w: the unprivileged gate-run uid must be able to use what root just wrote.
+ARG PRE_TAG_CROSS_TARGETS
+RUN if [ -z "$PRE_TAG_CROSS_TARGETS" ]; then \
+      echo "PRE_TAG_CROSS_TARGETS is empty: build this image only via ./scripts/pre-tag-check.sh --container, which derives it from release.yml" >&2; \
+      exit 1; \
+    fi \
+ && if printf '%s' "$PRE_TAG_CROSS_TARGETS" | grep -q '[^a-z0-9_. -]'; then \
+      echo "PRE_TAG_CROSS_TARGETS may contain only [a-z0-9_.-] and spaces" >&2; \
+      exit 1; \
+    fi \
+ && rustup target add --toolchain stable $PRE_TAG_CROSS_TARGETS \
+ && chmod -R a+w /usr/local/rustup
