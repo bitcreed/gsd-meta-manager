@@ -2,11 +2,11 @@
 gsd_state_version: "1.0"
 milestone: v2.3.0
 milestone_name: Multiplexer Backends
-status: Awaiting next milestone
-stopped_at: Phase 33 complete — all phases complete
+status: shipped
+stopped_at: v2.3.0 released locally (release commit + annotated tag v2.3.0, not pushed) — Multiplexer Backends milestone closed
 last_updated: "2026-11-11T02:01:15.610Z"
 last_activity: 2026-11-10
-last_activity_desc: Milestone v2.3.0 completed and archived
+last_activity_desc: v2.3.0 released — Multiplexer Backends
 state_head: 43249dc18a54544d06fd285e2b79beb4b4ef35b8
 progress:
   total_phases: 1
@@ -28,10 +28,10 @@ See: .planning/PROJECT.md (updated 2026-11-10)
 
 ## Current Position
 
-Phase: Milestone v2.3.0 complete
+Phase: — (milestone v2.3.0 shipped; no milestone open)
 Plan: —
-Status: Awaiting next milestone
-Last activity: 2026-11-10 — Milestone v2.3.0 completed and archived
+Status: Shipped v2.3.0 Multiplexer Backends — release commit and annotated tag v2.3.0 created locally; not pushed (pushing the tag triggers the crates.io publish, awaiting the user)
+Last activity: 2026-11-10 — v2.3.0 released (Phase 33 + review fixes, quick 261110-qap)
 
 ## Deferred Verification
 
@@ -583,10 +583,11 @@ non-unique bullets in these narrative logs). Disclosed per file instead [inferre
 ## Session Continuity
 
 Last session: 2026-11-10T20:53:16.043Z
-Stopped at: Phase 33 complete — all phases complete
+Stopped at: v2.3.0 released locally — musk retro, milestone close (archive in `.planning/milestones/v2.3.0-*`), release commit and annotated tag v2.3.0; nothing pushed
 Resume file: None
 
-Next: `/gsd-musk-retro`, then `/gsd-complete-milestone` (v2.3.0 Multiplexer Backends).
+Next: user decides on pushing master + tag v2.3.0 (tag push publishes to crates.io); then `/gsd-new-milestone`.
+Earlier (2026-11-05): v2.2.0 released — interim gsd-core 1.20.1 Sync & One-off Tasks.
 Earlier (2026-11-03): v2.1.0 released — release commit and annotated tag v2.1.0 created.
 Earlier (2026-10-29): v2.0.0 released locally — milestone v2.0 archived, release commit and annotated tag v2.0.0 created.
 Earlier session history: `.planning/STATE-ARCHIVE.md`.
