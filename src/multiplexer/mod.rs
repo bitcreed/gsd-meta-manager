@@ -7,8 +7,23 @@
 //!
 //! * [`launch`] opens a new or resumed session where the user is: the
 //!   innermost detected backend, then the GUI terminal chain ([`gui`]).
-//! * [`focus_message`] focuses an existing session: each detected backend is
-//!   tried innermost-first and the first success wins.
+//! * [`focus_message`] focuses an existing session: the backends the SESSION
+//!   itself lives in are tried first, innermost-first, then the TUI's own, and
+//!   the first success wins ([`plan_focus`]).
+//!
+//! # Launch follows the TUI, focus follows the session
+//!
+//! Launching opens a session where the user is looking, so it targets the
+//! TUI's innermost multiplexer ([`launch_with`], D-10). Focusing goes to a
+//! session that already exists, wherever it lives, so it is routed by the
+//! session's own `/proc/<pid>/environ` markers and ancestry
+//! ([`SessionContext`]), never by where the TUI happens to run: a TUI in tmux
+//! focuses a session under a herdr server, a TUI in herdr focuses a session in
+//! tmux (on the tmux server named by the SESSION's `$TMUX`), and both then
+//! bring forward the terminal that displays the result (`reveal_client`).
+//! This supersedes Phase 33's "controlling a multiplexer the TUI is not running
+//! inside" exclusion, for focus only. Both UI paths (the Sessions panel and the
+//! tab-switch) call the one [`focus_message`].
 //!
 //! # Pure core, impure edges (D-04)
 //!
@@ -49,7 +64,8 @@
 //!
 //! ## How each trait method maps onto the table
 //!
-//! * [`MultiplexerBackend::detect`] is the "detect" column. It returns
+//! * [`MultiplexerBackend::detect`] is the "detect" column, asked of the
+//!   SESSION's environment for focus and of the TUI's for launch. It returns
 //!   [`Detection`], which keeps `inside` (the marker is set) apart from
 //!   `reachable` (the tool can be driven from here), because kitty shows the two
 //!   differ and herdr can carry its marker without a socket (D-02). The
@@ -60,6 +76,11 @@
 //!   session id and pids but no tty, GNU screen exposes neither, which is why
 //!   its focus is weak. A tool that cannot satisfy the join answers
 //!   [`MuxError::Unsupported`], the trait default.
+//! * [`MultiplexerBackend::client_ttys`] and [`MultiplexerBackend::focus_tty`]
+//!   are the reveal step after a focus: a headless server's pane (herdr) is on
+//!   a terminal only its CLIENT process shows, and that terminal is usually a
+//!   pane of another multiplexer (tmux), found by tty. Defaults: no client
+//!   concept, and [`MuxError::Unsupported`].
 //! * [`MultiplexerBackend::open`] is the "open" column and takes an
 //!   [`ExecArgv`], so the "exec-direct?" column is enforced for every backend by
 //!   the one sink (D-05). A tool whose only path re-parses text (GNU screen,
@@ -71,7 +92,9 @@
 //! `ui::screens::detail` calls [`launch`] twice (resume and new session) and
 //! [`focus_message`] once, and builds its plan through [`plan_launch`] over
 //! [`detect_current`]; `ui::screens::normal` calls [`focus_message`] once. No UI
-//! code spawns a multiplexer command itself.
+//! code spawns a multiplexer command itself, and `tests/focus_entry_guard.rs`
+//! pins that these two are the only focus callers and that nothing outside
+//! this module reaches a backend.
 //!
 //! ## Recorded but unused, and superseded
 //!
@@ -87,6 +110,8 @@
 //!   exposes no tty (`herdr.rs` module docs). The exact-match and refuse-on-
 //!   ambiguity rules are unchanged.
 
+#[cfg(test)]
+pub(crate) mod fixtures;
 pub mod gui;
 pub mod herdr;
 pub mod tmux;
@@ -276,6 +301,47 @@ impl EnvSnapshot {
         Self { values }
     }
 
+    /// Read [`ENV_KEYS`] from another process's `/proc/<pid>/environ` block
+    /// (`KEY=VALUE` entries separated by NUL). **Pure.**
+    ///
+    /// Only the [`ENV_KEYS`] are kept. The FIRST entry for a key wins, as
+    /// `getenv` would have it; an entry without `=`, with a key that is not
+    /// UTF-8, or for another key is skipped. Values are read lossily.
+    ///
+    /// This is untrusted input: another process's environment. A control
+    /// socket path is accepted only when it is an absolute path
+    /// (`accept_session_value`); anything else is dropped, so it can neither
+    /// make a backend a candidate nor reach a command line.
+    pub fn from_environ_block(block: &[u8]) -> Self {
+        let mut first: BTreeMap<&'static str, &[u8]> = BTreeMap::new();
+        for entry in block.split(|byte| *byte == 0) {
+            let Some(eq) = entry.iter().position(|byte| *byte == b'=') else {
+                continue;
+            };
+            let Ok(key) = std::str::from_utf8(&entry[..eq]) else {
+                continue;
+            };
+            if let Some(known) = ENV_KEYS.iter().find(|k| **k == key) {
+                first.entry(known).or_insert(&entry[eq + 1..]);
+            }
+        }
+        let values = first
+            .into_iter()
+            .map(|(key, value)| (key, String::from_utf8_lossy(value).into_owned()))
+            .filter(|(key, value)| accept_session_value(key, value))
+            .map(|(key, value)| (key.to_string(), value))
+            .collect();
+        Self { values }
+    }
+
+    /// `self` with every key `over` sets replaced by `over`'s value. Keys `over`
+    /// does not set keep `self`'s. **Pure.**
+    pub fn overlaid_with(&self, over: &EnvSnapshot) -> Self {
+        let mut values = self.values.clone();
+        values.extend(over.values.iter().map(|(k, v)| (k.clone(), v.clone())));
+        Self { values }
+    }
+
     /// Build a fixture from `(key, value)` pairs.
     pub fn from_pairs(pairs: &[(&str, &str)]) -> Self {
         Self {
@@ -289,6 +355,21 @@ impl EnvSnapshot {
     /// The value of `key`: `None` when unset, `Some("")` when set but empty.
     pub fn get(&self, key: &str) -> Option<&str> {
         self.values.get(key).map(String::as_str)
+    }
+}
+
+/// May `value` of `key`, read from ANOTHER process's environment, be believed?
+///
+/// A control socket named there is something this build would connect a CLI to,
+/// so it must be an absolute path: a relative one would resolve against this
+/// process's working directory instead of the session's. `TMUX` is
+/// `<socket>,<server pid>,<session index>` and its socket is the part before the
+/// first comma ([`tmux::socket_of`]). Every other key is only a marker.
+fn accept_session_value(key: &str, value: &str) -> bool {
+    match key {
+        "HERDR_SOCKET_PATH" => Path::new(value).is_absolute(),
+        "TMUX" => tmux::socket_of(value).is_some(),
+        _ => true,
     }
 }
 
@@ -336,6 +417,26 @@ pub struct FocusOutcome {
     pub partial: Option<String>,
 }
 
+/// One process as `/proc` shows it: the facts the reveal step needs to tell a
+/// multiplexer's CLIENT (the process that displays it in a terminal) from its
+/// server and from short-lived CLI calls.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcEntry {
+    pub pid: u32,
+    /// The command name from `/proc/<pid>/stat`.
+    pub comm: String,
+    /// `/proc/<pid>/cmdline`, split on NUL. Empty when it could not be read.
+    pub argv: Vec<String>,
+    /// The terminal on the process's stdin in `pts/N` / `ttyN` form (see
+    /// `terminal_name`). `None` when stdin is not a terminal or unreadable.
+    pub tty: Option<String>,
+}
+
+/// Look up the processes whose command name EQUALS `comm`. Handed to
+/// [`MultiplexerBackend::client_ttys`] so that a backend with no client concept
+/// never causes a `/proc` walk. The real implementation is `ProcFs::scan`.
+pub type ProcScan<'a> = dyn Fn(&str) -> Vec<ProcEntry> + 'a;
+
 /// One terminal multiplexer. Object-safe, stateless, registered statically.
 ///
 /// `focus` and `open` default to [`MuxError::Unsupported`], the same
@@ -366,6 +467,32 @@ pub trait MultiplexerBackend: Sync {
     fn open(&self, _env: &EnvSnapshot, _cwd: &Path, _argv: &ExecArgv) -> Result<(), MuxError> {
         Err(MuxError::Unsupported(format!(
             "{} cannot open a session",
+            self.name()
+        )))
+    }
+
+    /// The terminals (`pts/N`) of this backend's own CLIENT processes: the
+    /// processes that DISPLAY it. **Reveal step, part 1.**
+    ///
+    /// A pane that a headless server owns (herdr) is on no terminal the user can
+    /// see; a client process shows it, and that client usually sits in a pane of
+    /// ANOTHER multiplexer (tmux). Once this backend has focused the session, the
+    /// seam asks it which terminals show it, so the other multiplexer can bring
+    /// that terminal forward ([`MultiplexerBackend::focus_tty`]).
+    ///
+    /// `None` means the backend has no such notion (the default; tmux), so the
+    /// seam does no `/proc` walk for it. `Some(vec![])` means it has one and no
+    /// client is attached. The list is sorted and holds no duplicates.
+    fn client_ttys(&self, _scan: &ProcScan<'_>) -> Option<Vec<String>> {
+        None
+    }
+
+    /// Bring forward the pane that shows one of `ttys`. **Reveal step, part 2**,
+    /// run on a backend OTHER than the one that focused the session. The
+    /// default is [`MuxError::Unsupported`]; tmux overrides it.
+    fn focus_tty(&self, _env: &EnvSnapshot, _ttys: &[String]) -> Result<FocusOutcome, MuxError> {
+        Err(MuxError::Unsupported(format!(
+            "{} cannot reveal a client terminal",
             self.name()
         )))
     }
@@ -449,7 +576,6 @@ pub fn order_innermost(
 /// The comm of a `/proc/<pid>/stat` line: from the first `(` to the LAST `)`,
 /// the kernel's own rule, because the comm may itself contain spaces and `)`.
 /// Sibling of `session_detector::parse_stat_starttime`.
-#[cfg(any(target_os = "linux", test))]
 pub(crate) fn parse_stat_comm(stat: &str) -> Option<&str> {
     let open = stat.find('(')?;
     let close = stat.rfind(')')?;
@@ -459,49 +585,178 @@ pub(crate) fn parse_stat_comm(stat: &str) -> Option<&str> {
 /// The parent pid of a `/proc/<pid>/stat` line: the second whitespace field
 /// after the comm (the first is the state). Truncated, non-numeric or
 /// out-of-range input is `None`.
-#[cfg(any(target_os = "linux", test))]
 pub(crate) fn parse_stat_ppid(stat: &str) -> Option<u32> {
     let after_comm = stat.rfind(')')?.checked_add(1)?;
     let rest = stat.get(after_comm..)?;
     rest.split_whitespace().nth(1)?.parse::<u32>().ok()
 }
 
-/// The longest chain [`proc_chain`] will walk. Bounds a cyclic or absurd chain.
-#[cfg(target_os = "linux")]
+/// The longest chain `ProcFs::chain` will walk. Bounds a cyclic or absurd chain.
 const PROC_CHAIN_MAX: usize = 64;
 
-/// `start` and then each of its ancestors as `(pid, comm)`, nearest first, read
-/// from `/proc/<pid>/stat`. **Facts only**: an empty or short chain means
-/// "could not say", never "no multiplexer".
-///
-/// The walk stops at ppid 0, at the first unreadable or unparsable entry, on a
-/// repeated pid, or after 64 entries, and never guesses past a gap. Off Linux
-/// there is no `/proc`, and a `ps` call would add a spawn site, so the chain is
-/// empty and D-07's fallback clause (the static order) is the only rule there.
-#[cfg(target_os = "linux")]
-pub(crate) fn proc_chain(start: u32) -> Vec<(u32, String)> {
-    let mut chain: Vec<(u32, String)> = Vec::new();
-    let mut pid = start;
-    while chain.len() < PROC_CHAIN_MAX {
-        let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
-            break;
-        };
-        let (Some(comm), Some(ppid)) = (parse_stat_comm(&stat), parse_stat_ppid(&stat)) else {
-            break;
-        };
-        chain.push((pid, comm.to_string()));
-        if ppid == 0 || chain.iter().any(|(seen, _)| *seen == ppid) {
-            break;
-        }
-        pid = ppid;
-    }
-    chain
+/// The most bytes of one `environ` or `cmdline` that are read. Another
+/// process's data is bounded before it is parsed.
+const PROC_READ_MAX: u64 = 1 << 20;
+
+/// The most `/proc` entries one `ProcFs::scan` looks at.
+const PROC_SCAN_MAX: usize = 262_144;
+
+/// The terminal name of a `/proc/<pid>/fd/0` link target: `pts/N` for a
+/// pseudo-terminal, `ttyN` / `ttyS0` for a console. **Pure.** `/dev/null`, a
+/// pipe, a socket or a path outside `/dev` is not a terminal and gives `None`,
+/// which is what keeps a headless server (stdin `/dev/null`) from looking like
+/// a client.
+pub(crate) fn terminal_name(link: &Path) -> Option<String> {
+    let link = link.to_str()?;
+    let rest = link.strip_prefix("/dev/")?;
+    let is_pts = rest
+        .strip_prefix("pts/")
+        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
+    let is_console =
+        rest.len() > 3 && rest.starts_with("tty") && !rest.contains('/') && !rest.contains(' ');
+    (is_pts || is_console).then(|| rest.to_string())
 }
 
-/// Off Linux there is no `/proc`: the chain is always empty.
-#[cfg(not(target_os = "linux"))]
-pub(crate) fn proc_chain(_start: u32) -> Vec<(u32, String)> {
-    Vec::new()
+/// Where `/proc` is read from, and the ONLY reader of it in this module.
+///
+/// A value, not a hardcoded path, so a test can describe a process table nobody
+/// is running (a herdr server and its client, a session, a tmux server) by
+/// laying out a directory. **Facts only**: every method answers "could not say"
+/// (empty, `None`) rather than an error, and none of them spawns anything. Off
+/// Linux [`ProcFs::system`] has no root, so there is no `/proc` read at all and
+/// no `ps` call (that would add a spawn site); D-07's static order is then the
+/// only rule, and focus falls back to the TUI-derived backends.
+#[derive(Debug, Clone)]
+pub(crate) struct ProcFs {
+    root: Option<std::path::PathBuf>,
+}
+
+impl ProcFs {
+    /// The real `/proc` (Linux), or nothing.
+    pub(crate) fn system() -> Self {
+        Self {
+            root: cfg!(target_os = "linux").then(|| std::path::PathBuf::from("/proc")),
+        }
+    }
+
+    /// A procfs laid out under `root`.
+    #[cfg(test)]
+    pub(crate) fn at(root: &Path) -> Self {
+        Self {
+            root: Some(root.to_path_buf()),
+        }
+    }
+
+    /// No procfs at all.
+    #[cfg(test)]
+    pub(crate) fn none() -> Self {
+        Self { root: None }
+    }
+
+    fn path(&self, pid: u32, file: &str) -> Option<std::path::PathBuf> {
+        self.root
+            .as_ref()
+            .map(|root| root.join(pid.to_string()).join(file))
+    }
+
+    /// At most [`PROC_READ_MAX`] bytes of `/proc/<pid>/<file>`.
+    fn read_bounded(&self, pid: u32, file: &str) -> Option<Vec<u8>> {
+        use std::io::Read;
+        let mut bytes = Vec::new();
+        std::fs::File::open(self.path(pid, file)?)
+            .ok()?
+            .take(PROC_READ_MAX)
+            .read_to_end(&mut bytes)
+            .ok()?;
+        Some(bytes)
+    }
+
+    /// `start` and then each of its ancestors as `(pid, comm)`, nearest first,
+    /// read from `/proc/<pid>/stat`. **Facts only**: an empty or short chain
+    /// means "could not say", never "no multiplexer".
+    ///
+    /// The walk stops at ppid 0, at the first unreadable or unparsable entry, on
+    /// a repeated pid, or after 64 entries, and never guesses past a gap.
+    pub(crate) fn chain(&self, start: u32) -> Vec<(u32, String)> {
+        let mut chain: Vec<(u32, String)> = Vec::new();
+        let mut pid = start;
+        while chain.len() < PROC_CHAIN_MAX {
+            let Some(path) = self.path(pid, "stat") else {
+                break;
+            };
+            let Ok(stat) = std::fs::read_to_string(path) else {
+                break;
+            };
+            let (Some(comm), Some(ppid)) = (parse_stat_comm(&stat), parse_stat_ppid(&stat)) else {
+                break;
+            };
+            chain.push((pid, comm.to_string()));
+            if ppid == 0 || chain.iter().any(|(seen, _)| *seen == ppid) {
+                break;
+            }
+            pid = ppid;
+        }
+        chain
+    }
+
+    /// The processes whose comm EQUALS `comm`, each with its argv and stdin
+    /// terminal. Unreadable entries are skipped. Bounded by [`PROC_SCAN_MAX`]
+    /// entries, and only the matching processes have their cmdline and `fd/0`
+    /// read.
+    pub(crate) fn scan(&self, comm: &str) -> Vec<ProcEntry> {
+        let Some(root) = &self.root else {
+            return Vec::new();
+        };
+        let Ok(entries) = std::fs::read_dir(root) else {
+            return Vec::new();
+        };
+        let mut found: Vec<ProcEntry> = entries
+            .filter_map(Result::ok)
+            .take(PROC_SCAN_MAX)
+            .filter_map(|entry| entry.file_name().to_str()?.parse::<u32>().ok())
+            .filter_map(|pid| {
+                let stat = std::fs::read_to_string(self.path(pid, "stat")?).ok()?;
+                (parse_stat_comm(&stat)? == comm).then(|| ProcEntry {
+                    pid,
+                    comm: comm.to_string(),
+                    argv: self
+                        .read_bounded(pid, "cmdline")
+                        .map(|raw| {
+                            raw.split(|b| *b == 0)
+                                .filter(|part| !part.is_empty())
+                                .map(|part| String::from_utf8_lossy(part).into_owned())
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                    tty: self
+                        .path(pid, "fd/0")
+                        .and_then(|link| std::fs::read_link(link).ok())
+                        .and_then(|target| terminal_name(&target)),
+                })
+            })
+            .collect();
+        found.sort_by_key(|entry| entry.pid);
+        found
+    }
+
+    /// The [`SessionContext`] of `pid`: its `environ` markers and its ancestry.
+    /// Each half degrades to "unknown" on its own (another uid's environ is
+    /// unreadable, a process that exited has no chain).
+    pub(crate) fn session_context(&self, pid: u32) -> SessionContext {
+        SessionContext {
+            env: self
+                .read_bounded(pid, "environ")
+                .map(|block| EnvSnapshot::from_environ_block(&block))
+                .unwrap_or_default(),
+            ancestry: self.chain(pid),
+        }
+    }
+}
+
+/// `start` and each of its ancestors as `(pid, comm)`, nearest first, from the
+/// real `/proc` (`ProcFs::chain`).
+pub(crate) fn proc_chain(start: u32) -> Vec<(u32, String)> {
+    ProcFs::system().chain(start)
 }
 
 /// Snapshot the process environment and order [`REGISTRY`] over it and the
@@ -512,6 +767,78 @@ pub fn detect_current() -> (EnvSnapshot, Vec<Detected>) {
     let ancestry = proc_chain(std::process::id());
     let backends = order_innermost(REGISTRY, &env, &ancestry);
     (env, backends)
+}
+
+/// What the SESSION's own process says about where it lives: the
+/// [`ENV_KEYS`] of its `/proc/<pid>/environ` and its own ancestry (nearest
+/// first, as `ProcFs::chain` returns it).
+///
+/// Focus has to follow the session, not the TUI: the TUI can run in tmux while
+/// the session runs under a herdr server that is a sibling daemon, not an
+/// ancestor of the TUI, so the TUI's own markers say nothing about it.
+/// `Default` is "unknown" (no markers, no chain): everything then falls back to
+/// the TUI-derived list, which is exactly the behaviour before this type existed.
+#[derive(Debug, Clone, Default)]
+pub struct SessionContext {
+    /// The session's own [`ENV_KEYS`].
+    pub env: EnvSnapshot,
+    /// The session's ancestry, nearest first.
+    pub ancestry: Vec<(u32, String)>,
+}
+
+/// Which backends to try to focus a session, innermost first, and the
+/// environment they act on (like [`LaunchPlan`], decided once and purely).
+pub struct FocusPlan {
+    /// The environment the backends act on: the TUI's, overlaid with the
+    /// session's own markers (the session wins).
+    pub env: EnvSnapshot,
+    /// The backends to try, in order.
+    pub backends: Vec<Detected>,
+}
+
+/// Decide which backends to try to focus a session. **Pure.**
+///
+/// # Focus follows the SESSION's multiplexer, wherever the TUI runs
+///
+/// The user's rule is "jump to either herdr or tmux depending on context": the
+/// TUI's location decides only where a NEW session launches. Focus is decided by
+/// where the target session lives, read from the session's own facts:
+///
+/// 1. **The session's backends first**: [`order_innermost`] over the session's
+///    own `environ` markers and ancestry (`session`). The same pure rule as for
+///    the TUI, so a session nested in two multiplexers is ordered innermost-first
+///    and an ancestor whose env gate fails is ignored.
+/// 2. **Then the TUI's backends**, de-duplicated by name: D-09's "not found is
+///    not final", and the whole answer when nothing is known about the session
+///    (non-Linux, another uid, an exited process). With an empty `session` the
+///    plan is exactly the TUI-derived one, over the TUI's own environment.
+/// 3. **The environment they act on** is the TUI's overlaid with the session's
+///    markers, the session winning. That is what lets herdr reach the SESSION's
+///    server socket (named herdr sessions have different sockets) and tmux
+///    address the SESSION's tmux server (`tmux -S <socket>`, from the session's
+///    `$TMUX`), neither of which the TUI's environment has to mention.
+///
+/// A `Detected`'s reachability is judged against the environment it was
+/// detected from (the session's for rule 1, the TUI's for rule 2).
+pub fn plan_focus(
+    registry: &[&'static dyn MultiplexerBackend],
+    tui_env: &EnvSnapshot,
+    tui_ancestry: &[(u32, String)],
+    session: &SessionContext,
+) -> FocusPlan {
+    let mut backends = order_innermost(registry, &session.env, &session.ancestry);
+    for tui in order_innermost(registry, tui_env, tui_ancestry) {
+        if !backends
+            .iter()
+            .any(|known| known.backend.name() == tui.backend.name())
+        {
+            backends.push(tui);
+        }
+    }
+    FocusPlan {
+        env: tui_env.overlaid_with(&session.env),
+        backends,
+    }
 }
 
 /// What to do about a launch request.
@@ -662,27 +989,43 @@ pub fn launch(
 }
 
 /// Focus the pane or tab running `session` and report what happened (D-09).
-/// **Pure over `backends`**: tests pass fakes.
+/// **Pure over `backends`**: tests pass fakes. Reads `/proc` only for the reveal
+/// step (`reveal_client`).
 ///
 /// * With no backend detected: `"Tab-switching requires running inside <names>
 ///   (none detected)"`, where `<names>` is the [`REGISTRY`] names joined with
 ///   `" or "`, so a future backend appears automatically.
-/// * Otherwise each backend is tried innermost-first and **the first success
-///   wins**. Not found is not final: the session may live in an outer
-///   multiplexer. A detection that is `inside` but not `reachable` counts as
-///   that backend's failure with its reason, and its `focus` is not called.
+/// * Otherwise each backend is tried in order (the SESSION's own first, see
+///   [`plan_focus`]) and **the first success wins**. Not found is not final: the
+///   session may live in an outer multiplexer. A detection that is `inside` but
+///   not `reachable` counts as that backend's failure with its reason, and its
+///   `focus` is not called.
+/// * On success the winner's client, if it has one, is revealed in the other
+///   backends (`reveal_client`). The reveal is best effort and can only add a
+///   note, never turn the success into an error.
 /// * On success: `"Switched to <label>"`, or `"Switched to <label> (<note>)"`
 ///   when the focus landed short of the exact pane. The matched identity goes to
 ///   the log only, which keeps the success text byte-identical to the tmux-only
 ///   days.
 /// * When all fail: a single tried backend gives its reason verbatim (so tmux
 ///   failures are byte-identical); several give `"<name>: <reason>"` joined with
-///   `"; "`, innermost first.
+///   `"; "`, in the order tried.
 pub fn focus_with(
     backends: &[Detected],
     env: &EnvSnapshot,
     session: &ClaudeSession,
     label: &str,
+) -> String {
+    focus_with_procs(backends, env, session, label, &ProcFs::system())
+}
+
+/// [`focus_with`] over an explicit `/proc`.
+pub(crate) fn focus_with_procs(
+    backends: &[Detected],
+    env: &EnvSnapshot,
+    session: &ClaudeSession,
+    label: &str,
+    procfs: &ProcFs,
 ) -> String {
     if backends.is_empty() {
         let names: Vec<&str> = REGISTRY.iter().map(|b| b.name()).collect();
@@ -702,6 +1045,7 @@ pub fn focus_with(
         match detected.backend.focus(env, session) {
             Ok(outcome) => {
                 tracing::debug!(backend = name, matched_by = ?outcome.by, "focused session");
+                let outcome = reveal_client(detected, backends, env, procfs, outcome);
                 return match outcome.partial {
                     Some(note) => format!("Switched to {label} ({note})"),
                     None => format!("Switched to {label}"),
@@ -721,11 +1065,126 @@ pub fn focus_with(
     }
 }
 
+/// After `winner` focused the session, bring forward the terminal that shows
+/// it. **Best effort: it can add a note to `outcome`, never an error.**
+///
+/// A pane that a headless server owns (herdr) is on no terminal the user can
+/// see. The server's CLIENT process shows it, and that client usually sits in a
+/// pane of another multiplexer in the plan (tmux), which is what the user is
+/// looking at. So: ask the winner for its client terminals
+/// ([`MultiplexerBackend::client_ttys`]) and have each other reachable backend
+/// try to select the pane that shows one ([`MultiplexerBackend::focus_tty`]).
+///
+/// * Nothing to reveal into (the winner is the only backend), or a winner with
+///   no client concept (tmux): nothing happens, no `/proc` walk, no note.
+/// * The winner has clients and one is shown in a pane of another backend: that
+///   pane is selected, no note. With several clients the other backend picks
+///   deterministically (the first match in its own listing order); it can only
+///   choose which already-correct view to show, never route input elsewhere,
+///   because the winner's focus was exact.
+/// * No client attached, a client in a terminal no other backend manages, or a
+///   reveal that failed: success with a note saying so. The note never repeats a
+///   backend's own "not found" error, because the session WAS focused.
+fn reveal_client(
+    winner: &Detected,
+    backends: &[Detected],
+    env: &EnvSnapshot,
+    procfs: &ProcFs,
+    mut outcome: FocusOutcome,
+) -> FocusOutcome {
+    let winner_name = winner.backend.name();
+    let others: Vec<&Detected> = backends
+        .iter()
+        .filter(|d| d.backend.name() != winner_name && d.detection.reachable.is_ok())
+        .collect();
+    if others.is_empty() {
+        return outcome;
+    }
+    let Some(ttys) = winner.backend.client_ttys(&|comm| procfs.scan(comm)) else {
+        return outcome;
+    };
+
+    let names = others
+        .iter()
+        .map(|d| d.backend.name())
+        .collect::<Vec<_>>()
+        .join(" or ");
+    let note = if ttys.is_empty() {
+        Some(format!(
+            "focused in {winner_name}; no {winner_name} client is attached"
+        ))
+    } else {
+        let mut failed = false;
+        let mut revealed = false;
+        for other in &others {
+            match other.backend.focus_tty(env, &ttys) {
+                Ok(_) => {
+                    revealed = true;
+                    break;
+                }
+                Err(MuxError::Unsupported(_) | MuxError::NotFound(_)) => {}
+                Err(e) => {
+                    tracing::warn!(
+                        backend = other.backend.name(),
+                        reason = %e,
+                        "could not reveal the terminal of the focused session's client"
+                    );
+                    failed = true;
+                }
+            }
+        }
+        match (revealed, failed) {
+            (true, _) => None,
+            (false, true) => Some(format!(
+                "focused in {winner_name}; could not reveal its {winner_name} client in {names}"
+            )),
+            (false, false) => Some(format!(
+                "focused in {winner_name}; its {winner_name} client is not in a {names} pane"
+            )),
+        }
+    };
+    if let Some(note) = note {
+        outcome.partial = Some(match outcome.partial.take() {
+            Some(earlier) => format!("{earlier}; {note}"),
+            None => note,
+        });
+    }
+    outcome
+}
+
 /// [`focus_with`] over the detected process environment. **The
 /// real-environment entry, called only from `normal.rs` and `detail.rs`.**
+///
+/// There is ONE entry for both focus paths, the Sessions panel and the
+/// tab-switch, so they cannot route differently (`tests/focus_entry_guard.rs`
+/// pins that no UI code reaches a backend another way).
 pub fn focus_message(session: &ClaudeSession, label: &str) -> String {
-    let (env, backends) = detect_current();
-    focus_with(&backends, &env, session, label)
+    focus_message_in(
+        &ProcFs::system(),
+        REGISTRY,
+        &EnvSnapshot::from_process(),
+        std::process::id(),
+        session,
+        label,
+    )
+}
+
+/// [`focus_message`] with its inputs explicit: the `/proc` to read, the
+/// registry, the TUI's own environment and pid. The whole decision, from the
+/// session's `/proc` facts to the status text, runs in a test against a process
+/// table laid out in a directory and backends pointed at fixture scripts.
+pub(crate) fn focus_message_in(
+    procfs: &ProcFs,
+    registry: &[&'static dyn MultiplexerBackend],
+    tui_env: &EnvSnapshot,
+    tui_pid: u32,
+    session: &ClaudeSession,
+    label: &str,
+) -> String {
+    let tui_ancestry = procfs.chain(tui_pid);
+    let context = procfs.session_context(session.pid);
+    let plan = plan_focus(registry, tui_env, &tui_ancestry, &context);
+    focus_with_procs(&plan.backends, &plan.env, session, label, procfs)
 }
 
 /// Accept one connection on `listener`, giving up after `limit`. For the test
@@ -1648,6 +2107,238 @@ mod tests {
         assert_eq!(run_focus(&[detected(&BARE)]), "bare cannot focus a session");
     }
 
+    // ---- focus routing: where the SESSION lives, not where the TUI runs -----
+    //
+    // Debug session `herdr-session-focus-from-tmux`. Measured 2026-11-10: the
+    // TUI ran in a tmux pane (`$TMUX` set, no `HERDR_*`), while the sessions ran
+    // under a herdr SERVER that is a sibling daemon under systemd, not an
+    // ancestor of the TUI: claude(672012) -> fish -> herdr(`herdr server`,
+    // 671927) -> systemd, environ `HERDR_ENV=1`, `HERDR_SOCKET_PATH=...`, no
+    // `$TMUX`, stdin `/dev/pts/3`. Focus offered the session only to tmux, which
+    // answered "TTY pts/3 not found in any tmux pane (session may have exited)"
+    // because pts/3 is owned by the herdr server and tmux has no such pane.
+
+    /// herdr's default control socket, as the measured session's environ had it.
+    const SESSION_HERDR_SOCKET: &str = "/home/blk/.config/herdr/herdr.sock";
+
+    /// The tmux symptom, verbatim from the user's status line.
+    const TMUX_NOT_FOUND: &str = "TTY pts/3 not found in any tmux pane (session may have exited)";
+
+    /// The TUI in a plain tmux pane: `$TMUX` set, no `HERDR_*`, and a chain that
+    /// ends in the tmux server. herdr is nowhere in it.
+    fn tui_in_tmux() -> (EnvSnapshot, Vec<(u32, String)>) {
+        (
+            EnvSnapshot::from_pairs(&[TMUX_ENV]),
+            chain(&["gsd-meta-manager", "fish", "tmux: server", "systemd"]),
+        )
+    }
+
+    /// The TUI inside a herdr pane (the Phase 33 SC1 topology): `HERDR_*` set,
+    /// no `$TMUX`, a chain through the herdr server.
+    fn tui_in_herdr() -> (EnvSnapshot, Vec<(u32, String)>) {
+        (
+            EnvSnapshot::from_pairs(&[HERDR_ENV_ON, HERDR_SOCK]),
+            chain(&["gsd-meta-manager", "fish", "herdr", "systemd"]),
+        )
+    }
+
+    /// A session hosted by a herdr server: the markers and chain measured for
+    /// pid 672012, with no tmux anywhere.
+    fn session_in_herdr() -> SessionContext {
+        SessionContext {
+            env: EnvSnapshot::from_pairs(&[
+                HERDR_ENV_ON,
+                ("HERDR_SOCKET_PATH", SESSION_HERDR_SOCKET),
+                ("HERDR_WORKSPACE_ID", "w2"),
+            ]),
+            ancestry: chain(&["claude", "fish", "herdr", "systemd", "systemd"]),
+        }
+    }
+
+    /// A session in a tmux pane: `$TMUX` set and the tmux server in its chain.
+    fn session_in_tmux() -> SessionContext {
+        SessionContext {
+            env: EnvSnapshot::from_pairs(&[TMUX_ENV]),
+            ancestry: chain(&["claude", "fish", "tmux: server", "systemd"]),
+        }
+    }
+
+    fn plan_names(plan: &FocusPlan) -> Vec<&'static str> {
+        plan.backends.iter().map(|d| d.backend.name()).collect()
+    }
+
+    /// A backend that, like the real ones, is a candidate only when ITS OWN
+    /// marker is in the snapshot it is shown, names its server's comm for the
+    /// nesting rule, and records every `focus` call with the herdr socket the
+    /// snapshot it acted on carried. No process is spawned and no socket is
+    /// opened, so it runs where no multiplexer exists.
+    struct Gated {
+        name: &'static str,
+        marker: fn(&EnvSnapshot) -> bool,
+        server_comm: &'static str,
+        focus_result: Result<FocusOutcome, MuxError>,
+        log: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl Gated {
+        fn leak(
+            name: &'static str,
+            marker: fn(&EnvSnapshot) -> bool,
+            server_comm: &'static str,
+            focus_result: Result<FocusOutcome, MuxError>,
+            log: &Arc<Mutex<Vec<String>>>,
+        ) -> &'static Gated {
+            Box::leak(Box::new(Gated {
+                name,
+                marker,
+                server_comm,
+                focus_result,
+                log: Arc::clone(log),
+            }))
+        }
+    }
+
+    impl MultiplexerBackend for Gated {
+        fn name(&self) -> &'static str {
+            self.name
+        }
+        fn detect(&self, env: &EnvSnapshot) -> Option<Detection> {
+            (self.marker)(env).then_some(Detection {
+                inside: true,
+                reachable: Ok(()),
+            })
+        }
+        fn focus(
+            &self,
+            env: &EnvSnapshot,
+            _session: &ClaudeSession,
+        ) -> Result<FocusOutcome, MuxError> {
+            self.log.lock().unwrap().push(format!(
+                "focus:{} sock={}",
+                self.name,
+                env.get("HERDR_SOCKET_PATH").unwrap_or("-")
+            ));
+            self.focus_result.clone()
+        }
+        fn is_server_comm(&self, comm: &str) -> bool {
+            comm == self.server_comm
+        }
+    }
+
+    /// **The reported bug, routing half, through the real registry.** A TUI in
+    /// tmux and a session under a sibling herdr server: the plan must offer
+    /// herdr, first, and hand it the SESSION's socket (the herdr backend reads
+    /// the socket only from the snapshot it acts on, and the TUI's has none).
+    #[test]
+    fn plan_focus_routes_a_herdr_session_to_herdr_when_the_tui_runs_in_tmux() {
+        let (tui_env, tui_ancestry) = tui_in_tmux();
+        let plan = plan_focus(REGISTRY, &tui_env, &tui_ancestry, &session_in_herdr());
+
+        assert_eq!(
+            plan_names(&plan).first().copied(),
+            Some("herdr"),
+            "the session lives under herdr (HERDR_ENV=1, a `herdr` server in its own chain), \
+             so herdr must be tried FIRST even though the TUI itself runs in tmux; got {:?}, \
+             the TUI-derived list, which can only ever end in the tmux tty error",
+            plan_names(&plan)
+        );
+        assert_eq!(
+            plan.env.get("HERDR_SOCKET_PATH"),
+            Some(SESSION_HERDR_SOCKET),
+            "herdr must act on the SESSION's own server socket: the TUI's snapshot has none, \
+             and the herdr CLI edge refuses to spawn without one"
+        );
+    }
+
+    /// The same defect mirrored: a TUI inside herdr and a session in a tmux
+    /// pane. The TUI-derived list is `[herdr]` alone, so tmux (which owns the
+    /// session's tty) is never asked.
+    #[test]
+    fn plan_focus_routes_a_tmux_session_to_tmux_when_the_tui_runs_in_herdr() {
+        let (tui_env, tui_ancestry) = tui_in_herdr();
+        let plan = plan_focus(REGISTRY, &tui_env, &tui_ancestry, &session_in_tmux());
+
+        assert_eq!(
+            plan_names(&plan).first().copied(),
+            Some("tmux"),
+            "the session lives in tmux ($TMUX set, `tmux: server` in its own chain), so tmux \
+             must be tried first even though the TUI runs in herdr; got {:?}",
+            plan_names(&plan)
+        );
+    }
+
+    /// **The reported bug, end to end** through `plan_focus` and `focus_with`
+    /// with fake backends (no multiplexer): the user must get the herdr focus,
+    /// not tmux's "not found" text, and herdr must have acted on the session's
+    /// socket.
+    #[test]
+    fn a_herdr_session_is_focused_in_herdr_instead_of_failing_in_tmux() {
+        let log = new_log();
+        let tmux = Gated::leak(
+            "tmux",
+            |env| env.get("TMUX").is_some(),
+            "tmux: server",
+            Err(MuxError::NotFound(TMUX_NOT_FOUND.to_string())),
+            &log,
+        );
+        let herdr = Gated::leak(
+            "herdr",
+            |env| env.get("HERDR_ENV") == Some("1"),
+            "herdr",
+            Ok(FocusOutcome {
+                by: MatchedBy::SessionId,
+                partial: None,
+            }),
+            &log,
+        );
+        let registry: [&'static dyn MultiplexerBackend; 2] = [tmux, herdr];
+
+        let (tui_env, tui_ancestry) = tui_in_tmux();
+        let plan = plan_focus(&registry, &tui_env, &tui_ancestry, &session_in_herdr());
+        let message = focus_with(&plan.backends, &plan.env, &session(), "sentriq");
+
+        assert!(
+            !message.contains("not found in any tmux pane"),
+            "a session that runs under herdr was reported missing from tmux: {message:?}"
+        );
+        assert!(
+            message.starts_with("Switched to sentriq"),
+            "focusing a herdr-hosted session must succeed through herdr; got {message:?}"
+        );
+        assert_eq!(
+            log.lock().unwrap().first().map(String::as_str),
+            Some(format!("focus:herdr sock={SESSION_HERDR_SOCKET}").as_str()),
+            "herdr must be the first backend asked, acting on the session's socket; calls: {:?}",
+            log.lock().unwrap()
+        );
+    }
+
+    /// **Guard, passes before and after the fix (SC2).** A tmux-only user (TUI
+    /// and session both in tmux) keeps exactly the old list: tmux alone.
+    #[test]
+    fn plan_focus_keeps_tmux_only_routing_for_a_tmux_session_in_a_tmux_tui() {
+        let (tui_env, tui_ancestry) = tui_in_tmux();
+        let plan = plan_focus(REGISTRY, &tui_env, &tui_ancestry, &session_in_tmux());
+        assert_eq!(plan_names(&plan), vec!["tmux"]);
+    }
+
+    /// **Guard, passes before and after the fix.** When nothing can be read
+    /// about the session (non-Linux, another uid, an exited process) the plan is
+    /// the TUI-derived one, over the TUI's own environment, as before.
+    #[test]
+    fn plan_focus_without_session_facts_falls_back_to_the_tuis_own_backends() {
+        let (tui_env, tui_ancestry) = tui_in_tmux();
+        let plan = plan_focus(
+            REGISTRY,
+            &tui_env,
+            &tui_ancestry,
+            &SessionContext::default(),
+        );
+        assert_eq!(plan_names(&plan), vec!["tmux"]);
+        assert_eq!(plan.env.get("TMUX"), tui_env.get("TMUX"));
+        assert_eq!(plan.env.get("HERDR_SOCKET_PATH"), None);
+    }
+
     // ---- the tracer's end-to-end check: a fake herdr socket ----------------
 
     /// Serve ONE request on a Unix socket in a tempdir: read a line, hand it to
@@ -1747,5 +2438,1263 @@ mod tests {
             "the raw herdr error stays out of the status line"
         );
         assert_eq!(spawned.len(), 1);
+    }
+
+    // ---- the session's own facts: environ block, overlay, plan ---------------
+
+    /// A `/proc/<pid>/environ` block from `KEY=VALUE` entries.
+    fn environ_block(entries: &[&str]) -> Vec<u8> {
+        entries
+            .iter()
+            .flat_map(|e| e.bytes().chain(std::iter::once(0)))
+            .collect()
+    }
+
+    #[test]
+    fn an_environ_block_keeps_only_the_detection_keys_and_the_first_entry_of_each() {
+        let block = environ_block(&[
+            "PATH=/usr/bin",
+            "HERDR_ENV=1",
+            "HERDR_PANE_ID=w2:p1",
+            "HERDR_SOCKET_PATH=/home/blk/.config/herdr/herdr.sock",
+            "HERDR_WORKSPACE_ID=w2",
+            "HERDR_ENV=0",
+            "SECRET_TOKEN=hunter2",
+        ]);
+        let env = EnvSnapshot::from_environ_block(&block);
+        assert_eq!(
+            env.get("HERDR_ENV"),
+            Some("1"),
+            "getenv: the first entry wins"
+        );
+        assert_eq!(env.get("HERDR_WORKSPACE_ID"), Some("w2"));
+        assert_eq!(env.get("HERDR_SOCKET_PATH"), Some(SESSION_HERDR_SOCKET));
+        assert_eq!(env.get("TMUX"), None);
+        assert_eq!(
+            env.get("HERDR_PANE_ID"),
+            None,
+            "a pane id is not a detection key: it can be stale after `pane move`"
+        );
+        assert_eq!(env.get("SECRET_TOKEN"), None, "other keys are never copied");
+    }
+
+    #[test]
+    fn an_environ_block_tolerates_malformed_entries() {
+        assert!(EnvSnapshot::from_environ_block(&[]).get("TMUX").is_none());
+        let mut block = environ_block(&["no-equals-sign", "=novalue-key"]);
+        block.extend_from_slice(b"\xff\xfe=bad-utf8-key\0");
+        block.extend(environ_block(&["HERDR_ENV=1", "HERDR_WORKSPACE_ID=a=b"]));
+        let env = EnvSnapshot::from_environ_block(&block);
+        assert_eq!(env.get("HERDR_ENV"), Some("1"));
+        assert_eq!(
+            env.get("HERDR_WORKSPACE_ID"),
+            Some("a=b"),
+            "only the first `=` splits"
+        );
+    }
+
+    /// The control-socket values come from ANOTHER process's environment.
+    #[test]
+    fn an_environ_block_drops_a_relative_control_socket() {
+        let env = EnvSnapshot::from_environ_block(&environ_block(&[
+            "HERDR_ENV=1",
+            "HERDR_SOCKET_PATH=relative/herdr.sock",
+            "TMUX=relative/tmux,1,0",
+        ]));
+        assert_eq!(
+            env.get("HERDR_SOCKET_PATH"),
+            None,
+            "a relative path would resolve against THIS process's working directory"
+        );
+        assert_eq!(
+            env.get("TMUX"),
+            None,
+            "a tmux with no absolute socket is no tmux"
+        );
+        assert_eq!(env.get("HERDR_ENV"), Some("1"), "the marker itself stays");
+        for tmux in ["", ",1,0", "tmux,1,0"] {
+            let block = environ_block(&[&format!("TMUX={tmux}")]);
+            assert_eq!(
+                EnvSnapshot::from_environ_block(&block).get("TMUX"),
+                None,
+                "TMUX={tmux:?} names no absolute socket"
+            );
+        }
+        let ok = EnvSnapshot::from_environ_block(&environ_block(&[
+            "TMUX=/tmp/tmux-1000/default,3628116,0",
+        ]));
+        assert_eq!(ok.get("TMUX"), Some("/tmp/tmux-1000/default,3628116,0"));
+    }
+
+    #[test]
+    fn an_overlay_prefers_the_over_snapshot_and_keeps_the_rest() {
+        let tui = EnvSnapshot::from_pairs(&[TMUX_ENV, ("HERDR_WORKSPACE_ID", "w2")]);
+        let session = EnvSnapshot::from_pairs(&[HERDR_ENV_ON, ("HERDR_WORKSPACE_ID", "w6")]);
+        let merged = tui.overlaid_with(&session);
+        assert_eq!(
+            merged.get("TMUX"),
+            Some(TMUX_ENV.1),
+            "the TUI's key survives"
+        );
+        assert_eq!(merged.get("HERDR_ENV"), Some("1"));
+        assert_eq!(
+            merged.get("HERDR_WORKSPACE_ID"),
+            Some("w6"),
+            "the session wins"
+        );
+        assert_eq!(tui.get("HERDR_ENV"), None, "the base is not modified");
+    }
+
+    #[test]
+    fn terminal_names_are_terminals_only() {
+        let rows: [(&str, Option<&str>); 9] = [
+            ("/dev/pts/13", Some("pts/13")),
+            ("/dev/pts/0", Some("pts/0")),
+            ("/dev/tty1", Some("tty1")),
+            ("/dev/ttyS0", Some("ttyS0")),
+            ("/dev/null", None),
+            ("/dev/pts/", None),
+            ("/dev/pts/x", None),
+            ("pipe:[1234]", None),
+            ("socket:[99]", None),
+        ];
+        for (link, expected) in rows {
+            assert_eq!(
+                terminal_name(Path::new(link)).as_deref(),
+                expected,
+                "{link}: a headless server's stdin (/dev/null) must not look like a client's"
+            );
+        }
+    }
+
+    /// A session nested in BOTH multiplexers is ordered by its own chain, like
+    /// the TUI's was.
+    #[test]
+    fn plan_focus_orders_a_nested_session_by_its_own_ancestry() {
+        let (tui_env, tui_ancestry) = tui_in_tmux();
+        let nested = SessionContext {
+            env: EnvSnapshot::from_pairs(&[TMUX_ENV, HERDR_ENV_ON, HERDR_SOCK]),
+            ancestry: chain(&["claude", "fish", "herdr", "tmux: server", "systemd"]),
+        };
+        let plan = plan_focus(REGISTRY, &tui_env, &tui_ancestry, &nested);
+        assert_eq!(
+            plan_names(&plan),
+            vec!["herdr", "tmux"],
+            "the nearer server (herdr) is tried first and tmux is not listed twice"
+        );
+    }
+
+    #[test]
+    fn plan_focus_appends_the_tuis_backends_after_the_sessions() {
+        let (tui_env, tui_ancestry) = tui_in_tmux();
+        let plan = plan_focus(REGISTRY, &tui_env, &tui_ancestry, &session_in_herdr());
+        assert_eq!(
+            plan_names(&plan),
+            vec!["herdr", "tmux"],
+            "the session's herdr first, the TUI's tmux as the fallback (not found is not final)"
+        );
+    }
+
+    #[test]
+    fn plan_focus_acts_on_the_session_markers_over_the_tuis() {
+        let (tui_env, tui_ancestry) = tui_in_tmux();
+        let plan = plan_focus(REGISTRY, &tui_env, &tui_ancestry, &session_in_herdr());
+        assert_eq!(
+            plan.env.get("HERDR_SOCKET_PATH"),
+            Some(SESSION_HERDR_SOCKET)
+        );
+        assert_eq!(
+            plan.env.get("TMUX"),
+            tui_env.get("TMUX"),
+            "the TUI's tmux stays for the reveal step"
+        );
+
+        let (herdr_tui_env, herdr_tui_ancestry) = tui_in_herdr();
+        let session = SessionContext {
+            env: EnvSnapshot::from_pairs(&[("TMUX", "/tmp/tmux-1000/work,2,0")]),
+            ancestry: chain(&["claude", "fish", "tmux: server", "systemd"]),
+        };
+        let plan = plan_focus(REGISTRY, &herdr_tui_env, &herdr_tui_ancestry, &session);
+        assert_eq!(plan_names(&plan), vec!["tmux", "herdr"]);
+        assert_eq!(plan.env.get("TMUX"), Some("/tmp/tmux-1000/work,2,0"));
+    }
+
+    #[test]
+    fn plan_focus_judges_reachability_by_the_environment_each_backend_was_detected_in() {
+        let (tui_env, tui_ancestry) = tui_in_tmux();
+        let no_socket = SessionContext {
+            env: EnvSnapshot::from_pairs(&[HERDR_ENV_ON]),
+            ancestry: chain(&["claude", "fish", "herdr", "systemd"]),
+        };
+        let plan = plan_focus(REGISTRY, &tui_env, &tui_ancestry, &no_socket);
+        assert_eq!(plan_names(&plan), vec!["herdr", "tmux"]);
+        assert_eq!(
+            plan.backends[0].detection.reachable,
+            Err("HERDR_SOCKET_PATH is unset".to_string()),
+            "the session's herdr names no socket: reported, not guessed"
+        );
+        assert_eq!(plan.backends[1].detection.reachable, Ok(()));
+    }
+
+    // ---- ProcFs on a fake /proc ----------------------------------------------
+
+    #[cfg(unix)]
+    mod procfs {
+        use super::*;
+        use crate::multiplexer::fixtures::FakeProc;
+
+        #[test]
+        fn a_chain_is_read_nearest_first_and_stops_at_a_gap() {
+            let proc = FakeProc::new();
+            proc.process(1, "systemd", 0, &[], &[], None)
+                .process(10, "fish", 1, &[], &[], None)
+                .process(20, "claude", 10, &[], &[], None)
+                .process(30, "orphan", 99, &[], &[], None);
+            let fs = proc.procfs();
+            assert_eq!(
+                fs.chain(20),
+                vec![
+                    (20, "claude".to_string()),
+                    (10, "fish".to_string()),
+                    (1, "systemd".to_string())
+                ]
+            );
+            assert_eq!(
+                fs.chain(30),
+                vec![(30, "orphan".to_string())],
+                "pid 99 does not exist: the chain stops, it does not guess past the gap"
+            );
+            assert!(fs.chain(555).is_empty());
+            assert!(ProcFs::none().chain(20).is_empty());
+        }
+
+        #[test]
+        fn a_session_context_reads_the_markers_and_the_chain_of_the_session() {
+            let proc = FakeProc::new();
+            proc.process(1, "systemd", 0, &[], &[], None)
+                .process(
+                    671927,
+                    "herdr",
+                    1,
+                    &["herdr", "server"],
+                    &[],
+                    Some("/dev/null"),
+                )
+                .process(671995, "fish", 671927, &["fish"], &[], Some("/dev/pts/3"))
+                .process(
+                    672012,
+                    "claude",
+                    671995,
+                    &["claude"],
+                    &[
+                        "HERDR_ENV=1",
+                        "HERDR_SOCKET_PATH=/home/blk/.config/herdr/herdr.sock",
+                        "HERDR_PANE_ID=w2:p1",
+                    ],
+                    Some("/dev/pts/3"),
+                );
+            let context = proc.procfs().session_context(672012);
+            assert_eq!(context.env.get("HERDR_ENV"), Some("1"));
+            assert_eq!(
+                context.env.get("HERDR_SOCKET_PATH"),
+                Some(SESSION_HERDR_SOCKET)
+            );
+            let comms: Vec<&str> = context.ancestry.iter().map(|(_, c)| c.as_str()).collect();
+            assert_eq!(comms, vec!["claude", "fish", "herdr", "systemd"]);
+        }
+
+        /// Another uid's process, or one that exited: nothing can be read, and
+        /// the answer is "unknown", which plan_focus turns into the TUI-derived
+        /// plan.
+        #[test]
+        fn an_unreadable_session_is_unknown_not_an_error() {
+            let proc = FakeProc::new();
+            let context = proc.procfs().session_context(424242);
+            assert!(context.env.get("HERDR_ENV").is_none());
+            assert!(context.ancestry.is_empty());
+            let none = ProcFs::none().session_context(1);
+            assert!(none.ancestry.is_empty());
+        }
+
+        #[test]
+        fn a_scan_returns_only_the_matching_comm_with_argv_and_terminal() {
+            let proc = FakeProc::new();
+            proc.process(1, "systemd", 0, &[], &[], None)
+                .process(5, "herdr", 1, &["herdr", "server"], &[], Some("/dev/null"))
+                .process(
+                    9,
+                    "herdr",
+                    1,
+                    &["herdr", "session", "attach", "default"],
+                    &[],
+                    Some("/dev/pts/13"),
+                )
+                .process(11, "fish", 1, &["fish"], &[], Some("/dev/pts/13"))
+                .process(12, "herdr", 1, &["herdr"], &[], None);
+            let found = proc.procfs().scan("herdr");
+            let shape: Vec<(u32, Vec<&str>, Option<&str>)> = found
+                .iter()
+                .map(|e| {
+                    (
+                        e.pid,
+                        e.argv.iter().map(String::as_str).collect(),
+                        e.tty.as_deref(),
+                    )
+                })
+                .collect();
+            assert_eq!(
+                shape,
+                vec![
+                    (5, vec!["herdr", "server"], None),
+                    (
+                        9,
+                        vec!["herdr", "session", "attach", "default"],
+                        Some("pts/13")
+                    ),
+                    (12, vec!["herdr"], None),
+                ]
+            );
+            assert!(ProcFs::none().scan("herdr").is_empty());
+        }
+    }
+
+    // ---- the reveal step, with fake backends ---------------------------------
+
+    /// A backend that can focus, report its clients and reveal a client's
+    /// terminal, recording each call. No process, no socket.
+    struct Revealing {
+        name: &'static str,
+        focus_result: Result<FocusOutcome, MuxError>,
+        clients: Option<Vec<String>>,
+        reveal: Result<FocusOutcome, MuxError>,
+        log: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl Revealing {
+        fn leak(
+            name: &'static str,
+            clients: Option<&[&str]>,
+            reveal: Result<FocusOutcome, MuxError>,
+            log: &Arc<Mutex<Vec<String>>>,
+        ) -> &'static Revealing {
+            Box::leak(Box::new(Revealing {
+                name,
+                focus_result: Ok(FocusOutcome {
+                    by: MatchedBy::SessionId,
+                    partial: None,
+                }),
+                clients: clients.map(|c| c.iter().map(|s| (*s).to_string()).collect()),
+                reveal,
+                log: Arc::clone(log),
+            }))
+        }
+    }
+
+    impl MultiplexerBackend for Revealing {
+        fn name(&self) -> &'static str {
+            self.name
+        }
+        fn detect(&self, _env: &EnvSnapshot) -> Option<Detection> {
+            Some(Detection {
+                inside: true,
+                reachable: Ok(()),
+            })
+        }
+        fn focus(&self, _: &EnvSnapshot, _: &ClaudeSession) -> Result<FocusOutcome, MuxError> {
+            self.log
+                .lock()
+                .unwrap()
+                .push(format!("focus:{}", self.name));
+            self.focus_result.clone()
+        }
+        fn client_ttys(&self, _scan: &ProcScan<'_>) -> Option<Vec<String>> {
+            self.log
+                .lock()
+                .unwrap()
+                .push(format!("client_ttys:{}", self.name));
+            self.clients.clone()
+        }
+        fn focus_tty(&self, _: &EnvSnapshot, ttys: &[String]) -> Result<FocusOutcome, MuxError> {
+            self.log
+                .lock()
+                .unwrap()
+                .push(format!("focus_tty:{}:{}", self.name, ttys.join(",")));
+            self.reveal.clone()
+        }
+    }
+
+    fn revealed() -> Result<FocusOutcome, MuxError> {
+        Ok(FocusOutcome {
+            by: MatchedBy::Tty,
+            partial: None,
+        })
+    }
+
+    fn run_reveal(backends: &[Detected]) -> String {
+        focus_with_procs(
+            backends,
+            &EnvSnapshot::default(),
+            &session(),
+            "alpha",
+            &ProcFs::none(),
+        )
+    }
+
+    /// The reveal tests must never read the real `/proc`: the fakes ignore the
+    /// scan, and `ProcFs::none()` has no root.
+    #[test]
+    fn a_revealed_client_adds_no_note() {
+        let log = new_log();
+        let herdr = Revealing::leak("herdr", Some(&["pts/13"]), revealed(), &log);
+        let tmux = Revealing::leak("tmux", None, revealed(), &log);
+        assert_eq!(
+            run_reveal(&[detected(herdr), detected(tmux)]),
+            "Switched to alpha"
+        );
+        assert_eq!(
+            *log.lock().unwrap(),
+            vec![
+                "focus:herdr".to_string(),
+                "client_ttys:herdr".to_string(),
+                "focus_tty:tmux:pts/13".to_string()
+            ],
+            "focus first, then the winner's clients, then the other backend reveals them"
+        );
+    }
+
+    #[test]
+    fn several_clients_are_all_offered_to_the_revealing_backend() {
+        let log = new_log();
+        let herdr = Revealing::leak("herdr", Some(&["pts/13", "pts/20"]), revealed(), &log);
+        let tmux = Revealing::leak("tmux", None, revealed(), &log);
+        run_reveal(&[detected(herdr), detected(tmux)]);
+        assert!(
+            log.lock()
+                .unwrap()
+                .contains(&"focus_tty:tmux:pts/13,pts/20".to_string()),
+            "{:?}",
+            log.lock().unwrap()
+        );
+    }
+
+    #[test]
+    fn a_client_in_a_terminal_no_other_backend_manages_is_a_note_not_an_error() {
+        let log = new_log();
+        let herdr = Revealing::leak("herdr", Some(&["pts/20"]), revealed(), &log);
+        let tmux = Revealing::leak(
+            "tmux",
+            None,
+            Err(MuxError::NotFound(
+                "no tmux pane shows that terminal".into(),
+            )),
+            &log,
+        );
+        let message = run_reveal(&[detected(herdr), detected(tmux)]);
+        assert_eq!(
+            message,
+            "Switched to alpha (focused in herdr; its herdr client is not in a tmux pane)"
+        );
+        assert!(
+            !message.contains("not found"),
+            "the session WAS focused: no backend's not-found text may reach the user: {message}"
+        );
+    }
+
+    #[test]
+    fn no_attached_client_is_a_note_and_nothing_is_revealed() {
+        let log = new_log();
+        let herdr = Revealing::leak("herdr", Some(&[]), revealed(), &log);
+        let tmux = Revealing::leak("tmux", None, revealed(), &log);
+        assert_eq!(
+            run_reveal(&[detected(herdr), detected(tmux)]),
+            "Switched to alpha (focused in herdr; no herdr client is attached)"
+        );
+        assert!(
+            !log.lock()
+                .unwrap()
+                .iter()
+                .any(|c| c.starts_with("focus_tty")),
+            "with no client there is no terminal to reveal: {:?}",
+            log.lock().unwrap()
+        );
+    }
+
+    #[test]
+    fn a_failing_reveal_is_a_note_that_keeps_the_reason_out_of_the_status_line() {
+        let log = new_log();
+        let herdr = Revealing::leak("herdr", Some(&["pts/13"]), revealed(), &log);
+        let tmux = Revealing::leak(
+            "tmux",
+            None,
+            Err(MuxError::Failed(
+                "tmux list-panes exited exit status: 1: no server running on /tmp/x".into(),
+            )),
+            &log,
+        );
+        assert_eq!(
+            run_reveal(&[detected(herdr), detected(tmux)]),
+            "Switched to alpha (focused in herdr; could not reveal its herdr client in tmux)"
+        );
+    }
+
+    #[test]
+    fn a_winner_without_a_client_concept_reveals_nothing() {
+        let log = new_log();
+        let tmux = Revealing::leak("tmux", None, revealed(), &log);
+        let herdr = Revealing::leak("herdr", Some(&["pts/13"]), revealed(), &log);
+        assert_eq!(
+            run_reveal(&[detected(tmux), detected(herdr)]),
+            "Switched to alpha"
+        );
+        assert!(
+            !log.lock()
+                .unwrap()
+                .iter()
+                .any(|c| c.starts_with("focus_tty")),
+            "the winner (tmux) has no client terminal to reveal: {:?}",
+            log.lock().unwrap()
+        );
+    }
+
+    /// A TUI inside herdr and a session in herdr: there is no other multiplexer
+    /// to reveal into, so no `/proc` walk and no note.
+    #[test]
+    fn a_lone_winner_has_nothing_to_reveal_into() {
+        let log = new_log();
+        let herdr = Revealing::leak("herdr", Some(&["pts/13"]), revealed(), &log);
+        assert_eq!(run_reveal(&[detected(herdr)]), "Switched to alpha");
+        assert_eq!(*log.lock().unwrap(), vec!["focus:herdr".to_string()]);
+    }
+
+    #[test]
+    fn the_reveal_note_follows_the_winners_own_note() {
+        let log = new_log();
+        let herdr: &'static Revealing = Box::leak(Box::new(Revealing {
+            name: "herdr",
+            focus_result: Ok(FocusOutcome {
+                by: MatchedBy::Cwd,
+                partial: Some("matched by working directory only".to_string()),
+            }),
+            clients: Some(vec![]),
+            reveal: revealed(),
+            log: Arc::clone(&log),
+        }));
+        let tmux = Revealing::leak("tmux", None, revealed(), &log);
+        assert_eq!(
+            run_reveal(&[detected(herdr), detected(tmux)]),
+            "Switched to alpha (matched by working directory only; \
+             focused in herdr; no herdr client is attached)"
+        );
+    }
+
+    #[test]
+    fn an_unreachable_backend_is_not_asked_to_reveal() {
+        let log = new_log();
+        let herdr = Revealing::leak("herdr", Some(&["pts/13"]), revealed(), &log);
+        let tmux = Revealing::leak("tmux", None, revealed(), &log);
+        let unreachable_tmux = Detected {
+            backend: tmux,
+            detection: Detection {
+                inside: true,
+                reachable: Err("no server".to_string()),
+            },
+        };
+        assert_eq!(
+            run_reveal(&[detected(herdr), unreachable_tmux]),
+            "Switched to alpha"
+        );
+        assert!(
+            !log.lock()
+                .unwrap()
+                .iter()
+                .any(|c| c.starts_with("focus_tty")),
+            "{:?}",
+            log.lock().unwrap()
+        );
+    }
+
+    #[test]
+    fn a_backend_that_does_not_override_the_reveal_is_unsupported_and_never_scans() {
+        struct Bare;
+        impl MultiplexerBackend for Bare {
+            fn name(&self) -> &'static str {
+                "bare"
+            }
+            fn detect(&self, _env: &EnvSnapshot) -> Option<Detection> {
+                None
+            }
+        }
+        assert_eq!(
+            Bare.focus_tty(&EnvSnapshot::default(), &["pts/1".to_string()])
+                .unwrap_err(),
+            MuxError::Unsupported("bare cannot reveal a client terminal".into())
+        );
+        assert_eq!(
+            Bare.client_ttys(&|_| panic!("a backend with no client concept must not scan")),
+            None
+        );
+        assert_eq!(
+            tmux::TMUX.client_ttys(&|_| panic!("tmux has no client concept: no /proc walk")),
+            None
+        );
+    }
+
+    // ---- focus_message_in: fake /proc + fixture programs, end to end ---------
+    //
+    // Both UI paths (the Sessions panel in `normal.rs` and the project tab-switch
+    // in `detail.rs`) call the one `focus_message`, which is `focus_message_in`
+    // over the real `/proc`; `tests/focus_entry_guard.rs` pins that nothing else
+    // reaches a backend. These tests drive that entry with a process table laid
+    // out in a directory and `herdr` / `tmux` fixture scripts, so they cover the
+    // SAME code for both.
+
+    #[cfg(unix)]
+    mod entry {
+        use super::*;
+        use crate::multiplexer::fixtures::{
+            claude, pane_list_json, tmux_call, FakeProc, World, HERDR_SOCKET, LIST_PANES_ARGS,
+            TMUX_SOCKET,
+        };
+
+        // The fake processes' cmdline carries no `--resume <id>`: the session id
+        // reaches the focus path through `ClaudeSession::session_id` (the
+        // detector's job), and spelling the option here would make this file a
+        // `claude` argv site the census in `session_detector` must adjudicate.
+        const SID_P1: &str = "6e02a046-aa43-4f2c-9b1e-0123456789ab";
+        const SID_P2: &str = "f1644e8e-63f3-4d51-8a7c-0123456789ab";
+        const SID_KNIT: &str = "c0ffee00-1111-4222-8333-444455556666";
+        const TMUX_VALUE: &str = "/tmp/tmux-1000/default,3628116,0";
+
+        const HERDR_SESSION_P1: [&str; 6] = [
+            "HERDR_ENV=1",
+            "HERDR_SOCKET_PATH=/home/blk/.config/herdr/herdr.sock",
+            "HERDR_WORKSPACE_ID=w2",
+            "HERDR_TAB_ID=w2:t1",
+            "HERDR_PANE_ID=w2:p1",
+            "TERM_PROGRAM=herdr",
+        ];
+        const HERDR_SESSION_P2: [&str; 6] = [
+            "HERDR_ENV=1",
+            "HERDR_SOCKET_PATH=/home/blk/.config/herdr/herdr.sock",
+            "HERDR_WORKSPACE_ID=w2",
+            "HERDR_TAB_ID=w2:t2",
+            "HERDR_PANE_ID=w2:p2",
+            "TERM_PROGRAM=herdr",
+        ];
+
+        /// The measured topology (debug session `herdr-session-focus-from-tmux`).
+        /// The herdr server 671927 is headless under systemd; two Claude
+        /// sessions hang off it. The herdr CLIENT 3630647 is on pts/13, which
+        /// is tmux pane 0:0.0, a child of the tmux server 3628116 through fish.
+        /// The TUI 3631000 sits in tmux pane 0:0.1 (pts/8) of the same window.
+        fn measured_topology() -> FakeProc {
+            let p = FakeProc::new();
+            p.process(1, "systemd", 0, &["/sbin/init"], &[], None)
+                .process(2384, "systemd", 1, &["systemd", "--user"], &[], None)
+                .process(
+                    671927,
+                    "herdr",
+                    2384,
+                    &["/home/blk/.local/bin/herdr", "server"],
+                    &[],
+                    Some("/dev/null"),
+                )
+                .process(671995, "fish", 671927, &["fish"], &[], Some("/dev/pts/3"))
+                .process(
+                    672012,
+                    "claude",
+                    671995,
+                    &["claude"],
+                    &HERDR_SESSION_P1,
+                    Some("/dev/pts/3"),
+                )
+                .process(672020, "fish", 671927, &["fish"], &[], Some("/dev/pts/4"))
+                .process(
+                    672048,
+                    "claude",
+                    672020,
+                    &["claude"],
+                    &HERDR_SESSION_P2,
+                    Some("/dev/pts/4"),
+                )
+                .process(3628116, "tmux: server", 1, &["tmux"], &[], None)
+                .process(
+                    3628117,
+                    "fish",
+                    3628116,
+                    &["fish"],
+                    &[],
+                    Some("/dev/pts/13"),
+                )
+                .process(
+                    3630647,
+                    "herdr",
+                    3628117,
+                    &["herdr", "session", "attach", "default"],
+                    &[],
+                    Some("/dev/pts/13"),
+                )
+                .process(3629000, "fish", 3628116, &["fish"], &[], Some("/dev/pts/8"))
+                .process(
+                    3631000,
+                    "gsd-meta-manager",
+                    3629000,
+                    &["gsd-meta-manager"],
+                    &[],
+                    Some("/dev/pts/8"),
+                );
+            p
+        }
+
+        const TUI_PID_IN_TMUX: u32 = 3631000;
+
+        fn tmux_tui_env() -> EnvSnapshot {
+            EnvSnapshot::from_pairs(&[("TMUX", TMUX_VALUE)])
+        }
+
+        fn herdr_panes() -> String {
+            pane_list_json(&[("w2:p1", "w2:t1", SID_P1), ("w2:p2", "w2:t2", SID_P2)])
+        }
+
+        fn herdr_call(rest: &str) -> String {
+            format!("herdr {rest} sock={HERDR_SOCKET}")
+        }
+
+        /// The TUI in a tmux pane, the session under a sibling herdr server,
+        /// the herdr client in the neighbouring tmux pane: herdr focuses
+        /// w2:p1, THEN tmux selects 0:0.0. This is the reported bug, end to
+        /// end, for the Sessions panel and the tab-switch alike.
+        #[test]
+        fn a_herdr_session_is_focused_in_herdr_then_its_client_pane_is_selected_in_tmux() {
+            let proc = measured_topology();
+            let world = World::new(&herdr_panes(), "/dev/pts/13 0:0.0\n/dev/pts/8 0:0.1\n");
+            let (message, calls) = world.run(|| {
+                focus_message_in(
+                    &proc.procfs(),
+                    &world.registry(),
+                    &tmux_tui_env(),
+                    TUI_PID_IN_TMUX,
+                    &claude(672012, Some(SID_P1), Some("pts/3")),
+                    "sentriq",
+                )
+            });
+            assert_eq!(message, "Switched to sentriq");
+            assert!(!message.contains("not found in any tmux pane"), "{message}");
+            assert_eq!(
+                calls,
+                vec![
+                    herdr_call("pane list"),
+                    herdr_call("agent focus w2:p1"),
+                    tmux_call(Some(TMUX_SOCKET), LIST_PANES_ARGS),
+                    tmux_call(Some(TMUX_SOCKET), "select-window -t 0:0.0"),
+                    tmux_call(Some(TMUX_SOCKET), "select-pane -t 0:0.0"),
+                ],
+                "the session id joins the pane (no process-info, no cwd guess); herdr acts on \
+                 the SESSION's socket; tmux then selects the pane showing the herdr client"
+            );
+        }
+
+        #[test]
+        fn the_second_session_is_focused_in_its_own_pane() {
+            let proc = measured_topology();
+            let world = World::new(&herdr_panes(), "/dev/pts/13 0:0.0\n/dev/pts/8 0:0.1\n");
+            let (message, calls) = world.run(|| {
+                focus_message_in(
+                    &proc.procfs(),
+                    &world.registry(),
+                    &tmux_tui_env(),
+                    TUI_PID_IN_TMUX,
+                    &claude(672048, Some(SID_P2), Some("pts/4")),
+                    "sentriq",
+                )
+            });
+            assert_eq!(message, "Switched to sentriq");
+            assert!(
+                calls.contains(&herdr_call("agent focus w2:p2")),
+                "{calls:?}"
+            );
+            assert!(
+                !calls.iter().any(|c| c.contains("process-info")),
+                "the session-id tier is enough: {calls:?}"
+            );
+        }
+
+        /// Several clients attached (two herdr sessions, or two terminals): the
+        /// pick is the first match in tmux's own listing order, so it is the
+        /// same every time, and it is a view of an already-correct focus.
+        #[test]
+        fn several_clients_give_a_deterministic_tmux_pick() {
+            let proc = measured_topology();
+            proc.process(
+                3640001,
+                "herdr",
+                3628117,
+                &["herdr", "--session", "work"],
+                &[],
+                Some("/dev/pts/9"),
+            )
+            .process(
+                3640002,
+                "herdr",
+                1,
+                &["herdr", "session", "attach", "other"],
+                &[],
+                Some("/dev/pts/20"),
+            );
+            // pts/9 is listed before pts/13; pts/20 is in no tmux pane.
+            let listing = "/dev/pts/8 0:0.1\n/dev/pts/9 0:1.0\n/dev/pts/13 0:0.0\n";
+            let world = World::new(&herdr_panes(), listing);
+            let run = || {
+                world.run(|| {
+                    focus_message_in(
+                        &proc.procfs(),
+                        &world.registry(),
+                        &tmux_tui_env(),
+                        TUI_PID_IN_TMUX,
+                        &claude(672012, Some(SID_P1), Some("pts/3")),
+                        "sentriq",
+                    )
+                })
+            };
+            let (first, calls) = run();
+            let (second, _) = run();
+            assert_eq!(first, "Switched to sentriq");
+            assert_eq!(first, second);
+            assert!(
+                calls.contains(&tmux_call(Some(TMUX_SOCKET), "select-pane -t 0:1.0")),
+                "the first matching pane in tmux's listing order: {calls:?}"
+            );
+        }
+
+        /// The herdr client runs in a terminal that is not a tmux pane (a plain
+        /// terminal emulator): the herdr focus succeeded, so no error, only a
+        /// note, and tmux selects nothing.
+        #[test]
+        fn a_client_in_a_non_tmux_terminal_is_a_note_with_no_tmux_step() {
+            let proc = measured_topology();
+            let world = World::new(&herdr_panes(), "/dev/pts/8 0:0.1\n");
+            let (message, calls) = world.run(|| {
+                focus_message_in(
+                    &proc.procfs(),
+                    &world.registry(),
+                    &tmux_tui_env(),
+                    TUI_PID_IN_TMUX,
+                    &claude(672012, Some(SID_P1), Some("pts/3")),
+                    "sentriq",
+                )
+            });
+            assert_eq!(
+                message,
+                "Switched to sentriq (focused in herdr; its herdr client is not in a tmux pane)"
+            );
+            assert!(
+                !calls.iter().any(|c| c.contains("select-")),
+                "no tmux pane shows the client, so no tmux pane is selected: {calls:?}"
+            );
+        }
+
+        #[test]
+        fn no_attached_client_is_a_clear_partial_outcome_and_tmux_is_never_asked() {
+            // The measured topology with the client gone: only the server, the
+            // session and the TUI remain.
+            let gone = FakeProc::new();
+            gone.process(1, "systemd", 0, &[], &[], None)
+                .process(2384, "systemd", 1, &[], &[], None)
+                .process(
+                    671927,
+                    "herdr",
+                    2384,
+                    &["herdr", "server"],
+                    &[],
+                    Some("/dev/null"),
+                )
+                .process(671995, "fish", 671927, &["fish"], &[], Some("/dev/pts/3"))
+                .process(
+                    672012,
+                    "claude",
+                    671995,
+                    &["claude"],
+                    &HERDR_SESSION_P1,
+                    Some("/dev/pts/3"),
+                )
+                .process(3628116, "tmux: server", 1, &["tmux"], &[], None)
+                .process(3629000, "fish", 3628116, &["fish"], &[], Some("/dev/pts/8"))
+                .process(
+                    3631000,
+                    "gsd-meta-manager",
+                    3629000,
+                    &[],
+                    &[],
+                    Some("/dev/pts/8"),
+                );
+            let world = World::new(&herdr_panes(), "/dev/pts/8 0:0.1\n");
+            let (message, calls) = world.run(|| {
+                focus_message_in(
+                    &gone.procfs(),
+                    &world.registry(),
+                    &tmux_tui_env(),
+                    TUI_PID_IN_TMUX,
+                    &claude(672012, Some(SID_P1), Some("pts/3")),
+                    "sentriq",
+                )
+            });
+            assert_eq!(
+                message,
+                "Switched to sentriq (focused in herdr; no herdr client is attached)"
+            );
+            assert!(
+                !calls.iter().any(|c| c.starts_with("tmux")),
+                "nothing to reveal, so tmux is not asked: {calls:?}"
+            );
+        }
+
+        /// Live case B1. The TUI is in herdr pane w2:p5; the `knit` project's
+        /// session is herdr pane w6:p1 in ANOTHER workspace. herdr focuses
+        /// workspace, tab and pane in one `agent focus`. v2.2.0 answered
+        /// "Tab-switching requires running inside tmux (no $TMUX set)" here;
+        /// that text is gone, and this pins that it does not come back.
+        #[test]
+        fn a_herdr_tui_focuses_a_herdr_session_in_another_workspace() {
+            let proc = FakeProc::new();
+            proc.process(1, "systemd", 0, &[], &[], None)
+                .process(2384, "systemd", 1, &[], &[], None)
+                .process(
+                    671927,
+                    "herdr",
+                    2384,
+                    &["herdr", "server"],
+                    &[],
+                    Some("/dev/null"),
+                )
+                .process(700000, "fish", 671927, &["fish"], &[], Some("/dev/pts/20"))
+                .process(
+                    700100,
+                    "gsd-meta-manager",
+                    700000,
+                    &["gsd-meta-manager"],
+                    &[],
+                    Some("/dev/pts/20"),
+                )
+                .process(700400, "fish", 671927, &["fish"], &[], Some("/dev/pts/21"))
+                .process(
+                    700500,
+                    "claude",
+                    700400,
+                    &["claude"],
+                    &[
+                        "HERDR_ENV=1",
+                        "HERDR_SOCKET_PATH=/home/blk/.config/herdr/herdr.sock",
+                        "HERDR_WORKSPACE_ID=w6",
+                        "HERDR_PANE_ID=w6:p1",
+                    ],
+                    Some("/dev/pts/21"),
+                );
+            let panes = pane_list_json(&[
+                ("w2:p5", "w2:t5", "00000000-0000-4000-8000-000000000000"),
+                ("w6:p1", "w6:t1", SID_KNIT),
+            ]);
+            let world = World::new(&panes, "");
+            let tui_env = EnvSnapshot::from_pairs(&[
+                ("HERDR_ENV", "1"),
+                ("HERDR_SOCKET_PATH", HERDR_SOCKET),
+                ("HERDR_WORKSPACE_ID", "w2"),
+            ]);
+            let (message, calls) = world.run(|| {
+                focus_message_in(
+                    &proc.procfs(),
+                    &world.registry(),
+                    &tui_env,
+                    700100,
+                    &claude(700500, Some(SID_KNIT), Some("pts/21")),
+                    "knit",
+                )
+            });
+            assert_eq!(message, "Switched to knit");
+            assert!(!message.contains("Tab-switching requires"), "{message}");
+            assert!(!message.contains("no $TMUX set"), "{message}");
+            assert_eq!(
+                calls,
+                vec![herdr_call("pane list"), herdr_call("agent focus w6:p1")],
+                "the session's own pane in the other workspace, and no tmux step: the TUI \
+                 and the session are both in herdr"
+            );
+        }
+
+        /// Live case B2. The TUI runs in herdr (no `$TMUX` in its environment);
+        /// the session lives in tmux. The tmux server is addressed from the
+        /// SESSION's `$TMUX`, with `-S`, and herdr is never asked.
+        #[test]
+        fn a_herdr_tui_focuses_a_tmux_session_through_the_sessions_own_tmux_socket() {
+            let proc = FakeProc::new();
+            proc.process(1, "systemd", 0, &[], &[], None)
+                .process(2384, "systemd", 1, &[], &[], None)
+                .process(
+                    671927,
+                    "herdr",
+                    2384,
+                    &["herdr", "server"],
+                    &[],
+                    Some("/dev/null"),
+                )
+                .process(700000, "fish", 671927, &["fish"], &[], Some("/dev/pts/20"))
+                .process(
+                    700100,
+                    "gsd-meta-manager",
+                    700000,
+                    &[],
+                    &[],
+                    Some("/dev/pts/20"),
+                )
+                .process(3628116, "tmux: server", 1, &["tmux"], &[], None)
+                .process(800400, "fish", 3628116, &["fish"], &[], Some("/dev/pts/5"))
+                .process(
+                    800500,
+                    "claude",
+                    800400,
+                    &["claude"],
+                    &["TMUX=/tmp/tmux-1000/default,3628116,0", "TMUX_PANE=%4"],
+                    Some("/dev/pts/5"),
+                );
+            let world = World::new(&herdr_panes(), "/dev/pts/5 0:1.2\n/dev/pts/6 0:2.0\n");
+            let tui_env = EnvSnapshot::from_pairs(&[
+                ("HERDR_ENV", "1"),
+                ("HERDR_SOCKET_PATH", HERDR_SOCKET),
+                ("HERDR_WORKSPACE_ID", "w2"),
+            ]);
+            let (message, calls) = world.run(|| {
+                focus_message_in(
+                    &proc.procfs(),
+                    &world.registry(),
+                    &tui_env,
+                    700100,
+                    &claude(800500, None, Some("pts/5")),
+                    "alpha",
+                )
+            });
+            assert_eq!(message, "Switched to alpha");
+            assert_eq!(
+                calls,
+                vec![
+                    tmux_call(Some(TMUX_SOCKET), LIST_PANES_ARGS),
+                    tmux_call(Some(TMUX_SOCKET), "select-window -t 0:1.2"),
+                    tmux_call(Some(TMUX_SOCKET), "select-pane -t 0:1.2"),
+                ],
+                "tmux first, on the session's socket; herdr (the TUI's) is never needed"
+            );
+        }
+
+        /// The TUI and the session are on DIFFERENT tmux servers: the session's
+        /// socket wins, not the TUI's.
+        #[test]
+        fn a_session_on_another_tmux_server_is_addressed_by_its_own_socket() {
+            let proc = FakeProc::new();
+            proc.process(1, "systemd", 0, &[], &[], None)
+                .process(3628116, "tmux: server", 1, &["tmux"], &[], None)
+                .process(
+                    3631000,
+                    "gsd-meta-manager",
+                    3628116,
+                    &[],
+                    &[],
+                    Some("/dev/pts/8"),
+                )
+                .process(
+                    4000001,
+                    "tmux: server",
+                    1,
+                    &["tmux", "-L", "work"],
+                    &[],
+                    None,
+                )
+                .process(
+                    4000100,
+                    "claude",
+                    4000001,
+                    &["claude"],
+                    &["TMUX=/tmp/tmux-1000/work,4000001,0"],
+                    Some("/dev/pts/5"),
+                );
+            let world = World::new("", "/dev/pts/5 work:0.0\n");
+            let (message, calls) = world.run(|| {
+                focus_message_in(
+                    &proc.procfs(),
+                    &world.registry(),
+                    &tmux_tui_env(),
+                    3631000,
+                    &claude(4000100, None, Some("pts/5")),
+                    "alpha",
+                )
+            });
+            assert_eq!(message, "Switched to alpha");
+            assert_eq!(
+                calls,
+                vec![
+                    tmux_call(Some("/tmp/tmux-1000/work"), LIST_PANES_ARGS),
+                    tmux_call(Some("/tmp/tmux-1000/work"), "select-window -t work:0.0"),
+                    tmux_call(Some("/tmp/tmux-1000/work"), "select-pane -t work:0.0"),
+                ]
+            );
+        }
+
+        /// A `$TMUX` in the session's environment that names no absolute socket
+        /// is dropped, so it can neither route to tmux nor reach `tmux -S`.
+        #[test]
+        fn a_relative_tmux_socket_in_a_sessions_environment_is_never_used() {
+            let proc = FakeProc::new();
+            proc.process(1, "systemd", 0, &[], &[], None)
+                .process(
+                    671927,
+                    "herdr",
+                    1,
+                    &["herdr", "server"],
+                    &[],
+                    Some("/dev/null"),
+                )
+                .process(
+                    700100,
+                    "gsd-meta-manager",
+                    671927,
+                    &[],
+                    &[],
+                    Some("/dev/pts/20"),
+                )
+                .process(
+                    800500,
+                    "claude",
+                    1,
+                    &["claude"],
+                    &["TMUX=relative/sock,1,0"],
+                    Some("/dev/pts/5"),
+                );
+            let world = World::new(&herdr_panes(), "/dev/pts/5 0:1.2\n");
+            let tui_env =
+                EnvSnapshot::from_pairs(&[("HERDR_ENV", "1"), ("HERDR_SOCKET_PATH", HERDR_SOCKET)]);
+            let (message, calls) = world.run(|| {
+                focus_message_in(
+                    &proc.procfs(),
+                    &world.registry(),
+                    &tui_env,
+                    700100,
+                    &claude(800500, None, Some("pts/5")),
+                    "alpha",
+                )
+            });
+            assert!(
+                !calls.is_empty() && calls.iter().all(|c| c.starts_with("herdr")),
+                "the garbage value must not reach tmux; only the TUI's own herdr was asked: \
+                 {calls:?} / {message}"
+            );
+            assert!(!message.starts_with("Switched"), "{message}");
+        }
+
+        /// SC2 guard, through the whole entry: a tmux-only user (TUI and
+        /// session on the same tmux server) gets the tmux-only behaviour.
+        #[test]
+        fn a_tmux_session_in_a_tmux_tui_is_focused_by_tmux_alone() {
+            let proc = FakeProc::new();
+            proc.process(1, "systemd", 0, &[], &[], None)
+                .process(3628116, "tmux: server", 1, &["tmux"], &[], None)
+                .process(
+                    3631000,
+                    "gsd-meta-manager",
+                    3628116,
+                    &[],
+                    &[],
+                    Some("/dev/pts/8"),
+                )
+                .process(
+                    3632000,
+                    "claude",
+                    3628116,
+                    &["claude"],
+                    &[&format!("TMUX={TMUX_VALUE}")],
+                    Some("/dev/pts/5"),
+                );
+            let world = World::new("", "/dev/pts/5 0:3.0\n");
+            let (message, calls) = world.run(|| {
+                focus_message_in(
+                    &proc.procfs(),
+                    &world.registry(),
+                    &tmux_tui_env(),
+                    3631000,
+                    &claude(3632000, None, Some("pts/5")),
+                    "alpha",
+                )
+            });
+            assert_eq!(message, "Switched to alpha");
+            assert_eq!(calls.len(), 3, "{calls:?}");
+            assert!(calls.iter().all(|c| c.starts_with("tmux")), "{calls:?}");
+        }
+
+        /// When the session's process cannot be read (it exited, or belongs to
+        /// another uid), the TUI-derived plan applies and tmux's wording is
+        /// byte-identical to the tmux-only days.
+        #[test]
+        fn an_unreadable_session_falls_back_to_the_tuis_own_backends_verbatim() {
+            let proc = FakeProc::new();
+            proc.process(1, "systemd", 0, &[], &[], None)
+                .process(3628116, "tmux: server", 1, &["tmux"], &[], None)
+                .process(
+                    3631000,
+                    "gsd-meta-manager",
+                    3628116,
+                    &[],
+                    &[],
+                    Some("/dev/pts/8"),
+                );
+            let world = World::new("", "/dev/pts/8 0:0.1\n");
+            let (message, calls) = world.run(|| {
+                focus_message_in(
+                    &proc.procfs(),
+                    &world.registry(),
+                    &tmux_tui_env(),
+                    3631000,
+                    &claude(999_999, None, Some("pts/3")),
+                    "alpha",
+                )
+            });
+            assert_eq!(
+                message,
+                "TTY pts/3 not found in any tmux pane (session may have exited)"
+            );
+            assert_eq!(
+                calls,
+                vec![tmux_call(Some(TMUX_SOCKET), LIST_PANES_ARGS)],
+                "no select step when nothing matched"
+            );
+        }
+
+        /// With no multiplexer anywhere (neither the TUI nor the session), the
+        /// message is the unchanged "none detected" text.
+        #[test]
+        fn no_multiplexer_anywhere_is_the_none_detected_text() {
+            let proc = FakeProc::new();
+            proc.process(1, "systemd", 0, &[], &[], None)
+                .process(500, "gsd-meta-manager", 1, &[], &[], Some("/dev/pts/1"))
+                .process(
+                    600,
+                    "claude",
+                    1,
+                    &["claude"],
+                    &["PATH=/usr/bin"],
+                    Some("/dev/pts/2"),
+                );
+            let world = World::new("", "");
+            let (message, calls) = world.run(|| {
+                focus_message_in(
+                    &proc.procfs(),
+                    &world.registry(),
+                    &EnvSnapshot::default(),
+                    500,
+                    &claude(600, None, Some("pts/2")),
+                    "alpha",
+                )
+            });
+            assert_eq!(
+                message,
+                "Tab-switching requires running inside tmux or herdr (none detected)"
+            );
+            assert!(calls.is_empty());
+        }
     }
 }
