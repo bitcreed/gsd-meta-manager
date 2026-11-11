@@ -3,6 +3,10 @@ phase: 33
 review: 33-REVIEW.md
 titles: json
 findings:
+  - id: IN-06
+    severity: info
+    disposition: open
+    title: "`same_dir` adds unbounded filesystem I/O per herdr pane on the UI thread"
   - id: WR-01
     severity: warning
     disposition: fixed
@@ -35,23 +39,24 @@ findings:
     severity: info
     disposition: fixed
     title: "Test listeners in `mod.rs` and `herdr.rs` can hang the suite if the client never connects"
-open: 0
-total: 8
-recorded: 2026-11-11T01:36:36.984Z
+open: 1
+total: 9
+recorded: 2026-11-11T01:50:39.935Z
 ---
 
 # Phase 33: Code Review Disposition
 
 | Finding | Severity | Disposition | Source |
 |---------|----------|-------------|--------|
-| WR-01 | warning | fixed | 33-REVIEW-FIX.md |
-| WR-02 | warning | fixed | 33-REVIEW-FIX.md |
-| WR-03 | warning | fixed | 33-REVIEW-FIX.md |
-| IN-01 | info | fixed | 33-REVIEW-FIX.md |
-| IN-02 | info | fixed | 33-REVIEW-FIX.md |
-| IN-03 | info | fixed | 33-REVIEW-FIX.md |
-| IN-04 | info | fixed | 33-REVIEW-FIX.md |
-| IN-05 | info | fixed | 33-REVIEW-FIX.md |
+| IN-06 | info | open | - |
+| WR-01 | warning | fixed | 33-REVIEW-FIX.md (not in the current review) |
+| WR-02 | warning | fixed | 33-REVIEW-FIX.md (not in the current review) |
+| WR-03 | warning | fixed | 33-REVIEW-FIX.md (not in the current review) |
+| IN-01 | info | fixed | 33-REVIEW-FIX.md (not in the current review) |
+| IN-02 | info | fixed | 33-REVIEW-FIX.md (not in the current review) |
+| IN-03 | info | fixed | 33-REVIEW-FIX.md (not in the current review) |
+| IN-04 | info | fixed | 33-REVIEW-FIX.md (not in the current review) |
+| IN-05 | info | fixed | 33-REVIEW-FIX.md (not in the current review) |
 
 Dispositions: `open` (recorded, not yet triaged), `fixed`, `skipped`, `deferred`.
 Set `deferred` by hand and put the reason in the Source cell; both are preserved. A `|` in the reason is kept as prose and escaped on the next run.
