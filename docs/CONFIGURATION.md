@@ -119,6 +119,8 @@ The binary itself does not require any environment variables to start. It does, 
 | `HERDR_SOCKET_PATH` | Optional | `src/multiplexer/herdr.rs` | The herdr server socket. Launching opens a tab with one `layout.apply` request on it, and the herdr CLI calls used for focus (`pane list`, `pane process-info`, `agent focus`, `tab focus`) get it passed explicitly. Inside herdr but without it, herdr is reported as not reachable and the launch falls through to a GUI terminal. |
 | `HERDR_WORKSPACE_ID` | Optional | `src/multiplexer/herdr.rs` | The herdr workspace a launched tab opens in. Unset or empty: herdr uses its focused workspace. |
 | `GSD_HOME` | Optional | `src/state_reader/config_json.rs` (`user_defaults_path`) | Root of the GSD-owned store. GSD user defaults are read from, and the Config tab's global scope writes to, `$GSD_HOME/.gsd/defaults.json`. Unset or empty falls back to `$HOME`, matching gsd-core's own `GSD_HOME \|\| homedir()` rule. Any other value is used as given. |
+| `CLAUDE_CONFIG_DIR` | Optional | `src/launcher/host_dirs.rs` (`HostDirs::resolve`), also `src/state_reader/` and `src/agents/adapters/claude.rs` | The Claude root. A non-empty absolute value wins; blank or relative counts as unset and `~/.claude` is used. The driver and one-off launchers read the host token from `$CLAUDE_CONFIG_DIR/.credentials.json`, seed the per-run config from it, and bind and mask it in the sandbox (see `docs/DRIVER-SANDBOX.md`, "Relocated host directories"). |
+| `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME`, `XDG_RUNTIME_DIR` | Optional | `src/launcher/host_dirs.rs` (`HostDirs::resolve`) | As the launcher uses them: where the gh, gcloud, glab-cli, git and keyring credential stores, the rtk config and data, the cache and the runtime socket directory live, for the sandbox's binds and masks. Same rule as above: absolute and non-empty, else the `$HOME` default. |
 | `HOME` | Optional | `src/state_reader/config_json.rs` (`user_defaults_path`) | Fallback root for `$GSD_HOME/.gsd/defaults.json` (the GSD user defaults overlay) when `GSD_HOME` is unset or empty. If neither is set, the defaults file is simply not loaded. |
 | `GSDMM_EXPERIMENTAL_FEATURES` | Optional | `src/experimental.rs` (read once at startup by `App::from_config`) | Turns on the experimental surfaces, which today means the **Driver** tab and everything that leads to it, one-off tasks (`t` / `T`, and `t` on the Backlog tab) included. **Default is OFF.** Accepted truthy values are `1`, `true`, `yes` and `on`, ASCII-case-insensitive with surrounding whitespace trimmed; unset, empty, `0`, `false`, `no`, `off` and any unrecognised value are OFF. |
 | `GSD_MM_ENVELOPE_ROOT` | Optional | `src/envelope/mod.rs` (`envelope_root`) | Overrides the root directory of the per-alias envelope ledger, which otherwise lives under `dirs::data_local_dir()/gsd-meta-manager/`. Intended for tests; it only moves where the ledger is read and written. Unset or empty uses the default. |
@@ -424,8 +426,12 @@ when `XDG_DATA_HOME` or `XDG_CONFIG_HOME` puts `gsd-meta-manager`'s data or conf
 directory outside both (the run dirs with their host-only inbox, the stored run
 token), an empty tmpfs hides that directory inside the sandbox, and only the run's
 own clone, `report/` and config dir are bound back on top. This applies to the
-driver's sandbox as well. With the default layout (everything under `$HOME`) the
-sandbox is unchanged.
+driver's sandbox as well. A relocated Claude root (`CLAUDE_CONFIG_DIR`) outside both
+becomes an empty tmpfs with only its GSD entries bound back read-only, its credential
+files are masked, and the credential stores of a relocated `XDG_CONFIG_HOME` /
+`XDG_DATA_HOME` (gh, gcloud, glab-cli, git, keyrings) outside both are hidden the same
+way; the host token is read from `$CLAUDE_CONFIG_DIR`. With the default layout
+(everything under `$HOME`) the sandbox is unchanged.
 
 **The report contract.** The agent ends with `gsd-meta-manager taskctl report
 --status done|partial|blocked|failed --headline <one line, max 120>

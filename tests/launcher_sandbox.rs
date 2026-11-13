@@ -21,6 +21,7 @@ use std::process::{Command, Stdio};
 use gsd_meta_manager::driverctl::serve::socket_path;
 use gsd_meta_manager::launcher::egress::socket_path_for;
 use gsd_meta_manager::launcher::home::{HomeBind, HomeSetup};
+use gsd_meta_manager::launcher::host_dirs::HostDirs;
 use gsd_meta_manager::launcher::sandbox::{
     bridged_command, bwrap_argv, child_env, claude_argv, common_env_sets, egress_env_sets,
     etc_entries_in, guard_binds_for, EtcEntry, GuardBind, LaunchPaths, SandboxSpec, BRIDGE_PORT,
@@ -208,7 +209,8 @@ fn null_masks_are_a_second_layer_inside_binds_only() {
 
     // No bind: every credential file is hidden by the tmpfs alone, so no mask, and no
     // flag at all names a path under the host home except the tmpfs itself.
-    let bare = SandboxSpec::from_host(paths(), &home_path, &HomeSetup::default());
+    let dirs = HostDirs::resolve(&home_path, |_| None);
+    let bare = SandboxSpec::from_host_with(paths(), &dirs, &HomeSetup::default());
     assert!(bare.null_masks.is_empty());
     assert!(bare.home_binds.is_empty());
     let argv = strings(&bwrap_argv(&bare, &[OsString::from("true")]));
@@ -233,7 +235,7 @@ fn null_masks_are_a_second_layer_inside_binds_only() {
         gitconfig: None,
         ..HomeSetup::default()
     };
-    let spec = SandboxSpec::from_host(paths(), &home_path, &setup);
+    let spec = SandboxSpec::from_host_with(paths(), &dirs, &setup);
     assert_eq!(
         spec.null_masks,
         [
@@ -273,6 +275,65 @@ fn home_str_join(home: &std::path::Path, rel: &str) -> String {
 }
 
 #[test]
+fn a_claude_root_outside_home_is_hidden_and_its_gsd_entries_rebound() {
+    // quick 261113-dck, T-261113-dck-01: a `CLAUDE_CONFIG_DIR` outside `$HOME` and
+    // `/tmp` would otherwise leave its refresh token readable through the read-only `/`.
+    let base = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"));
+    fs::create_dir_all(base).unwrap();
+    let outside = tempfile::Builder::new()
+        .prefix("dck-claude-root-")
+        .tempdir_in(base)
+        .unwrap();
+    if outside.path().starts_with("/tmp") {
+        eprintln!("skipped: the build tree is under /tmp");
+        return;
+    }
+    let root = TempDir::new().unwrap();
+    let home = root.path().join("home");
+    let state = root.path().join("state");
+    fs::create_dir_all(&state).unwrap();
+    fs::create_dir_all(&home).unwrap();
+    let profile = outside.path().join("work");
+    for dir in ["agents", "hooks", "projects"] {
+        fs::create_dir_all(profile.join(dir)).unwrap();
+    }
+    fs::write(profile.join(".credentials.json"), "{}").unwrap();
+    fs::write(profile.join(".claude.json"), "{}").unwrap();
+
+    let env = |name: &str| (name == "CLAUDE_CONFIG_DIR").then(|| profile.clone().into());
+    let dirs = HostDirs::resolve(&home, env);
+    let setup = HomeSetup::for_host_with(
+        &dirs,
+        std::path::Path::new("/nonexistent/exe"),
+        true,
+        &state,
+    )
+    .unwrap();
+    let mut spec = SandboxSpec::from_host_with(paths(), &dirs, &setup);
+    spec.runtime_dir = Some(PathBuf::from(RUNTIME_DIR));
+    let argv = strings(&bwrap_argv(&spec, &[OsString::from("true")]));
+
+    let p = profile.display().to_string();
+    let at = |w: &[&str]| argv.windows(w.len()).position(|win| win == w);
+    let tmpfs = at(&["--size", "1048576", "--tmpfs", &p]).expect("an empty tmpfs over the profile");
+    let agents = at(&["--ro-bind", &format!("{p}/agents"), &format!("{p}/agents")])
+        .expect("its agents entry is re-bound read-only");
+    let hooks = at(&["--ro-bind", &format!("{p}/hooks"), &format!("{p}/hooks")])
+        .expect("its hooks entry is re-bound read-only");
+    assert!(tmpfs < agents && tmpfs < hooks, "{argv:?}");
+    let creds = at(&["--ro-bind", "/dev/null", &format!("{p}/.credentials.json")])
+        .expect("the credentials file is masked");
+    let claude_json = at(&["--ro-bind", "/dev/null", &format!("{p}/.claude.json")])
+        .expect(".claude.json is masked");
+    assert!(tmpfs < creds && tmpfs < claude_json, "{argv:?}");
+    // The transcripts directory has no re-bind: it is hidden by the tmpfs.
+    assert!(
+        !argv.iter().any(|a| a == &format!("{p}/projects")),
+        "{argv:?}"
+    );
+}
+
+#[test]
 fn no_flag_names_a_credential_directory_and_the_home_block_precedes_the_run_binds() {
     use gsd_meta_manager::launcher::sandbox::TMPFS_MASK_DIRS;
     let root = TempDir::new().unwrap();
@@ -284,14 +345,15 @@ fn no_flag_names_a_credential_directory_and_the_home_block_precedes_the_run_bind
         fs::write(home.join(rel).join("secret"), "x").unwrap();
     }
     fs::create_dir_all(home.join(".gsd")).unwrap();
-    let setup = HomeSetup::for_host(
-        &home,
+    let dirs = HostDirs::resolve(&home, |_| None);
+    let setup = HomeSetup::for_host_with(
+        &dirs,
         std::path::Path::new("/nonexistent/exe"),
         true,
         &state,
     )
     .unwrap();
-    let mut spec = SandboxSpec::from_host(paths(), &home, &setup);
+    let mut spec = SandboxSpec::from_host_with(paths(), &dirs, &setup);
     // The runtime dir is an input of `bwrap_argv` that this test pins to its socket
     // fixture (`SOCK` and `EGRESS` live under it). `from_host` reads the host's
     // `XDG_RUNTIME_DIR`, which the CI runner and the pre-tag container do not set; the
@@ -742,7 +804,13 @@ fn runtime_dir_holds_only_the_driverctl_socket() {
     let _ = fs::remove_file(&egress_sock);
     let egress_listener = UnixListener::bind(&egress_sock).expect("bind the probe egress socket");
 
-    let spec = SandboxSpec::from_host(
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR");
+    let dirs = HostDirs::resolve(&home, |name| {
+        (name == "XDG_RUNTIME_DIR")
+            .then(|| runtime.clone())
+            .flatten()
+    });
+    let spec = SandboxSpec::from_host_with(
         LaunchPaths {
             project: project.clone(),
             run_dir,
@@ -750,7 +818,7 @@ fn runtime_dir_holds_only_the_driverctl_socket() {
             socket: sock.clone(),
             egress_socket: egress_sock.clone(),
         },
-        &home,
+        &dirs,
         &HomeSetup::default(),
     );
     let script = format!(

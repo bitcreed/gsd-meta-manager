@@ -133,3 +133,19 @@ fn masks_outside_keeps_only_roots_that_home_and_tmp_do_not_cover() {
     );
     assert!(masks_outside(&home, &[]).is_empty());
 }
+
+#[test]
+fn masks_outside_never_masks_an_ancestor_of_home_or_tmp() {
+    // quick 261113-dck, I-7: a tmpfs over `/`, `/home` or `/tmp` would hide the sandbox's
+    // own footing; a relative path cannot be a mount point.
+    let home = PathBuf::from("/home/u");
+    let candidates = [
+        PathBuf::from("/"),
+        PathBuf::from("/home"),
+        PathBuf::from("/home/u"),
+        PathBuf::from("/tmp"),
+        PathBuf::from("relative/dir"),
+        PathBuf::from(DATA),
+    ];
+    assert_eq!(masks_outside(&home, &candidates), [PathBuf::from(DATA)]);
+}

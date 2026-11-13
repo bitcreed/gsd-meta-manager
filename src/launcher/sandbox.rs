@@ -65,7 +65,9 @@
 //! `gsd-meta-manager`) are masked with an empty tmpfs when they live outside `$HOME` and
 //! `/tmp`, which the read-only root would otherwise leave readable (one-off inboxes, the
 //! stored run token). [`masks_outside`] is the pure filter; the host-reading half is
-//! `config_dir::app_root_masks`. With no masks the argv is unchanged.
+//! `config_dir::sandbox_dir_masks`, which also names the credential stores of a
+//! relocated `XDG_CONFIG_HOME` / `XDG_DATA_HOME` (quick 261113-dck). With no masks the
+//! argv is unchanged.
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -74,6 +76,7 @@ use std::path::{Path, PathBuf};
 use crate::state_reader::driver_frontmatter::DRIVER_RUNS_REL;
 
 use super::home::{HomeBind, HomeSetup, HOME_TMPFS_SIZE};
+use super::host_dirs::{placement, HostDirs, Placement};
 
 /// The first word of every scope unit name (D-08).
 pub const SCOPE_PREFIX: &str = "gsdmm-driver";
@@ -416,11 +419,24 @@ pub fn etc_entries_in(etc: &Path) -> Vec<EtcEntry> {
 }
 
 impl SandboxSpec {
-    /// The spec for this host: the `$HOME` setup of this launch, the null-mask
-    /// candidates that exist inside one of its read-only entries, and
-    /// `$XDG_RUNTIME_DIR` when it is an absolute path. **The one function here that
-    /// reads the file system and the environment.**
+    /// The spec for this host: [`from_host_with`](Self::from_host_with) for the
+    /// directories the process environment resolves to. **The impure entry.**
     pub fn from_host(paths: LaunchPaths, home: &Path, setup: &HomeSetup) -> Self {
+        SandboxSpec::from_host_with(paths, &HostDirs::from_host(home), setup)
+    }
+
+    /// The spec for `dirs`: the `$HOME` setup of this launch, the null-mask
+    /// candidates that exist inside one of its read-only entries (plus a relocated
+    /// Claude root's credential files, which exist outside `$HOME` and `/tmp`), and
+    /// the runtime directory when it is an absolute path. **Reads the file system.**
+    ///
+    /// The candidates are [`HostDirs::credential_files`]: the `$HOME`-relative
+    /// defaults, the Claude root's, the relocated git credentials and the stored run
+    /// token wherever `auth::token_path()` puts it (WR-02, T-261113-dck-02). A Claude
+    /// root's `.credentials.json` and `.claude.json` outside `$HOME` and `/tmp` are
+    /// masked even though no bind covers them: the read-only `/` would show them
+    /// (T-261113-dck-01).
+    pub fn from_host_with(paths: LaunchPaths, dirs: &HostDirs, setup: &HomeSetup) -> Self {
         let ro_entries: Vec<&Path> = setup
             .binds
             .iter()
@@ -430,32 +446,30 @@ impl SandboxSpec {
             })
             .collect();
         let in_a_bind = |path: &Path| ro_entries.iter().any(|root| path.starts_with(root));
-        #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(unused_mut))]
-        let mut null_masks: Vec<PathBuf> = NULL_MASK_FILES
-            .iter()
-            .map(|rel| home.join(rel))
-            .filter(|p| p.exists() && in_a_bind(p))
+        let claude_files = dirs.claude_credential_files();
+        let outside_home_and_tmp = |path: &Path| {
+            matches!(
+                placement(path, &dirs.home, &[]),
+                Placement::Maskable | Placement::Unmaskable
+            )
+        };
+        let null_masks: Vec<PathBuf> = dirs
+            .credential_files()
+            .into_iter()
+            .filter(|p| {
+                p.exists()
+                    && (in_a_bind(p) || (claude_files.contains(p) && outside_home_and_tmp(p)))
+            })
             .collect();
-        // The stored run token lives under `dirs::config_dir()`, which an
-        // `XDG_CONFIG_HOME` moves away from `~/.config` (WR-02).
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
-        if let Some(token) = super::auth::token_path() {
-            if token.exists() && in_a_bind(&token) && !null_masks.contains(&token) {
-                null_masks.push(token);
-            }
-        }
-        let runtime_dir = std::env::var_os("XDG_RUNTIME_DIR")
-            .map(PathBuf::from)
-            .filter(|dir| dir.is_absolute());
         let guard_binds = guard_binds_for(&paths.project);
         SandboxSpec {
-            home: home.to_owned(),
+            home: dirs.home.clone(),
             paths,
             guard_binds,
             home_binds: setup.binds.clone(),
             gitconfig: setup.gitconfig.clone(),
             null_masks,
-            runtime_dir,
+            runtime_dir: dirs.runtime_dir.clone(),
             etc_entries: etc_entries_in(Path::new("/etc")),
         }
     }
@@ -543,13 +557,15 @@ pub fn bwrap_argv_with(
 
 /// The directories among `candidates` that the sandbox must mask with an empty tmpfs
 /// because `$HOME` and `/tmp` (already masked) do not cover them (quick 261103-hx7,
-/// D-09, C-32). Pure and lexical: a candidate under `home` or under `/tmp` is dropped,
-/// and so is a duplicate. The order of `candidates` is kept.
+/// D-09, C-32). Pure and lexical: only a [`Placement::Maskable`] candidate is kept, so
+/// a candidate under `home` or under `/tmp` is dropped, and so are `/`, a relative path
+/// and any ancestor of `home` or `/tmp` (a tmpfs there would hide the sandbox's own
+/// footing, quick 261113-dck I-7), and so is a duplicate. The order of `candidates` is
+/// kept.
 pub fn masks_outside(home: &Path, candidates: &[PathBuf]) -> Vec<PathBuf> {
     let mut kept: Vec<PathBuf> = Vec::new();
     for candidate in candidates {
-        if candidate.starts_with(home) || candidate.starts_with("/tmp") || kept.contains(candidate)
-        {
+        if placement(candidate, home, &[]) != Placement::Maskable || kept.contains(candidate) {
             continue;
         }
         kept.push(candidate.clone());
@@ -1382,7 +1398,8 @@ mod tests {
             ..HomeSetup::default()
         };
         std::fs::write(home.path().join(".cargo/credentials.toml"), "x").unwrap();
-        let spec = SandboxSpec::from_host(paths(), home.path(), &setup);
+        let dirs = HostDirs::resolve(home.path(), |_| None);
+        let spec = SandboxSpec::from_host_with(paths(), &dirs, &setup);
         // `.claude.json` exists but is in no bind (the tmpfs hides it); the cargo
         // credentials file is inside the read-only `.cargo` entry.
         assert_eq!(
@@ -1391,5 +1408,91 @@ mod tests {
         );
         assert_eq!(spec.home_binds, setup.binds);
         assert_eq!(spec.gitconfig, setup.gitconfig);
+    }
+
+    /// A scratch directory that is neither under `/tmp` nor under the fake home, or
+    /// `None` (the test then has nothing to prove) when the build tree is under `/tmp`.
+    fn outside_tmp_dir() -> Option<tempfile::TempDir> {
+        let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
+        std::fs::create_dir_all(&base).unwrap();
+        let dir = tempfile::Builder::new()
+            .prefix("dck-profile-")
+            .tempdir_in(base)
+            .unwrap();
+        if dir.path().starts_with("/tmp") {
+            eprintln!("skipped: the build tree is under /tmp");
+            return None;
+        }
+        Some(dir)
+    }
+
+    #[test]
+    fn from_host_with_masks_the_relocated_claude_credentials_outside_home() {
+        let home = tempfile::TempDir::new().unwrap();
+        let Some(outside) = outside_tmp_dir() else {
+            return;
+        };
+        let profile = outside.path().join("work");
+        std::fs::create_dir_all(profile.join("agents")).unwrap();
+        std::fs::write(profile.join(".credentials.json"), "{}").unwrap();
+        std::fs::write(profile.join(".claude.json"), "{}").unwrap();
+        let setup = HomeSetup::default();
+        let env = |name: &str| (name == "CLAUDE_CONFIG_DIR").then(|| profile.clone().into());
+        let dirs = HostDirs::resolve(home.path(), env);
+        let spec = SandboxSpec::from_host_with(paths(), &dirs, &setup);
+        assert_eq!(
+            spec.null_masks,
+            [
+                profile.join(".credentials.json"),
+                profile.join(".claude.json")
+            ],
+            "no bind covers them, the read-only root would show them"
+        );
+
+        // Under `/tmp` the sandbox's own empty tmpfs already hides them.
+        let tmp_profile = home.path().join("p");
+        std::fs::create_dir_all(&tmp_profile).unwrap();
+        std::fs::write(tmp_profile.join(".credentials.json"), "{}").unwrap();
+        let env = |name: &str| (name == "CLAUDE_CONFIG_DIR").then(|| tmp_profile.clone().into());
+        let dirs = HostDirs::resolve(Path::new("/nonexistent/home"), env);
+        let spec = SandboxSpec::from_host_with(paths(), &dirs, &setup);
+        assert!(spec.null_masks.is_empty(), "{:?}", spec.null_masks);
+    }
+
+    #[test]
+    fn from_host_with_masks_the_run_token_where_token_path_puts_it() {
+        let home = tempfile::TempDir::new().unwrap();
+        let token = home.path().join("cfg/gsd-meta-manager/driver-oauth-token");
+        std::fs::create_dir_all(token.parent().unwrap()).unwrap();
+        std::fs::write(&token, "t").unwrap();
+        let mut dirs = HostDirs::resolve(home.path(), |_| None);
+        dirs.run_token = Some(token.clone());
+
+        // Inside a read-only bind: masked with /dev/null (WR-02).
+        let bound = HomeSetup {
+            binds: vec![HomeBind::Ro(home.path().join("cfg"))],
+            ..HomeSetup::default()
+        };
+        let spec = SandboxSpec::from_host_with(paths(), &dirs, &bound);
+        assert_eq!(spec.null_masks, std::slice::from_ref(&token));
+
+        // In no bind: the tmpfs `$HOME` hides it, so the argv gains nothing.
+        let spec = SandboxSpec::from_host_with(paths(), &dirs, &HomeSetup::default());
+        assert!(spec.null_masks.is_empty());
+    }
+
+    #[test]
+    fn from_host_with_takes_the_runtime_dir_from_the_resolved_dirs() {
+        let home = Path::new("/home/u");
+        let env = |name: &str| (name == "XDG_RUNTIME_DIR").then(|| "/run/user/9".into());
+        let dirs = HostDirs::resolve(home, env);
+        let spec = SandboxSpec::from_host_with(paths(), &dirs, &HomeSetup::default());
+        assert_eq!(spec.runtime_dir, Some(PathBuf::from("/run/user/9")));
+        let none = SandboxSpec::from_host_with(
+            paths(),
+            &HostDirs::resolve(home, |_| None),
+            &HomeSetup::default(),
+        );
+        assert_eq!(none.runtime_dir, None);
     }
 }

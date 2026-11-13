@@ -11,19 +11,32 @@
 //! * the toolchain: the `PATH` hit and the install root of each of [`HOME_TOOLS`]
 //!   that lives under `$HOME`, `$CARGO_HOME/{bin,env,config.toml,config}` and
 //!   `$RUSTUP_HOME`, so `~/.cargo/credentials.toml` is out by construction;
-//! * GSD and rtk: [`HOME_RO_REL`];
+//! * GSD and rtk: [`CLAUDE_RO_REL`] under every Claude root, [`HOME_RO_REL`] and
+//!   `<config home>/rtk`;
 //! * this binary (the `driverctl` shim and the bridge run it): its tool root when it has
 //!   a `bin/` or `versions/` layout, else only the file;
 //! * `$CARGO_HOME/{registry,git}` as a throw-away overlay when bwrap can build one,
 //!   else read-only, never read-write: a crate planted there would be compiled later
 //!   on the host (T-28.1-34);
-//! * a per-run tmpfs at `~/.cache` and `~/.local/share/rtk`.
+//! * a per-run tmpfs at `~/.cache` and `~/.local/share/rtk` (and at the relocated
+//!   `$XDG_CACHE_HOME` / `$XDG_DATA_HOME/rtk`).
 //!
 //! Every path comes from the running host (`PATH`, `CARGO_HOME`, `RUSTUP_HOME`, the
 //! binary's own location), never from one user's layout. The derivation is a pure
 //! function ([`home_allowlist`]) of a [`HostFacts`] value, so the rules are
 //! golden-tested on any runner; [`HostFacts::from_host`] and [`HomeSetup::for_host`]
-//! are the impure entries. The rules are `[inferred — audit]` (CONTEXT D-16).
+//! are the impure entries (their `_with` variants take the [`HostDirs`] they resolve
+//! the host environment into). The rules are `[inferred — audit]` (CONTEXT D-16).
+//!
+//! # Relocated host directories (quick 261113-dck)
+//!
+//! `CLAUDE_CONFIG_DIR` and the `XDG_*` variables move the Claude root and the credential
+//! stores. The binds and masks here are the **union** of the default and the relocated
+//! location (I-4), so no default is ever dropped. A Claude root under `$HOME` is bound
+//! like any `$HOME` entry; one under `/tmp` is re-bound without an extra tmpfs; one
+//! outside both becomes an empty tmpfs with only its GSD entries re-bound read-only (its
+//! credential files are `/dev/null`-masked in `sandbox`); a root that is `/` or an
+//! ancestor of `$HOME`, `/tmp` or a tool gets no tmpfs at all (I-5, `host_dirs::placement`).
 //!
 //! The git configuration is not bound either: [`HomeSetup`] writes a three-key
 //! per-run gitconfig and the sandbox binds that at `~/.gitconfig` (D-17), so no
@@ -33,7 +46,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use super::sandbox::{NULL_MASK_FILES, TMPFS_MASK_DIRS};
+use super::host_dirs::{placement, HostDirs, Placement};
 
 /// The programs the driver runs, resolved on the host `PATH`. Those found under
 /// `$HOME` are re-bound (D-16).
@@ -41,22 +54,29 @@ pub const HOME_TOOLS: &[&str] = &[
     "claude", "node", "npm", "npx", "rtk", "cargo", "rustc", "rustup", "git",
 ];
 
-/// Entries under `$HOME` re-bound read-only when they exist (D-16): the GSD files the
-/// hooks and `gsd-tools` read, the GSD profile and capability files, and the rtk
-/// configuration.
-pub const HOME_RO_REL: &[&str] = &[
-    ".claude/agents",
-    ".claude/commands",
-    ".claude/skills",
-    ".claude/gsd-core",
-    ".claude/get-shit-done",
-    ".claude/hooks",
-    ".claude/scripts",
-    ".claude/.gsd-profile",
-    ".gsd",
-    ".gsd-capabilities.json",
-    ".config/rtk",
+/// Entries of a Claude root re-bound read-only when they exist (D-16): the GSD files
+/// the hooks and `gsd-tools` read and the GSD profile. Relative to each Claude root
+/// (`$CLAUDE_CONFIG_DIR` and `~/.claude`, quick 261113-dck).
+pub const CLAUDE_RO_REL: &[&str] = &[
+    "agents",
+    "commands",
+    "skills",
+    "gsd-core",
+    "get-shit-done",
+    "hooks",
+    "scripts",
+    ".gsd-profile",
 ];
+
+/// Entries under `$HOME` re-bound read-only when they exist (D-16): the GSD profile and
+/// capability files. The Claude root's entries are [`CLAUDE_RO_REL`] and the rtk
+/// configuration is `<config home>/rtk`.
+pub const HOME_RO_REL: &[&str] = &[".gsd", ".gsd-capabilities.json"];
+
+/// The size of the empty tmpfs over a Claude root outside `$HOME` and `/tmp`: 1 MiB
+/// `[inferred — audit]` (the driver never writes there; it exists to hide the root's
+/// other contents and to give the read-only re-binds a mount point).
+pub const CLAUDE_ROOT_TMPFS_SIZE: u64 = 1_048_576;
 
 /// The entries of `$CARGO_HOME` re-bound read-only (D-16). Not the whole directory:
 /// `credentials.toml` stays out by construction.
@@ -84,6 +104,9 @@ const CACHE_REL: &str = ".cache";
 
 /// `~/.local/share/rtk`, relative to `$HOME`.
 const RTK_REL: &str = ".local/share/rtk";
+
+/// `rtk`, relative to a data home (`$XDG_DATA_HOME/rtk`).
+const RTK_DATA_REL: &str = "rtk";
 
 /// Directories no install root may be: they hold far more than one tool. `.local/bin`
 /// and `bin` are shared bin directories, where users keep pipx entry points and
@@ -141,6 +164,8 @@ pub struct ToolHit {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostFacts {
     pub home: PathBuf,
+    /// The relocatable host directories (`dirs.home == home`).
+    pub dirs: HostDirs,
     pub cargo_home: PathBuf,
     pub rustup_home: PathBuf,
     /// This binary, fully resolved.
@@ -156,30 +181,80 @@ fn strictly_under(path: &Path, home: &Path) -> bool {
 }
 
 /// True when `path` is, contains or lies inside one of the credential directories of
-/// [`TMPFS_MASK_DIRS`].
-fn touches_mask_dir(path: &Path, home: &Path) -> bool {
-    TMPFS_MASK_DIRS.iter().any(|rel| {
-        let mask = home.join(rel);
-        path.starts_with(&mask) || mask.starts_with(path)
-    })
+/// [`HostDirs::credential_dirs`] (the `$HOME`-relative defaults and the relocated XDG
+/// ones).
+fn touches_mask_dir(path: &Path, facts: &HostFacts) -> bool {
+    facts
+        .dirs
+        .credential_dirs()
+        .iter()
+        .any(|mask| path.starts_with(mask) || mask.starts_with(path))
+}
+
+/// The paths a mask must never cover: every tool hit and resolved path, this binary,
+/// `$CARGO_HOME` and `$RUSTUP_HOME`.
+fn protected_paths(facts: &HostFacts) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = facts
+        .tools
+        .iter()
+        .flat_map(|tool| [tool.hit.clone(), tool.real.clone()])
+        .collect();
+    out.push(facts.exe.clone());
+    out.push(facts.cargo_home.clone());
+    out.push(facts.rustup_home.clone());
+    out
+}
+
+/// The per-run tmpfs entries: `~/.cache` and `~/.local/share/rtk` always, then the
+/// relocated `$XDG_CACHE_HOME` and `$XDG_DATA_HOME/rtk` when they differ and lie under
+/// `$HOME` or where a tmpfs is safe (I-5).
+fn per_run_tmpfs(facts: &HostFacts) -> Vec<(PathBuf, u64)> {
+    let home = &facts.home;
+    let protected = protected_paths(facts);
+    let mut out = vec![
+        (home.join(CACHE_REL), CACHE_TMPFS_SIZE),
+        (home.join(RTK_REL), RTK_TMPFS_SIZE),
+    ];
+    let relocated = [
+        (facts.dirs.cache_home.clone(), CACHE_TMPFS_SIZE),
+        (facts.dirs.data_home.join(RTK_DATA_REL), RTK_TMPFS_SIZE),
+    ];
+    for (path, size) in relocated {
+        let usable = matches!(
+            placement(&path, home, &protected),
+            Placement::UnderHome | Placement::Maskable
+        );
+        if usable && !out.iter().any(|(known, _)| known == &path) {
+            out.push((path, size));
+        }
+    }
+    out
 }
 
 /// True when `root` may not be bound as a whole: it is `$HOME` or outside it, one of
-/// the shared directories [`REFUSED_ROOT_REL`], `$CARGO_HOME`, or it would expose a
-/// credential directory, a masked credential file or one of the per-run tmpfs paths.
+/// the shared directories [`REFUSED_ROOT_REL`], a relocated XDG home or a Claude root,
+/// `$CARGO_HOME`, or it would expose a credential directory, a masked credential file
+/// or one of the per-run tmpfs paths.
 fn root_refused(root: &Path, facts: &HostFacts) -> bool {
     let home = &facts.home;
+    let dirs = &facts.dirs;
     if !strictly_under(root, home)
         || root == facts.cargo_home
         || REFUSED_ROOT_REL.iter().any(|rel| root == home.join(rel))
-        || touches_mask_dir(root, home)
+        || [&dirs.config_home, &dirs.data_home, &dirs.cache_home]
+            .iter()
+            .any(|dir| root == dir.as_path())
+        || dirs.claude_roots().iter().any(|claude| root == claude)
+        || touches_mask_dir(root, facts)
     {
         return true;
     }
-    NULL_MASK_FILES
+    dirs.credential_files()
         .iter()
-        .chain([&CACHE_REL, &RTK_REL])
-        .any(|rel| home.join(rel).starts_with(root))
+        .any(|file| file.starts_with(root))
+        || per_run_tmpfs(facts)
+            .iter()
+            .any(|(path, _)| path.starts_with(root))
 }
 
 /// The directory to bind for a tool whose resolved binary is `real`: the grandparent
@@ -204,7 +279,7 @@ pub fn install_root(real: &Path, facts: &HostFacts) -> Option<PathBuf> {
 /// A path the allowlist may name at all: strictly under `$HOME` and clear of every
 /// credential directory.
 fn admissible(path: &Path, facts: &HostFacts) -> bool {
-    strictly_under(path, &facts.home) && !touches_mask_dir(path, &facts.home)
+    strictly_under(path, &facts.home) && !touches_mask_dir(path, facts)
 }
 
 /// Every path the allowlist could name, before the existence check, the ordering and
@@ -240,33 +315,64 @@ fn candidates(facts: &HostFacts, overlay: bool) -> Vec<HomeBind> {
     for rel in HOME_RO_REL {
         ro(home.join(rel), &mut out);
     }
+    for config_home in facts.dirs.config_homes() {
+        ro(config_home.join("rtk"), &mut out);
+    }
+    // Every Claude root, the configured one and `~/.claude` (I-4, I-5).
+    let protected = protected_paths(facts);
+    for root in facts.dirs.claude_roots() {
+        match placement(&root, home, &protected) {
+            Placement::UnderHome => {
+                for rel in CLAUDE_RO_REL {
+                    ro(root.join(rel), &mut out);
+                }
+            }
+            Placement::UnderTmp => {
+                for rel in CLAUDE_RO_REL {
+                    out.push(HomeBind::Ro(root.join(rel)));
+                }
+            }
+            Placement::Maskable => {
+                out.push(HomeBind::Tmpfs {
+                    path: root.clone(),
+                    size: CLAUDE_ROOT_TMPFS_SIZE,
+                });
+                for rel in CLAUDE_RO_REL {
+                    out.push(HomeBind::Ro(root.join(rel)));
+                }
+            }
+            Placement::Unmaskable => {}
+        }
+    }
     // The shim and the bridge execute one file: bind its tool root when it has a
     // `bin/` or `versions/` layout, else only the file (WR-04).
     ro(
         install_root(&facts.exe, facts).unwrap_or_else(|| facts.exe.clone()),
         &mut out,
     );
-    out.push(HomeBind::Tmpfs {
-        path: home.join(CACHE_REL),
-        size: CACHE_TMPFS_SIZE,
-    });
-    out.push(HomeBind::Tmpfs {
-        path: home.join(RTK_REL),
-        size: RTK_TMPFS_SIZE,
-    });
+    for (path, size) in per_run_tmpfs(facts) {
+        out.push(HomeBind::Tmpfs { path, size });
+    }
     out
 }
 
 /// The `$HOME` entries of the sandbox, derived from `facts`.
 ///
 /// Only paths in `facts.existing` are named (a bind of a missing path aborts bwrap);
-/// the two tmpfs entries are always present. Parents come before children (by depth,
-/// then name), an entry nested in another read-only or overlay entry is dropped, and
-/// anything outside `$HOME` is skipped: it is visible through the read-only `/`.
+/// a tmpfs under `$HOME` is always present, one elsewhere only when its path exists.
+/// Parents come before children (by depth, then name), an entry nested in another
+/// read-only or overlay entry is dropped, and a tool or tree outside `$HOME` is skipped:
+/// it is visible through the read-only `/`. The exception is a Claude root outside both
+/// `$HOME` and `/tmp`, which is an empty tmpfs with its GSD entries re-bound (I-5).
 pub fn home_allowlist(facts: &HostFacts, overlay: bool) -> Vec<HomeBind> {
     let mut picked: Vec<HomeBind> = candidates(facts, overlay)
         .into_iter()
-        .filter(|bind| !bind.shows_host() || facts.existing.contains(bind.path()))
+        .filter(|bind| match bind {
+            HomeBind::Tmpfs { path, .. } => {
+                path.starts_with(&facts.home) || facts.existing.contains(path)
+            }
+            _ => facts.existing.contains(bind.path()),
+        })
         .collect();
     picked.sort_by(|a, b| {
         let key = |bind: &HomeBind| (bind.path().components().count(), bind.path().to_owned());
@@ -325,12 +431,18 @@ pub fn render_gitconfig(
 /// `~/.claude/skills`. A link is never followed by the sandbox, so it dangles there.
 /// A link that is broken on the host too is not reported.
 pub fn dangling_symlinks(binds: &[HomeBind]) -> Vec<PathBuf> {
-    dangling_within(binds, None)
+    dangling_within(binds, None, &[])
 }
 
 /// [`dangling_symlinks`], ignoring targets outside `home` when given: those are
-/// visible through the read-only `/` and do not dangle.
-fn dangling_within(binds: &[HomeBind], home: Option<&Path>) -> Vec<PathBuf> {
+/// visible through the read-only `/` and do not dangle. The one-level `skills` scan
+/// applies to `<claude root>/skills` for every one of `claude_roots` as well as to a
+/// `skills` directory whose parent is named `.claude`.
+fn dangling_within(
+    binds: &[HomeBind],
+    home: Option<&Path>,
+    claude_roots: &[PathBuf],
+) -> Vec<PathBuf> {
     let bound: Vec<&Path> = binds
         .iter()
         .filter(|bind| bind.shows_host())
@@ -351,10 +463,13 @@ fn dangling_within(binds: &[HomeBind], home: Option<&Path>) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = Vec::new();
     for dir in bound.iter().filter(|path| path.is_dir()) {
         let is_skills = dir.file_name().is_some_and(|n| n == "skills")
-            && dir
+            && (dir
                 .parent()
                 .and_then(Path::file_name)
-                .is_some_and(|n| n == ".claude");
+                .is_some_and(|n| n == ".claude")
+                || dir
+                    .parent()
+                    .is_some_and(|parent| claude_roots.iter().any(|root| root == parent)));
         let Ok(entries) = std::fs::read_dir(dir) else {
             continue;
         };
@@ -438,6 +553,7 @@ mod imp {
         HostFacts, ToolHit, GITCONFIG_FILE, HOME_TOOLS,
     };
     use crate::launcher::config_dir::write_atomic;
+    use crate::launcher::host_dirs::HostDirs;
     use crate::launcher::process::run_bounded;
 
     /// The budget of one `git config --get`.
@@ -464,12 +580,19 @@ mod imp {
     }
 
     impl HostFacts {
-        /// The facts of this host. **The one function here that reads the file system
-        /// and the environment.**
+        /// The facts of this host, its relocatable directories resolved from the
+        /// process environment. **The impure entry**; see [`HostFacts::from_host_with`].
+        pub fn from_host(home: &Path, exe: &Path) -> HostFacts {
+            HostFacts::from_host_with(&HostDirs::from_host(home), exe)
+        }
+
+        /// The facts of this host for the given `dirs`. **Reads the file system and
+        /// `PATH`, `CARGO_HOME` and `RUSTUP_HOME`.**
         ///
         /// A `$HOME` that is itself a symlink is handled: resolved paths are
         /// re-expressed under the name the launcher knows `$HOME` by.
-        pub fn from_host(home: &Path, exe: &Path) -> HostFacts {
+        pub fn from_host_with(dirs: &HostDirs, exe: &Path) -> HostFacts {
+            let home = dirs.home.as_path();
             let home_real = std::fs::canonicalize(home).unwrap_or_else(|_| home.to_owned());
             let rebase = |path: PathBuf| match path.strip_prefix(&home_real) {
                 Ok(rest) if home_real != home => home.join(rest),
@@ -489,6 +612,7 @@ mod imp {
                 .collect();
             let mut facts = HostFacts {
                 home: home.to_owned(),
+                dirs: dirs.clone(),
                 cargo_home: dir_from_env("CARGO_HOME", home, ".cargo"),
                 rustup_home: dir_from_env("RUSTUP_HOME", home, ".rustup"),
                 exe: rebase(std::fs::canonicalize(exe).unwrap_or_else(|_| exe.to_owned())),
@@ -530,7 +654,19 @@ mod imp {
             overlay: bool,
             state_dir: &Path,
         ) -> io::Result<HomeSetup> {
-            let facts = HostFacts::from_host(home, exe);
+            HomeSetup::for_host_with(&HostDirs::from_host(home), exe, overlay, state_dir)
+        }
+
+        /// [`for_host`](Self::for_host) for the given `dirs`: production and every
+        /// hermetic test resolve a [`HostDirs`] once and pass it here.
+        pub fn for_host_with(
+            dirs: &HostDirs,
+            exe: &Path,
+            overlay: bool,
+            state_dir: &Path,
+        ) -> io::Result<HomeSetup> {
+            let home = dirs.home.as_path();
+            let facts = HostFacts::from_host_with(dirs, exe);
             let binds = home_allowlist(&facts, overlay);
             let name = git_config_value("user.name");
             let email = git_config_value("user.email");
@@ -543,7 +679,7 @@ mod imp {
                 .filter(|bind| !matches!(bind, HomeBind::Tmpfs { .. }))
                 .map(|bind| bind.path().to_owned())
                 .collect();
-            let dangling = dangling_within(&binds, Some(home));
+            let dangling = dangling_within(&binds, Some(home), &dirs.claude_roots());
             Ok(HomeSetup {
                 binds,
                 gitconfig: Some(gitconfig),
@@ -581,7 +717,7 @@ mod host_tests {
             [skills.join("alpha/nested-away"), skills.join("away")]
         );
         // The same links, with the home set to a directory that holds no target.
-        assert!(dangling_within(&binds, Some(Path::new("/elsewhere"))).is_empty());
+        assert!(dangling_within(&binds, Some(Path::new("/elsewhere")), &[]).is_empty());
     }
 
     #[test]
@@ -592,8 +728,8 @@ mod host_tests {
         fs::create_dir_all(home.join(".gsd")).unwrap();
         fs::create_dir_all(home.join(".ssh")).unwrap();
         fs::create_dir_all(&state).unwrap();
-        let setup = HomeSetup::for_host(
-            &home,
+        let setup = HomeSetup::for_host_with(
+            &HostDirs::resolve(&home, |_| None),
             Path::new("/nonexistent/gsd-meta-manager"),
             true,
             &state,
@@ -647,9 +783,10 @@ mod host_tests {
             .iter()
             .flat_map(|state| std::iter::repeat_n(state.clone(), 3))
             .map(|state| {
-                let home = home.clone();
+                let dirs = HostDirs::resolve(&home, |_| None);
                 std::thread::spawn(move || {
-                    HomeSetup::for_host(&home, Path::new("/nonexistent/x"), false, &state).unwrap()
+                    HomeSetup::for_host_with(&dirs, Path::new("/nonexistent/x"), false, &state)
+                        .unwrap()
                 })
             })
             .collect();
@@ -679,7 +816,10 @@ mod host_tests {
         fs::write(real.join("bin/gsd-meta-manager"), "x").unwrap();
         let link = root.path().canonicalize().unwrap().join("home-link");
         symlink(&real, &link).unwrap();
-        let facts = HostFacts::from_host(&link, &link.join("bin/gsd-meta-manager"));
+        let facts = HostFacts::from_host_with(
+            &HostDirs::resolve(&link, |_| None),
+            &link.join("bin/gsd-meta-manager"),
+        );
         assert_eq!(facts.exe, link.join("bin/gsd-meta-manager"));
         assert!(facts.existing.contains(&link.join(".gsd")));
         let got = home_allowlist(&facts, false);
@@ -701,6 +841,7 @@ mod tests {
         let node = "/home/u/.nvm/versions/node/v24";
         let mut facts = HostFacts {
             home: PathBuf::from("/home/u"),
+            dirs: HostDirs::resolve(Path::new("/home/u"), |_| None),
             cargo_home: PathBuf::from("/home/u/.cargo"),
             rustup_home: PathBuf::from("/home/u/.rustup"),
             exe: PathBuf::from("/home/u/.cargo/bin/gsd-meta-manager"),
@@ -862,27 +1003,43 @@ mod tests {
 
     #[test]
     fn no_allowlist_entry_overlaps_a_mask_dir() {
-        let mut hostile = facts();
-        hostile.tools.push(ToolHit {
-            name: "evil".to_owned(),
-            hit: PathBuf::from("/home/u/.ssh/bin/evil"),
-            real: PathBuf::from("/home/u/.ssh/bin/evil"),
-        });
-        hostile.tools.push(ToolHit {
-            name: "gh".to_owned(),
-            hit: PathBuf::from("/home/u/.config/gh/bin/gh"),
-            real: PathBuf::from("/home/u/.config/gh/bin/gh"),
-        });
-        hostile.exe = PathBuf::from("/home/u/.aws/gsd-meta-manager");
-        hostile.existing = candidates(&hostile, true)
-            .iter()
-            .map(|bind| bind.path().to_owned())
-            .collect();
-        for facts in [facts(), hostile] {
+        let hostile_tools = |mut hostile: HostFacts| {
+            hostile.tools.push(ToolHit {
+                name: "evil".to_owned(),
+                hit: PathBuf::from("/home/u/.ssh/bin/evil"),
+                real: PathBuf::from("/home/u/.ssh/bin/evil"),
+            });
+            hostile.tools.push(ToolHit {
+                name: "gh".to_owned(),
+                hit: PathBuf::from("/home/u/.config/gh/bin/gh"),
+                real: PathBuf::from("/home/u/.config/gh/bin/gh"),
+            });
+            hostile.tools.push(ToolHit {
+                name: "gh2".to_owned(),
+                hit: PathBuf::from("/home/u/cfg/gh/bin/gh"),
+                real: PathBuf::from("/home/u/cfg/gh/bin/gh"),
+            });
+            hostile.exe = PathBuf::from("/home/u/.aws/gsd-meta-manager");
+            hostile.existing = candidates(&hostile, true)
+                .iter()
+                .map(|bind| bind.path().to_owned())
+                .collect();
+            hostile
+        };
+        let relocated = relocated_facts(&[
+            ("XDG_CONFIG_HOME", "/home/u/cfg"),
+            ("XDG_DATA_HOME", "/home/u/data"),
+            ("CLAUDE_CONFIG_DIR", "/home/u/profiles/work"),
+        ]);
+        for facts in [
+            facts(),
+            hostile_tools(facts()),
+            relocated.clone(),
+            hostile_tools(relocated),
+        ] {
             for overlay in [true, false] {
                 for bind in home_allowlist(&facts, overlay) {
-                    for rel in TMPFS_MASK_DIRS {
-                        let mask = facts.home.join(rel);
+                    for mask in facts.dirs.credential_dirs() {
                         assert!(
                             !bind.path().starts_with(&mask) && !mask.starts_with(bind.path()),
                             "{bind:?} overlaps the credential directory {}",
@@ -892,6 +1049,166 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// [`facts`] with the host directories resolved from `env`, every candidate existing.
+    fn relocated_facts(env: &[(&str, &str)]) -> HostFacts {
+        let mut f = facts();
+        f.dirs = HostDirs::resolve(Path::new("/home/u"), |name| {
+            env.iter()
+                .find(|(k, _)| *k == name)
+                .map(|(_, v)| std::ffi::OsString::from(v))
+        });
+        f.existing = candidates(&f, true)
+            .iter()
+            .map(|bind| bind.path().to_owned())
+            .collect();
+        f
+    }
+
+    #[test]
+    fn a_claude_root_under_home_binds_the_gsd_entries_of_both_roots() {
+        let f = relocated_facts(&[("CLAUDE_CONFIG_DIR", "/home/u/profiles/work")]);
+        let got = paths(&home_allowlist(&f, true));
+        for rel in CLAUDE_RO_REL {
+            for root in ["/home/u/.claude", "/home/u/profiles/work"] {
+                assert!(
+                    got.contains(&format!("ro {root}/{rel}")),
+                    "{root}/{rel}: {got:?}"
+                );
+            }
+        }
+        assert!(!got.iter().any(|e| e.starts_with("tmpfs /home/u/profiles")));
+    }
+
+    #[test]
+    fn a_relocated_claude_root_is_never_an_install_root() {
+        let mut f = relocated_facts(&[("CLAUDE_CONFIG_DIR", "/home/u/profiles/work")]);
+        f.tools = vec![ToolHit {
+            name: "x".to_owned(),
+            hit: PathBuf::from("/home/u/profiles/work/bin/x"),
+            real: PathBuf::from("/home/u/profiles/work/bin/x"),
+        }];
+        f.existing = candidates(&f, true)
+            .iter()
+            .map(|bind| bind.path().to_owned())
+            .collect();
+        assert_eq!(
+            install_root(Path::new("/home/u/profiles/work/bin/x"), &f),
+            None
+        );
+        let got = paths(&home_allowlist(&f, true));
+        assert!(
+            got.contains(&"ro /home/u/profiles/work/bin/x".to_owned()),
+            "{got:?}"
+        );
+        assert!(
+            !got.contains(&"ro /home/u/profiles/work".to_owned()),
+            "{got:?}"
+        );
+    }
+
+    #[test]
+    fn a_claude_root_outside_home_is_an_empty_tmpfs_with_its_gsd_entries_rebound() {
+        let f = relocated_facts(&[("CLAUDE_CONFIG_DIR", "/srv/profiles/work")]);
+        let got = paths(&home_allowlist(&f, true));
+        let tmpfs = got
+            .iter()
+            .position(|e| e == "tmpfs /srv/profiles/work")
+            .unwrap_or_else(|| panic!("no tmpfs over the profile: {got:?}"));
+        let agents = got
+            .iter()
+            .position(|e| e == "ro /srv/profiles/work/agents")
+            .unwrap_or_else(|| panic!("agents not re-bound: {got:?}"));
+        assert!(tmpfs < agents, "the tmpfs precedes its re-binds: {got:?}");
+        assert!(got.contains(&"ro /srv/profiles/work/hooks".to_owned()));
+        // The default root is still bound.
+        assert!(got.contains(&"ro /home/u/.claude/hooks".to_owned()));
+        assert!(f
+            .dirs
+            .claude_roots()
+            .iter()
+            .all(|root| !root.starts_with("/home/u/.ssh")));
+        // The tmpfs is named only when the root exists.
+        let mut absent = f.clone();
+        absent.existing.remove(Path::new("/srv/profiles/work"));
+        let got = paths(&home_allowlist(&absent, true));
+        assert!(
+            !got.contains(&"tmpfs /srv/profiles/work".to_owned()),
+            "{got:?}"
+        );
+    }
+
+    #[test]
+    fn a_claude_root_under_tmp_is_rebound_without_a_tmpfs() {
+        let f = relocated_facts(&[("CLAUDE_CONFIG_DIR", "/tmp/profile")]);
+        let got = paths(&home_allowlist(&f, true));
+        assert!(
+            got.contains(&"ro /tmp/profile/agents".to_owned()),
+            "{got:?}"
+        );
+        assert!(!got.iter().any(|e| e.starts_with("tmpfs /tmp")), "{got:?}");
+    }
+
+    #[test]
+    fn a_degenerate_claude_root_never_gets_a_tmpfs() {
+        // `/`, an ancestor of `$HOME` and an ancestor of a tool or the binary.
+        for root in ["/", "/home", "/home/u/.cargo/bin", "/home/u/.nvm/versions"] {
+            let f = relocated_facts(&[("CLAUDE_CONFIG_DIR", root)]);
+            for bind in home_allowlist(&f, true) {
+                if let HomeBind::Tmpfs { path, .. } = &bind {
+                    assert!(
+                        path.starts_with("/home/u") && !f.dirs.claude_roots().contains(path),
+                        "{root}: {bind:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_relocated_xdg_config_home_under_home_is_refused_and_masked() {
+        let f = relocated_facts(&[("XDG_CONFIG_HOME", "/home/u/cfg")]);
+        let got = paths(&home_allowlist(&f, true));
+        assert!(got.contains(&"ro /home/u/cfg/rtk".to_owned()), "{got:?}");
+        assert!(
+            got.contains(&"ro /home/u/.config/rtk".to_owned()),
+            "{got:?}"
+        );
+        // The whole directory is never an install root, and its gh store is a mask dir.
+        assert_eq!(
+            install_root(Path::new("/home/u/cfg/bin/x"), &f),
+            None,
+            "XDG_CONFIG_HOME is a refused root"
+        );
+        assert!(touches_mask_dir(Path::new("/home/u/cfg/gh/hosts.yml"), &f));
+        assert!(touches_mask_dir(Path::new("/home/u/cfg"), &f));
+        assert!(!touches_mask_dir(Path::new("/home/u/cfg/rtk"), &f));
+    }
+
+    #[test]
+    fn a_relocated_cache_and_rtk_data_dir_get_a_per_run_tmpfs_next_to_the_defaults() {
+        let f = relocated_facts(&[
+            ("XDG_CACHE_HOME", "/home/u/xcache"),
+            ("XDG_DATA_HOME", "/home/u/xdata"),
+        ]);
+        let got = paths(&home_allowlist(&f, true));
+        for want in [
+            "tmpfs /home/u/.cache",
+            "tmpfs /home/u/.local/share/rtk",
+            "tmpfs /home/u/xcache",
+            "tmpfs /home/u/xdata/rtk",
+        ] {
+            assert!(got.contains(&want.to_owned()), "{want}: {got:?}");
+        }
+        // Outside `$HOME` a relocated cache is a tmpfs only when it exists.
+        let mut outside = relocated_facts(&[("XDG_CACHE_HOME", "/srv/cache")]);
+        outside.existing.remove(Path::new("/srv/cache"));
+        assert!(!paths(&home_allowlist(&outside, true)).contains(&"tmpfs /srv/cache".to_owned()));
+        outside.existing.insert(PathBuf::from("/srv/cache"));
+        assert!(paths(&home_allowlist(&outside, true)).contains(&"tmpfs /srv/cache".to_owned()));
+        // And is never an install root.
+        assert_eq!(install_root(Path::new("/home/u/xcache/bin/x"), &f), None);
     }
 
     #[test]

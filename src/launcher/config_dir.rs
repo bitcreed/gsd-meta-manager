@@ -59,6 +59,7 @@ use serde_json::{json, Map, Value};
 
 use crate::driverctl::serve::hash8;
 
+use super::host_dirs::HostDirs;
 use super::sandbox::is_stripped_env;
 
 /// The application's directory under the data dir.
@@ -144,20 +145,38 @@ pub fn driver_root() -> Option<PathBuf> {
     dirs::data_local_dir().map(|d| d.join(APP_SUBDIR).join(DRIVER_SUBDIR))
 }
 
-/// The host directories the sandbox must mask because they hold this app's own state
-/// and live outside both `$HOME` and `/tmp` (quick 261103-hx7, D-09, C-33, I-06):
+/// The host directories the sandbox must mask because they hold secrets or this app's
+/// own state and live outside both `$HOME` and `/tmp` (quick 261103-hx7, D-09, C-33,
+/// I-06; quick 261113-dck, I-5, I-6): the two app roots
 /// `dirs::data_local_dir()/gsd-meta-manager` (the one-off run dirs with their host-only
 /// inbox, the driver's per-run config dirs and push mirrors) and
-/// `dirs::config_dir()/gsd-meta-manager` (the stored run OAuth token). Only an existing
-/// directory is returned. The host-reading half of [`super::sandbox::masks_outside`].
-pub fn app_root_masks(home: &Path) -> Vec<PathBuf> {
-    let candidates: Vec<PathBuf> = [dirs::data_local_dir(), dirs::config_dir()]
+/// `dirs::config_dir()/gsd-meta-manager` (the stored run OAuth token), then the
+/// relocated credential stores of `dirs` (see [`sandbox_dir_masks_in`]). Only an
+/// existing directory is returned. The host-reading half of
+/// [`super::sandbox::masks_outside`].
+pub fn sandbox_dir_masks(dirs: &HostDirs) -> Vec<PathBuf> {
+    let app_roots: Vec<PathBuf> = [dirs::data_local_dir(), dirs::config_dir()]
         .into_iter()
         .flatten()
         .map(|d| d.join(APP_SUBDIR))
+        .collect();
+    sandbox_dir_masks_in(dirs, &app_roots)
+}
+
+/// [`sandbox_dir_masks`] with the app roots given, for tests. The candidates, in order:
+/// `app_roots`, [`HostDirs::credential_dirs`] (gh, gcloud, glab-cli and keyrings under the
+/// resolved XDG dirs, and the `$HOME`-relative defaults) and `config_home/git` (I-6:
+/// the host's git config must not reach the driver, T-28.1-33). An existing directory
+/// outside `$HOME` and `/tmp` is kept, and nothing that does not exist.
+pub fn sandbox_dir_masks_in(dirs: &HostDirs, app_roots: &[PathBuf]) -> Vec<PathBuf> {
+    let candidates: Vec<PathBuf> = app_roots
+        .iter()
+        .cloned()
+        .chain(dirs.credential_dirs())
+        .chain([dirs.config_home.join("git")])
         .filter(|d| fs::metadata(d).is_ok_and(|m| m.is_dir()))
         .collect();
-    super::sandbox::masks_outside(home, &candidates)
+    super::sandbox::masks_outside(&dirs.home, &candidates)
 }
 
 /// `<root>/<hash8(canonical project)>/<run-id>`: the launcher's state directory
@@ -1139,6 +1158,58 @@ mod tests {
         assert!(!settings.to_string().contains("driverctl"));
         assert!(fs::symlink_metadata(spec.config_dir.join(MANAGED_SUBDIR)).is_err());
         assert!(fs::symlink_metadata(spec.config_dir.join("bin/driverctl")).is_err());
+    }
+
+    #[test]
+    fn sandbox_dir_masks_in_masks_relocated_credential_dirs_outside_home() {
+        let home = TempDir::new().unwrap();
+        let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
+        fs::create_dir_all(&base).unwrap();
+        let outside = tempfile::Builder::new()
+            .prefix("dck-xdg-")
+            .tempdir_in(base)
+            .unwrap();
+        if outside.path().starts_with("/tmp") {
+            eprintln!("skipped: the build tree is under /tmp");
+            return;
+        }
+        let cfg = outside.path().join("cfg");
+        let data = outside.path().join("data");
+        for dir in ["gh", "gcloud", "glab-cli", "git", "other"] {
+            fs::create_dir_all(cfg.join(dir)).unwrap();
+        }
+        fs::create_dir_all(data.join("keyrings")).unwrap();
+        // `glab-cli` exists, `aws` is not a relocated store, and an app root exists.
+        let app = outside.path().join("app/gsd-meta-manager");
+        fs::create_dir_all(&app).unwrap();
+        let env = |name: &str| match name {
+            "XDG_CONFIG_HOME" => Some(cfg.clone().into_os_string()),
+            "XDG_DATA_HOME" => Some(data.clone().into_os_string()),
+            _ => None,
+        };
+        let dirs = HostDirs::resolve(home.path(), env);
+        let got = sandbox_dir_masks_in(&dirs, &[app.clone(), outside.path().join("missing")]);
+        assert_eq!(
+            got,
+            [
+                app,
+                cfg.join("gh"),
+                cfg.join("gcloud"),
+                cfg.join("glab-cli"),
+                data.join("keyrings"),
+                cfg.join("git"),
+            ]
+        );
+
+        // Under `$HOME` the tmpfs `$HOME` hides them; nothing is named. Nothing that
+        // does not exist is named either.
+        let under = home.path().join("cfg");
+        fs::create_dir_all(under.join("gh")).unwrap();
+        let env = |name: &str| (name == "XDG_CONFIG_HOME").then(|| under.clone().into_os_string());
+        let dirs = HostDirs::resolve(home.path(), env);
+        assert!(sandbox_dir_masks_in(&dirs, &[]).is_empty());
+        let empty = HostDirs::resolve(Path::new("/nonexistent/home"), |_| None);
+        assert!(sandbox_dir_masks_in(&empty, &[]).is_empty());
     }
 
     #[test]
