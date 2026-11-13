@@ -7,9 +7,10 @@
 // and `src/agents/` is not on the spawn allowlist in `tests/spawn_seam_guard.rs`,
 // test code included. `tests/` is not walked by that guard.
 //
-// Every test roots the adapter at a tempdir through `ClaudeCodeAdapter::new`
-// and injects its clock; none calls `from_env()` or reads the real home
-// directory (D-C17, RESEARCH Pitfall 10). Transcript mtimes are set with
+// Every test either roots the adapter at a tempdir through
+// `ClaudeCodeAdapter::new` or injects CLAUDE_CONFIG_DIR and a tempdir home
+// through `ClaudeCodeAdapter::with_env`, and injects its clock; none calls
+// `from_env()` or reads the real home directory (D-C17, RESEARCH Pitfall 10). Transcript mtimes are set with
 // `File::set_modified`, never by sleeping.
 //
 // It reuses `common::git` but never `common::fixture()`, which installs
@@ -201,6 +202,82 @@ fn a_live_claude_executor_is_enriched_end_to_end() {
     );
     assert_eq!(row.last_activity, Some(now - Duration::from_secs(10)));
     assert_eq!(row.liveness, AgentLiveness::Live);
+}
+
+/// The Claude-profile setup: `CLAUDE_CONFIG_DIR` names a profile directory with
+/// its own `projects/`, while the main account keeps `<home>/.claude`. One scan
+/// must see an agent filed under either root.
+#[test]
+fn both_claude_config_roots_reach_the_scan() {
+    let Some(fx) = claude_fixture() else {
+        return;
+    };
+    let profile = fx.root.clone();
+    let home = fx.root.parent().expect("tempdir base").join("home");
+    let wt = fx.add_agent_worktree(AGENT_ID, Some(1));
+    let now = SystemTime::now();
+
+    // The worktree agent is filed only under the home root, in its own session.
+    let home_subagents = home
+        .join(".claude")
+        .join("projects")
+        .join(encode_project_dir(fx.work.to_str().expect("utf-8 tempdir")))
+        .join("1c7e8b4f-2222-4333-8444-a55566667777")
+        .join("subagents");
+    std::fs::create_dir_all(&home_subagents).expect("home root subagents dir");
+    write_meta_in(&home_subagents, AGENT_ID, &executor_meta(&wt));
+    write_transcript_in(&home_subagents, AGENT_ID, now - Duration::from_secs(10));
+
+    // The worktree-less researcher is filed only under the profile root.
+    fx.write_meta(
+        "aresearcher00000",
+        &loose_meta("gsd-phase-researcher", "Research phase 26"),
+    );
+    fx.write_transcript("aresearcher00000", now, Duration::from_secs(30));
+
+    let scan_with = |adapter: ClaudeCodeAdapter| {
+        let adapters: Vec<Box<dyn AgentAdapter>> = vec![Box::new(adapter)];
+        scan_project_with(&fx.work, &adapters, now)
+    };
+    let researcher = vec![(
+        Some("gsd-phase-researcher".to_string()),
+        Some("Research phase 26".to_string()),
+    )];
+
+    let scan = scan_with(ClaudeCodeAdapter::with_env(
+        Some(profile.clone().into_os_string()),
+        Some(home.clone()),
+    ));
+    let row = only_row(&scan);
+    assert_eq!(row.path, wt);
+    assert_eq!(row.adapter, Some("claude-code"));
+    assert_eq!(shown(&row.agent_type), Some("gsd-executor".to_string()));
+    assert_eq!(row.liveness, AgentLiveness::Live);
+    assert_eq!(
+        loose(&scan),
+        researcher,
+        "the profile root's agent is listed"
+    );
+
+    // Controls: either root alone misses the other account's agent.
+    let profile_only = scan_with(ClaudeCodeAdapter::new(profile));
+    assert_eq!(
+        only_row(&profile_only).agent_type,
+        None,
+        "the profile root alone cannot enrich the home root's worktree agent"
+    );
+    assert_eq!(loose(&profile_only), researcher);
+
+    let home_only = scan_with(ClaudeCodeAdapter::new(home.join(".claude")));
+    assert_eq!(
+        shown(&only_row(&home_only).agent_type),
+        Some("gsd-executor".to_string())
+    );
+    assert!(
+        home_only.worktreeless.is_empty(),
+        "the home root alone cannot see the profile root's agent: {:?}",
+        home_only.worktreeless
+    );
 }
 
 #[test]

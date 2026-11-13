@@ -29,15 +29,19 @@
 //! so a live owner never upgrades a row and D-A05 holds. This adapter still
 //! parses nothing of it.)
 //!
-//! **Where the files are.** The config root is `$CLAUDE_CONFIG_DIR` when set,
-//! non-empty and absolute, else `<home>/.claude` ([`resolve_config_root`]).
-//! Sessions live under `<root>/projects/<encoded project path>/<session>/`, with
+//! **Where the files are.** Two config roots are scanned: `$CLAUDE_CONFIG_DIR`
+//! when set, non-empty and absolute, and `<home>/.claude`
+//! ([`resolve_config_roots`], built from [`resolve_config_root`]). A
+//! claude-profile setup points `CLAUDE_CONFIG_DIR` at a profile directory with
+//! its own `projects/`, while the main account keeps `<home>/.claude`, so one
+//! process sees only one of them in its environment and would miss the other
+//! account's agents. Sessions live under `<root>/projects/<encoded project path>/<session>/`, with
 //! every subagent of that session — at any spawn depth — flat in its
 //! `subagents/` directory as `agent-<id>.meta.json` beside `agent-<id>.jsonl`.
 //! The directory name is Claude Code's lossy encoding of the project path
 //! ([`encode_project_dir`]); it is only ever computed forwards, never decoded.
 //!
-//! **Only the user's own config root is read**, never a `.claude/` directory
+//! **Only the user's own config roots are read**, never a `.claude/` directory
 //! inside a project: a cloned repository can ship any files it likes there.
 
 use std::collections::HashSet;
@@ -67,29 +71,38 @@ const META_SUFFIX: &str = ".meta.json";
 /// Enriches agent worktrees from Claude Code's session metadata.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClaudeCodeAdapter {
-    /// The Claude config root; `None` when neither the environment nor a home
-    /// directory names one, in which case every scan reports nothing.
-    config_root: Option<PathBuf>,
+    /// The Claude config roots to scan: the `CLAUDE_CONFIG_DIR` root first,
+    /// then `<home>/.claude`, at most two. Empty when neither the environment
+    /// nor a home directory names one, in which case every scan reports
+    /// nothing.
+    config_roots: Vec<PathBuf>,
 }
 
 impl ClaudeCodeAdapter {
-    /// An adapter rooted at `config_root`. Tests use this, with a tempdir, so
-    /// no test ever reads the real home directory (D-C17).
+    /// An adapter rooted at the single `config_root`. Tests use this, with a
+    /// tempdir, so no test ever reads the real home directory (D-C17).
     pub fn new(config_root: PathBuf) -> Self {
         Self {
-            config_root: Some(config_root),
+            config_roots: vec![config_root],
         }
     }
 
-    /// An adapter rooted where Claude Code itself looks: `$CLAUDE_CONFIG_DIR`,
-    /// else `<home>/.claude`. Resolves a path only; reads no file.
-    pub fn from_env() -> Self {
+    /// An adapter over both roots Claude Code may file sessions under, from an
+    /// injected environment: the `CLAUDE_CONFIG_DIR` value and the home
+    /// directory ([`resolve_config_roots`]). Resolves paths only; reads no
+    /// file. Tests use this, with tempdir paths, so none touches the process
+    /// environment or the real home directory.
+    pub fn with_env(claude_config_dir: Option<OsString>, home: Option<PathBuf>) -> Self {
         Self {
-            config_root: resolve_config_root(
-                std::env::var_os("CLAUDE_CONFIG_DIR"),
-                dirs::home_dir(),
-            ),
+            config_roots: resolve_config_roots(claude_config_dir, home),
         }
+    }
+
+    /// An adapter over both roots where Claude Code itself looks:
+    /// `$CLAUDE_CONFIG_DIR` and `<home>/.claude`. The module's only read of the
+    /// process environment.
+    pub fn from_env() -> Self {
+        Self::with_env(std::env::var_os("CLAUDE_CONFIG_DIR"), dirs::home_dir())
     }
 }
 
@@ -109,6 +122,28 @@ pub fn resolve_config_root(env_value: Option<OsString>, home: Option<PathBuf>) -
         }
     }
     home.map(|home| home.join(".claude"))
+}
+
+/// Every Claude config root to scan: the [`resolve_config_root`] result for
+/// `env_value`, then `<home>/.claude` when that is a different path.
+///
+/// A claude-profile setup points `CLAUDE_CONFIG_DIR` at a profile directory
+/// with its own `projects/`, while the main account keeps `<home>/.claude`; a
+/// process sees only one of them in its environment, so both are scanned. At
+/// most two roots. A blank, whitespace-only or relative `env_value` is ignored
+/// by [`resolve_config_root`], leaving only the home root (T-25-12). Pure path
+/// resolution: nothing is canonicalized or statted here, so two spellings of
+/// one directory stay two entries until [`project_dirs_across`] collapses them.
+pub fn resolve_config_roots(env_value: Option<OsString>, home: Option<PathBuf>) -> Vec<PathBuf> {
+    let mut roots: Vec<PathBuf> = resolve_config_root(env_value, home.clone())
+        .into_iter()
+        .collect();
+    if let Some(home_root) = resolve_config_root(None, home) {
+        if !roots.contains(&home_root) {
+            roots.push(home_root);
+        }
+    }
+    roots
 }
 
 /// Claude Code's directory name for a project path (D-C05), byte for byte.
@@ -301,6 +336,29 @@ fn project_dirs(root: &Path, snap: &CoreSnapshot<'_>) -> Vec<PathBuf> {
         let exact = projects.join(&encoded);
         if exact.is_dir() && !dirs.contains(&exact) {
             dirs.push(exact);
+        }
+    }
+    dirs
+}
+
+/// This project's directories across every config root, in root order.
+///
+/// Each root is looked up with [`project_dirs`]. A directory that is the
+/// [`same_path`] as one already kept, raw or canonical, is skipped, and the
+/// first spelling seen (the `CLAUDE_CONFIG_DIR` root's) is kept. This is the
+/// one dedupe point: it collapses a `CLAUDE_CONFIG_DIR` that is a symlink to
+/// `<home>/.claude` and also a profile whose `projects/` is symlinked to the
+/// main account's, so each project directory is scanned once [inferred].
+///
+/// A symlinked config root or `projects/` directory is still followed, as it
+/// always was for a single root: it is the user's own configuration.
+fn project_dirs_across(roots: &[PathBuf], snap: &CoreSnapshot<'_>) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    for root in roots {
+        for dir in project_dirs(root, snap) {
+            if !dirs.iter().any(|kept| same_path(kept, &dir)) {
+                dirs.push(dir);
+            }
         }
     }
     dirs
@@ -582,10 +640,7 @@ impl AgentAdapter for ClaudeCodeAdapter {
     }
 
     fn enrich(&self, snap: &CoreSnapshot<'_>) -> AdapterReport {
-        let Some(root) = self.config_root.as_deref() else {
-            return AdapterReport::default();
-        };
-        let dirs = project_dirs(root, snap);
+        let dirs = project_dirs_across(&self.config_roots, snap);
         if dirs.is_empty() {
             return AdapterReport::default();
         }
@@ -612,7 +667,8 @@ impl AgentAdapter for ClaudeCodeAdapter {
 
 // Tempdir fixtures only: a hand-built `CoreSnapshot` over tempdir paths, no git
 // and no process of any kind (this directory is not on the spawn allowlist,
-// test code included). Every adapter here is `ClaudeCodeAdapter::new(<tmp>)`.
+// test code included). Every adapter here is `ClaudeCodeAdapter::new(<tmp>)` or
+// `ClaudeCodeAdapter::with_env(<tmp paths>)`: never the process environment.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -666,8 +722,7 @@ mod tests {
         }
 
         fn write_meta_bytes(&self, id: &str, bytes: &[u8]) {
-            std::fs::write(self.subagents.join(format!("agent-{id}.meta.json")), bytes)
-                .expect("meta write");
+            write_meta_bytes_in(&self.subagents, id, bytes);
         }
 
         fn write_meta(&self, id: &str, meta: serde_json::Value) {
@@ -676,22 +731,77 @@ mod tests {
 
         /// `agent-<id>.jsonl`, modified `age_secs` before `now`.
         fn transcript(&self, id: &str, now: SystemTime, age_secs: u64) {
-            let path = self.subagents.join(format!("agent-{id}.jsonl"));
-            std::fs::write(&path, "{}\n").expect("transcript write");
-            std::fs::File::open(&path)
-                .and_then(|f| f.set_modified(now - Duration::from_secs(age_secs)))
-                .expect("transcript mtime");
+            transcript_in(&self.subagents, id, now, age_secs);
         }
 
         fn enrich(&self, worktrees: &[CoreWorktree], now: SystemTime) -> AdapterReport {
-            let snap = CoreSnapshot {
+            self.enrich_with(&ClaudeCodeAdapter::new(self.root.clone()), worktrees, now)
+        }
+
+        /// The snapshot of this project, as `adapter` sees it.
+        fn snapshot<'a>(
+            &'a self,
+            worktrees: &'a [CoreWorktree],
+            now: SystemTime,
+        ) -> CoreSnapshot<'a> {
+            CoreSnapshot {
                 project_root: &self.project,
                 main_worktree: None,
                 worktrees,
                 now,
-            };
-            ClaudeCodeAdapter::new(self.root.clone()).enrich(&snap)
+            }
         }
+
+        fn enrich_with(
+            &self,
+            adapter: &ClaudeCodeAdapter,
+            worktrees: &[CoreWorktree],
+            now: SystemTime,
+        ) -> AdapterReport {
+            adapter.enrich(&self.snapshot(worktrees, now))
+        }
+
+        /// This project's session directory under any config `root`:
+        /// `<root>/projects/<encoded project>/<SESSION>`, created.
+        fn session_in(&self, root: &Path) -> PathBuf {
+            let session = root
+                .join("projects")
+                .join(encode_project_dir(self.project.to_str().expect("utf-8")))
+                .join(SESSION);
+            std::fs::create_dir_all(session.join("subagents")).expect("session dir");
+            session
+        }
+    }
+
+    fn write_meta_bytes_in(subagents: &Path, id: &str, bytes: &[u8]) {
+        std::fs::write(subagents.join(format!("agent-{id}.meta.json")), bytes).expect("meta write");
+    }
+
+    fn write_meta_in(subagents: &Path, id: &str, meta: serde_json::Value) {
+        write_meta_bytes_in(subagents, id, &serde_json::to_vec(&meta).expect("json"));
+    }
+
+    /// `agent-<id>.jsonl` in `subagents`, modified `age_secs` before `now`.
+    fn transcript_in(subagents: &Path, id: &str, now: SystemTime, age_secs: u64) {
+        let path = subagents.join(format!("agent-{id}.jsonl"));
+        std::fs::write(&path, "{}\n").expect("transcript write");
+        set_modified(&path, now - Duration::from_secs(age_secs));
+    }
+
+    fn set_modified(path: &Path, at: SystemTime) {
+        std::fs::File::open(path)
+            .and_then(|f| f.set_modified(at))
+            .expect("mtime");
+    }
+
+    /// A live worktree-less agent of `agent_type` under `subagents`.
+    fn live_loose_agent(subagents: &Path, id: &str, agent_type: &str, now: SystemTime) {
+        write_meta_in(
+            subagents,
+            id,
+            json!({"agentType": agent_type, "description": "d"}),
+        );
+        transcript_in(subagents, id, now, 5);
     }
 
     fn facts(report: &AdapterReport, index: usize) -> Option<&Enrichment> {
@@ -796,6 +906,183 @@ mod tests {
         );
         assert_eq!(resolve_config_root(Some("relative".into()), None), None);
         assert_eq!(resolve_config_root(None, None), None);
+    }
+
+    #[test]
+    fn resolve_config_roots_lists_the_env_root_then_the_home_root() {
+        let home = || Some(PathBuf::from("/home/someone"));
+        let both = vec![
+            PathBuf::from("/profiles/a"),
+            PathBuf::from("/home/someone/.claude"),
+        ];
+        assert_eq!(
+            resolve_config_roots(Some("/profiles/a".into()), home()),
+            both,
+            "the CLAUDE_CONFIG_DIR root first, then the home root"
+        );
+        let home_only = vec![PathBuf::from("/home/someone/.claude")];
+        assert_eq!(
+            resolve_config_roots(Some("/home/someone/.claude".into()), home()),
+            home_only,
+            "raw-equal roots are one root"
+        );
+        assert_eq!(
+            resolve_config_roots(Some("/home/someone/.claude/".into()), home()),
+            home_only,
+            "a trailing separator is the same root"
+        );
+        assert_eq!(resolve_config_roots(None, home()), home_only);
+        assert_eq!(
+            resolve_config_roots(Some("/abs".into()), None),
+            vec![PathBuf::from("/abs")]
+        );
+        assert!(resolve_config_roots(Some("relative".into()), None).is_empty());
+        assert!(resolve_config_roots(None, None).is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // Two config roots (quick 261113-dcj)
+    // -----------------------------------------------------------------------
+
+    #[cfg(unix)]
+    #[test]
+    fn a_config_dir_aliasing_the_home_root_scans_once() {
+        let env = env();
+        let now = SystemTime::now();
+        let home = env.base.join("home");
+        let home_root = home.join(".claude");
+        let session = env.session_in(&home_root);
+        live_loose_agent(
+            &session.join("subagents"),
+            "acontrol0000000",
+            "control",
+            now,
+        );
+
+        // Case A: CLAUDE_CONFIG_DIR is a symlink to the home root.
+        let alias = env.base.join("alias");
+        std::os::unix::fs::symlink(&home_root, &alias).expect("symlink");
+        let adapter =
+            ClaudeCodeAdapter::with_env(Some(alias.clone().into_os_string()), Some(home.clone()));
+        assert_eq!(adapter.config_roots.len(), 2, "the raw spellings differ");
+        let worktrees: [CoreWorktree; 0] = [];
+        let dirs = project_dirs_across(&adapter.config_roots, &env.snapshot(&worktrees, now));
+        assert_eq!(dirs.len(), 1, "one directory, scanned once: {dirs:?}");
+        assert!(
+            dirs[0].starts_with(&alias),
+            "the first spelling, CLAUDE_CONFIG_DIR's, is kept: {dirs:?}"
+        );
+        let report = env.enrich_with(&adapter, &worktrees, now);
+        assert_eq!(report.worktreeless.len(), 1, "{:?}", report.worktreeless);
+
+        // Case B: a real profile directory whose `projects` is a symlink to the
+        // home root's `projects`.
+        let profile = env.base.join("profile");
+        std::fs::create_dir_all(&profile).expect("profile dir");
+        std::os::unix::fs::symlink(home_root.join("projects"), profile.join("projects"))
+            .expect("symlink");
+        let adapter = ClaudeCodeAdapter::with_env(Some(profile.into_os_string()), Some(home));
+        assert_eq!(adapter.config_roots.len(), 2);
+        let dirs = project_dirs_across(&adapter.config_roots, &env.snapshot(&worktrees, now));
+        assert_eq!(dirs.len(), 1, "an aliased `projects/` is one: {dirs:?}");
+        let report = env.enrich_with(&adapter, &worktrees, now);
+        assert_eq!(report.worktreeless.len(), 1, "{:?}", report.worktreeless);
+    }
+
+    #[test]
+    fn a_blank_or_relative_config_dir_scans_only_the_home_root() {
+        let env = env();
+        let now = SystemTime::now();
+        let home = env.base.join("home");
+        let home_root = home.join(".claude");
+        let session = env.session_in(&home_root);
+        live_loose_agent(
+            &session.join("subagents"),
+            "acontrol0000000",
+            "control",
+            now,
+        );
+        let worktrees: [CoreWorktree; 0] = [];
+
+        for value in ["", "   ", "rel/dir"] {
+            let adapter = ClaudeCodeAdapter::with_env(Some(value.into()), Some(home.clone()));
+            assert_eq!(adapter.config_roots, vec![home_root.clone()], "{value:?}");
+            let report = env.enrich_with(&adapter, &worktrees, now);
+            assert_eq!(report.worktreeless.len(), 1, "{value:?}");
+        }
+
+        let adapter =
+            ClaudeCodeAdapter::with_env(Some(env.root.clone().into_os_string()), Some(home));
+        assert_eq!(
+            adapter.config_roots,
+            vec![env.root.clone(), home_root],
+            "control: an absolute profile value adds a second root"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_home_root_keeps_every_safety_property() {
+        let env = env();
+        let now = SystemTime::now();
+        let home = env.base.join("home");
+        let home_root = home.join(".claude");
+        let session = env.session_in(&home_root);
+        let sub = session.join("subagents");
+
+        // Control: a plain live agent in the home root IS reported.
+        live_loose_agent(&sub, "acontrol0000000", "control", now);
+
+        // A symlinked meta pointing at a valid meta outside every root.
+        let outside = env.base.join("outside");
+        std::fs::create_dir_all(&outside).expect("outside dir");
+        let valid = json!({"agentType": "leak", "description": "d"});
+        write_meta_in(&outside, "target", valid.clone());
+        std::os::unix::fs::symlink(
+            outside.join("agent-target.meta.json"),
+            sub.join("agent-alinkedmeta000.meta.json"),
+        )
+        .expect("symlink");
+        transcript_in(&sub, "alinkedmeta000", now, 5);
+
+        // A symlinked session entry pointing at an outside directory that
+        // holds a valid meta and a fresh transcript.
+        let outside_sub = outside.join("session").join("subagents");
+        std::fs::create_dir_all(&outside_sub).expect("outside session");
+        live_loose_agent(&outside_sub, "alinkedsession0", "leak", now);
+        std::os::unix::fs::symlink(
+            outside.join("session"),
+            session
+                .parent()
+                .expect("project dir")
+                .join("9a9a9a9a-2222-4333-8444-955566667777"),
+        )
+        .expect("symlink");
+
+        // An oversize meta with a fresh transcript.
+        let mut padded = serde_json::to_vec(&valid).expect("json");
+        padded.resize(usize::try_from(META_READ_CAP).expect("fits") + 1, b' ');
+        write_meta_bytes_in(&sub, "aoversize00000", &padded);
+        transcript_in(&sub, "aoversize00000", now, 5);
+
+        // A worktree agent that has only a transcript, whose bytes look like
+        // a valid meta: transcripts are statted, never opened.
+        let worktrees = [env.worktree("onlytranscript", Some("atranscript0000"))];
+        let transcript = sub.join("agent-atranscript0000.jsonl");
+        std::fs::write(&transcript, serde_json::to_vec(&valid).expect("json")).expect("write");
+        set_modified(&transcript, now - Duration::from_secs(5));
+
+        let adapter =
+            ClaudeCodeAdapter::with_env(Some(env.root.clone().into_os_string()), Some(home));
+        assert_eq!(adapter.config_roots.len(), 2, "the home root is the second");
+        let report = env.enrich_with(&adapter, &worktrees, now);
+        let types: Vec<Option<&str>> = report
+            .worktreeless
+            .iter()
+            .map(|child| raw(&child.agent_type))
+            .collect();
+        assert_eq!(types, vec![Some("control")], "{:?}", report.worktreeless);
+        assert!(report.per_worktree.is_empty(), "{:?}", report.per_worktree);
     }
 
     // -----------------------------------------------------------------------
