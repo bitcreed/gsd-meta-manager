@@ -85,7 +85,10 @@ fn skip_permitted(opt_out: Option<&str>) -> bool {
 /// gsd-core 1.15.0 (#4667) a Codex install is self-contained there, so a
 /// Codex-only machine has no Claude-home `gsd-core`. An override replaces its
 /// default rather than adding to it, and counts only when non-blank
-/// (whitespace-only is unset) with a leading `~` expanded against home. The
+/// (whitespace-only is unset) with a leading `~` expanded against home, and a
+/// relative override (judged after `~` expansion) counts as unset too —
+/// inherited from the shared resolver, because this test runs the oracle with
+/// `current_dir(fixture)`, where a relative path would point somewhere else. The
 /// project-local candidates of the production resolver are omitted: the
 /// fixtures are temp trees that never carry an install of their own.
 fn oracle_candidates(roots: &InstallRoots) -> Vec<PathBuf> {

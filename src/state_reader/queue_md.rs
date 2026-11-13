@@ -96,8 +96,9 @@ const GSD_TOOLS_SHIM: &str = "bin/gsd-tools.cjs";
 ///   5. `${CODEX_HOME:-~/.codex}/gsd-core/bin/gsd-tools.cjs`
 ///
 /// An override counts only when it is non-blank (the installer's
-/// `hasNonBlankOverride`), so an empty or whitespace-only value falls back to
-/// the home default; a leading `~` is expanded against home. With neither a
+/// `hasNonBlankOverride`) and absolute after `~` expansion, so an empty,
+/// whitespace-only or relative value falls back to the home default; a leading
+/// `~` is expanded against home. With neither a
 /// home nor an override, only the three project-local candidates are returned.
 fn gsd_tools_candidates(project_root: &Path, roots: &InstallRoots) -> Vec<PathBuf> {
     install_candidates(Some(project_root), roots)
@@ -134,7 +135,10 @@ fn resolve_gsd_tools(project_root: &Path) -> Option<GsdToolsCmd> {
 ///
 /// Known, deliberate differences from upstream:
 ///   - upstream's other runtime homes (Gemini, OpenCode, ...) are not probed;
-///   - the PATH arm is not gated on `gsd-tools runtime-identity`.
+///   - the PATH arm is not gated on `gsd-tools runtime-identity`;
+///   - a relative `CLAUDE_CONFIG_DIR` / `CODEX_HOME` counts as unset, whereas
+///     upstream's resolver uses it as-is, relative to its own cwd (see
+///     [`InstallRoots`]; [inferred 261113-dcl I-1/I-2]).
 ///
 /// The `smart-entry` call pins `GSD_RUNTIME=claude` (see [`smart_entry_command`]):
 /// since 1.17.0 (e288f4ab2, #4859) smart-entry spells each action through
