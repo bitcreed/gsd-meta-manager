@@ -24,7 +24,7 @@
 # evidence about the developer's laptop.
 #
 # THE DON'T-CLOBBER RULE, stated up front because it is the surprising part.
-# If `$HOME/.claude/gsd-core` already exists — directory, symlink, or anything
+# If `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/gsd-core` already exists — directory, symlink, or anything
 # else — this script NEVER touches it. It installs nothing, verifies what is
 # there, exits 0 if that answers and NON-ZERO if it does not. It does not
 # repair, move, back up or overwrite. Developer machines run this by hand and
@@ -57,12 +57,50 @@ VERSION_CONST="GSD_CORE_SYNCED_VERSION"
 PACKAGE="@opengsd/gsd-core"
 
 NPM_PREFIX="$HOME/.npm-global"
+
+# WHERE THE ORACLE GOES. `${CLAUDE_CONFIG_DIR:-$HOME/.claude}`, by the same rule
+# as `InstallRoots::claude_home` in src/state_reader/gsd_install.rs:
+#   - the override counts only when it holds a non-whitespace character;
+#   - a leading `~` expands against $HOME (`~` alone, or `~/...`; `~user/...`
+#     stays literal);
+#   - the result must then be an absolute path, otherwise it counts as unset.
+# Why: `$CLAUDE_DIR/gsd-core` is the first global path `oracle_candidates()` in
+# tests/driver_router_conformance.rs probes, and that is the TUI's own
+# `install_candidates` list, so the script, the test, GSD and the TUI agree on
+# which install is "the" install. A relative value is ignored because Claude
+# Code itself refuses one, and the probe `cd`s into a fixture, so a relative
+# path could never be the one that runs (nor should this script ever create
+# `<cwd>/.../gsd-core`). The publish job and `pre-tag-check.sh --container`
+# never set CLAUDE_CONFIG_DIR (release.yml sets none, and the container run
+# forwards only its explicit `-e` variables), so there the path is the home
+# default, exactly as before.
 CLAUDE_DIR="$HOME/.claude"
+CLAUDE_DIR_SOURCE="default"
+claude_config_dir="${CLAUDE_CONFIG_DIR:-}"
+if [ -n "${claude_config_dir//[[:space:]]/}" ]; then
+	claude_config_expanded="$claude_config_dir"
+	# The tilde MUST be quoted in every pattern: bash tilde-expands unquoted
+	# ones, which would turn `~` into $HOME inside the pattern itself.
+	case "$claude_config_dir" in
+	"~") claude_config_expanded="$HOME" ;;
+	"~/"*) claude_config_expanded="$HOME/${claude_config_dir#"~/"}" ;;
+	esac
+	case "$claude_config_expanded" in
+	/*)
+		CLAUDE_DIR="$claude_config_expanded"
+		CLAUDE_DIR_SOURCE="CLAUDE_CONFIG_DIR"
+		;;
+	*)
+		CLAUDE_DIR_SOURCE="default; ignored CLAUDE_CONFIG_DIR='$claude_config_dir' (not absolute)"
+		;;
+	esac
+fi
 ORACLE_DIR="$CLAUDE_DIR/gsd-core"
 ORACLE_SHIM="$ORACLE_DIR/bin/gsd-tools.cjs"
 
-# The verb tests/driver_router_conformance.rs:54 names. The probe below asks the
-# oracle the SAME question the test asks, so a green probe means a green test.
+# The verb `ORACLE_VERB` in tests/driver_router_conformance.rs names. The probe
+# below asks the oracle the SAME question the test asks, so a green probe means
+# a green test.
 ORACLE_VERB="init.manager"
 
 hard_error() {
@@ -143,6 +181,7 @@ echo "$THIN"
 echo "  repo root        : $REPO_ROOT"
 echo "  pinned version   : $PACKAGE@$GSD_VERSION"
 echo "    from $VERSION_CONST in src/state_reader/config_json.rs"
+echo "  claude dir       : $CLAUDE_DIR ($CLAUDE_DIR_SOURCE)"
 echo "  oracle path      : $ORACLE_DIR"
 echo "$RULE"
 echo
@@ -159,7 +198,7 @@ echo
 #
 # The probe exercises the SAME call path the test uses — `query init.manager`
 # against a tree shaped like the test's `skeleton()` fixture
-# (tests/driver_router_conformance.rs:232-246) — so a green probe is evidence
+# (`skeleton()` in tests/driver_router_conformance.rs) — so a green probe is evidence
 # about the test rather than about the filesystem.
 # ---------------------------------------------------------------------------
 verify_oracle() {
@@ -296,9 +335,9 @@ else
 	mkdir -p "$CLAUDE_DIR"
 	# The symlink target is the package's INNER gsd-core/ directory, not the
 	# package root. That is what puts bin/gsd-tools.cjs at
-	# $HOME/.claude/gsd-core/bin/gsd-tools.cjs — the FIRST path Oracle::resolve()
-	# probes (tests/driver_router_conformance.rs:91-115) — so no PATH surgery is
-	# needed. Which matters in CI: a PATH exported in one `run:` step does not
+	# $CLAUDE_DIR/gsd-core/bin/gsd-tools.cjs — the FIRST global path
+	# `oracle_candidates()` probes (`Oracle::resolve()` in
+	# tests/driver_router_conformance.rs) — so no PATH surgery is needed. Which matters in CI: a PATH exported in one `run:` step does not
 	# survive into the next without $GITHUB_PATH.
 	ln -s "$NPM_PREFIX/lib/node_modules/$PACKAGE/gsd-core" "$ORACLE_DIR"
 	echo

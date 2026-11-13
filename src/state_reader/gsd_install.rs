@@ -20,7 +20,9 @@
 //!
 //! The first candidate whose `VERSION` is a regular file is the EFFECTIVE
 //! install, so a project-local install overrides a global one and Claude beats
-//! Codex at the same scope. The gsd-tools resolver in
+//! Codex at the same scope. An override (items 4 and 5) counts only when it is
+//! non-blank and absolute after `~` expansion; otherwise the home default
+//! applies. The gsd-tools resolver in
 //! [`super::queue_md`] walks the same list, projected onto
 //! `bin/gsd-tools.cjs`, so the two can never disagree about the order.
 //!
@@ -93,9 +95,23 @@ impl InstallRoots {
     /// (`hasNonBlankOverride`, whitespace-only counts as unset) and has a
     /// leading `~` expanded against home (`expandTilde`); otherwise
     /// `<home>/<name>`. Inferred I-5.
+    ///
+    /// Unlike upstream, the expanded override must also be ABSOLUTE; a relative
+    /// one counts as unset. The TUI checks a candidate's existence in its own
+    /// cwd but runs node with `current_dir(project_root)` (`smart_entry_command`
+    /// in `queue_md.rs`), and the conformance oracle runs it with
+    /// `current_dir(fixture)`, so a relative candidate can never be the one that
+    /// runs. Claude Code itself refuses a relative `CLAUDE_CONFIG_DIR`, and
+    /// `agents::adapters::claude::resolve_config_root` applies the same rule
+    /// (T-25-12). One helper serves both overrides, so `CODEX_HOME` gets it too.
+    /// [inferred 261113-dcl I-1/I-2]
     fn config_home(&self, override_: Option<&OsString>, name: &str) -> Option<PathBuf> {
-        match override_.filter(|v| !v.to_string_lossy().trim().is_empty()) {
-            Some(value) => Some(expand_tilde(value, self.home.as_deref())),
+        let explicit = override_
+            .filter(|v| !v.to_string_lossy().trim().is_empty())
+            .map(|value| expand_tilde(value, self.home.as_deref()))
+            .filter(|path| path.is_absolute());
+        match explicit {
+            Some(path) => Some(path),
             None => self.home.as_ref().map(|home| home.join(name)),
         }
     }
@@ -103,7 +119,9 @@ impl InstallRoots {
 
 /// `~` and `~/rest` expand against `home`; anything else (including `~user`)
 /// is taken literally, as upstream's `expandTilde` does. Without a home the
-/// value stays literal and simply will not exist.
+/// value stays literal and simply will not exist; a literal `~` value is
+/// relative, so [`InstallRoots::claude_home`] / [`InstallRoots::codex_home_dir`]
+/// count it as unset. [inferred 261113-dcl I-3]
 fn expand_tilde(value: &OsString, home: Option<&Path>) -> PathBuf {
     if let (Some(home), Some(s)) = (home, value.to_str()) {
         if s == "~" {
@@ -727,6 +745,36 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![PathBuf::from("/h/x/gsd-core"), PathBuf::from("/h/gsd-core")]
         );
+    }
+
+    #[test]
+    fn a_relative_override_falls_back_to_the_home_default() {
+        for relative in ["rel/cc", "~user/cc"] {
+            let r = InstallRoots {
+                home: Some(PathBuf::from("/h")),
+                claude_config_dir: Some(OsString::from(relative)),
+                codex_home: Some(OsString::from(relative.replace("cc", "cx"))),
+            };
+            assert_eq!(
+                install_candidates(None, &r)
+                    .iter()
+                    .map(|c| c.gsd_core_dir.clone())
+                    .collect::<Vec<_>>(),
+                vec![
+                    PathBuf::from("/h/.claude/gsd-core"),
+                    PathBuf::from("/h/.codex/gsd-core"),
+                ],
+                "override {relative:?} is relative and must count as unset"
+            );
+        }
+        // Without a home a `~` override cannot expand, stays relative, and so
+        // yields no global candidate at all.
+        let no_home = InstallRoots {
+            home: None,
+            claude_config_dir: Some(OsString::from("~/x")),
+            codex_home: None,
+        };
+        assert!(install_candidates(None, &no_home).is_empty());
     }
 
     // ── detection ──────────────────────────────────────────────────────

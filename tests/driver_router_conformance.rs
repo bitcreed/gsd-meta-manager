@@ -43,6 +43,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use gsd_meta_manager::driver::router::{decide, Decision, SAFE_COMMAND_ALPHABET};
+use gsd_meta_manager::state_reader::gsd_install::{install_candidates, InstallRoots};
 use gsd_meta_manager::state_reader::parse_project_state;
 use tempfile::TempDir;
 
@@ -77,28 +78,24 @@ fn skip_permitted(opt_out: Option<&str>) -> bool {
 
 /// Where the oracle looks for GSD's `gsd-tools.cjs`, in order.
 ///
-/// Mirrors the home arm of `src/state_reader/queue_md.rs`'s
-/// `gsd_tools_candidates` (an integration test cannot call that private fn):
-/// the Claude install first, then `${CODEX_HOME:-$HOME/.codex}` — since
+/// The global arm of the production list: `install_candidates` with no project
+/// root, the same list `gsd_tools_candidates` in `src/state_reader/queue_md.rs`
+/// projects onto the same `bin/gsd-tools.cjs` shim. The order is therefore
+/// `${CLAUDE_CONFIG_DIR:-~/.claude}`, then `${CODEX_HOME:-~/.codex}` — since
 /// gsd-core 1.15.0 (#4667) a Codex install is self-contained there, so a
-/// Codex-only machine has no `~/.claude/gsd-core`. An EMPTY `CODEX_HOME` falls
-/// back to `~/.codex`, like the shell's `:-`. The project-local candidates of
-/// the production resolver are omitted: the fixtures are temp trees that never
-/// carry an install of their own.
-fn oracle_candidates(home: Option<PathBuf>, codex_home: Option<OsString>) -> Vec<PathBuf> {
-    const SHIM: &str = "gsd-core/bin/gsd-tools.cjs";
-    let mut candidates = Vec::new();
-    if let Some(home) = &home {
-        candidates.push(home.join(".claude").join(SHIM));
-    }
-    let codex_root = match codex_home.filter(|value| !value.is_empty()) {
-        Some(explicit) => Some(PathBuf::from(explicit)),
-        None => home.map(|h| h.join(".codex")),
-    };
-    if let Some(codex_root) = codex_root {
-        candidates.push(codex_root.join(SHIM));
-    }
-    candidates
+/// Codex-only machine has no Claude-home `gsd-core`. An override replaces its
+/// default rather than adding to it, and counts only when non-blank
+/// (whitespace-only is unset) with a leading `~` expanded against home, and a
+/// relative override (judged after `~` expansion) counts as unset too —
+/// inherited from the shared resolver, because this test runs the oracle with
+/// `current_dir(fixture)`, where a relative path would point somewhere else. The
+/// project-local candidates of the production resolver are omitted: the
+/// fixtures are temp trees that never carry an install of their own.
+fn oracle_candidates(roots: &InstallRoots) -> Vec<PathBuf> {
+    install_candidates(None, roots)
+        .into_iter()
+        .map(|candidate| candidate.gsd_core_dir.join("bin/gsd-tools.cjs"))
+        .collect()
 }
 
 /// A resolved way to run GSD's own router.
@@ -110,16 +107,13 @@ struct Oracle {
 impl Oracle {
     /// Resolve a runnable `gsd-tools`, or `None` with the reason printed.
     ///
-    /// The search order mirrors `src/state_reader/queue_md.rs`'s resolver,
-    /// which already had to answer this question for the TUI: a `.cjs` shim is
-    /// run through `node`, and a `gsd-tools` binary on `PATH` is run directly.
-    /// Reusing the order rather than inventing one keeps "which GSD is this
-    /// project talking to?" a single answer.
+    /// The search order is the list `src/state_reader/queue_md.rs`'s resolver
+    /// reads, which already had to answer this question for the TUI: a `.cjs`
+    /// shim is run through `node`, and a `gsd-tools` binary on `PATH` is run
+    /// directly. Reading the same list rather than inventing one keeps "which
+    /// GSD is this project talking to?" a single answer.
     fn resolve() -> Option<Self> {
-        let candidates = oracle_candidates(
-            std::env::var_os("HOME").map(PathBuf::from),
-            std::env::var_os("CODEX_HOME"),
-        );
+        let candidates = oracle_candidates(&InstallRoots::from_env());
 
         for script in candidates {
             if script.is_file() {
@@ -148,7 +142,7 @@ impl Oracle {
         }
 
         eprintln!(
-            "SKIP: neither ~/.claude/gsd-core/bin/gsd-tools.cjs, \
+            "SKIP: neither ${{CLAUDE_CONFIG_DIR:-~/.claude}}/gsd-core/bin/gsd-tools.cjs, \
              ${{CODEX_HOME:-~/.codex}}/gsd-core/bin/gsd-tools.cjs nor a `gsd-tools` on PATH \
              is available, so the conformance oracle cannot run. This is a SKIP and not a pass: \
              the Rust rule table is a transcription of GSD's routing table and nothing in this \
@@ -649,9 +643,11 @@ fn the_rust_rule_table_agrees_with_gsd_s_own_router_over_a_fixture_per_state() {
                  failure by default: the table is a transcription of a runtime \
                  this project neither owns nor versions, GSD shipped 1.8.0 → \
                  1.10.0 in about a month, and the research behind the table \
-                 self-expires. Install GSD (~/.claude/gsd-core/bin/gsd-tools.cjs \
-                 or ${{CODEX_HOME:-~/.codex}}/gsd-core/bin/gsd-tools.cjs) and \
-                 Node, or set {ALLOW_MISSING_ORACLE}=1 to accept a run that \
+                 self-expires. Install GSD \
+                 (${{CLAUDE_CONFIG_DIR:-~/.claude}}/gsd-core/bin/gsd-tools.cjs \
+                 or ${{CODEX_HOME:-~/.codex}}/gsd-core/bin/gsd-tools.cjs; \
+                 ./scripts/install-conformance-oracle.sh provisions the first) \
+                 and Node, or set {ALLOW_MISSING_ORACLE}=1 to accept a run that \
                  verified none of it"
             );
             eprintln!(
@@ -817,11 +813,69 @@ fn a_missing_oracle_is_a_failure_unless_the_environment_says_otherwise() {
     );
 }
 
+/// Injected roots: home `/h`, with the two overrides as the process would see them.
+fn roots(claude_config_dir: Option<&str>, codex_home: Option<&str>) -> InstallRoots {
+    InstallRoots {
+        home: Some(PathBuf::from("/h")),
+        claude_config_dir: claude_config_dir.map(OsString::from),
+        codex_home: codex_home.map(OsString::from),
+    }
+}
+
+#[test]
+fn the_oracle_follows_claude_config_dir() {
+    let home = PathBuf::from("/h");
+    let explicit = oracle_candidates(&roots(Some("/cc"), None));
+    assert_eq!(
+        explicit.first(),
+        Some(&PathBuf::from("/cc/gsd-core/bin/gsd-tools.cjs")),
+        "an absolute CLAUDE_CONFIG_DIR is where Claude, GSD and the TUI load gsd-core from"
+    );
+    assert_eq!(
+        explicit.len(),
+        2,
+        "CLAUDE_CONFIG_DIR replaces ~/.claude, it does not add"
+    );
+    assert!(
+        !explicit.iter().any(|c| c.starts_with(home.join(".claude"))),
+        "~/.claude must not be consulted as an extra candidate: {explicit:?}"
+    );
+    for unset in ["", "   "] {
+        assert_eq!(
+            oracle_candidates(&roots(Some(unset), None)).first(),
+            Some(&home.join(".claude/gsd-core/bin/gsd-tools.cjs")),
+            "a blank CLAUDE_CONFIG_DIR ({unset:?}) counts as unset"
+        );
+    }
+    assert_eq!(
+        oracle_candidates(&roots(Some("~/cc"), None)).first(),
+        Some(&home.join("cc/gsd-core/bin/gsd-tools.cjs")),
+        "a leading `~` expands against home"
+    );
+}
+
+#[test]
+fn a_relative_claude_config_dir_counts_as_unset_for_the_oracle() {
+    // Claude Code refuses a relative CLAUDE_CONFIG_DIR, and the oracle checks a
+    // candidate in the test's cwd but runs it with `current_dir(fixture)`, so a
+    // relative candidate could never be the one that runs.
+    let candidates = oracle_candidates(&roots(Some("rel/cfg"), None));
+    assert_eq!(
+        candidates.first(),
+        Some(&PathBuf::from("/h/.claude/gsd-core/bin/gsd-tools.cjs")),
+        "a relative CLAUDE_CONFIG_DIR falls back to the home default"
+    );
+    assert!(
+        candidates.iter().all(|c| c.is_absolute()),
+        "no relative candidate may be probed: {candidates:?}"
+    );
+}
+
 #[test]
 fn the_oracle_looks_for_a_claude_install_then_a_codex_install() {
     let home = PathBuf::from("/h");
     assert_eq!(
-        oracle_candidates(Some(home.clone()), None),
+        oracle_candidates(&roots(None, None)),
         vec![
             home.join(".claude/gsd-core/bin/gsd-tools.cjs"),
             home.join(".codex/gsd-core/bin/gsd-tools.cjs"),
@@ -834,7 +888,7 @@ fn the_oracle_looks_for_a_claude_install_then_a_codex_install() {
 #[test]
 fn the_oracle_honours_a_non_empty_codex_home() {
     let home = PathBuf::from("/h");
-    let explicit = oracle_candidates(Some(home.clone()), Some(OsString::from("/x/codex")));
+    let explicit = oracle_candidates(&roots(None, Some("/x/codex")));
     assert_eq!(
         explicit.last(),
         Some(&PathBuf::from("/x/codex/gsd-core/bin/gsd-tools.cjs"))
@@ -844,12 +898,15 @@ fn the_oracle_honours_a_non_empty_codex_home() {
         2,
         "CODEX_HOME replaces ~/.codex, it does not add"
     );
-    let empty = oracle_candidates(Some(home.clone()), Some(OsString::new()));
-    assert_eq!(
-        empty.last(),
-        Some(&home.join(".codex/gsd-core/bin/gsd-tools.cjs")),
-        "an empty CODEX_HOME falls back like the shell's `${{CODEX_HOME:-$HOME/.codex}}`"
-    );
+    for unset in ["", "   "] {
+        let blank = oracle_candidates(&roots(None, Some(unset)));
+        assert_eq!(
+            blank.last(),
+            Some(&home.join(".codex/gsd-core/bin/gsd-tools.cjs")),
+            "a blank CODEX_HOME ({unset:?}) falls back like the shell's \
+             `${{CODEX_HOME:-$HOME/.codex}}`"
+        );
+    }
 }
 
 #[test]

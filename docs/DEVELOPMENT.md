@@ -93,9 +93,10 @@ See `docs/TESTING.md` for testing specifics.
 - `pre-tag-check.sh` / `pre-tag-check.Dockerfile` -- rehearse the release gates before
   tagging; `--container` runs them in an `ubuntu-24.04` lookalike.
 - `install-conformance-oracle.sh` -- installs the pinned GSD version used by the router
-  conformance test. It never touches an existing `~/.claude/gsd-core`. The test fails
-  by design when the oracle is absent, so run this script once on a machine without GSD
-  before `cargo test`.
+  conformance test. It never touches an existing `${CLAUDE_CONFIG_DIR:-~/.claude}/gsd-core`
+  (a blank or relative `CLAUDE_CONFIG_DIR` counts as unset), which is also where the
+  conformance test looks first. The test fails by design when the oracle is absent, so
+  run this script once on a machine without GSD before `cargo test`.
 - `launcher-acceptance.sh`, `prompt-acceptance.sh` -- live acceptance harnesses that
   drive the real `driver` with real `bwrap`, `systemd-run` and `claude`. Their `run`
   mode spends real money; `selftest` and `check` do not.
