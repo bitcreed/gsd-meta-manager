@@ -798,6 +798,38 @@ mod tests {
         assert_eq!(resolve_config_root(None, None), None);
     }
 
+    #[test]
+    fn resolve_config_roots_lists_the_env_root_then_the_home_root() {
+        let home = || Some(PathBuf::from("/home/someone"));
+        let both = vec![
+            PathBuf::from("/profiles/a"),
+            PathBuf::from("/home/someone/.claude"),
+        ];
+        assert_eq!(
+            resolve_config_roots(Some("/profiles/a".into()), home()),
+            both,
+            "the CLAUDE_CONFIG_DIR root first, then the home root"
+        );
+        let home_only = vec![PathBuf::from("/home/someone/.claude")];
+        assert_eq!(
+            resolve_config_roots(Some("/home/someone/.claude".into()), home()),
+            home_only,
+            "raw-equal roots are one root"
+        );
+        assert_eq!(
+            resolve_config_roots(Some("/home/someone/.claude/".into()), home()),
+            home_only,
+            "a trailing separator is the same root"
+        );
+        assert_eq!(resolve_config_roots(None, home()), home_only);
+        assert_eq!(
+            resolve_config_roots(Some("/abs".into()), None),
+            vec![PathBuf::from("/abs")]
+        );
+        assert!(resolve_config_roots(Some("relative".into()), None).is_empty());
+        assert!(resolve_config_roots(None, None).is_empty());
+    }
+
     // -----------------------------------------------------------------------
     // Tolerance and caps (D-A03, T-25-08, T-25-09, T-25-10)
     // -----------------------------------------------------------------------
