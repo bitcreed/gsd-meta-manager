@@ -665,6 +665,12 @@ pub struct HooksConfig {
     pub context_warning_threshold: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_critical_threshold: Option<u32>,
+    // --- gsd-core v1.21.0 (#4432, quick task 261113-fi0) ---
+    /// Repo-relative paths of committed files the secret-read guard lets
+    /// agents read. A list, so surfaced read-only (mirrors
+    /// [`GitConfig::protected_branches`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret_read_exempt: Option<serde_json::Value>,
     /// See [`ExtraKeys`].
     #[serde(flatten)]
     pub extra: ExtraKeys,
@@ -1650,7 +1656,8 @@ mod tests {
             "hooks": {
                 "workflow_guard": true,
                 "context_warning_threshold": 40,
-                "context_critical_threshold": 20
+                "context_critical_threshold": 20,
+                "secret_read_exempt": [".env.production"]
             },
             "graphify": { "auto_update": true },
             "statusline": {
@@ -1696,6 +1703,7 @@ mod tests {
         assert!(git.protected_branches.as_ref().unwrap().is_array());
         let hooks = config.hooks.as_ref().unwrap();
         assert_eq!(hooks.workflow_guard, Some(true));
+        assert!(hooks.secret_read_exempt.as_ref().unwrap().is_array());
         assert_eq!(hooks.context_warning_threshold, Some(40));
         assert_eq!(hooks.context_critical_threshold, Some(20));
         assert_eq!(config.graphify.as_ref().unwrap().auto_update, Some(true));

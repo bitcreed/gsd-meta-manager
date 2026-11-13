@@ -12625,6 +12625,14 @@ fn build_defaults_entries(
     push(cat, "hooks.workflow_guard", v, k, false, ConfigHelp::new(
         "Warns when a file is edited outside any GSD command, and hard-blocks force-adding files on an agent branch.",
     ).since("v1.01.0"));
+    // gsd-core v1.21.0 (#4432, quick task 261113-fi0): a list, so read-only.
+    let (v, k) = opt_json_readonly(
+        "hooks.secret_read_exempt",
+        phk.and_then(|h| h.secret_read_exempt.as_ref()),
+    );
+    push(cat, "hooks.secret_read_exempt", v, k, false, ConfigHelp::new(
+        "Committed files, by repo-relative path, the secret-read guard lets agents read despite a protected name; a list, so edited in the file.",
+    ).since("v1.21.0"));
     let (v, k) = opt_u32(config.context_window);
     push(cat, "context_window", v, k, false, ConfigHelp::new(
         "Tokens the model you run can hold; 200000 by default, and at 500000 or more GSD reads prior summaries in full.",
@@ -15922,7 +15930,8 @@ mod tests {
                 "context_warnings": true,
                 "workflow_guard": false,
                 "context_warning_threshold": 35,
-                "context_critical_threshold": 25
+                "context_critical_threshold": 25,
+                "secret_read_exempt": [".env.production"]
             },
             "intel": { "enabled": true },
             "graphify": {
@@ -15990,7 +15999,7 @@ mod tests {
     /// carrying such a key would make this number a property of the fixture
     /// rather than of the tab. [`populated_gsd_config`] is therefore kept free
     /// of unmodelled keys, and the pass-through rows have their own fixture.
-    const DEFAULTS_OPTION_COUNT: usize = 138;
+    const DEFAULTS_OPTION_COUNT: usize = 139;
 
     #[test]
     fn every_config_entry_carries_a_non_empty_summary() {
@@ -17373,6 +17382,13 @@ mod tests {
         ("planner.stall_detect_interval_minutes", "integer"),
     ];
 
+    /// MEASURED key-cell diff v1.20.1..v1.21.0 of upstream `docs/CONFIGURATION.md`
+    /// (+1 / -0): `hooks.secret_read_exempt`, first commit b39076563 (#4432 /
+    /// PR #5834). An array of strings upstream, so a read-only row here; its
+    /// name trips the secret heuristic, so it is also a measured exemption in
+    /// `NON_SECRET_CONFIG_KEYS`.
+    const RESYNCED_KEYS_1_21_0: &[(&str, &str)] = &[("hooks.secret_read_exempt", "readonly")];
+
     /// The real top-level gsd-core keys that were still pass-through after the
     /// release-1.15.0 re-sync, promoted to typed rows by quick task
     /// 260926-jnf — MEASURED against `upstream/release-1.15.0` (the 260926-gtk
@@ -17553,6 +17569,12 @@ mod tests {
              gsd-core and update docs/GSD-CORE-SYNC.md in the SAME commit"
         );
         assert_eq!(
+            RESYNCED_KEYS_1_21_0.len(),
+            1,
+            "the v1.21.0 delta was MEASURED at +1 key; re-measure against \
+             gsd-core and update docs/GSD-CORE-SYNC.md in the SAME commit"
+        );
+        assert_eq!(
             PROMOTED_PLANNER_KEYS_1_20_0.len(),
             2,
             "quick task 261103-f5i promoted exactly 2 planner keys; re-measure \
@@ -17669,6 +17691,59 @@ mod tests {
         );
     }
 
+    /// `hooks.secret_read_exempt` (gsd-core 1.21.0, #4432): a typed read-only
+    /// row, shown in the clear (its name trips the secret heuristic, its value
+    /// is a list of committed file paths), and it survives a save byte for byte.
+    #[test]
+    fn hooks_secret_read_exempt_is_one_unmasked_read_only_row_that_round_trips() {
+        use crate::state_reader::config_json::{parse_gsd_config, serialize_gsd_config};
+        use crate::state_reader::config_secrets::MASKED_SECRET;
+        let mut config =
+            parse_gsd_config(r#"{"hooks":{"secret_read_exempt":[".env.production"]}}"#).unwrap();
+        let entries = build_defaults_entries(&config);
+        let rows: Vec<&ConfigEntry> = entries
+            .iter()
+            .filter(|e| e.key.as_ref() == "hooks.secret_read_exempt")
+            .collect();
+        assert_eq!(rows.len(), 1, "exactly one hooks.secret_read_exempt row");
+        let row = rows[0];
+        assert!(
+            matches!(row.kind, ConfigValueKind::ReadOnly),
+            "{:?}",
+            row.kind
+        );
+        assert_eq!(row.category, "Misc");
+        assert_ne!(row.category, PASSTHROUGH_CATEGORY);
+        assert!(
+            row.value.contains(".env.production"),
+            "value: {:?}",
+            row.value
+        );
+        assert!(!row.value.contains(MASKED_SECRET), "value: {:?}", row.value);
+        assert_eq!(row.help.since, "v1.21.0");
+        assert!(mutate_config_entry(
+            &mut config,
+            "research",
+            &ConfigValueKind::Bool
+        ));
+        let saved: serde_json::Value =
+            serde_json::from_str(&serialize_gsd_config(&config).unwrap()).unwrap();
+        assert_eq!(
+            serde_json::to_string(saved.pointer("/hooks/secret_read_exempt").unwrap()).unwrap(),
+            r#"[".env.production"]"#
+        );
+
+        // Unset: still the typed row, never a pass-through row.
+        let empty = parse_gsd_config("{}").unwrap();
+        let entries = build_defaults_entries(&empty);
+        let row = entries
+            .iter()
+            .find(|e| e.key.as_ref() == "hooks.secret_read_exempt")
+            .expect("the unset hooks.secret_read_exempt row");
+        assert_eq!(row.value, "(unset)");
+        assert_ne!(row.category, PASSTHROUGH_CATEGORY);
+    }
+
     /// The sync record carries the secret-key provenance a future sync diffs
     /// against: every explicit secret key and every measured exemption.
     #[test]
@@ -17715,6 +17790,7 @@ mod tests {
             .chain(RESYNCED_KEYS_1_16_0)
             .chain(RESYNCED_KEYS_1_19_0)
             .chain(PROMOTED_PLANNER_KEYS_1_20_0)
+            .chain(RESYNCED_KEYS_1_21_0)
             .chain(PROMOTED_TOP_LEVEL_KEYS)
         {
             let matching: Vec<&ConfigEntry> = entries
@@ -17768,6 +17844,7 @@ mod tests {
             .chain(RESYNCED_KEYS_1_16_0)
             .chain(RESYNCED_KEYS_1_19_0)
             .chain(PROMOTED_PLANNER_KEYS_1_20_0)
+            .chain(RESYNCED_KEYS_1_21_0)
             .chain(PROMOTED_TOP_LEVEL_KEYS)
         {
             let entry = entries

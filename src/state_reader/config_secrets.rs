@@ -17,7 +17,7 @@
 //! — pass-through rows and members inside read-only JSON values — by a
 //! case-insensitive substring match of [`SECRET_NAME_MARKERS`] against the FULL
 //! dotted path. Its measured false positives in upstream's key table are the
-//! four numeric/boolean budget keys in [`NON_SECRET_CONFIG_KEYS`].
+//! measured exemptions in [`NON_SECRET_CONFIG_KEYS`].
 //!
 //! **The mask diverges from upstream on purpose (INFERRED I-1).** gsd-core's
 //! `maskSecret` renders `****<last-4>`; this build renders a fixed
@@ -41,12 +41,14 @@ pub const SECRET_CONFIG_KEYS: &[&str] = &[
     "jina",
 ];
 
-/// Keys whose names trip [`SECRET_NAME_MARKERS`] but which hold budgets, not
-/// secrets — MEASURED as every key cell of upstream `docs/CONFIGURATION.md`
-/// (release-1.15.0) matching the markers:
+/// Keys whose names trip [`SECRET_NAME_MARKERS`] but which hold budgets or
+/// repo-relative file paths, not secrets — MEASURED as every key cell of
+/// upstream `docs/CONFIGURATION.md` matching the markers, re-measured at
+/// v1.21.0. The values are numbers, booleans or (`hooks.secret_read_exempt`)
+/// repo-relative paths of committed files:
 ///
 /// ```text
-/// git -C ~/projects/node/gsd-core show upstream/release-1.15.0:docs/CONFIGURATION.md \
+/// git -C "$CORE" show v1.21.0:docs/CONFIGURATION.md \
 ///   | grep -oP '^\| `\K[a-z0-9_.<>-]+(?=`)' | sort -u \
 ///   | grep -iE 'api_key|apikey|api-key|token|secret|password|passwd'
 /// ```
@@ -58,6 +60,7 @@ pub const NON_SECRET_CONFIG_KEYS: &[&str] = &[
     "review.max_prompt_tokens_per_reviewer",
     "statusline.show_context_tokens",
     "workflow.smart_zone_tokens",
+    "hooks.secret_read_exempt",
 ];
 
 /// Lowercase substrings that mark an unmodelled key path as secret.
@@ -173,8 +176,8 @@ mod tests {
         );
         assert_eq!(
             NON_SECRET_CONFIG_KEYS.len(),
-            4,
-            "the four measured budget-key exemptions"
+            5,
+            "the measured non-secret exemptions"
         );
     }
 
@@ -203,6 +206,7 @@ mod tests {
             "statusline.show_context_tokens",
             "review.max_prompt_tokens",
             "review.max_prompt_tokens_per_reviewer.claude",
+            "hooks.secret_read_exempt",
         ] {
             assert!(!is_secret_key(key), "`{key}` is not a secret");
         }

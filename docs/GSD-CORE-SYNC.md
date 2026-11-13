@@ -634,14 +634,16 @@ secret when it contains, case-insensitively, one of `api_key`, `apikey`,
 impossible to add an authored row whose key trips the heuristic unless the row
 is Secret-kind.
 
-**The measured exemptions — 4 budget keys.** Every upstream key cell matching
-the markers holds a number or a boolean, not a secret. They are exempt as the
-exact path or as a `<key>.` prefix:
+**The measured exemptions — 5 keys.** Every upstream key cell matching
+the markers holds a number, a boolean or a list of file paths, not a secret. They
+are exempt as the exact path or as a `<key>.` prefix:
 
 - `review.max_prompt_tokens`
 - `review.max_prompt_tokens_per_reviewer` (and its `.<slug>` entries)
 - `statusline.show_context_tokens`
 - `workflow.smart_zone_tokens`
+- `hooks.secret_read_exempt` (gsd-core 1.21.0, #4432; repo-relative paths of
+  committed files the secret-read guard lets agents read)
 
 Measured with (`validKeys` in the schema manifest has the same four matches):
 
@@ -668,22 +670,22 @@ in another value, is displayed like any other value (T-jnf-07, accepted).
 
 ## Modelled
 
-Every key `build_defaults_entries` pushes a row for, in display order. **138
+Every key `build_defaults_entries` pushes a row for, in display order. **139
 rows**: **51** carry a `since` measured at the 1.14.0 re-sync (260916-vqw
 measured 57; six were retired at 261012-jqb), **2** carry `v1.15.0` (added by
 260926-gtk, measured against the v1.15.0 tag at 261012-jqb), **7** carry a
 `since` measured when quick task 260926-jnf promoted them, **2** carry
 `v1.16.0` (261012-jqb), **1** carries `v1.6.0`, measured at 261019-guw, **1**
 carries `v1.19.0` (261027-184), **2** carry `v1.10.0`, measured when quick task
-261103-f5i promoted them, and the **72** without one predate this record
+261103-f5i promoted them, **1** carries `v1.21.0` (261113-fi0), and the **72** without one predate this record
 and were not retro-measured.
 
-`DEFAULTS_OPTION_COUNT` in `src/ui/screens/detail.rs` pins this count at 138
+`DEFAULTS_OPTION_COUNT` in `src/ui/screens/detail.rs` pins this count at 139
 (132 -> 139 at 260926-jnf, 139 -> 135 at 261012-jqb, 135 -> 136 at 261027-184,
-136 -> 138 at 261103-f5i),
+136 -> 138 at 261103-f5i, 138 -> 139 at 261113-fi0),
 `RESYNCED_KEYS` / `RESYNCED_KEYS_1_15_0` / `RESYNCED_KEYS_1_16_0` /
 `RESYNCED_KEYS_1_19_0` / `PROMOTED_PLANNER_KEYS_1_20_0` /
-`PROMOTED_TOP_LEVEL_KEYS` pin the six key lists,
+`RESYNCED_KEYS_1_21_0` / `PROMOTED_TOP_LEVEL_KEYS` pin the seven key lists,
 `REMOVED_KEYS_1_16_0` pins the six retired ones, and three coverage assertions
 refuse a row with no `ConfigHelp`.
 
@@ -819,6 +821,7 @@ refuse a row with no `ConfigHelp`.
 | `hooks.context_warning_threshold` | v1.14.0 |
 | `hooks.context_critical_threshold` | v1.14.0 |
 | `hooks.workflow_guard` | v1.01.0 |
+| `hooks.secret_read_exempt` | v1.21.0 |
 | `context_window` | v1.01.0 |
 | `research_before_questions` | |
 | `discuss_mode` | |
@@ -831,6 +834,10 @@ refuse a row with no `ConfigHelp`.
 | `sub_repos` | |
 | `planning.sub_repos` | v1.01.0 |
 | `workflow.auto_prune_state` | v1.01.0 |
+
+`hooks.secret_read_exempt` is read-only (a list of repo-relative paths, edited in
+the file), and its name trips the secret heuristic, so it is a measured exemption
+(see [Secret-bearing keys](#secret-bearing-keys)).
 
 ### Orchestration
 
