@@ -4,10 +4,10 @@ milestone: v2.4.0
 current_phase_name: v2.4.0 shipped; no milestone open
 status: shipped
 stopped_at: v2.4.0 released locally (release commit + annotated tag v2.4.0, not pushed) — Sessions multiplexer location column + glyph overflow fix
-last_updated: "2026-11-13T17:00:14.426Z"
-last_activity: 2026-11-11
+last_updated: "2026-11-13T17:39:02.283Z"
+last_activity: 2026-11-13
 last_activity_desc: v2.4.0 released — Session Locations
-state_head: 3eb643a279968b30d9ee960f3464658f284f88bc
+state_head: 1ac98325e87304b4dc475a8a2b7516370f612540
 progress:
   total_phases: 1
   completed_phases: 1
@@ -32,7 +32,7 @@ See: .planning/PROJECT.md (updated 2026-11-10)
 Phase: — (v2.4.0 shipped; no milestone open)
 Plan: —
 Status: Shipped v2.4.0 Session Locations — release commit and annotated tag v2.4.0 created locally; not pushed (pushing the tag triggers the crates.io publish). v2.3.1 is on crates.io.
-Last activity: 2026-11-13 - Completed quick task 261113-epo: Sandbox binds of `.gsd` and `.gsd-capabilities.json` honour `GSD_HOME`
+Last activity: 2026-11-13 - Completed quick task 261113-fi0: Sync against gsd-core v1.21.0
 
 ## Deferred Verification
 
@@ -535,6 +535,7 @@ Older entries (Phase 19 T-19-* rows, Phase 21 round-13 gaps, Phase 26 risks, 31-
 | 261113-dck | Launcher honours CLAUDE_CONFIG_DIR and XDG dirs for host paths and sandbox masks | 2026-11-13 | 577f27e | .planning/quick/261113-dck-launcher-honours-claude-config-dir-and-xdg-dirs-for-host-pat |
 | 261113-dcl | Conformance oracle and provisioning script follow CLAUDE_CONFIG_DIR | 2026-11-13 | e4897c2 | .planning/quick/261113-dcl-conformance-oracle-follows-claude-config-dir-tests-driver-ro |
 | 261113-epo | Sandbox binds of `.gsd` and `.gsd-capabilities.json` honour `GSD_HOME` | 2026-11-13 | 3eb643a | [261113-epo-sandbox-binds-of-gsd-and-gsd-capabilitie](./quick/261113-epo-sandbox-binds-of-gsd-and-gsd-capabilitie/) |
+| 261113-fi0 | Sync against gsd-core v1.21.0 | 2026-11-13 | 1ac9832 | [261113-fi0-sync-against-gsd-core-v1-21-0](./quick/261113-fi0-sync-against-gsd-core-v1-21-0/) |
 
 ## Deferred Items
 
