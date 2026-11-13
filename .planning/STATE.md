@@ -531,6 +531,9 @@ Older entries (Phase 19 T-19-* rows, Phase 21 round-13 gaps, Phase 26 risks, 31-
 | 261110-tbn | Fix Windows-only dead-code clippy error and add non-Linux clippy pre-tag gate | 2026-11-10 | 24494e1 | [261110-tbn-fix-windows-only-dead-code-clippy-error-](./quick/261110-tbn-fix-windows-only-dead-code-clippy-error-/) |
 | 261111-h9f | Sessions panel multiplexer location column + README multiplexer support section | 2026-11-11 | 029f69d | [261111-h9f-sessions-panel-multiplexer-location-colu](./quick/261111-h9f-sessions-panel-multiplexer-location-colu/) |
 | 261111-ixj | Replace the overlapping unmerged glyph U+25D2 (font-fallback overflow) with U+2206, Status-cell separator U+00B7 to U+2219, flush-safe glyph guard | 2026-11-11 | ac9214e | [261111-ixj-replace-east-asian-ambiguous-indicator-g](./quick/261111-ixj-replace-east-asian-ambiguous-indicator-g/) |
+| 261113-dcj | Sessions panel reads both CLAUDE_CONFIG_DIR and ~/.claude roots | 2026-11-13 | 9bbb2fb | .planning/quick/261113-dcj-session-panel-sees-both-claude-config-roots-in-src-agents-ad |
+| 261113-dck | Launcher honours CLAUDE_CONFIG_DIR and XDG dirs for host paths and sandbox masks | 2026-11-13 | 577f27e | .planning/quick/261113-dck-launcher-honours-claude-config-dir-and-xdg-dirs-for-host-pat |
+| 261113-dcl | Conformance oracle and provisioning script follow CLAUDE_CONFIG_DIR | 2026-11-13 | e4897c2 | .planning/quick/261113-dcl-conformance-oracle-follows-claude-config-dir-tests-driver-ro |
 
 ## Deferred Items
 

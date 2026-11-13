@@ -1,0 +1,85 @@
+{
+  "schema_version": 1,
+  "batch_id": "261113-dci",
+  "created_at": "2026-11-13T15:36:36.569Z",
+  "options": {},
+  "base_revision": "7c857d5ba76e548469575a218a4971c1fd0d031e",
+  "items": [
+    {
+      "quick_id": "261113-dcj",
+      "client_id": null,
+      "description": "Session panel sees both Claude config roots: in src/agents/adapters/claude.rs (ClaudeCodeAdapter::from_env, resolve_config_root ~L87-112, enrich ~L585) sessions are read only from $CLAUDE_CONFIG_DIR/projects/<encoded>/... else ~/.claude/projects/..., so with claude-profile setups (CLAUDE_CONFIG_DIR=~/.local/share/claude-profiles/<name>, separate real projects/ dir) the other account's sessions are invisible. Make the adapter scan the CLAUDE_CONFIG_DIR root AND <home>/.claude when they differ (dedupe by canonical path; same path scans once). Keep every safety property (meta-only reads, symlink refusal, caps). Blank/relative CLAUDE_CONFIG_DIR counts as unset (existing resolve_config_root semantics); reuse existing resolvers. Tests with tempdirs and injected env, no real-home reads, no process-env mutation.",
+      "status": "complete",
+      "depends_on": [],
+      "planned_files": [
+        "src/agents/adapters/claude.rs",
+        "tests/agents_claude.rs"
+      ],
+      "directory": null,
+      "worktree": null,
+      "dispatched_worktree": null,
+      "dispatched_branch": null,
+      "dispatched_base": null,
+      "wave": 0,
+      "commit": "9bbb2fb",
+      "failure_reason": null
+    },
+    {
+      "quick_id": "261113-dck",
+      "client_id": null,
+      "description": "Launcher honours CLAUDE_CONFIG_DIR and XDG dirs for host paths: replace hardcoded host ~/.claude in src/launcher/auth.rs (~L241,~L474 host token fallback / auth_status), src/launcher/run.rs (~L740 host_claude_dir, ~L1135 auth_relaunch, ~L1725 egress Host token refresh), src/launcher/home.rs (~L48-55 ro binds of .claude/agents|commands|skills|gsd-core|get-shit-done|hooks|scripts|.gsd-profile), src/launcher/sandbox.rs (~L255-256 .claude/.credentials.json and .claude.json masks; Claude Code keeps .claude.json inside $CLAUDE_CONFIG_DIR when set), and check src/oneoff/launch.rs:261, src/oneoff/resolve.rs:916, src/launcher/config_dir.rs:446-449. XDG: src/launcher/sandbox.rs ~L238-265 credential masks (.config/gh, .config/gcloud, .config/glab-cli, .local/share/keyrings, .config/git/credentials, .config/gsd-meta-manager/driver-oauth-token) and src/launcher/home.rs ~L58,83,86,93-97 (.config/rtk, .cache, .local/share/rtk, skeleton dirs) must honour XDG_CONFIG_HOME/XDG_DATA_HOME/XDG_CACHE_HOME/XDG_RUNTIME_DIR, falling back to defaults only when unset (blank or relative = unset, matching resolve_config_root / InstallRoots::config_home; reuse those resolvers). SECURITY: stored token path is dirs::config_dir()/gsd-meta-manager/... (auth.rs:39, XDG-aware) but the mask is $HOME/.config/gsd-meta-manager/driver-oauth-token, so with XDG_CONFIG_HOME set the token is not masked; derive the mask from the same resolver as token_path(). When a relocated path is outside $HOME decide and document how the sandbox treats it; keep both default and relocated locations masked if in doubt (deny-by-default). Leave /etc/claude-code, /dev/null, /bin/sh alone. Inject env in tests (no process-env mutation races).",
+      "status": "complete",
+      "depends_on": [],
+      "planned_files": [
+        "src/launcher/host_dirs.rs",
+        "src/launcher/mod.rs",
+        "src/launcher/auth.rs",
+        "src/launcher/run.rs",
+        "src/launcher/config_dir.rs",
+        "src/launcher/home.rs",
+        "src/launcher/sandbox.rs",
+        "src/oneoff/runtime.rs",
+        "src/oneoff/launch.rs",
+        "tests/launcher_caps.rs",
+        "tests/launcher_auth.rs",
+        "tests/launcher_config_dir.rs",
+        "tests/launcher_live_isolation.rs",
+        "tests/launcher_live_managed.rs",
+        "tests/launcher_sandbox.rs",
+        "tests/launcher_sandbox_data_mask.rs",
+        "docs/DRIVER-SANDBOX.md",
+        "docs/CONFIGURATION.md"
+      ],
+      "directory": null,
+      "worktree": null,
+      "dispatched_worktree": null,
+      "dispatched_branch": null,
+      "dispatched_base": null,
+      "wave": 0,
+      "commit": "577f27e",
+      "failure_reason": null
+    },
+    {
+      "quick_id": "261113-dcl",
+      "client_id": null,
+      "description": "Conformance oracle follows CLAUDE_CONFIG_DIR: tests/driver_router_conformance.rs Oracle::resolve / oracle_candidates (~L118-125) takes only HOME and CODEX_HOME while the TUI resolver (src/state_reader/queue_md.rs:116 via InstallRoots::from_env) also honours CLAUDE_CONFIG_DIR and the doc comment claims to mirror that order; align it (blank/relative = unset). scripts/install-conformance-oracle.sh:60 CLAUDE_DIR=\"$HOME/.claude\" becomes ${CLAUDE_CONFIG_DIR:-$HOME/.claude} (update comments at ~L27 and ~L299). Must not break the CI publish job or ./scripts/pre-tag-check.sh --container (no CLAUDE_CONFIG_DIR there; default behaviour unchanged).",
+      "status": "complete",
+      "depends_on": [],
+      "planned_files": [
+        "tests/driver_router_conformance.rs",
+        "scripts/install-conformance-oracle.sh",
+        "docs/DEVELOPMENT.md",
+        "src/state_reader/gsd_install.rs",
+        "src/state_reader/queue_md.rs"
+      ],
+      "directory": null,
+      "worktree": null,
+      "dispatched_worktree": null,
+      "dispatched_branch": null,
+      "dispatched_base": null,
+      "wave": 0,
+      "commit": "e4897c2",
+      "failure_reason": null
+    }
+  ]
+}
