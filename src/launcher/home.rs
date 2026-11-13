@@ -11,7 +11,7 @@
 //! * the toolchain: the `PATH` hit and the install root of each of [`HOME_TOOLS`]
 //!   that lives under `$HOME`, `$CARGO_HOME/{bin,env,config.toml,config}` and
 //!   `$RUSTUP_HOME`, so `~/.cargo/credentials.toml` is out by construction;
-//! * GSD and rtk: [`CLAUDE_RO_REL`] under every Claude root, [`HOME_RO_REL`] and
+//! * GSD and rtk: [`CLAUDE_RO_REL`] under every Claude root, [`GSD_RO_REL`] under every GSD home and
 //!   `<config home>/rtk`;
 //! * this binary (the `driverctl` shim and the bridge run it): its tool root when it has
 //!   a `bin/` or `versions/` layout, else only the file;
@@ -68,10 +68,11 @@ pub const CLAUDE_RO_REL: &[&str] = &[
     ".gsd-profile",
 ];
 
-/// Entries under `$HOME` re-bound read-only when they exist (D-16): the GSD profile and
-/// capability files. The Claude root's entries are [`CLAUDE_RO_REL`] and the rtk
-/// configuration is `<config home>/rtk`.
-pub const HOME_RO_REL: &[&str] = &[".gsd", ".gsd-capabilities.json"];
+/// Entries of each GSD home (`$HOME` and an absolute `$GSD_HOME`, gsd-core's
+/// `resolveGsdHome`) re-bound read-only when they exist (D-16): GSD's store and its
+/// global capability ledger. Both sit directly in the GSD home; the ledger is not
+/// inside `.gsd` (quick 261113-epo).
+pub const GSD_RO_REL: &[&str] = &[".gsd", ".gsd-capabilities.json"];
 
 /// The size of the empty tmpfs over a Claude root outside `$HOME` and `/tmp`: 1 MiB
 /// `[inferred — audit]` (the driver never writes there; it exists to hide the root's
@@ -312,8 +313,10 @@ fn candidates(facts: &HostFacts, overlay: bool) -> Vec<HomeBind> {
         }
     }
     ro(facts.rustup_home.clone(), &mut out);
-    for rel in HOME_RO_REL {
-        ro(home.join(rel), &mut out);
+    for gsd_home in facts.dirs.gsd_homes() {
+        for rel in GSD_RO_REL {
+            ro(gsd_home.join(rel), &mut out);
+        }
     }
     for config_home in facts.dirs.config_homes() {
         ro(config_home.join("rtk"), &mut out);
@@ -1079,6 +1082,20 @@ mod tests {
             }
         }
         assert!(!got.iter().any(|e| e.starts_with("tmpfs /home/u/profiles")));
+    }
+
+    #[test]
+    fn a_gsd_home_under_home_binds_the_store_of_both_homes() {
+        let f = relocated_facts(&[("GSD_HOME", "/home/u/gsd")]);
+        let got = paths(&home_allowlist(&f, true));
+        for want in [
+            "ro /home/u/gsd/.gsd",
+            "ro /home/u/gsd/.gsd-capabilities.json",
+            "ro /home/u/.gsd",
+            "ro /home/u/.gsd-capabilities.json",
+        ] {
+            assert!(got.contains(&want.to_owned()), "{want}: {got:?}");
+        }
     }
 
     #[test]

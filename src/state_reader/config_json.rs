@@ -737,16 +737,11 @@ pub const GSD_HOME_ENV: &str = "GSD_HOME";
 /// Resolve the absolute path to the user-level GSD defaults file,
 /// `$GSD_HOME/.gsd/defaults.json`.
 ///
-/// Mirrors gsd-core's own rule, `process.env.GSD_HOME || os.homedir()`
-/// (gsd-core `src/runtime-homes.cts` `resolveGsdHome`, v1.18.0, #5017;
-/// upstream's `fallbackHome` parameter defaults to `os.homedir()`, and since
-/// v1.18.0 the config loader and every other defaults-store reader and writer
-/// call that one function): a non-empty `GSD_HOME`
-/// roots the store; an unset or empty `GSD_HOME` falls back to `$HOME`.
-/// Returns None when neither is usable, and the defaults file is then not
-/// loaded. This is the single env-reading wrapper; the semantics live in
-/// [`user_defaults_path_from`], which tests drive without touching the
-/// process environment.
+/// The GSD home is decided by [`resolve_gsd_home_from`]; this is the single
+/// env-reading wrapper over it. Returns None when neither `GSD_HOME` nor `HOME`
+/// is usable, and the defaults file is then not loaded. The semantics live in
+/// [`user_defaults_path_from`], which tests drive without touching the process
+/// environment.
 pub fn user_defaults_path() -> Option<std::path::PathBuf> {
     user_defaults_path_from(
         std::env::var_os(GSD_HOME_ENV).as_deref(),
@@ -754,20 +749,40 @@ pub fn user_defaults_path() -> Option<std::path::PathBuf> {
     )
 }
 
-/// Pure resolver behind [`user_defaults_path`].
+/// The one GSD-home rule, shared by [`user_defaults_path`] and
+/// `launcher::host_dirs::HostDirs::resolve` (quick 261113-epo, I-1).
 ///
-/// An empty `gsd_home` is treated as unset, matching JS `||`. Any other
-/// value is used verbatim — no trimming, no relative-path normalization —
-/// because upstream joins whatever it gets, and normalizing would make the
-/// TUI and gsd-core disagree about which file is live. The `home` fallback
-/// keeps the pre-GSD_HOME semantics exactly (`$HOME` only; upstream's
-/// passwd lookup when HOME is unset is a known, out-of-scope divergence).
+/// Mirrors gsd-core's own rule, `process.env.GSD_HOME || os.homedir()`
+/// (gsd-core `src/runtime-homes.cts` `resolveGsdHome`, v1.18.0, #5017;
+/// upstream's `fallbackHome` parameter defaults to `os.homedir()`, and since
+/// v1.18.0 the config loader and every other defaults-store reader and writer
+/// call that one function): a non-empty `GSD_HOME` roots the store; an unset or
+/// empty `GSD_HOME` falls back to `home`.
+///
+/// An empty `gsd_home` is treated as unset, matching JS `||`. Any other value
+/// is used verbatim, with no trimming and no relative-path normalization,
+/// because upstream joins whatever it gets, and normalizing would make the TUI
+/// and gsd-core disagree about which file is live. The `home` fallback keeps
+/// the pre-GSD_HOME semantics exactly (`$HOME` only; upstream's passwd lookup
+/// when HOME is unset is a known, out-of-scope divergence). None when neither
+/// is usable.
+pub fn resolve_gsd_home_from(
+    gsd_home: Option<&std::ffi::OsStr>,
+    home: Option<&std::ffi::OsStr>,
+) -> Option<std::path::PathBuf> {
+    gsd_home
+        .filter(|g| !g.is_empty())
+        .or(home)
+        .map(std::path::PathBuf::from)
+}
+
+/// Pure resolver behind [`user_defaults_path`]: the GSD home from
+/// [`resolve_gsd_home_from`], then `.gsd/defaults.json`.
 fn user_defaults_path_from(
     gsd_home: Option<&std::ffi::OsStr>,
     home: Option<&std::ffi::OsStr>,
 ) -> Option<std::path::PathBuf> {
-    let root = gsd_home.filter(|g| !g.is_empty()).or(home)?;
-    let mut p = std::path::PathBuf::from(root);
+    let mut p = resolve_gsd_home_from(gsd_home, home)?;
     p.push(".gsd");
     p.push("defaults.json");
     Some(p)
@@ -807,6 +822,18 @@ mod tests {
 
     fn os(s: &str) -> Option<&std::ffi::OsStr> {
         Some(std::ffi::OsStr::new(s))
+    }
+
+    #[test]
+    fn resolve_gsd_home_from_is_gsd_cores_rule() {
+        let p = |s: &str| Some(std::path::PathBuf::from(s));
+        assert_eq!(resolve_gsd_home_from(os("/g"), os("/h")), p("/g"));
+        assert_eq!(resolve_gsd_home_from(os(""), os("/h")), p("/h"));
+        assert_eq!(resolve_gsd_home_from(None, os("/h")), p("/h"));
+        // Used verbatim, as gsd-core does: no normalization of a relative value.
+        assert_eq!(resolve_gsd_home_from(os("rel/dir"), os("/h")), p("rel/dir"));
+        assert_eq!(resolve_gsd_home_from(None, None), None);
+        assert_eq!(resolve_gsd_home_from(os(""), None), None);
     }
 
     #[test]
