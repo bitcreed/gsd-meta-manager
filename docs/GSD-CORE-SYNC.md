@@ -634,9 +634,9 @@ secret when it contains, case-insensitively, one of `api_key`, `apikey`,
 impossible to add an authored row whose key trips the heuristic unless the row
 is Secret-kind.
 
-**The measured exemptions — 5 keys.** Every upstream key cell matching
-the markers holds a number, a boolean or a list of file paths, not a secret. They
-are exempt as the exact path or as a `<key>.` prefix:
+**The measured exemptions — 6 keys.** Every upstream key cell matching
+the markers holds a number, a boolean, a map of numbers or a list of file paths,
+not a secret. They are exempt as the exact path or as a `<key>.` prefix:
 
 - `review.max_prompt_tokens`
 - `review.max_prompt_tokens_per_reviewer` (and its `.<slug>` entries)
@@ -644,8 +644,14 @@ are exempt as the exact path or as a `<key>.` prefix:
 - `workflow.smart_zone_tokens`
 - `hooks.secret_read_exempt` (gsd-core 1.21.0, #4432; repo-relative paths of
   committed files the secret-read guard lets agents read)
+- `review.context_window_tokens` (and its `.<slug>` entries): a per-reviewer-slug
+  map of token counts added in gsd-core 1.20.0. The v1.20.0 sync missed it
+  because it re-diffed only `src/secrets.cts`; it was exempted at 261113-fi0,
+  after it had been masked as a secret in the pass-through row.
 
-Measured with (`validKeys` in the schema manifest has the same four matches):
+Measured with (`validKeys` in the schema manifest has five of the six, because
+`review.context_window_tokens` is capability-registered rather than listed in
+`validKeys`):
 
 ```bash
 git -C "$CORE" show "$REF:docs/CONFIGURATION.md" \

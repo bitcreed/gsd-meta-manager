@@ -61,6 +61,7 @@ pub const NON_SECRET_CONFIG_KEYS: &[&str] = &[
     "statusline.show_context_tokens",
     "workflow.smart_zone_tokens",
     "hooks.secret_read_exempt",
+    "review.context_window_tokens",
 ];
 
 /// Lowercase substrings that mark an unmodelled key path as secret.
@@ -176,7 +177,7 @@ mod tests {
         );
         assert_eq!(
             NON_SECRET_CONFIG_KEYS.len(),
-            5,
+            6,
             "the measured non-secret exemptions"
         );
     }
@@ -207,6 +208,8 @@ mod tests {
             "review.max_prompt_tokens",
             "review.max_prompt_tokens_per_reviewer.claude",
             "hooks.secret_read_exempt",
+            "review.context_window_tokens",
+            "review.context_window_tokens.claude",
         ] {
             assert!(!is_secret_key(key), "`{key}` is not a secret");
         }

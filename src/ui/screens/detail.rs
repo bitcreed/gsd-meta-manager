@@ -26177,6 +26177,27 @@ mod tests {
         draw_config_tab(&screen, &ctx, SECRET_PROBE_WIDTH, SECRET_PROBE_HEIGHT).join("\n")
     }
 
+    /// `review.context_window_tokens` (gsd-core 1.20.0) is a per-reviewer-slug map
+    /// of token counts; its name trips the heuristic, but it holds numbers, so
+    /// it renders in the clear (quick task 261113-fi0).
+    #[test]
+    fn review_context_window_tokens_renders_unmasked() {
+        use crate::state_reader::config_secrets::MASKED_SECRET;
+        let config = crate::state_reader::config_json::parse_gsd_config(
+            r#"{"review":{"context_window_tokens":{"claude":200000}}}"#,
+        )
+        .expect("the fixture parses");
+        let entries = build_defaults_entries(&config);
+        let row = entries
+            .iter()
+            .find(|e| e.key.as_ref() == "review.context_window_tokens")
+            .expect("the review.context_window_tokens row");
+        assert_eq!(row.category, PASSTHROUGH_CATEGORY);
+        assert!(matches!(row.kind, ConfigValueKind::ReadOnly));
+        assert!(row.value.contains("200000"), "value: {:?}", row.value);
+        assert!(!row.value.contains(MASKED_SECRET), "value: {:?}", row.value);
+    }
+
     /// Task 2: the NAME heuristic masks keys this build does not model —
     /// top-level pass-through rows and secret members nested inside one —
     /// while the measured budget-key exemption keeps its number.
