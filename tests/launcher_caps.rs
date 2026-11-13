@@ -22,7 +22,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use chrono::{DateTime, SecondsFormat};
 
 use gsd_meta_manager::driver::lock::run_lock_path;
-use launcher_support::{wait_until, Fixture, RUN_ID, STARTED_FILE};
+use launcher_support::{wait_until, Fixture, RUN_ID, STARTED_FILE, WELL_MANNERED_SCENARIO};
 
 fn stderr(out: &std::process::Output) -> String {
     String::from_utf8_lossy(&out.stderr).into_owned()
@@ -641,6 +641,37 @@ fn an_unsandboxed_launch_takes_the_host_token_from_claude_config_dir() {
     );
     assert!(!fx.recorded("tokens.txt").contains("at-decoy"));
     assert!(!log.contains("at-decoy"), "{log}");
+}
+
+#[test]
+fn an_unsandboxed_launch_seeds_from_claude_config_dir() {
+    // quick 261113-dck: the per-run config links and settings come from
+    // `$CLAUDE_CONFIG_DIR`, not from `~/.claude`.
+    let fx = Fixture::new();
+    let profile = fx.home().join(".local/share/claude-profiles/work");
+    fs::create_dir_all(profile.join("agents")).expect("profile agents");
+    fs::write(profile.join("settings.json"), r#"{"gsdmmProbe":"profile"}"#).expect("settings");
+    let default = fx.home().join(".claude");
+    fs::create_dir_all(&default).expect("default root");
+    fs::write(default.join("settings.json"), r#"{"gsdmmProbe":"default"}"#).expect("settings");
+    fx.write_scenario(WELL_MANNERED_SCENARIO);
+
+    let out = fx
+        .launch_command(RUN_ID, &["--unsandboxed"])
+        .env("CLAUDE_CONFIG_DIR", &profile)
+        .output()
+        .expect("the binary is built and spawnable");
+    assert!(out.status.success(), "{}", stderr(&out));
+
+    let cfg = fx.config_dir();
+    assert_eq!(
+        fs::read_link(cfg.join("agents")).expect("agents is a link"),
+        profile.join("agents")
+    );
+    let settings: serde_json::Value =
+        serde_json::from_slice(&fs::read(cfg.join("settings.json")).expect("settings.json"))
+            .expect("json");
+    assert_eq!(settings["gsdmmProbe"], "profile", "{settings}");
 }
 
 #[test]

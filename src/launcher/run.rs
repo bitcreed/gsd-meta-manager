@@ -742,7 +742,8 @@ pub fn launch(opts: LaunchOptions) -> Result<LaunchSummary, LauncherError> {
     }
     let seeded = seed(&SeedSpec {
         config_dir: config_dir.clone(),
-        host_claude_dir: home.join(".claude"),
+        host_claude_dir: host_dirs.claude_root.clone(),
+        host_home: home.clone(),
         binary: binary.clone(),
         run_dir: run_dir.clone(),
         socket: sock.clone(),

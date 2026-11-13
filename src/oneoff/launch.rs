@@ -38,6 +38,7 @@ use crate::launcher::config_dir::{app_root_masks, driver_root, resolve_current_e
 use crate::launcher::egress::socket_path_for;
 use crate::launcher::home::HomeSetup;
 use crate::launcher::host::{detect, Posture};
+use crate::launcher::host_dirs::HostDirs;
 use crate::launcher::process::{
     respawn_detached, run_bounded, spawn_launch_child_piped, CAPTURE_FINISH_BUDGET,
 };
@@ -807,13 +808,15 @@ pub(crate) fn run_sandboxed_session(
     let binary = resolve_current_exe()
         .and_then(|exe| snapshot_exe(&exe, spec.project, &config_dir))
         .map_err(|e| io_error("locate or snapshot this binary", e))?;
+    // quick 261113-dck: the host's relocatable directories, once for this session.
+    let host_dirs = HostDirs::from_host(spec.home);
     let home_setup = HomeSetup::for_host(spec.home, &binary, spec.overlay, session_dir)
         .map_err(|e| io_error("derive the sandbox's $HOME allowlist", e))?;
     let sandboxed = matches!(spec.posture, Posture::BwrapScope);
     spec.runtime
         .seed_config(
             &config_dir,
-            spec.home,
+            &host_dirs,
             &binary,
             spec.report_dir,
             sandboxed,
@@ -841,7 +844,7 @@ pub(crate) fn run_sandboxed_session(
         let egress_sock = socket_path_for(&sock, session_dir);
         egress_guard = Some(EgressGuard::start_with(
             &egress_sock,
-            spec.runtime.egress_token(spec.credential, spec.home),
+            spec.runtime.egress_token(spec.credential, &host_dirs),
             spec.egress_allow.to_vec(),
             spec.runtime.upstream(),
             session_dir.join("egress.log"),

@@ -325,6 +325,7 @@ fn sandbox_isolates_host_credentials_and_services() {
     seed(&SeedSpec {
         config_dir: config_dir.clone(),
         host_claude_dir: home.join(".claude"),
+        host_home: home.clone(),
         binary: std::env::current_exe().unwrap(),
         run_dir: run_dir.clone(),
         socket: sock.clone(),

@@ -6,7 +6,9 @@
 //! file masked) inside the sandbox. [`seed`] ports the spike's `seed_config`:
 //!
 //! * symlinks to the host's `agents`, `commands`, `skills`, `gsd-core`,
-//!   `get-shit-done` and `hooks` (read-only inside) -- each only when the host has
+//!   `get-shit-done` and `hooks` (read-only inside), taken from
+//!   `${CLAUDE_CONFIG_DIR:-~/.claude}` (quick 261113-dck; `~/.claude` is not merged
+//!   in) -- each only when the host has
 //!   it and the config dir does not. **The global `CLAUDE.md` is deliberately not
 //!   linked** (OQ-R2, `[inferred]`): the driver follows the master prompt and the
 //!   project's own `CLAUDE.md`, not the operator's personal rules;
@@ -171,8 +173,13 @@ pub fn run_state_dir_in(root: &Path, canonical_project: &Path, run_id: &str) -> 
 pub struct SeedSpec {
     /// The per-run `CLAUDE_CONFIG_DIR` to create and fill.
     pub config_dir: PathBuf,
-    /// The host's `~/.claude`: read for the links and the settings, never written.
+    /// The host's Claude root (`${CLAUDE_CONFIG_DIR:-~/.claude}`): read for the links
+    /// and the settings, never written.
     pub host_claude_dir: PathBuf,
+    /// The host `$HOME`, which hook `~`/`$HOME` expansion and the keep-root check use.
+    /// **Not** derived from `host_claude_dir`, which is `$CLAUDE_CONFIG_DIR` when that
+    /// is set (quick 261113-dck).
+    pub host_home: PathBuf,
     /// The binary the `driverctl` shim execs.
     pub binary: PathBuf,
     /// The run directory the Stop-guard entry (`driverctl stop-guard --run-dir`) names.
@@ -449,6 +456,22 @@ const GSD_HOOK_MARKERS: &[&str] = &[
     ".claude/scripts/",
 ];
 
+/// `[host_claude_dir, <home>/.claude]`, lexically deduplicated: the Claude roots a
+/// hook may name (quick 261113-dck, I-9).
+fn claude_roots_of(host_claude_dir: &Path, home: &Path) -> Vec<PathBuf> {
+    let default = home.join(".claude");
+    if host_claude_dir == default {
+        vec![default]
+    } else {
+        vec![host_claude_dir.to_path_buf(), default]
+    }
+}
+
+/// The directories of a Claude root that hold GSD hook and helper scripts: the
+/// root-relative form of [`GSD_HOOK_MARKERS`], matched against every Claude root
+/// by [`hook_is_kept_in`] (quick 261113-dck, I-9).
+const GSD_HOOK_DIRS: &[&str] = &["hooks", "gsd-core", "get-shit-done", "scripts"];
+
 /// Host names a kept hook may not reach: the operator's local agents and phone
 /// bridges listen there (T-28.1-35).
 const LOCAL_HOSTS: &[&str] = &["localhost", "127.0.0.1", "[::1]"];
@@ -528,6 +551,20 @@ fn home_paths_named(command: &str, home: &Path) -> Vec<PathBuf> {
 /// operator's phone bridge, a user's own scripts) is dropped, in both postures
 /// `[inferred — audit]`.
 pub fn hook_is_kept(command: &str, home: &Path, roots: &[PathBuf]) -> bool {
+    hook_is_kept_in(command, home, &[home.join(".claude")], roots)
+}
+
+/// [`hook_is_kept`] for a host whose Claude root may be relocated (quick 261113-dck,
+/// I-9): a command also names GSD when its expanded text contains
+/// `<claude root>/<dir>/` for any of `claude_roots` and any [`GSD_HOOK_DIRS`] entry,
+/// so a hook under `$CLAUDE_CONFIG_DIR` is recognised although the root is not
+/// named `.claude`.
+pub fn hook_is_kept_in(
+    command: &str,
+    home: &Path,
+    claude_roots: &[PathBuf],
+    roots: &[PathBuf],
+) -> bool {
     if LOCAL_HOSTS.iter().any(|host| command.contains(host)) {
         return false;
     }
@@ -538,7 +575,13 @@ pub fn hook_is_kept(command: &str, home: &Path, roots: &[PathBuf]) -> bool {
         .replace(['"', '\''], "");
     let names_gsd = GSD_HOOK_MARKERS
         .iter()
-        .any(|marker| expanded.contains(marker));
+        .any(|marker| expanded.contains(marker))
+        || claude_roots.iter().any(|root| {
+            GSD_HOOK_DIRS.iter().any(|dir| {
+                let marker = format!("{}/{dir}/", root.to_string_lossy().trim_end_matches('/'));
+                expanded.contains(&marker)
+            })
+        });
     let names_rtk = expanded.split_whitespace().any(|word| {
         Path::new(word)
             .file_name()
@@ -558,11 +601,16 @@ pub fn hook_is_kept(command: &str, home: &Path, roots: &[PathBuf]) -> bool {
 /// matcher entry whose hooks were all dropped disappears, and so does an event whose
 /// entries all did; entries that were empty before keep their place, and kept
 /// entries keep their order.
-fn filter_user_hooks(hooks: &mut Map<String, Value>, home: &Path, roots: &[PathBuf]) {
+fn filter_user_hooks(
+    hooks: &mut Map<String, Value>,
+    home: &Path,
+    claude_roots: &[PathBuf],
+    roots: &[PathBuf],
+) {
     let keep = |hook: &Value| {
         hook.get("command")
             .and_then(Value::as_str)
-            .is_some_and(|command| hook_is_kept(command, home, roots))
+            .is_some_and(|command| hook_is_kept_in(command, home, claude_roots, roots))
     };
     for entries in hooks.values_mut() {
         let Value::Array(list) = entries else {
@@ -609,6 +657,18 @@ pub fn settings_transform(
     home: &Path,
     keep_roots: &[PathBuf],
 ) -> Value {
+    settings_transform_in(host, gate, home, &[home.join(".claude")], keep_roots)
+}
+
+/// [`settings_transform`] recognising GSD hooks under every one of `claude_roots`
+/// (quick 261113-dck, I-9; see [`hook_is_kept_in`]).
+pub fn settings_transform_in(
+    host: Value,
+    gate: Option<&GateCommands>,
+    home: &Path,
+    claude_roots: &[PathBuf],
+    keep_roots: &[PathBuf],
+) -> Value {
     let mut settings = match host {
         Value::Object(map) => map,
         _ => Map::new(),
@@ -638,7 +698,7 @@ pub fn settings_transform(
     }
     // D-19: only GSD and rtk hooks reach the driver, whatever the posture.
     if let Some(Value::Object(hooks)) = settings.get_mut("hooks") {
-        filter_user_hooks(hooks, home, keep_roots);
+        filter_user_hooks(hooks, home, claude_roots, keep_roots);
     }
     if let Some(gate) = gate {
         let hooks = settings
@@ -832,8 +892,10 @@ pub fn seed(spec: &SeedSpec) -> io::Result<()> {
     };
 
     let host_settings = Value::Object(read_host_settings(&spec.host_claude_dir));
-    // The host `$HOME` the keep roots are relative to: `host_claude_dir` is `~/.claude`.
-    let home = spec.host_claude_dir.parent().unwrap_or(Path::new("/"));
+    // The host `$HOME` the keep roots are relative to; `host_claude_dir` may be
+    // `$CLAUDE_CONFIG_DIR`, so it says nothing about it (quick 261113-dck, I-3).
+    let home = spec.host_home.as_path();
+    let claude_roots = claude_roots_of(&spec.host_claude_dir, home);
     let settings = if spec.managed {
         let managed_dir = spec.config_dir.join(MANAGED_SUBDIR);
         create_private_dir(&managed_dir)?;
@@ -841,9 +903,15 @@ pub fn seed(spec: &SeedSpec) -> io::Result<()> {
         let rendered = serde_json::to_vec_pretty(&managed)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         write_atomic(&managed_dir.join(MANAGED_FILE), &rendered, 0o600)?;
-        settings_transform(host_settings, None, home, &spec.keep_roots)
+        settings_transform_in(host_settings, None, home, &claude_roots, &spec.keep_roots)
     } else {
-        settings_transform(host_settings, Some(&gate), home, &spec.keep_roots)
+        settings_transform_in(
+            host_settings,
+            Some(&gate),
+            home,
+            &claude_roots,
+            &spec.keep_roots,
+        )
     };
     let rendered = serde_json::to_vec_pretty(&settings)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
@@ -890,6 +958,8 @@ pub struct OneoffSeedSpec {
     pub config_dir: PathBuf,
     /// The host's agent config dir: read for the links and the settings, never written.
     pub host_claude_dir: PathBuf,
+    /// The host `$HOME` the hook filter uses; see [`SeedSpec::host_home`].
+    pub host_home: PathBuf,
     /// The binary the `bin/gsd-meta-manager` shim execs.
     pub binary: PathBuf,
     /// The run's report directory, pinned in the shim as `GSDMM_ONEOFF_REPORT_DIR`.
@@ -929,8 +999,10 @@ pub fn seed_oneoff(spec: &OneoffSeedSpec) -> io::Result<()> {
     }
 
     let host_settings = Value::Object(read_host_settings(&spec.host_claude_dir));
-    let home = spec.host_claude_dir.parent().unwrap_or(Path::new("/"));
-    let mut settings = settings_transform(host_settings, None, home, &spec.keep_roots);
+    let home = spec.host_home.as_path();
+    let claude_roots = claude_roots_of(&spec.host_claude_dir, home);
+    let mut settings =
+        settings_transform_in(host_settings, None, home, &claude_roots, &spec.keep_roots);
     if spec.managed {
         let managed_dir = spec.config_dir.join(MANAGED_SUBDIR);
         create_private_dir(&managed_dir)?;
@@ -981,6 +1053,7 @@ mod tests {
         OneoffSeedSpec {
             config_dir: root.path().join("cfg"),
             host_claude_dir: root.path().join("host"),
+            host_home: root.path().to_path_buf(),
             binary: PathBuf::from("/opt/gsd mm/gsd-meta-manager"),
             report_dir: root.path().join("run/report"),
             managed,
@@ -1068,10 +1141,30 @@ mod tests {
         assert!(fs::symlink_metadata(spec.config_dir.join("bin/driverctl")).is_err());
     }
 
+    #[test]
+    fn hook_is_kept_in_recognises_every_claude_root() {
+        let home = Path::new("/home/u");
+        let profile = PathBuf::from("/srv/profiles/work");
+        let roots = vec![PathBuf::from("/home/u/.claude"), profile.clone()];
+        let keep_roots = vec![home.join(".claude/hooks")];
+        let under_profile = "node /srv/profiles/work/hooks/gsd-y.js";
+        let other_profile = "node /srv/profiles/work/bin/other.sh";
+        let default_root = "node /home/u/.claude/hooks/gsd-x.js";
+        // Only the root-aware entry knows the profile.
+        assert!(hook_is_kept_in(under_profile, home, &roots, &keep_roots));
+        assert!(!hook_is_kept(under_profile, home, &keep_roots));
+        assert!(!hook_is_kept_in(other_profile, home, &roots, &keep_roots));
+        // The wrapper still behaves as before for the default root.
+        assert!(hook_is_kept(default_root, home, &keep_roots));
+        assert!(hook_is_kept_in(default_root, home, &roots, &keep_roots));
+        assert!(!hook_is_kept(default_root, home, &[]));
+    }
+
     fn spec(root: &TempDir) -> SeedSpec {
         SeedSpec {
             config_dir: root.path().join("cfg"),
             host_claude_dir: root.path().join("host"),
+            host_home: root.path().to_path_buf(),
             binary: PathBuf::from("/opt/gsd mm/gsd-meta-manager"),
             run_dir: root.path().join("run"),
             socket: PathBuf::from("/run/user/1000/gsdmm-driverctl/r1-ab12cd34.sock"),
