@@ -1,18 +1,18 @@
 # gsd-core config sync record
 
-**Config surface synced against gsd-core `v1.20.1`**
-(`9385f4618b52ef68ed8a5e8bdd93cfb25bd87765`, `package.json` 1.20.1, tagged
-2026-11-05) **on 2026-11-05. Conformance oracle / `GSD_CORE_SYNCED_VERSION`
-pinned at `1.20.1`**, the latest version published on npm.
+**Config surface synced against gsd-core `v1.21.0`**
+(`357508df233ccca0dcf4332b385d6bee9b113da9`, `package.json` 1.21.0, tagged
+2026-11-13) **on 2026-11-13. Conformance oracle / `GSD_CORE_SYNCED_VERSION`
+pinned at `1.21.0`**, the latest version published on npm.
 
 `src/state_reader/config_json.rs` carries the machine-readable copy of those
 values as three constants, which at this sync all name the same release:
 
 | Constant | Value | What it means |
 |---|---|---|
-| `GSD_CORE_SYNCED_VERSION` | `1.20.1` | The **conformance-oracle pin**: the latest gsd-core release published on npm at or below the synced commit. `scripts/install-conformance-oracle.sh` greps this declaration and runs `npm install @opengsd/gsd-core@<version>` — in the publish job (`.github/workflows/release.yml`) and inside `./scripts/pre-tag-check.sh --container`. The floor of the installed-GSD comparison's in-sync range. |
-| `GSD_CORE_SYNCED_COMMIT` | `v1.20.1` | The tree the config surface was diffed against, as `git describe --tags --always` spells it. |
-| `GSD_CORE_SYNCED_TREE_VERSION` | `1.20.1` | The `package.json` version of that tree. The ceiling of the installed-GSD comparison's in-sync range (quick task 260926-j0a). |
+| `GSD_CORE_SYNCED_VERSION` | `1.21.0` | The **conformance-oracle pin**: the latest gsd-core release published on npm at or below the synced commit. `scripts/install-conformance-oracle.sh` greps this declaration and runs `npm install @opengsd/gsd-core@<version>` — in the publish job (`.github/workflows/release.yml`) and inside `./scripts/pre-tag-check.sh --container`. The floor of the installed-GSD comparison's in-sync range. |
+| `GSD_CORE_SYNCED_COMMIT` | `v1.21.0` | The tree the config surface was diffed against, as `git describe --tags --always` spells it. |
+| `GSD_CORE_SYNCED_TREE_VERSION` | `1.21.0` | The `package.json` version of that tree. The ceiling of the installed-GSD comparison's in-sync range (quick task 260926-j0a). |
 
 This file is the human-readable half: the full key inventory, per-key status,
 and the exact commands that produced it, so the *next* sync starts from a
@@ -47,7 +47,12 @@ rows and corrected three help texts — see
 (quick task 261105-e7u) was baseline-only, a hotfix release with no config key,
 default or loader change; the milestone-prefixed phase-id readers it touches are
 ported by quick task 261105-e7v — see
-[The v1.20.1 delta](#the-v1201-delta-quick-task-261105-e7u).
+[The v1.20.1 delta](#the-v1201-delta-quick-task-261105-e7u). The v1.21.0 sync
+(quick task 261113-fi0) modelled `hooks.secret_read_exempt` as a read-only row,
+exempted it and `review.context_window_tokens` from the secret-name heuristic,
+and aligned the `claude_orchestration.*` help texts with the deprecated
+`min_agent_sdk_version` — see
+[The v1.21.0 delta](#the-v1210-delta-quick-task-261113-fi0).
 
 > **Keep this file, `config_json.rs`'s three constants and README.md's
 > `**GSD compatibility:**` note in step, in the SAME commit.** A record that
@@ -79,15 +84,16 @@ it, and nothing below checks out a branch there.
 
 **Measure against a REF, never the working tree.** The local checkout's HEAD is
 whatever branch someone last worked on (at the time of writing: `next`, at
-`v1.20.1-24-g9d6b6c728` with `package.json` 1.20.1, i.e. 24 commits past the
-last tag it was described from) — not the sync target. A
+`v1.20.1-97-gd668c307b` with `package.json` 1.20.1, i.e. 97 commits past the
+last tag it was described from, and without the `v1.21.0` tag) — not the sync
+target. A
 plain `cat "$CORE/docs/CONFIGURATION.md"` or `node -p require(package.json)`
 measures the wrong tree.
 
 ```bash
 CORE=~/projects/node/gsd-core
-REF=v1.21.0                          # the sync target: the next release tag
-PREV=v1.20.1                         # the previous GSD_CORE_SYNCED_COMMIT
+REF=v1.22.0                          # the sync target: the next release tag
+PREV=v1.21.0                         # the previous GSD_CORE_SYNCED_COMMIT
 
 # 1. The baseline constants.
 git -C "$CORE" describe --tags --always "$REF"   # -> GSD_CORE_SYNCED_COMMIT
@@ -119,6 +125,17 @@ git -C "$CORE" tag --contains "$C" --sort=v:refname | head -1
 git -C "$CORE" describe --tags "$C"
 ```
 
+**When the sibling checkout lacks REF**, never fetch into it. Measure from a
+throwaway bare clone that borrows its objects, and set `CORE` to the clone:
+
+```bash
+S=$(mktemp -d) && git clone --bare --reference ~/projects/node/gsd-core \
+  https://github.com/open-gsd/gsd-core.git "$S/core.git"
+CORE="$S/core.git"        # then run steps 1-5; remove "$S" afterwards
+```
+
+The v1.21.0 sync measured this way: the sibling checkout had no `v1.21.0` tag.
+
 **Step 5's needle is the DOTTED key, not the leaf name.** A leaf like `enabled`
 or `auto_update` matches dozens of unrelated commits across `src/`, and the
 first of those is a `since` that is wrong by several releases. Every key below
@@ -138,6 +155,102 @@ reproduced verbatim.
 `capabilities/<name>/capability.json` (like `workflow.ui_interaction_capture`)
 shows up in CONFIGURATION.md and in step 4's capability diff, but not in
 `config-schema.manifest.json`'s `validKeys`. Diff both.
+
+---
+
+## The v1.21.0 delta (quick task 261113-fi0)
+
+Measured on 2026-11-13 between `v1.20.1` and `v1.21.0`
+(`357508df233ccca0dcf4332b385d6bee9b113da9`), against the tags, from a throwaway
+clone, not the working tree: 101 commits, 411 files. v1.20.1 is an ancestor of
+v1.21.0. v1.21.0's CHANGELOG re-lists the v1.20.1 hotfixes because it carries
+their `next`-branch originals; they are already recorded in the v1.20.1 delta
+below.
+
+| Measurement | v1.20.1 | v1.21.0 | Change |
+|---|---:|---:|---|
+| CONFIGURATION.md key cells (step 2) | 263 | 264 | **+1 / -0**: `hooks.secret_read_exempt` (array of strings, default `[]`; b39076563, #4432 / PR #5834, 2026-11-08; first tag `v1.21.0`) |
+| `config-schema.manifest.json` | — | — | +1 `validKeys` entry (`hooks.secret_read_exempt`) |
+| `config-defaults.manifest.json`, `gsd-core/templates/config.json` | — | — | unchanged (no diff) |
+| `src/config.cts` | — | — | `config-get --default` now emits the JSON value it spells (#6029 / PR #6077); `config-set` refuses a `hooks.secret_read_exempt` that is not an array of repo-relative paths |
+| `src/config-loader.cts` | — | — | bounded config reads (#5759: a FIFO or device no longer hangs, a config.json over 1 MiB is refused); no key or default semantics change |
+| `src/secrets.cts` | — | — | unchanged (no diff) |
+| Existing keys whose default changed | — | — | **none** |
+| `capabilities/*/capability.json` | 1.20.1 | 1.21.0 | 45 files bump `version`; non-version lines change in `claude-orchestration` (descriptions), `claude` (runtime-only `powershellHooksOnWindows`) and `mempalace` (`activationKey`, a step's `when`); no key added |
+
+**How this build models the change.**
+
+- `hooks.secret_read_exempt` is one typed **read-only** Misc row, since
+  `v1.21.0` (feat commit `3d13fd1`): it is a list and this TUI has no list
+  editor, so it is edited in the file and round-trips verbatim (I-fi0-1). The
+  Modelled count and `DEFAULTS_OPTION_COUNT` go 138 -> 139, pinned by
+  `RESYNCED_KEYS_1_21_0`.
+- Its name contains "secret", so it is a measured exemption from the secret-name
+  heuristic: its value names committed files, not a secret (I-fi0-2).
+- `review.context_window_tokens` (gsd-core 1.20.0, a per-reviewer-slug map of
+  token counts) was masked as a secret in its pass-through row, a v1.20.0 sync
+  miss: that sync re-diffed only `src/secrets.cts`. It is exempted too (fix
+  commit `ed60cc9`, I-fi0-3). The exemption list holds 6 keys.
+- `claude_orchestration.min_agent_sdk_version` is deprecated and ignored upstream
+  (#4747) but still capability-registered and loadable, so it KEEPS its typed
+  editable row (`x` removes it from the file) with a rewritten help text
+  (I-fi0-4). The `execution_backend` and `enabled` help texts follow v1.21.0
+  semantics too (I-fi0-5). Commit `715801c`.
+
+**The gsd-tools invocation audit (#6087 / PR #6100).** v1.21.0 rejects unknown
+flags and stray words and takes the first value of a repeated flag.
+`docs/CLI-SURFACE-MANIFEST.json` is new at v1.21.0 (absent at v1.20.1): global
+flags `cwd`, `default`, `json-errors`, `pick`, `project-dir`, `raw`, `ws`;
+rejected `--version` and `-v`; 94 declared verbs; an `undeclared` list of verbs
+still on legacy parsing that holds `smart-entry` and `init.manager`. Every
+invocation this project makes, run against the installed 1.21.0:
+
+| Where | Invocation | Result |
+|---|---|---|
+| `src/state_reader/queue_md.rs:186` | `smart-entry --json` (TUI next-command suggestions); undeclared verb | exit 0, valid JSON |
+| `tests/driver_router_conformance.rs:177` (`ORACLE_VERB` at :56), `scripts/install-conformance-oracle.sh:242` (`ORACLE_VERB` at :104) | `query init.manager`; undeclared verb | exit 0 |
+| `tests/launcher_live_isolation.rs:126` | `runtime-identity --raw`; declared verb, `--raw` is a global boolean | exit 0, `{"packageName":"@opengsd/gsd-core","version":"1.21.0"}` |
+| `tests/driver_router_conformance.rs:137` | PATH probe `gsd-tools --version` | rejected (exit 1), but the rejection predates v1.21.0 and the probe only checks that the binary spawns |
+| `tests/launcher_config_dir.rs:299` | `query init` inside a hook-command string fixture | never executed |
+
+No invocation repeats a flag, and nothing calls `commit`, `config-get`,
+`config-set` or `project-context`. Conclusion: no code change (I-fi0-6).
+
+**Other leads, each measured as no change (I-fi0-7).**
+
+- `gsd-tools commit` refuses `outside_worktree` and takes a new `--project-dir`,
+  and `query project-context` is a new verb (#6043 / PR #6071): this project
+  never runs `commit` and calls no new verb.
+- `config-get --default` prints JSON (#6029 / PR #6077): no caller; the app
+  reads config.json directly.
+- The project-root walk stops at a symlinked `$HOME` (#5624 / PR #5847): the TUI
+  runs `smart-entry` with its cwd at the registered project root, which has its
+  own `.planning/`, so no walk happens.
+- The `.gsd/` fork-probe cache gets its own `.gitignore` (#5757): already in
+  v1.20.1; this build reads no project `.gsd/`.
+- init's `phase_name` drops "(INSERTED)" (#5824 / PR #6023): this app reads no
+  init `phase_name` and keeps "(INSERTED)" as a visible tag by design.
+
+**Other areas.**
+
+- **Routing.** `src/smart-entry.cts` has no diff; `src/init.cts` changes only
+  bounded config reads, `readRecordedPlanTotal` and the "(INSERTED)" stripping.
+  `tests/driver_router_conformance.rs` is green (8 passed) against the installed
+  1.21.0 and against the npm-pinned 1.21.0 oracle that
+  `scripts/install-conformance-oracle.sh` provisions into a throwaway HOME (see
+  the 261113-fi0 SUMMARY).
+- **The CLI.** `commands/gsd` has 72 files at both tags; only `autonomous.md`'s
+  description line changes. No verb was added or removed, and the slash-command
+  flags this app emits still appear in the argument hints.
+- **Agents.** 4 files, small text changes (the executor's Workflow structured
+  output, #4747).
+- **Codex and installs.** The codex capability changes only `version`; install-tree
+  fixtures add three hook libraries and a plan-phase step file; the
+  `<config home>/gsd-core/VERSION` root `src/state_reader/gsd_install.rs` reads
+  is unchanged.
+- **Secret-bearing keys.** `src/secrets.cts` and
+  `gsd-core/references/gsd-run-resolver.md` have no diff; the heuristic matches
+  go 5 -> 6 (see [Secret-bearing keys](#secret-bearing-keys)).
 
 ---
 
@@ -991,7 +1104,7 @@ warning.
 Then, in priority order:
 
 1. **Re-measure the baseline trio** with step 1 against the next release tag
-   (`REF=v1.21.0`, `PREV=v1.20.1`). If `GSD_CORE_SYNCED_COMMIT` already
+   (`REF=v1.22.0`, `PREV=v1.21.0`). If `GSD_CORE_SYNCED_COMMIT` already
    matches the new REF, there is nothing else to do. If the target is an
    untagged tree past the last npm release, see "When the three disagree"
    above. After moving the oracle pin, re-run
@@ -1021,7 +1134,7 @@ Then, in priority order:
    `review.context_window_tokens.<slug>` itself stays templated, like
    `effort.<slug>`.
 4. **Then `refactor.*` and `safety.*`**, which are small and fully scalar.
-5. **Retro-measure `since` for the 73 rows that have none**, using step 5's
+5. **Retro-measure `since` for the 72 rows that have none**, using step 5's
    command, if a reader ever needs the full history rather than the delta.
 6. **Consider the label rename** described under "Known inconsistency" — as its
    own change, never folded into a sync.
