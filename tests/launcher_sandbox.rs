@@ -387,6 +387,36 @@ fn a_gsd_home_under_home_rebinds_its_store_and_keeps_the_default() {
 }
 
 #[test]
+fn a_gsd_home_outside_home_and_tmp_is_rebound_read_only_without_a_tmpfs() {
+    let base = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"));
+    fs::create_dir_all(base).unwrap();
+    let outside = tempfile::Builder::new()
+        .prefix("epo-gsd-home-")
+        .tempdir_in(base)
+        .unwrap();
+    if outside.path().starts_with("/tmp") {
+        eprintln!("skipped: the build tree is under /tmp");
+        return;
+    }
+    let root = TempDir::new().unwrap();
+    let home = root.path().join("home");
+    let state = root.path().join("state");
+    fs::create_dir_all(&state).unwrap();
+    fs::create_dir_all(home.join(".gsd")).unwrap();
+    let store = outside.path().join("store");
+    fs::create_dir_all(store.join(".gsd")).unwrap();
+    fs::write(store.join(".gsd-capabilities.json"), "{}").unwrap();
+
+    let argv = argv_with_gsd_home(&home, &state, &store);
+    for rel in [".gsd", ".gsd-capabilities.json"] {
+        assert!(has_ro_bind(&argv, &store.join(rel)), "{rel}: {argv:?}");
+    }
+    assert!(has_ro_bind(&argv, &home.join(".gsd")), "{argv:?}");
+    assert!(!has_tmpfs(&argv, &store), "{argv:?}");
+    assert!(!has_tmpfs(&argv, outside.path()), "{argv:?}");
+}
+
+#[test]
 fn no_flag_names_a_credential_directory_and_the_home_block_precedes_the_run_binds() {
     use gsd_meta_manager::launcher::sandbox::TMPFS_MASK_DIRS;
     let root = TempDir::new().unwrap();
