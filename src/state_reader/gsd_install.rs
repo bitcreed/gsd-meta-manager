@@ -729,6 +729,36 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_relative_override_falls_back_to_the_home_default() {
+        for relative in ["rel/cc", "~user/cc"] {
+            let r = InstallRoots {
+                home: Some(PathBuf::from("/h")),
+                claude_config_dir: Some(OsString::from(relative)),
+                codex_home: Some(OsString::from(relative.replace("cc", "cx"))),
+            };
+            assert_eq!(
+                install_candidates(None, &r)
+                    .iter()
+                    .map(|c| c.gsd_core_dir.clone())
+                    .collect::<Vec<_>>(),
+                vec![
+                    PathBuf::from("/h/.claude/gsd-core"),
+                    PathBuf::from("/h/.codex/gsd-core"),
+                ],
+                "override {relative:?} is relative and must count as unset"
+            );
+        }
+        // Without a home a `~` override cannot expand, stays relative, and so
+        // yields no global candidate at all.
+        let no_home = InstallRoots {
+            home: None,
+            claude_config_dir: Some(OsString::from("~/x")),
+            codex_home: None,
+        };
+        assert!(install_candidates(None, &no_home).is_empty());
+    }
+
     // ── detection ──────────────────────────────────────────────────────
 
     #[test]

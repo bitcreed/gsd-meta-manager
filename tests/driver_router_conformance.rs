@@ -852,6 +852,23 @@ fn the_oracle_follows_claude_config_dir() {
 }
 
 #[test]
+fn a_relative_claude_config_dir_counts_as_unset_for_the_oracle() {
+    // Claude Code refuses a relative CLAUDE_CONFIG_DIR, and the oracle checks a
+    // candidate in the test's cwd but runs it with `current_dir(fixture)`, so a
+    // relative candidate could never be the one that runs.
+    let candidates = oracle_candidates(&roots(Some("rel/cfg"), None));
+    assert_eq!(
+        candidates.first(),
+        Some(&PathBuf::from("/h/.claude/gsd-core/bin/gsd-tools.cjs")),
+        "a relative CLAUDE_CONFIG_DIR falls back to the home default"
+    );
+    assert!(
+        candidates.iter().all(|c| c.is_absolute()),
+        "no relative candidate may be probed: {candidates:?}"
+    );
+}
+
+#[test]
 fn the_oracle_looks_for_a_claude_install_then_a_codex_install() {
     let home = PathBuf::from("/h");
     assert_eq!(
