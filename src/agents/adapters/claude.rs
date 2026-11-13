@@ -29,15 +29,19 @@
 //! so a live owner never upgrades a row and D-A05 holds. This adapter still
 //! parses nothing of it.)
 //!
-//! **Where the files are.** The config root is `$CLAUDE_CONFIG_DIR` when set,
-//! non-empty and absolute, else `<home>/.claude` ([`resolve_config_root`]).
-//! Sessions live under `<root>/projects/<encoded project path>/<session>/`, with
+//! **Where the files are.** Two config roots are scanned: `$CLAUDE_CONFIG_DIR`
+//! when set, non-empty and absolute, and `<home>/.claude`
+//! ([`resolve_config_roots`], built from [`resolve_config_root`]). A
+//! claude-profile setup points `CLAUDE_CONFIG_DIR` at a profile directory with
+//! its own `projects/`, while the main account keeps `<home>/.claude`, so one
+//! process sees only one of them in its environment and would miss the other
+//! account's agents. Sessions live under `<root>/projects/<encoded project path>/<session>/`, with
 //! every subagent of that session — at any spawn depth — flat in its
 //! `subagents/` directory as `agent-<id>.meta.json` beside `agent-<id>.jsonl`.
 //! The directory name is Claude Code's lossy encoding of the project path
 //! ([`encode_project_dir`]); it is only ever computed forwards, never decoded.
 //!
-//! **Only the user's own config root is read**, never a `.claude/` directory
+//! **Only the user's own config roots are read**, never a `.claude/` directory
 //! inside a project: a cloned repository can ship any files it likes there.
 
 use std::collections::HashSet;
@@ -67,29 +71,38 @@ const META_SUFFIX: &str = ".meta.json";
 /// Enriches agent worktrees from Claude Code's session metadata.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClaudeCodeAdapter {
-    /// The Claude config root; `None` when neither the environment nor a home
-    /// directory names one, in which case every scan reports nothing.
-    config_root: Option<PathBuf>,
+    /// The Claude config roots to scan: the `CLAUDE_CONFIG_DIR` root first,
+    /// then `<home>/.claude`, at most two. Empty when neither the environment
+    /// nor a home directory names one, in which case every scan reports
+    /// nothing.
+    config_roots: Vec<PathBuf>,
 }
 
 impl ClaudeCodeAdapter {
-    /// An adapter rooted at `config_root`. Tests use this, with a tempdir, so
-    /// no test ever reads the real home directory (D-C17).
+    /// An adapter rooted at the single `config_root`. Tests use this, with a
+    /// tempdir, so no test ever reads the real home directory (D-C17).
     pub fn new(config_root: PathBuf) -> Self {
         Self {
-            config_root: Some(config_root),
+            config_roots: vec![config_root],
         }
     }
 
-    /// An adapter rooted where Claude Code itself looks: `$CLAUDE_CONFIG_DIR`,
-    /// else `<home>/.claude`. Resolves a path only; reads no file.
-    pub fn from_env() -> Self {
+    /// An adapter over both roots Claude Code may file sessions under, from an
+    /// injected environment: the `CLAUDE_CONFIG_DIR` value and the home
+    /// directory ([`resolve_config_roots`]). Resolves paths only; reads no
+    /// file. Tests use this, with tempdir paths, so none touches the process
+    /// environment or the real home directory.
+    pub fn with_env(claude_config_dir: Option<OsString>, home: Option<PathBuf>) -> Self {
         Self {
-            config_root: resolve_config_root(
-                std::env::var_os("CLAUDE_CONFIG_DIR"),
-                dirs::home_dir(),
-            ),
+            config_roots: resolve_config_roots(claude_config_dir, home),
         }
+    }
+
+    /// An adapter over both roots where Claude Code itself looks:
+    /// `$CLAUDE_CONFIG_DIR` and `<home>/.claude`. The module's only read of the
+    /// process environment.
+    pub fn from_env() -> Self {
+        Self::with_env(std::env::var_os("CLAUDE_CONFIG_DIR"), dirs::home_dir())
     }
 }
 
@@ -109,6 +122,28 @@ pub fn resolve_config_root(env_value: Option<OsString>, home: Option<PathBuf>) -
         }
     }
     home.map(|home| home.join(".claude"))
+}
+
+/// Every Claude config root to scan: the [`resolve_config_root`] result for
+/// `env_value`, then `<home>/.claude` when that is a different path.
+///
+/// A claude-profile setup points `CLAUDE_CONFIG_DIR` at a profile directory
+/// with its own `projects/`, while the main account keeps `<home>/.claude`; a
+/// process sees only one of them in its environment, so both are scanned. At
+/// most two roots. A blank, whitespace-only or relative `env_value` is ignored
+/// by [`resolve_config_root`], leaving only the home root (T-25-12). Pure path
+/// resolution: nothing is canonicalized or statted here, so two spellings of
+/// one directory stay two entries until [`project_dirs_across`] collapses them.
+pub fn resolve_config_roots(env_value: Option<OsString>, home: Option<PathBuf>) -> Vec<PathBuf> {
+    let mut roots: Vec<PathBuf> = resolve_config_root(env_value, home.clone())
+        .into_iter()
+        .collect();
+    if let Some(home_root) = resolve_config_root(None, home) {
+        if !roots.contains(&home_root) {
+            roots.push(home_root);
+        }
+    }
+    roots
 }
 
 /// Claude Code's directory name for a project path (D-C05), byte for byte.
@@ -301,6 +336,22 @@ fn project_dirs(root: &Path, snap: &CoreSnapshot<'_>) -> Vec<PathBuf> {
         let exact = projects.join(&encoded);
         if exact.is_dir() && !dirs.contains(&exact) {
             dirs.push(exact);
+        }
+    }
+    dirs
+}
+
+/// This project's directories across every config root, in root order.
+///
+/// Each root is looked up with [`project_dirs`]; a directory already kept is
+/// skipped, so a path is scanned once.
+fn project_dirs_across(roots: &[PathBuf], snap: &CoreSnapshot<'_>) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    for root in roots {
+        for dir in project_dirs(root, snap) {
+            if !dirs.contains(&dir) {
+                dirs.push(dir);
+            }
         }
     }
     dirs
@@ -582,10 +633,7 @@ impl AgentAdapter for ClaudeCodeAdapter {
     }
 
     fn enrich(&self, snap: &CoreSnapshot<'_>) -> AdapterReport {
-        let Some(root) = self.config_root.as_deref() else {
-            return AdapterReport::default();
-        };
-        let dirs = project_dirs(root, snap);
+        let dirs = project_dirs_across(&self.config_roots, snap);
         if dirs.is_empty() {
             return AdapterReport::default();
         }
