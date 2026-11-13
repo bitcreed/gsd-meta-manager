@@ -12697,15 +12697,15 @@ fn build_defaults_entries(
     let pco = config.claude_orchestration.as_ref();
     let (v, k) = opt_bool(pco.and_then(|c| c.enabled));
     push(cat, "claude_orchestration.enabled", v, k, true, ConfigHelp::new(
-        "Lets GSD drive a phase's waves through the Claude Agent SDK rather than dispatching each plan itself.",
+        "BETA master switch for the Claude Code Workflow-tool backend and ultraplan offload; gsd-core 1.21.0 says execute-phase does not dispatch through it yet.",
     ));
     let (v, k) = opt_str(pco.and_then(|c| c.execution_backend.as_deref()));
     push(cat, "claude_orchestration.execution_backend", v, k, false, ConfigHelp::new(
-        "Which backend runs the waves: auto to choose, workflow to force the Workflow tool, or inline to stay put.",
+        "auto and workflow use the Workflow tool only when every detection gate passes (Claude, nesting host, no kill switch), else inline; inline never uses it.",
     ));
     let (v, k) = opt_str(pco.and_then(|c| c.min_agent_sdk_version.as_deref()));
     push(cat, "claude_orchestration.min_agent_sdk_version", v, k, false, ConfigHelp::new(
-        "Lowest Agent SDK semver allowed to host the Workflow backend; below it GSD falls back to inline.",
+        "Deprecated by gsd-core 1.21.0 (#4747) and ignored: the backend no longer checks the Agent SDK. Old files still load; press x to remove it.",
     ));
 
     // ── Statusline ────────────────────────────────────────────
@@ -16452,6 +16452,32 @@ mod tests {
                 entry.key
             );
         }
+    }
+
+    /// The three `claude_orchestration.*` summaries follow gsd-core v1.21.0:
+    /// `min_agent_sdk_version` is deprecated and ignored (#4747), and the
+    /// backend choice needs every detection gate (quick task 261113-fi0).
+    #[test]
+    fn claude_orchestration_help_texts_follow_gsd_core_1_21_0() {
+        let entries = all_config_entries();
+        let summary = |key: &str| {
+            entries
+                .iter()
+                .find(|e| e.key.as_ref() == key)
+                .unwrap_or_else(|| panic!("no `{key}` row"))
+                .help
+                .summary
+                .to_ascii_lowercase()
+        };
+        let min = summary("claude_orchestration.min_agent_sdk_version");
+        assert!(min.contains("ignored") && min.contains("1.21.0"), "{min}");
+        let backend = summary("claude_orchestration.execution_backend");
+        assert!(
+            backend.contains("inline") && backend.contains("gate"),
+            "{backend}"
+        );
+        let enabled = summary("claude_orchestration.enabled");
+        assert!(enabled.contains("workflow"), "{enabled}");
     }
 
     // ── Pass-through rows (quick task 260916-vqw) ─────────────────────────

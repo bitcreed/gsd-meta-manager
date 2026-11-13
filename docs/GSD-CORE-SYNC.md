@@ -853,6 +853,10 @@ the file), and its name trips the secret heuristic, so it is a measured exemptio
 | `claude_orchestration.execution_backend` | |
 | `claude_orchestration.min_agent_sdk_version` | |
 
+`claude_orchestration.min_agent_sdk_version` is deprecated and ignored upstream
+since v1.21.0 (#4747) but still capability-registered, so its row stays and `x`
+removes it from the file; the three help texts were aligned at 261113-fi0.
+
 ### Statusline
 
 | Key | since |
