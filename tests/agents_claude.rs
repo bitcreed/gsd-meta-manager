@@ -253,7 +253,11 @@ fn both_claude_config_roots_reach_the_scan() {
     assert_eq!(row.adapter, Some("claude-code"));
     assert_eq!(shown(&row.agent_type), Some("gsd-executor".to_string()));
     assert_eq!(row.liveness, AgentLiveness::Live);
-    assert_eq!(loose(&scan), researcher, "the profile root's agent is listed");
+    assert_eq!(
+        loose(&scan),
+        researcher,
+        "the profile root's agent is listed"
+    );
 
     // Controls: either root alone misses the other account's agent.
     let profile_only = scan_with(ClaudeCodeAdapter::new(profile));
