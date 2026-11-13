@@ -343,13 +343,20 @@ fn project_dirs(root: &Path, snap: &CoreSnapshot<'_>) -> Vec<PathBuf> {
 
 /// This project's directories across every config root, in root order.
 ///
-/// Each root is looked up with [`project_dirs`]; a directory already kept is
-/// skipped, so a path is scanned once.
+/// Each root is looked up with [`project_dirs`]. A directory that is the
+/// [`same_path`] as one already kept, raw or canonical, is skipped, and the
+/// first spelling seen (the `CLAUDE_CONFIG_DIR` root's) is kept. This is the
+/// one dedupe point: it collapses a `CLAUDE_CONFIG_DIR` that is a symlink to
+/// `<home>/.claude` and also a profile whose `projects/` is symlinked to the
+/// main account's, so each project directory is scanned once [inferred].
+///
+/// A symlinked config root or `projects/` directory is still followed, as it
+/// always was for a single root: it is the user's own configuration.
 fn project_dirs_across(roots: &[PathBuf], snap: &CoreSnapshot<'_>) -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = Vec::new();
     for root in roots {
         for dir in project_dirs(root, snap) {
-            if !dirs.contains(&dir) {
+            if !dirs.iter().any(|kept| same_path(kept, &dir)) {
                 dirs.push(dir);
             }
         }
