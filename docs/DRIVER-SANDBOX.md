@@ -50,6 +50,12 @@ Claude Code itself does, and the default under `$HOME` is used. It applies to `C
 (default `~/.claude`), `XDG_CONFIG_HOME` (`~/.config`), `XDG_DATA_HOME` (`~/.local/share`),
 `XDG_CACHE_HOME` (`~/.cache`) and `XDG_RUNTIME_DIR`.
 
+`GSD_HOME` follows gsd-core's own rule instead: unset or empty means `$HOME`, and any other value is
+used as given, by the same resolver the Config tab uses for `$GSD_HOME/.gsd/defaults.json`. GSD keeps its
+store at `$GSD_HOME/.gsd` and its global capability ledger at `$GSD_HOME/.gsd-capabilities.json`, both
+directly in the GSD home. The driver inherits `GSD_HOME`, so both entries are bound read-only next to
+`~/.gsd` and `~/.gsd-capabilities.json`. A relative value adds no bind.
+
 What follows `CLAUDE_CONFIG_DIR`: the host-token fallback (`${CLAUDE_CONFIG_DIR:-~/.claude}/.credentials.json`,
 read at launch, on every auth relaunch and by the egress server, and reported by `driver auth status`),
 and the links and settings the per-run config directory is seeded from. When the variable is set there
@@ -62,8 +68,9 @@ or masked before is dropped:
   `.gsd-profile`) of both the configured Claude root and `~/.claude`, and the rtk config of both
   `~/.config/rtk` and `$XDG_CONFIG_HOME/rtk`, are bound read-only (a hook that names `~/.claude/hooks/...`
   keeps working on a profile host);
+- `.gsd` and `.gsd-capabilities.json` of both `$HOME` and an absolute `$GSD_HOME` are bound read-only;
 - the per-run tmpfs for the cache and the rtk data exist at both the default and the relocated paths;
-- a relocated XDG directory and every Claude root are never bound as a whole (a tool installed under one
+- a relocated XDG directory, every Claude root and a relocated GSD home are never bound as a whole (a tool installed under one
   gets only its own file bound), and their credential stores join the no-overlap rule;
 - the stored run token is masked wherever its resolver puts it, and the default `~/...` credential masks stay.
 
@@ -78,9 +85,10 @@ Where a relocated path lies decides what happens to it:
 | Its `.credentials.json` and `.claude.json` | outside `$HOME` and `/tmp` | Masked with `/dev/null` whenever they exist. |
 | Relocated `gh`, `gcloud`, `glab-cli`, `git` and `keyrings` directories | outside `$HOME` and `/tmp`, existing | An empty tmpfs hides each. Masking `git` also keeps the host git config (aliases, includes, `credential.helper`) away from the driver. |
 | Relocated cache and rtk data | under `$HOME`, or elsewhere and existing | A per-run tmpfs. |
+| `.gsd` and `.gsd-capabilities.json` of `$GSD_HOME` | under `$HOME` | Bound read-only like any `$HOME` entry. |
+| `.gsd` and `.gsd-capabilities.json` of `$GSD_HOME` | elsewhere (`/tmp` or outside both), existing | Re-bound read-only, so the `/tmp` tmpfs or a Claude-root tmpfs cannot hide them. `GSD_HOME` itself never gets a tmpfs, because it may hold the project. When `GSD_HOME` is the project root, its `.gsd` is read-only inside the sandbox too. |
 
 Under `$HOME` nothing needs masking: the `$HOME` tmpfs already hides every path that is not bound.
-`gsd-meta-manager`'s own `GSD_HOME`-relative binds (`.gsd`, `.gsd-capabilities.json`) are not relocated.
 
 ## Protections and `protections_absent`
 

@@ -333,6 +333,89 @@ fn a_claude_root_outside_home_is_hidden_and_its_gsd_entries_rebound() {
     );
 }
 
+/// The argv of a driver launch on a host whose only relocated variable is
+/// `GSD_HOME = store`, with `home` as `$HOME`.
+fn argv_with_gsd_home(
+    home: &std::path::Path,
+    state: &std::path::Path,
+    store: &std::path::Path,
+) -> Vec<String> {
+    let env = |name: &str| (name == "GSD_HOME").then(|| store.to_path_buf().into());
+    let dirs = HostDirs::resolve(home, env);
+    let setup =
+        HomeSetup::for_host_with(&dirs, std::path::Path::new("/nonexistent/exe"), true, state)
+            .unwrap();
+    let mut spec = SandboxSpec::from_host_with(paths(), &dirs, &setup);
+    spec.runtime_dir = Some(PathBuf::from(RUNTIME_DIR));
+    strings(&bwrap_argv(&spec, &[OsString::from("true")]))
+}
+
+/// True when the argv holds the triple `--ro-bind p p`.
+fn has_ro_bind(argv: &[String], p: &std::path::Path) -> bool {
+    let p = p.display().to_string();
+    argv.windows(3)
+        .any(|w| w[0] == "--ro-bind" && w[1] == p && w[2] == p)
+}
+
+/// True when some `--tmpfs` names `p`.
+fn has_tmpfs(argv: &[String], p: &std::path::Path) -> bool {
+    let p = p.display().to_string();
+    argv.windows(2).any(|w| w[0] == "--tmpfs" && w[1] == p)
+}
+
+#[test]
+fn a_gsd_home_under_home_rebinds_its_store_and_keeps_the_default() {
+    // quick 261113-epo: GSD keeps its store and capability ledger at
+    // `${GSD_HOME:-$HOME}`; the driver inherits `GSD_HOME`, so the `$HOME` tmpfs
+    // must not hide them.
+    let root = TempDir::new().unwrap();
+    let home = root.path().join("home");
+    let state = root.path().join("state");
+    let store = home.join("gsd-store");
+    fs::create_dir_all(&state).unwrap();
+    for base in [&home, &store] {
+        fs::create_dir_all(base.join(".gsd")).unwrap();
+        fs::write(base.join(".gsd-capabilities.json"), "{}").unwrap();
+    }
+    let argv = argv_with_gsd_home(&home, &state, &store);
+    for base in [&home, &store] {
+        for rel in [".gsd", ".gsd-capabilities.json"] {
+            assert!(has_ro_bind(&argv, &base.join(rel)), "{rel}: {argv:?}");
+        }
+    }
+    assert!(!has_tmpfs(&argv, &store), "{argv:?}");
+}
+
+#[test]
+fn a_gsd_home_outside_home_and_tmp_is_rebound_read_only_without_a_tmpfs() {
+    let base = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"));
+    fs::create_dir_all(base).unwrap();
+    let outside = tempfile::Builder::new()
+        .prefix("epo-gsd-home-")
+        .tempdir_in(base)
+        .unwrap();
+    if outside.path().starts_with("/tmp") {
+        eprintln!("skipped: the build tree is under /tmp");
+        return;
+    }
+    let root = TempDir::new().unwrap();
+    let home = root.path().join("home");
+    let state = root.path().join("state");
+    fs::create_dir_all(&state).unwrap();
+    fs::create_dir_all(home.join(".gsd")).unwrap();
+    let store = outside.path().join("store");
+    fs::create_dir_all(store.join(".gsd")).unwrap();
+    fs::write(store.join(".gsd-capabilities.json"), "{}").unwrap();
+
+    let argv = argv_with_gsd_home(&home, &state, &store);
+    for rel in [".gsd", ".gsd-capabilities.json"] {
+        assert!(has_ro_bind(&argv, &store.join(rel)), "{rel}: {argv:?}");
+    }
+    assert!(has_ro_bind(&argv, &home.join(".gsd")), "{argv:?}");
+    assert!(!has_tmpfs(&argv, &store), "{argv:?}");
+    assert!(!has_tmpfs(&argv, outside.path()), "{argv:?}");
+}
+
 #[test]
 fn no_flag_names_a_credential_directory_and_the_home_block_precedes_the_run_binds() {
     use gsd_meta_manager::launcher::sandbox::TMPFS_MASK_DIRS;

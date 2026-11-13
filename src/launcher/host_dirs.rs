@@ -20,6 +20,13 @@
 //! path. The stored run token keeps [`auth::token_path`](super::auth::token_path),
 //! the resolver its writer uses.
 //!
+//! **`GSD_HOME` follows gsd-core, not I-1 `[inferred — audit]`.** The GSD home is
+//! decided by [`resolve_gsd_home_from`], the one resolver behind the Config tab's
+//! `$GSD_HOME/.gsd/defaults.json` (quick 261113-epo, I-1): empty or unset means
+//! `$HOME`, any other value is used as given, even a relative one.
+//! [`gsd_homes`](HostDirs::gsd_homes) keeps only an absolute value, because only
+//! that names a fixed host path to bind; `$HOME` stays in the list (I-3).
+//!
 //! **Defaults are never dropped (I-4).** Every list here starts with the
 //! `$HOME`-relative default and adds the relocated path, so a mask or bind that
 //! existed before still exists.
@@ -32,6 +39,7 @@ use std::path::{Path, PathBuf};
 
 use super::sandbox::{NULL_MASK_FILES, TMPFS_MASK_DIRS};
 use crate::agents::adapters::claude::resolve_config_root;
+use crate::state_reader::config_json::{resolve_gsd_home_from, GSD_HOME_ENV};
 
 /// Credential directories under `$XDG_CONFIG_HOME`; the `$HOME`-relative twins are
 /// `.config/gh`, `.config/gcloud` and `.config/glab-cli` in
@@ -51,6 +59,10 @@ pub const XDG_CONFIG_CREDENTIAL_FILES: &[&str] = &["git/credentials"];
 pub struct HostDirs {
     /// The host `$HOME`.
     pub home: PathBuf,
+    /// The GSD home as gsd-core resolves it (`config_json::resolve_gsd_home_from`:
+    /// non-empty `$GSD_HOME` used as given, else `home`); may be relative,
+    /// `gsd_homes()` keeps it only when absolute.
+    pub gsd_home: PathBuf,
     /// The Claude root: `$CLAUDE_CONFIG_DIR` when non-empty and absolute, else
     /// `<home>/.claude`.
     pub claude_root: PathBuf,
@@ -110,8 +122,11 @@ impl HostDirs {
         let runtime_dir = env("XDG_RUNTIME_DIR")
             .map(PathBuf::from)
             .filter(|p| !p.as_os_str().is_empty() && p.is_absolute());
+        let gsd_home = resolve_gsd_home_from(env(GSD_HOME_ENV).as_deref(), Some(home.as_os_str()))
+            .unwrap_or_else(|| home.to_path_buf());
         HostDirs {
             home: home.to_path_buf(),
+            gsd_home,
             claude_root,
             config_home: xdg_dir(&env, "XDG_CONFIG_HOME", home, ".config"),
             data_home: xdg_dir(&env, "XDG_DATA_HOME", home, ".local/share"),
@@ -127,6 +142,15 @@ impl HostDirs {
         let mut dirs = HostDirs::resolve(home, |name| std::env::var_os(name));
         dirs.run_token = host_run_token();
         dirs
+    }
+
+    /// `[home, gsd_home]`, deduplicated; `gsd_home` only when absolute.
+    pub fn gsd_homes(&self) -> Vec<PathBuf> {
+        let mut out = vec![self.home.clone()];
+        if self.gsd_home.is_absolute() {
+            out.push(self.gsd_home.clone());
+        }
+        dedup(out)
     }
 
     /// `[claude_root, <home>/.claude]`, deduplicated.
@@ -245,6 +269,31 @@ mod tests {
         assert_eq!(d.run_token, None);
         assert_eq!(d.claude_roots(), vec![PathBuf::from("/home/u/.claude")]);
         assert_eq!(d.config_homes(), vec![PathBuf::from("/home/u/.config")]);
+        assert_eq!(d.gsd_home, home());
+        assert_eq!(d.gsd_homes(), vec![home()]);
+    }
+
+    #[test]
+    fn gsd_home_follows_the_shared_resolver_and_keeps_the_default() {
+        let gsd = |v: &str| HostDirs::resolve(&home(), env_of(&[("GSD_HOME", v)]));
+        assert_eq!(gsd("/g").gsd_homes(), vec![home(), PathBuf::from("/g")]);
+        assert_eq!(gsd("").gsd_homes(), vec![home()]);
+        assert_eq!(gsd("/home/u").gsd_homes(), vec![home()], "deduplicated");
+        for relative in ["rel/dir", "~/x"] {
+            let d = gsd(relative);
+            assert_eq!(d.gsd_home, PathBuf::from(relative), "kept as given");
+            assert_eq!(d.gsd_homes(), vec![home()], "{relative:?} binds nothing");
+        }
+        for v in ["", "/g", "rel/dir", "~/x", "/home/u"] {
+            assert_eq!(
+                Some(gsd(v).gsd_home),
+                resolve_gsd_home_from(
+                    Some(OsString::from(v).as_os_str()),
+                    Some(home().as_os_str())
+                ),
+                "{v:?}"
+            );
+        }
     }
 
     #[test]

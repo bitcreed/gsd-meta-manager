@@ -11,7 +11,7 @@
 //! * the toolchain: the `PATH` hit and the install root of each of [`HOME_TOOLS`]
 //!   that lives under `$HOME`, `$CARGO_HOME/{bin,env,config.toml,config}` and
 //!   `$RUSTUP_HOME`, so `~/.cargo/credentials.toml` is out by construction;
-//! * GSD and rtk: [`CLAUDE_RO_REL`] under every Claude root, [`HOME_RO_REL`] and
+//! * GSD and rtk: [`CLAUDE_RO_REL`] under every Claude root, [`GSD_RO_REL`] under every GSD home and
 //!   `<config home>/rtk`;
 //! * this binary (the `driverctl` shim and the bridge run it): its tool root when it has
 //!   a `bin/` or `versions/` layout, else only the file;
@@ -37,6 +37,15 @@
 //! outside both becomes an empty tmpfs with only its GSD entries re-bound read-only (its
 //! credential files are `/dev/null`-masked in `sandbox`); a root that is `/` or an
 //! ancestor of `$HOME`, `/tmp` or a tool gets no tmpfs at all (I-5, `host_dirs::placement`).
+//!
+//! `GSD_HOME` (quick 261113-epo) follows gsd-core's own rule instead: empty or unset
+//! means `$HOME`, anything else is used as given. The `.gsd` and `.gsd-capabilities.json`
+//! of both `$HOME` and an absolute `$GSD_HOME` are bound (the union, I-3). Under `$HOME`
+//! they are bound like any `$HOME` entry; elsewhere they are re-bound read-only when
+//! they exist, so the `/tmp`, `/run` or Claude-root tmpfs cannot hide them (I-4). A GSD
+//! home never gets a tmpfs, because it may hold the project; a relative value adds
+//! nothing; an entry inside a credential directory is never named (I-6); and it is never
+//! bound as a whole install root (I-5).
 //!
 //! The git configuration is not bound either: [`HomeSetup`] writes a three-key
 //! per-run gitconfig and the sandbox binds that at `~/.gitconfig` (D-17), so no
@@ -68,10 +77,11 @@ pub const CLAUDE_RO_REL: &[&str] = &[
     ".gsd-profile",
 ];
 
-/// Entries under `$HOME` re-bound read-only when they exist (D-16): the GSD profile and
-/// capability files. The Claude root's entries are [`CLAUDE_RO_REL`] and the rtk
-/// configuration is `<config home>/rtk`.
-pub const HOME_RO_REL: &[&str] = &[".gsd", ".gsd-capabilities.json"];
+/// Entries of each GSD home (`$HOME` and an absolute `$GSD_HOME`, gsd-core's
+/// `resolveGsdHome`) re-bound read-only when they exist (D-16): GSD's store and its
+/// global capability ledger. Both sit directly in the GSD home; the ledger is not
+/// inside `.gsd` (quick 261113-epo).
+pub const GSD_RO_REL: &[&str] = &[".gsd", ".gsd-capabilities.json"];
 
 /// The size of the empty tmpfs over a Claude root outside `$HOME` and `/tmp`: 1 MiB
 /// `[inferred — audit]` (the driver never writes there; it exists to hide the root's
@@ -232,8 +242,8 @@ fn per_run_tmpfs(facts: &HostFacts) -> Vec<(PathBuf, u64)> {
 }
 
 /// True when `root` may not be bound as a whole: it is `$HOME` or outside it, one of
-/// the shared directories [`REFUSED_ROOT_REL`], a relocated XDG home or a Claude root,
-/// `$CARGO_HOME`, or it would expose a credential directory, a masked credential file
+/// the shared directories [`REFUSED_ROOT_REL`], a relocated XDG home, a Claude root or a
+/// GSD home, `$CARGO_HOME`, or it would expose a credential directory, a masked credential file
 /// or one of the per-run tmpfs paths.
 fn root_refused(root: &Path, facts: &HostFacts) -> bool {
     let home = &facts.home;
@@ -245,6 +255,7 @@ fn root_refused(root: &Path, facts: &HostFacts) -> bool {
             .iter()
             .any(|dir| root == dir.as_path())
         || dirs.claude_roots().iter().any(|claude| root == claude)
+        || dirs.gsd_homes().iter().any(|gsd| root == gsd)
         || touches_mask_dir(root, facts)
     {
         return true;
@@ -312,8 +323,19 @@ fn candidates(facts: &HostFacts, overlay: bool) -> Vec<HomeBind> {
         }
     }
     ro(facts.rustup_home.clone(), &mut out);
-    for rel in HOME_RO_REL {
-        ro(home.join(rel), &mut out);
+    // Every GSD home: `$HOME` and an absolute `$GSD_HOME` (quick 261113-epo, I-3,
+    // I-4, I-6). Under `$HOME` an entry is bound like any other; elsewhere it is
+    // re-bound read-only so a `/tmp`, `/run` or Claude-root tmpfs cannot hide it. A
+    // GSD home never gets a tmpfs: it may hold the project.
+    for gsd_home in facts.dirs.gsd_homes() {
+        for rel in GSD_RO_REL {
+            let path = gsd_home.join(rel);
+            if path.starts_with(home) {
+                ro(path, &mut out);
+            } else if !touches_mask_dir(&path, facts) {
+                out.push(HomeBind::Ro(path));
+            }
+        }
     }
     for config_home in facts.dirs.config_homes() {
         ro(config_home.join("rtk"), &mut out);
@@ -362,8 +384,10 @@ fn candidates(facts: &HostFacts, overlay: bool) -> Vec<HomeBind> {
 /// a tmpfs under `$HOME` is always present, one elsewhere only when its path exists.
 /// Parents come before children (by depth, then name), an entry nested in another
 /// read-only or overlay entry is dropped, and a tool or tree outside `$HOME` is skipped:
-/// it is visible through the read-only `/`. The exception is a Claude root outside both
-/// `$HOME` and `/tmp`, which is an empty tmpfs with its GSD entries re-bound (I-5).
+/// it is visible through the read-only `/`. The exceptions are a Claude root outside both
+/// `$HOME` and `/tmp`, which is an empty tmpfs with its GSD entries re-bound (I-5), and
+/// the `.gsd` and `.gsd-capabilities.json` of an absolute `$GSD_HOME` outside `$HOME`,
+/// which are re-bound read-only when they exist and never put under a tmpfs.
 pub fn home_allowlist(facts: &HostFacts, overlay: bool) -> Vec<HomeBind> {
     let mut picked: Vec<HomeBind> = candidates(facts, overlay)
         .into_iter()
@@ -1031,12 +1055,22 @@ mod tests {
             ("XDG_DATA_HOME", "/home/u/data"),
             ("CLAUDE_CONFIG_DIR", "/home/u/profiles/work"),
         ]);
+        let gsd_in_cfg = [
+            relocated_facts(&[
+                ("XDG_CONFIG_HOME", "/home/u/cfg"),
+                ("GSD_HOME", "/home/u/cfg/gh"),
+            ]),
+            relocated_facts(&[("XDG_CONFIG_HOME", "/x/cfg"), ("GSD_HOME", "/x/cfg/gh")]),
+        ];
         for facts in [
             facts(),
             hostile_tools(facts()),
             relocated.clone(),
             hostile_tools(relocated),
-        ] {
+        ]
+        .into_iter()
+        .chain(gsd_in_cfg)
+        {
             for overlay in [true, false] {
                 for bind in home_allowlist(&facts, overlay) {
                     for mask in facts.dirs.credential_dirs() {
@@ -1079,6 +1113,84 @@ mod tests {
             }
         }
         assert!(!got.iter().any(|e| e.starts_with("tmpfs /home/u/profiles")));
+    }
+
+    #[test]
+    fn a_gsd_home_under_home_binds_the_store_of_both_homes() {
+        let f = relocated_facts(&[("GSD_HOME", "/home/u/gsd")]);
+        let got = paths(&home_allowlist(&f, true));
+        for want in [
+            "ro /home/u/gsd/.gsd",
+            "ro /home/u/gsd/.gsd-capabilities.json",
+            "ro /home/u/.gsd",
+            "ro /home/u/.gsd-capabilities.json",
+        ] {
+            assert!(got.contains(&want.to_owned()), "{want}: {got:?}");
+        }
+    }
+
+    #[test]
+    fn a_gsd_home_outside_home_is_rebound_without_a_tmpfs() {
+        for root in ["/srv/gsd", "/tmp/gsd"] {
+            let f = relocated_facts(&[("GSD_HOME", root)]);
+            let got = paths(&home_allowlist(&f, true));
+            for rel in GSD_RO_REL {
+                let want = format!("ro {root}/{rel}");
+                assert!(got.contains(&want), "{want}: {got:?}");
+            }
+            assert!(
+                !got.iter().any(|e| e.starts_with(&format!("tmpfs {root}"))),
+                "{got:?}"
+            );
+            assert!(got.contains(&"ro /home/u/.gsd".to_owned()), "{got:?}");
+            // Named only when it exists.
+            let mut absent = f.clone();
+            absent.existing.remove(Path::new(&format!("{root}/.gsd")));
+            let got = paths(&home_allowlist(&absent, true));
+            assert!(!got.contains(&format!("ro {root}/.gsd")), "{got:?}");
+            assert!(
+                got.contains(&format!("ro {root}/.gsd-capabilities.json")),
+                "{got:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_relative_or_degenerate_gsd_home_never_gets_a_tmpfs() {
+        let plain = home_allowlist(&facts(), true);
+        for value in ["", "rel/dir", "~/x"] {
+            let f = relocated_facts(&[("GSD_HOME", value)]);
+            assert_eq!(home_allowlist(&f, true), plain, "{value:?}");
+        }
+        for root in ["/", "/home", "/home/u/.cargo/bin"] {
+            let f = relocated_facts(&[("GSD_HOME", root)]);
+            for bind in home_allowlist(&f, true) {
+                if let HomeBind::Tmpfs { path, .. } = &bind {
+                    assert!(
+                        path.starts_with("/home/u") && !f.dirs.gsd_homes().contains(path),
+                        "{root}: {bind:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_relocated_gsd_home_is_never_an_install_root() {
+        let mut f = relocated_facts(&[("GSD_HOME", "/home/u/gsd")]);
+        f.tools = vec![ToolHit {
+            name: "x".to_owned(),
+            hit: PathBuf::from("/home/u/gsd/bin/x"),
+            real: PathBuf::from("/home/u/gsd/bin/x"),
+        }];
+        f.existing = candidates(&f, true)
+            .iter()
+            .map(|bind| bind.path().to_owned())
+            .collect();
+        assert_eq!(install_root(Path::new("/home/u/gsd/bin/x"), &f), None);
+        let got = paths(&home_allowlist(&f, true));
+        assert!(got.contains(&"ro /home/u/gsd/bin/x".to_owned()), "{got:?}");
+        assert!(!got.contains(&"ro /home/u/gsd".to_owned()), "{got:?}");
     }
 
     #[test]
