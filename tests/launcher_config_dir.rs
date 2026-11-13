@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use chrono::Utc;
-use gsd_meta_manager::launcher::auth::{resolve_launch_token, TokenSource};
+use gsd_meta_manager::launcher::auth::{resolve_launch_token_in, TokenSource};
 use gsd_meta_manager::launcher::config_dir::{
     hook_command, hook_is_kept, managed_settings, read_host_managed, run_state_dir_in, seed,
     settings_transform, GateCommands, SeedSpec, DENY_TOOLS, DROPPED_SETTINGS_KEYS, LINK_FROM_HOST,
@@ -24,9 +24,6 @@ use tempfile::TempDir;
 
 const HOOK: &str = "'/cfg/bin/driverctl' hook";
 const GUARD: &str = "'/cfg/bin/driverctl' stop-guard --run-dir '/runs/r1'";
-
-/// Serialises the one test that points `HOME` / `XDG_CONFIG_HOME` at a fixture.
-static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 /// Serialises the two shim tests' write -> spawn -> wait sequence.
 ///
@@ -363,6 +360,7 @@ fn seed_filters_the_host_hooks_by_the_keep_roots_in_both_postures() {
         let mut spec = spec_in(root.path());
         spec.config_dir = root.path().join(format!("cfg-{managed}"));
         spec.host_claude_dir = home.join(".claude");
+        spec.host_home = home.clone();
         spec.managed = managed;
         spec.keep_roots = vec![hooks.clone()];
         seed(&spec).unwrap();
@@ -385,6 +383,7 @@ fn spec_in(root: &Path) -> SeedSpec {
     SeedSpec {
         config_dir: root.join("cfg"),
         host_claude_dir: root.join("host"),
+        host_home: root.to_path_buf(),
         binary: PathBuf::from("/opt/gsd-meta-manager"),
         run_dir: root.join("run"),
         socket: root.join("driverctl.sock"),
@@ -392,6 +391,73 @@ fn spec_in(root: &Path) -> SeedSpec {
         host_managed_dir: root.join("no-host-managed"),
         keep_roots: Vec::new(),
     }
+}
+
+#[test]
+fn seed_expands_home_against_host_home_not_the_claude_dirs_parent() {
+    // quick 261113-dck: `host_claude_dir` is `$CLAUDE_CONFIG_DIR` (a profile), so its
+    // parent is not the host `$HOME` the hook's `$HOME` expands against.
+    let root = TempDir::new().unwrap();
+    let home = root.path().join("home");
+    let profile = root.path().join("profiles/work");
+    let hooks = home.join(".claude/hooks");
+    fs::create_dir_all(&hooks).unwrap();
+    fs::create_dir_all(&profile).unwrap();
+    let keep = "bash $HOME/.claude/hooks/gsd-x.sh".to_owned();
+    fs::write(
+        profile.join("settings.json"),
+        json!({"hooks": {"PreToolUse": [
+            {"matcher": "Bash", "hooks": [{"type": "command", "command": keep}]}
+        ]}})
+        .to_string(),
+    )
+    .unwrap();
+    for managed in [true, false] {
+        let mut spec = spec_in(root.path());
+        spec.config_dir = root.path().join(format!("cfg-{managed}"));
+        spec.host_claude_dir = profile.clone();
+        spec.host_home = home.clone();
+        spec.managed = managed;
+        spec.keep_roots = vec![hooks.clone()];
+        seed(&spec).unwrap();
+        let settings = read_json(&spec.config_dir.join("settings.json"));
+        assert!(
+            hooks_of(&settings, "PreToolUse").contains(&keep),
+            "managed={managed}: {settings}"
+        );
+    }
+}
+
+#[test]
+fn a_gsd_hook_under_a_relocated_claude_root_is_kept() {
+    let root = TempDir::new().unwrap();
+    let home = root.path().join("home");
+    let profile = home.join("profiles/work");
+    fs::create_dir_all(profile.join("hooks")).unwrap();
+    let gsd = format!("node {}/hooks/gsd-y.js", profile.display());
+    let other = format!("bash {}/bin/other.sh", profile.display());
+    fs::write(
+        profile.join("settings.json"),
+        json!({"hooks": {"PreToolUse": [
+            {"matcher": "Bash", "hooks": [
+                {"type": "command", "command": gsd},
+                {"type": "command", "command": other}
+            ]}
+        ]}})
+        .to_string(),
+    )
+    .unwrap();
+    let mut spec = spec_in(root.path());
+    spec.host_claude_dir = profile.clone();
+    spec.host_home = home.clone();
+    spec.keep_roots = vec![profile.join("hooks"), profile.join("bin")];
+    seed(&spec).unwrap();
+    let commands = hooks_of(
+        &read_json(&spec.config_dir.join("settings.json")),
+        "PreToolUse",
+    );
+    assert!(commands.contains(&gsd), "{commands:?}");
+    assert!(!commands.contains(&other), "{commands:?}");
 }
 
 fn read_json(path: &Path) -> Value {
@@ -594,7 +660,6 @@ fn regular_files(dir: &Path, out: &mut Vec<PathBuf>) {
 
 #[test]
 fn no_refresh_token_material_reaches_the_sandbox() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let home = TempDir::new().unwrap();
     let host_claude = home.path().join(".claude");
     fs::create_dir_all(&host_claude).unwrap();
@@ -616,15 +681,16 @@ fn no_refresh_token_material_reaches_the_sandbox() {
     )
     .unwrap();
 
-    std::env::set_var("HOME", home.path());
-    std::env::remove_var("XDG_CONFIG_HOME");
-    let token = resolve_launch_token(Utc::now()).expect("the host token resolves");
+    let no_stored = home.path().join("no-stored-token");
+    let token = resolve_launch_token_in(Some(&no_stored), Some(&host_claude), Utc::now())
+        .expect("the host token resolves");
     assert_eq!(token.source, TokenSource::Host);
     assert_eq!(token.value, "AT-SENTINEL-0123456789");
 
     let spec = SeedSpec {
         config_dir: home.path().join("data/cfg"),
         host_claude_dir: host_claude.clone(),
+        host_home: home.path().to_path_buf(),
         binary: PathBuf::from("/opt/gsd-meta-manager"),
         run_dir: home.path().join("run"),
         socket: home.path().join("run.sock"),
@@ -694,6 +760,7 @@ fn next_shim_with_fake_binary(root: &TempDir) -> (PathBuf, PathBuf) {
     let spec = SeedSpec {
         config_dir: root.path().join("cfg"),
         host_claude_dir: root.path().join("host"),
+        host_home: root.path().to_path_buf(),
         binary: fake,
         run_dir: root.path().join("run"),
         socket: root.path().join("run.sock"),

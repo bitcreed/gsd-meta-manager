@@ -630,6 +630,7 @@ mod host_side {
     use crate::launcher::egress::upstream::Upstream;
     use crate::launcher::egress::{TokenProvider, INFERENCE_HOST};
     use crate::launcher::host::{self, HostCaps, Posture};
+    use crate::launcher::host_dirs::HostDirs;
     use crate::launcher::outcome::is_auth_failure;
     use crate::launcher::run::summarize_stream_file;
     use crate::launcher::sandbox::{common_env_sets, egress_env_sets, BRIDGE_PORT};
@@ -730,11 +731,11 @@ mod host_side {
         }
 
         /// What the launcher-side egress server injects.
-        pub fn egress_token(self, credential: &LaunchToken, home: &Path) -> TokenProvider {
+        pub fn egress_token(self, credential: &LaunchToken, host: &HostDirs) -> TokenProvider {
             match credential.source {
                 TokenSource::Stored => TokenProvider::Static(credential.value.clone()),
                 TokenSource::Host => TokenProvider::Host {
-                    claude_dir: home.join(".claude"),
+                    claude_dir: host.claude_root.clone(),
                     initial: credential.value.clone(),
                 },
             }
@@ -758,7 +759,7 @@ mod host_side {
         pub fn seed_config(
             self,
             config_dir: &Path,
-            home: &Path,
+            host: &HostDirs,
             binary: &Path,
             report_dir: &Path,
             managed: bool,
@@ -771,7 +772,8 @@ mod host_side {
             };
             seed_oneoff(&OneoffSeedSpec {
                 config_dir: config_dir.to_owned(),
-                host_claude_dir: home.join(".claude"),
+                host_claude_dir: host.claude_root.clone(),
+                host_home: host.home.clone(),
                 binary: binary.to_owned(),
                 report_dir: report_dir.to_owned(),
                 managed,
@@ -816,6 +818,51 @@ mod host_side {
                 end,
                 DateTime::from_timestamp(1_800_000_000, 0).unwrap(),
             )
+        }
+
+        #[test]
+        fn seed_config_and_egress_token_follow_the_relocated_claude_root() {
+            use crate::launcher::auth::TokenSource;
+            use std::ffi::OsString;
+            let root = TempDir::new().unwrap();
+            let home = root.path().join("home");
+            let profile = root.path().join("profiles/work");
+            std::fs::create_dir_all(profile.join("agents")).unwrap();
+            std::fs::create_dir_all(home.join(".claude/skills")).unwrap();
+            let profile_text = profile.as_os_str().to_owned();
+            let host = HostDirs::resolve(&home, |name| {
+                (name == "CLAUDE_CONFIG_DIR").then(|| OsString::from(&profile_text))
+            });
+
+            let config = root.path().join("cfg");
+            AgentRuntime::default()
+                .seed_config(
+                    &config,
+                    &host,
+                    Path::new("/opt/gsd-meta-manager"),
+                    &root.path().join("report"),
+                    false,
+                    &[],
+                )
+                .unwrap();
+            assert_eq!(
+                std::fs::read_link(config.join("agents")).unwrap(),
+                profile.join("agents")
+            );
+            assert!(
+                std::fs::symlink_metadata(config.join("skills")).is_err(),
+                "the default root is not merged in"
+            );
+
+            let credential = LaunchToken {
+                value: "at".to_owned(),
+                source: TokenSource::Host,
+                expires_at: None,
+            };
+            match AgentRuntime::default().egress_token(&credential, &host) {
+                TokenProvider::Host { claude_dir, .. } => assert_eq!(claude_dir, profile),
+                _ => panic!("a host credential yields the Host provider"),
+            }
         }
 
         #[test]

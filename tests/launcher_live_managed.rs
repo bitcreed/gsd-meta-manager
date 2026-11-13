@@ -189,6 +189,7 @@ fn a_nested_claude_cannot_shed_the_managed_gate_hook() {
     seed(&SeedSpec {
         config_dir: config_dir.clone(),
         host_claude_dir: home.join(".claude"),
+        host_home: home.clone(),
         binary: logger.clone(),
         run_dir: run_dir.clone(),
         socket: socket.clone(),

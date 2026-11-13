@@ -41,6 +41,47 @@ A sandboxed launch (`bwrap` inside a `systemd-run --user --scope` unit) gives th
 A launch on a host that cannot do this is refused unless you pick **Launch UNSANDBOXED** (or pass
 `--unsandboxed`), which asks a second time and lists what the run would lack.
 
+## Relocated host directories
+
+`CLAUDE_CONFIG_DIR` and the XDG base-directory variables move where Claude Code and the host's
+tools keep their files. The launcher follows them with one rule: a value counts only when it is
+**non-empty and absolute**; a blank or relative value (and a literal `~/x`) is treated as unset, as
+Claude Code itself does, and the default under `$HOME` is used. It applies to `CLAUDE_CONFIG_DIR`
+(default `~/.claude`), `XDG_CONFIG_HOME` (`~/.config`), `XDG_DATA_HOME` (`~/.local/share`),
+`XDG_CACHE_HOME` (`~/.cache`) and `XDG_RUNTIME_DIR`.
+
+What follows `CLAUDE_CONFIG_DIR`: the host-token fallback (`${CLAUDE_CONFIG_DIR:-~/.claude}/.credentials.json`,
+read at launch, on every auth relaunch and by the egress server, and reported by `driver auth status`),
+and the links and settings the per-run config directory is seeded from. When the variable is set there
+is no fallback to `~/.claude`: the launch uses that profile's account or none.
+
+**Binds and masks are the union of the default and the relocated location**, so nothing that was bound
+or masked before is dropped:
+
+- the GSD entries (`agents`, `commands`, `skills`, `gsd-core`, `get-shit-done`, `hooks`, `scripts`,
+  `.gsd-profile`) of both the configured Claude root and `~/.claude`, and the rtk config of both
+  `~/.config/rtk` and `$XDG_CONFIG_HOME/rtk`, are bound read-only (a hook that names `~/.claude/hooks/...`
+  keeps working on a profile host);
+- the per-run tmpfs for the cache and the rtk data exist at both the default and the relocated paths;
+- a relocated XDG directory and every Claude root are never bound as a whole (a tool installed under one
+  gets only its own file bound), and their credential stores join the no-overlap rule;
+- the stored run token is masked wherever its resolver puts it, and the default `~/...` credential masks stay.
+
+Where a relocated path lies decides what happens to it:
+
+| What | Where | Treatment |
+|------|-------|-----------|
+| A Claude root | under `$HOME` | Its GSD entries are bound read-only like any `$HOME` entry. |
+| A Claude root | under `/tmp` | Its GSD entries are re-bound read-only; `/tmp` is already an empty tmpfs. |
+| A Claude root | elsewhere (and not `/`, not an ancestor of `$HOME`, `/tmp`, a toolchain or this binary) | An empty 1 MiB tmpfs hides it; only its GSD entries that exist are re-bound read-only. |
+| A Claude root | `/` or an ancestor of `$HOME`, `/tmp`, a toolchain or this binary | Nothing: a tmpfs there would hide the sandbox's own footing. |
+| Its `.credentials.json` and `.claude.json` | outside `$HOME` and `/tmp` | Masked with `/dev/null` whenever they exist. |
+| Relocated `gh`, `gcloud`, `glab-cli`, `git` and `keyrings` directories | outside `$HOME` and `/tmp`, existing | An empty tmpfs hides each. Masking `git` also keeps the host git config (aliases, includes, `credential.helper`) away from the driver. |
+| Relocated cache and rtk data | under `$HOME`, or elsewhere and existing | A per-run tmpfs. |
+
+Under `$HOME` nothing needs masking: the `$HOME` tmpfs already hides every path that is not bound.
+`gsd-meta-manager`'s own `GSD_HOME`-relative binds (`.gsd`, `.gsd-capabilities.json`) are not relocated.
+
 ## Protections and `protections_absent`
 
 Every launch records `protections_absent` in its run files: the protections that launch did not
@@ -109,7 +150,9 @@ posture row:
 - **`host-token`**: the login token your own Claude Code install holds. It carries a wider
   server-side scope (sessions, connectors, plugins, profile and more).
 
-The host-token fallback is kept so a launch works before you run setup, but the Driver tab then
+The host-token fallback reads `${CLAUDE_CONFIG_DIR:-~/.claude}/.credentials.json` (see
+[Relocated host directories](#relocated-host-directories)). It is kept so a launch works before you run
+setup, but the Driver tab then
 shows `auth host-token  run driver auth setup`. Run `driver auth setup` once to narrow the
 server-side scope of the credential the launcher holds.
 
@@ -177,6 +220,11 @@ keep the driver usable on arbitrary projects. Each is its own entry.
   no tool use does not pass any gate hook. It is bounded by the active-seconds cap, the scope's
   `RuntimeMaxSec`, `MemoryMax` and `TasksMax`, and the proxy's request count, which is recorded on
   the run as `inference_requests` and shown as `api <n>`. There is no request-count cap.
+- **Other contents of relocated XDG directories outside `$HOME` stay readable.** The sandbox mounts `/`
+  read-only; only the named credential stores of a relocated `XDG_CONFIG_HOME` or `XDG_DATA_HOME` outside
+  `$HOME` and `/tmp` are hidden (see [Relocated host directories](#relocated-host-directories)). Masking
+  the whole directory would hide toolchains installed under it. This is unchanged from before the
+  directories could be relocated.
 - **Dangling out-of-allowlist symlinks.** A symlink inside an allowlisted directory whose target is
   outside the allowlist is not followed, so it dangles inside the sandbox (for example a skill
   directory symlinked into `~/projects`). The launcher logs the dangling entries once; they are an

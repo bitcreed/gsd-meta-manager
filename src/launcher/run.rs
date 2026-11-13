@@ -63,7 +63,7 @@ use serde_json::Value;
 
 use super::auth::{host_access_token, resolve_launch_token, AuthError, TokenSource};
 use super::config_dir::{
-    app_root_masks, driver_root, resolve_current_exe, run_state_dir_in, seed, snapshot_exe,
+    driver_root, resolve_current_exe, run_state_dir_in, sandbox_dir_masks, seed, snapshot_exe,
     SeedSpec, HOST_MANAGED_DIR,
 };
 use super::egress::upstream::Upstream;
@@ -73,6 +73,7 @@ use super::egress::{
 use super::gate::{new_tripped, trip, tripped_cap, CapGate, Tripped};
 use super::home::HomeSetup;
 use super::host::{decide, detect, protections_absent, Posture};
+use super::host_dirs::HostDirs;
 use super::outcome::{self, LaunchEnd, StreamAccumulator, StreamSummary, Verdict};
 use super::process::{
     respawn_detached, run_bounded, spawn_launch_child, CAPTURE_FINISH_BUDGET, MAX_STREAM_LINE,
@@ -458,7 +459,9 @@ struct LaunchContext {
     egress_sock: PathBuf,
     /// This binary: the sandbox runs it as `bridge` (D-08).
     binary: PathBuf,
-    home: PathBuf,
+    /// The host's relocatable directories (`CLAUDE_CONFIG_DIR`, `XDG_*`), resolved
+    /// once per launch (quick 261113-dck); `host_dirs.home` is the host `$HOME`.
+    host_dirs: HostDirs,
     /// The sandbox's `$HOME` allowlist and per-run gitconfig, derived once from the
     /// host at launch (D-16, D-17).
     home_setup: HomeSetup,
@@ -652,6 +655,7 @@ pub fn launch(opts: LaunchOptions) -> Result<LaunchSummary, LauncherError> {
     let home = dirs::home_dir().ok_or_else(|| LauncherError::Io {
         detail: "the home directory is unknown".to_owned(),
     })?;
+    let host_dirs = HostDirs::from_host(&home);
     let state_dir = run_state_dir_in(&root, &project, &run_id);
 
     // D-28: the host probes, after every refusal that needs no process and before
@@ -723,7 +727,7 @@ pub fn launch(opts: LaunchOptions) -> Result<LaunchSummary, LauncherError> {
     let egress_sock = egress::socket_path_for(&sock, &run_dir);
     // D-16, D-17: the `$HOME` allowlist and the per-run gitconfig, derived from this
     // host once per launch (every relaunch of the run reuses them).
-    let home_setup = match HomeSetup::for_host(&home, &binary, caps.overlay, &state_dir) {
+    let home_setup = match HomeSetup::for_host_with(&host_dirs, &binary, caps.overlay, &state_dir) {
         Ok(setup) => setup,
         Err(e) => {
             session.close();
@@ -737,7 +741,8 @@ pub fn launch(opts: LaunchOptions) -> Result<LaunchSummary, LauncherError> {
     }
     let seeded = seed(&SeedSpec {
         config_dir: config_dir.clone(),
-        host_claude_dir: home.join(".claude"),
+        host_claude_dir: host_dirs.claude_root.clone(),
+        host_home: home.clone(),
         binary: binary.clone(),
         run_dir: run_dir.clone(),
         socket: sock.clone(),
@@ -779,7 +784,7 @@ pub fn launch(opts: LaunchOptions) -> Result<LaunchSummary, LauncherError> {
         sock,
         egress_sock,
         binary,
-        home,
+        host_dirs,
         home_setup,
         driver_root: root,
         user_stop,
@@ -1132,7 +1137,7 @@ fn auth_relaunch(
     exited: &Exited,
     made: u32,
 ) -> Result<AfterLaunch, LauncherError> {
-    match host_access_token(&ctx.home.join(".claude"), Utc::now()) {
+    match host_access_token(&ctx.host_dirs.claude_root, Utc::now()) {
         Ok(token) => {
             ctx.token = token;
             let attempt = made.saturating_add(1);
@@ -1590,11 +1595,11 @@ fn supervise(
     // but no bwrap and no scope, so none of the 28-03 isolation applies to it.
     let argv = match ctx.posture {
         Posture::BwrapScope => {
-            let spec = SandboxSpec::from_host(paths, &ctx.home, &ctx.home_setup);
+            let spec = SandboxSpec::from_host_with(paths, &ctx.host_dirs, &ctx.home_setup);
             // D-13: the backstop behind the monitor. A degraded launch has none (D-29).
             let runtime_max = budget.remaining.map(runtime_max_sec);
             let bridged = bridged_command(&ctx.binary, BRIDGE_PORT, &ctx.egress_sock, &driver_argv);
-            let masks = app_root_masks(&ctx.home);
+            let masks = sandbox_dir_masks(&ctx.host_dirs);
             systemd_run_argv(
                 unit,
                 runtime_max,
@@ -1722,7 +1727,7 @@ impl EgressGuard {
         let token = match ctx.token.source {
             TokenSource::Stored => TokenProvider::Static(ctx.token.value.clone()),
             TokenSource::Host => TokenProvider::Host {
-                claude_dir: ctx.home.join(".claude"),
+                claude_dir: ctx.host_dirs.claude_root.clone(),
                 initial: ctx.token.value.clone(),
             },
         };

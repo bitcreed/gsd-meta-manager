@@ -72,6 +72,7 @@
 //!     parameter so the whole path runs in CI against a plain-TCP stub.
 
 pub mod home;
+pub mod host_dirs;
 pub mod prompt;
 pub mod sandbox;
 
