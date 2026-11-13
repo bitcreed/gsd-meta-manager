@@ -73,6 +73,7 @@ use super::egress::{
 use super::gate::{new_tripped, trip, tripped_cap, CapGate, Tripped};
 use super::home::HomeSetup;
 use super::host::{decide, detect, protections_absent, Posture};
+use super::host_dirs::HostDirs;
 use super::outcome::{self, LaunchEnd, StreamAccumulator, StreamSummary, Verdict};
 use super::process::{
     respawn_detached, run_bounded, spawn_launch_child, CAPTURE_FINISH_BUDGET, MAX_STREAM_LINE,
@@ -459,6 +460,9 @@ struct LaunchContext {
     /// This binary: the sandbox runs it as `bridge` (D-08).
     binary: PathBuf,
     home: PathBuf,
+    /// The host's relocatable directories (`CLAUDE_CONFIG_DIR`, `XDG_*`), resolved
+    /// once per launch (quick 261113-dck).
+    host_dirs: HostDirs,
     /// The sandbox's `$HOME` allowlist and per-run gitconfig, derived once from the
     /// host at launch (D-16, D-17).
     home_setup: HomeSetup,
@@ -652,6 +656,7 @@ pub fn launch(opts: LaunchOptions) -> Result<LaunchSummary, LauncherError> {
     let home = dirs::home_dir().ok_or_else(|| LauncherError::Io {
         detail: "the home directory is unknown".to_owned(),
     })?;
+    let host_dirs = HostDirs::from_host(&home);
     let state_dir = run_state_dir_in(&root, &project, &run_id);
 
     // D-28: the host probes, after every refusal that needs no process and before
@@ -780,6 +785,7 @@ pub fn launch(opts: LaunchOptions) -> Result<LaunchSummary, LauncherError> {
         egress_sock,
         binary,
         home,
+        host_dirs,
         home_setup,
         driver_root: root,
         user_stop,
@@ -1132,7 +1138,7 @@ fn auth_relaunch(
     exited: &Exited,
     made: u32,
 ) -> Result<AfterLaunch, LauncherError> {
-    match host_access_token(&ctx.home.join(".claude"), Utc::now()) {
+    match host_access_token(&ctx.host_dirs.claude_root, Utc::now()) {
         Ok(token) => {
             ctx.token = token;
             let attempt = made.saturating_add(1);
@@ -1722,7 +1728,7 @@ impl EgressGuard {
         let token = match ctx.token.source {
             TokenSource::Stored => TokenProvider::Static(ctx.token.value.clone()),
             TokenSource::Host => TokenProvider::Host {
-                claude_dir: ctx.home.join(".claude"),
+                claude_dir: ctx.host_dirs.claude_root.clone(),
                 initial: ctx.token.value.clone(),
             },
         };

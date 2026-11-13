@@ -16,6 +16,7 @@ mod launcher_support;
 use std::fs;
 use std::io::Write;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::path::Path;
 use std::process::{Command, Output, Stdio};
 
 use gsd_meta_manager::launcher::sandbox::DUMMY_OAUTH_TOKEN;
@@ -52,8 +53,12 @@ fn forget_token_dir(fx: &Fixture) {
 }
 
 fn host_credentials(fx: &Fixture, expires_in_minutes: i64) -> String {
-    let dir = fx.home().join(".claude");
-    fs::create_dir_all(&dir).unwrap();
+    host_credentials_at(&fx.home().join(".claude"), expires_in_minutes)
+}
+
+/// [`host_credentials`] in an arbitrary Claude root (`$CLAUDE_CONFIG_DIR`).
+fn host_credentials_at(dir: &Path, expires_in_minutes: i64) -> String {
+    fs::create_dir_all(dir).unwrap();
     let expires = chrono::Utc::now() + chrono::Duration::minutes(expires_in_minutes);
     fs::write(
         dir.join(".credentials.json"),
@@ -236,6 +241,33 @@ fn status_reports_presence_without_the_value() {
     for secret in [PASTED, HOST_ACCESS, HOST_REFRESH] {
         assert!(!shown.contains(secret), "status printed {secret}:\n{shown}");
     }
+}
+
+#[test]
+fn status_reads_the_host_token_from_claude_config_dir() {
+    // quick 261113-dck: the host token follows `$CLAUDE_CONFIG_DIR`; a relative
+    // value counts as unset, so the (empty) default `~/.claude` is read.
+    let fx = Fixture::new();
+    fx.write_token(None);
+    let profile = fx.home().join(".local/share/claude-profiles/work");
+    let expiry_prefix = host_credentials_at(&profile, 120);
+
+    let out = auth(&fx, "status")
+        .env("CLAUDE_CONFIG_DIR", &profile)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", text(&out));
+    let shown = text(&out);
+    assert!(shown.contains("host token: expires"), "{shown}");
+    assert!(shown.contains(&expiry_prefix), "{shown}");
+
+    let out = auth(&fx, "status")
+        .env("CLAUDE_CONFIG_DIR", "relative/profile")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", text(&out));
+    let shown = text(&out);
+    assert!(shown.contains("host token: none found"), "{shown}");
 }
 
 #[test]

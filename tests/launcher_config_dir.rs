@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use chrono::Utc;
-use gsd_meta_manager::launcher::auth::{resolve_launch_token, TokenSource};
+use gsd_meta_manager::launcher::auth::{resolve_launch_token_in, TokenSource};
 use gsd_meta_manager::launcher::config_dir::{
     hook_command, hook_is_kept, managed_settings, read_host_managed, run_state_dir_in, seed,
     settings_transform, GateCommands, SeedSpec, DENY_TOOLS, DROPPED_SETTINGS_KEYS, LINK_FROM_HOST,
@@ -24,9 +24,6 @@ use tempfile::TempDir;
 
 const HOOK: &str = "'/cfg/bin/driverctl' hook";
 const GUARD: &str = "'/cfg/bin/driverctl' stop-guard --run-dir '/runs/r1'";
-
-/// Serialises the one test that points `HOME` / `XDG_CONFIG_HOME` at a fixture.
-static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 /// Serialises the two shim tests' write -> spawn -> wait sequence.
 ///
@@ -594,7 +591,6 @@ fn regular_files(dir: &Path, out: &mut Vec<PathBuf>) {
 
 #[test]
 fn no_refresh_token_material_reaches_the_sandbox() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let home = TempDir::new().unwrap();
     let host_claude = home.path().join(".claude");
     fs::create_dir_all(&host_claude).unwrap();
@@ -616,9 +612,9 @@ fn no_refresh_token_material_reaches_the_sandbox() {
     )
     .unwrap();
 
-    std::env::set_var("HOME", home.path());
-    std::env::remove_var("XDG_CONFIG_HOME");
-    let token = resolve_launch_token(Utc::now()).expect("the host token resolves");
+    let no_stored = home.path().join("no-stored-token");
+    let token = resolve_launch_token_in(Some(&no_stored), Some(&host_claude), Utc::now())
+        .expect("the host token resolves");
     assert_eq!(token.source, TokenSource::Host);
     assert_eq!(token.value, "AT-SENTINEL-0123456789");
 

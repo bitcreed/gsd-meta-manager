@@ -2,7 +2,9 @@
 //!
 //! Resolution order is fixed (D-22): the token `claude setup-token` printed and
 //! the operator stored (0600, owner-checked), else the host's current
-//! `claudeAiOauth.accessToken`, refused under [`MIN_TOKEN_LIFETIME`] to expiry.
+//! `claudeAiOauth.accessToken` from `${CLAUDE_CONFIG_DIR:-~/.claude}/.credentials.json`
+//! (an absolute `CLAUDE_CONFIG_DIR` only, quick 261113-dck), refused under
+//! [`MIN_TOKEN_LIFETIME`] to expiry.
 //! Nothing else is consulted.
 //!
 //! **Only the access token (and its expiry) is ever extracted from the host
@@ -28,6 +30,8 @@ use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Duration, Utc};
 use serde_json::Value;
+
+use super::host_dirs::HostDirs;
 
 /// The stored token's file name under `dirs::config_dir()/gsd-meta-manager/`.
 pub const TOKEN_FILE_NAME: &str = "driver-oauth-token";
@@ -223,22 +227,36 @@ pub fn host_access_token(
     })
 }
 
+/// The host Claude root the host-token fallback reads: `$CLAUDE_CONFIG_DIR` when
+/// non-empty and absolute, else `~/.claude` (quick 261113-dck). `None` when the
+/// home directory is unknown.
+pub fn host_claude_dir() -> Option<PathBuf> {
+    let home = dirs::home_dir()?;
+    Some(HostDirs::from_host(&home).claude_root)
+}
+
 /// The token for a launch at `now`: stored first, else the host's, else
 /// [`AuthError::Missing`].
 pub fn resolve_launch_token(now: DateTime<Utc>) -> Result<LaunchToken, AuthError> {
-    if let Some(stored) = token_path()
-        .map(|p| read_stored_token(&p))
-        .transpose()?
-        .flatten()
-    {
+    resolve_launch_token_in(token_path().as_deref(), host_claude_dir().as_deref(), now)
+}
+
+/// [`resolve_launch_token`] with the two paths given, for tests. `None` for the
+/// Claude root means there is no host token to fall back to.
+pub fn resolve_launch_token_in(
+    token_path: Option<&Path>,
+    host_claude_dir: Option<&Path>,
+    now: DateTime<Utc>,
+) -> Result<LaunchToken, AuthError> {
+    if let Some(stored) = token_path.map(read_stored_token).transpose()?.flatten() {
         return Ok(LaunchToken {
             value: stored,
             source: TokenSource::Stored,
             expires_at: None,
         });
     }
-    let home = dirs::home_dir().ok_or(AuthError::Missing)?;
-    host_access_token(&home.join(".claude"), now)
+    let dir = host_claude_dir.ok_or(AuthError::Missing)?;
+    host_access_token(dir, now)
 }
 
 /// The shortest pasted token accepted (characters).
@@ -471,7 +489,7 @@ pub fn auth_status_in(
 /// token's expiry. Read-only, and no value is kept.
 pub fn auth_status(now: DateTime<Utc>) -> AuthStatus {
     let path = token_path();
-    let host = dirs::home_dir().map(|h| h.join(".claude"));
+    let host = host_claude_dir();
     auth_status_in(path.as_deref(), host.as_deref(), now)
 }
 
@@ -565,6 +583,26 @@ mod tests {
             read_stored_token(&path),
             Err(AuthError::Malformed { .. })
         ));
+    }
+
+    #[test]
+    fn resolve_launch_token_in_falls_back_to_the_given_claude_dir() {
+        let profile = TempDir::new().unwrap();
+        let host = creds(&profile, Duration::hours(2));
+        let scratch = TempDir::new().unwrap();
+        let missing = scratch.path().join("no-stored-token");
+        let token = resolve_launch_token_in(Some(&missing), Some(&host), now()).unwrap();
+        assert_eq!(token.value, "at-secret");
+        assert_eq!(token.source, TokenSource::Host);
+        // No Claude root at all: nothing to fall back to.
+        assert!(matches!(
+            resolve_launch_token_in(Some(&missing), None, now()),
+            Err(AuthError::Missing)
+        ));
+        // The stored token still wins over the host's.
+        let stored = write_mode(&scratch, "stored", "sk-ant-oat01-stored\n", 0o600);
+        let token = resolve_launch_token_in(Some(&stored), Some(&host), now()).unwrap();
+        assert_eq!(token.source, TokenSource::Stored);
     }
 
     #[test]
