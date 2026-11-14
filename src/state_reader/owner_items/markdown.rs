@@ -7,12 +7,7 @@
 //! takes `&[&str]` lines (split on `\n`, a trailing `\r` tolerated) and returns line
 //! indices. Every pass is linear in the line count, with no recursion and no regex.
 //!
-//! The helpers are shared by the UAT, VERIFICATION and deferred-items parsers. Some
-//! of them have no caller until those parsers land, hence the module-wide
-//! `allow(dead_code)`: the later plans must be able to build on this file without
-//! editing it.
-
-#![allow(dead_code)]
+//! The helpers are shared by the UAT, VERIFICATION and deferred-items parsers.
 
 use super::uat::{js_space, js_trim, line_terminator};
 
@@ -269,7 +264,9 @@ pub(super) fn collect_section(
 }
 
 /// `collectSection` with `stopAtLevel`: the section ends at the next heading whose
-/// level is at most `stop_at_level`, whatever the opener's level.
+/// level is at most `stop_at_level`, whatever the opener's level. No parser needs
+/// the option yet; it stays for the port's test.
+#[cfg(test)]
 pub(super) fn collect_section_stopping_at(
     lines: &[&str],
     predicate: impl Fn(&Heading) -> bool,

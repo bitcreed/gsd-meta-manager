@@ -291,7 +291,6 @@ pub(super) fn flatten_object_list_item(item: &Mapping) -> String {
 /// The entries of the list at `key` as display strings: a scalar entry as its text,
 /// null as an empty string, a mapping or a nested list flattened. A scalar value
 /// reads as a one-entry list; an absent key, null or a mapping reads as empty.
-#[allow(dead_code)] // first caller: the VERIFICATION and deferred parsers of plans 34-02 and 34-03
 pub(super) fn fm_list(map: &Mapping, key: &str) -> Vec<String> {
     match map.get(key) {
         Some(Value::Sequence(items)) => items.iter().map(flatten_for_display).collect(),
