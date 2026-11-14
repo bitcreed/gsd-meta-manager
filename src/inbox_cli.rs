@@ -12,8 +12,8 @@
 //!    never writes). No process table is read.
 //! 2. **One compact JSON document, one stdout line.** Built by
 //!    [`gsd_meta_manager::inbox::build_document`]; no timestamp, so the output is
-//!    deterministic. Until the plain checklist lands (plan 34-05), the text form
-//!    prints the same document.
+//!    deterministic. Without `--json`, the plain checklist of `inbox::render_text`
+//!    is printed instead (lane sections, `- [ ]` items, folds).
 //! 3. **Exit codes.** `0` the document was printed, including per-project error
 //!    entries; `1` the registry could not be loaded or parsed, or the working
 //!    directory is unreadable (nothing on stdout, exactly one stderr line starting
@@ -29,7 +29,7 @@ use std::path::PathBuf;
 use chrono::Utc;
 use gsd_meta_manager::cli::{InboxInclude, InboxLane};
 use gsd_meta_manager::config::{load_config, Config};
-use gsd_meta_manager::inbox::{build_document, EntryError, Filters, ProjectEntry};
+use gsd_meta_manager::inbox::{build_document, render_text, EntryError, Filters, ProjectEntry};
 use gsd_meta_manager::oneoff::todos::list_pending;
 use gsd_meta_manager::state_reader::owner_items::{read_owner_digest, Lane};
 use gsd_meta_manager::state_reader::parse_project_state;
@@ -89,7 +89,7 @@ fn read_entry(
 /// Run `inbox` and return the process exit code.
 pub fn run(
     targets: &[String],
-    _json: bool,
+    json: bool,
     lanes: &[InboxLane],
     includes: &[InboxInclude],
     config: Option<PathBuf>,
@@ -132,6 +132,12 @@ pub fn run(
             },
         })
         .collect();
-    out_line(&build_document(&entries, &filters).to_string());
+    if json {
+        out_line(&build_document(&entries, &filters).to_string());
+    } else {
+        for line in render_text(&entries, &filters).lines() {
+            out_line(line);
+        }
+    }
     0
 }

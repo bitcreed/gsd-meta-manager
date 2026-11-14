@@ -1,0 +1,303 @@
+Owner inbox: 6 projects · test 15 · decide 0 · fix 2 phases · blocked 5
+
+TEST — closes a phase
+  six  ph 21  Export  2 checks  307 d stale  /gsd-verify-work 21
+    - [ ] Export button
+    - [ ] File name
+  six  ph 22  Search  2 checks  307 d stale  /gsd-verify-work 22
+    - [ ] Search box
+    - [ ] Result order
+  six  ph 24  Reports  4 checks  307 d stale  /gsd-verify-work 24
+    - [ ] Weekly report
+    - [ ] Monthly report
+    - [ ] Chart colors
+    - [ ] Print layout
+
+TEST — phase stays open
+  old  ph 24  Current  all checks passed, run /gsd-verify-work 24 to finalize  307 d stale
+  six  ph 20  Ledger  2 checks  307 d stale  /gsd-verify-work 20
+    - [ ] Entry form
+    - [ ] Totals row
+  six  ph 23  Billing  1 check  307 d stale  /gsd-verify-work 23
+    - [ ] Invoice mail
+  six  ph 25  Archive  1 check  307 d stale  /gsd-verify-work 25
+    - [ ] Archive view
+  ws  ph 01  Root  1 check  307 d stale  /gsd-verify-work 1
+    - [ ] Root check
+  ws  ph alpha/03  Stream  2 checks  307 d stale  /gsd-verify-work 03 --ws alpha
+    - [ ] Stream check one
+    - [ ] Stream check two
+
+FIX — code needed
+  gaps  ph 01  Alpha  10 failed checks, 14 gaps  307 d stale  /gsd-plan-phase 01 --gaps
+    - [ ] Check number 1
+        - Behavior 1 of check 1 holds
+        - Behavior 2 of check 1 holds
+    - [ ] Check number 2
+        - Behavior 3 of check 2 holds
+    - [ ] Check number 3
+        - Behavior 4 of check 3 holds
+        - Behavior 5 of check 3 holds
+    - [ ] Check number 4
+        - Behavior 6 of check 4 holds
+    - [ ] Check number 5
+        - Behavior 7 of check 5 holds
+    - [ ] Check number 6
+        - Behavior 8 of check 6 holds
+        - Behavior 9 of check 6 holds
+    - [ ] Check number 7
+        - Behavior 10 of check 7 holds
+    - [ ] Check number 8
+        - Behavior 11 of check 8 holds
+    - [ ] Check number 9
+        - Behavior 12 of check 9 holds
+    - [ ] Check number 10
+        - Behavior 13 of check 10 holds
+        - Behavior 14 of check 10 holds
+  six  ph 25  Archive  1 check  307 d stale  /gsd-plan-phase 25 --gaps
+    - [ ] Old import
+
+BLOCKED
+  six  ph 20  Ledger  2 device  307 d stale
+    - [ ] Scanner pairing
+    - [ ] Label printer
+  six  ph 23  Billing  1 build · 1 third party · 1 blocked  307 d stale
+    - [ ] Identity login
+    - [ ] Store listing
+    - [ ] Legal text
+
+OLD DEBT
+  old  ph 20  intake  3 checks  (v1.5)  307 d stale
+    - [ ] Plain skip 1
+    - [ ] Plain skip 2
+    - [ ] Plain skip 3
+  old  ph 20  intake  1 device  (v1.5)  307 d stale
+    - [ ] Device skip 20
+  old  ph 21  review  3 checks  (v1.5)  307 d stale
+    - [ ] Plain skip 4
+    - [ ] Plain skip 5
+    - [ ] Plain skip 6
+  old  ph 21  review  1 device  (v1.5)  307 d stale
+    - [ ] Device skip 21
+  old  ph 22  publish  2 checks  (v1.5)  307 d stale
+    - [ ] Plain skip 7
+    - [ ] Plain skip 8
+  old  ph 22  publish  1 device  (v1.5)  307 d stale
+    - [ ] Device skip 22
+  old  ph 23  wrapup  2 checks  (v1.5)  307 d stale
+    - [ ] Plain skip 9
+    - [ ] Plain skip 10
+  old  ph 23  wrapup  1 device  (v1.5)  307 d stale
+    - [ ] Device skip 23
+  ws  ph 00  legacy  1 check  (v0.9)  307 d stale
+    - [ ] Legacy check
+  ws  ph alpha/01  old  1 check  (alpha/v0.1)  307 d stale
+    - [ ] Old stream check
+
+DEFERRED
+  deferred  ph 05  Cleanup  200 items  0 d
+    - [ ] item 1: invented follow-up number 1
+    - [ ] item 2: invented follow-up number 2
+    - [ ] item 3: invented follow-up number 3
+    - [ ] item 4: invented follow-up number 4
+    - [ ] item 5: invented follow-up number 5
+    - [ ] item 6: invented follow-up number 6
+    - [ ] item 7: invented follow-up number 7
+    - [ ] item 8: invented follow-up number 8
+    - [ ] item 9: invented follow-up number 9
+    - [ ] item 10: invented follow-up number 10
+    - [ ] item 11: invented follow-up number 11
+    - [ ] item 12: invented follow-up number 12
+    - [ ] item 13: invented follow-up number 13
+    - [ ] item 14: invented follow-up number 14
+    - [ ] item 15: invented follow-up number 15
+    - [ ] item 16: invented follow-up number 16
+    - [ ] item 17: invented follow-up number 17
+    - [ ] item 18: invented follow-up number 18
+    - [ ] item 19: invented follow-up number 19
+    - [ ] item 20: invented follow-up number 20
+    - [ ] item 21: invented follow-up number 21
+    - [ ] item 22: invented follow-up number 22
+    - [ ] item 23: invented follow-up number 23
+    - [ ] item 24: invented follow-up number 24
+    - [ ] item 25: invented follow-up number 25
+    - [ ] item 26: invented follow-up number 26
+    - [ ] item 27: invented follow-up number 27
+    - [ ] item 28: invented follow-up number 28
+    - [ ] item 29: invented follow-up number 29
+    - [ ] item 30: invented follow-up number 30
+    - [ ] item 31: invented follow-up number 31
+    - [ ] item 32: invented follow-up number 32
+    - [ ] item 33: invented follow-up number 33
+    - [ ] item 34: invented follow-up number 34
+    - [ ] item 35: invented follow-up number 35
+    - [ ] item 36: invented follow-up number 36
+    - [ ] item 37: invented follow-up number 37
+    - [ ] item 38: invented follow-up number 38
+    - [ ] item 39: invented follow-up number 39
+    - [ ] item 40: invented follow-up number 40
+    - [ ] item 41: invented follow-up number 41
+    - [ ] item 42: invented follow-up number 42
+    - [ ] item 43: invented follow-up number 43
+    - [ ] item 44: invented follow-up number 44
+    - [ ] item 45: invented follow-up number 45
+    - [ ] item 46: invented follow-up number 46
+    - [ ] item 47: invented follow-up number 47
+    - [ ] item 48: invented follow-up number 48
+    - [ ] item 49: invented follow-up number 49
+    - [ ] item 50: invented follow-up number 50
+    - [ ] item 51: invented follow-up number 51
+    - [ ] item 52: invented follow-up number 52
+    - [ ] item 53: invented follow-up number 53
+    - [ ] item 54: invented follow-up number 54
+    - [ ] item 55: invented follow-up number 55
+    - [ ] item 56: invented follow-up number 56
+    - [ ] item 57: invented follow-up number 57
+    - [ ] item 58: invented follow-up number 58
+    - [ ] item 59: invented follow-up number 59
+    - [ ] item 60: invented follow-up number 60
+    - [ ] item 61: invented follow-up number 61
+    - [ ] item 62: invented follow-up number 62
+    - [ ] item 63: invented follow-up number 63
+    - [ ] item 64: invented follow-up number 64
+    - [ ] item 65: invented follow-up number 65
+    - [ ] item 66: invented follow-up number 66
+    - [ ] item 67: invented follow-up number 67
+    - [ ] item 68: invented follow-up number 68
+    - [ ] item 69: invented follow-up number 69
+    - [ ] item 70: invented follow-up number 70
+    - [ ] item 71: invented follow-up number 71
+    - [ ] item 72: invented follow-up number 72
+    - [ ] item 73: invented follow-up number 73
+    - [ ] item 74: invented follow-up number 74
+    - [ ] item 75: invented follow-up number 75
+    - [ ] item 76: invented follow-up number 76
+    - [ ] item 77: invented follow-up number 77
+    - [ ] item 78: invented follow-up number 78
+    - [ ] item 79: invented follow-up number 79
+    - [ ] item 80: invented follow-up number 80
+    - [ ] item 81: invented follow-up number 81
+    - [ ] item 82: invented follow-up number 82
+    - [ ] item 83: invented follow-up number 83
+    - [ ] item 84: invented follow-up number 84
+    - [ ] item 85: invented follow-up number 85
+    - [ ] item 86: invented follow-up number 86
+    - [ ] item 87: invented follow-up number 87
+    - [ ] item 88: invented follow-up number 88
+    - [ ] item 89: invented follow-up number 89
+    - [ ] item 90: invented follow-up number 90
+    - [ ] item 91: invented follow-up number 91
+    - [ ] item 92: invented follow-up number 92
+    - [ ] item 93: invented follow-up number 93
+    - [ ] item 94: invented follow-up number 94
+    - [ ] item 95: invented follow-up number 95
+    - [ ] item 96: invented follow-up number 96
+    - [ ] item 97: invented follow-up number 97
+    - [ ] item 98: invented follow-up number 98
+    - [ ] item 99: invented follow-up number 99
+    - [ ] item 100: invented follow-up number 100
+    - [ ] item 101: invented follow-up number 101
+    - [ ] item 102: invented follow-up number 102
+    - [ ] item 103: invented follow-up number 103
+    - [ ] item 104: invented follow-up number 104
+    - [ ] item 105: invented follow-up number 105
+    - [ ] item 106: invented follow-up number 106
+    - [ ] item 107: invented follow-up number 107
+    - [ ] item 108: invented follow-up number 108
+    - [ ] item 109: invented follow-up number 109
+    - [ ] item 110: invented follow-up number 110
+    - [ ] item 111: invented follow-up number 111
+    - [ ] item 112: invented follow-up number 112
+    - [ ] item 113: invented follow-up number 113
+    - [ ] item 114: invented follow-up number 114
+    - [ ] item 115: invented follow-up number 115
+    - [ ] item 116: invented follow-up number 116
+    - [ ] item 117: invented follow-up number 117
+    - [ ] item 118: invented follow-up number 118
+    - [ ] item 119: invented follow-up number 119
+    - [ ] item 120: invented follow-up number 120
+    - [ ] item 121: invented follow-up number 121
+    - [ ] item 122: invented follow-up number 122
+    - [ ] item 123: invented follow-up number 123
+    - [ ] item 124: invented follow-up number 124
+    - [ ] item 125: invented follow-up number 125
+    - [ ] item 126: invented follow-up number 126
+    - [ ] item 127: invented follow-up number 127
+    - [ ] item 128: invented follow-up number 128
+    - [ ] item 129: invented follow-up number 129
+    - [ ] item 130: invented follow-up number 130
+    - [ ] item 131: invented follow-up number 131
+    - [ ] item 132: invented follow-up number 132
+    - [ ] item 133: invented follow-up number 133
+    - [ ] item 134: invented follow-up number 134
+    - [ ] item 135: invented follow-up number 135
+    - [ ] item 136: invented follow-up number 136
+    - [ ] item 137: invented follow-up number 137
+    - [ ] item 138: invented follow-up number 138
+    - [ ] item 139: invented follow-up number 139
+    - [ ] item 140: invented follow-up number 140
+    - [ ] item 141: invented follow-up number 141
+    - [ ] item 142: invented follow-up number 142
+    - [ ] item 143: invented follow-up number 143
+    - [ ] item 144: invented follow-up number 144
+    - [ ] item 145: invented follow-up number 145
+    - [ ] item 146: invented follow-up number 146
+    - [ ] item 147: invented follow-up number 147
+    - [ ] item 148: invented follow-up number 148
+    - [ ] item 149: invented follow-up number 149
+    - [ ] item 150: invented follow-up number 150
+    - [ ] item 151: invented follow-up number 151
+    - [ ] item 152: invented follow-up number 152
+    - [ ] item 153: invented follow-up number 153
+    - [ ] item 154: invented follow-up number 154
+    - [ ] item 155: invented follow-up number 155
+    - [ ] item 156: invented follow-up number 156
+    - [ ] item 157: invented follow-up number 157
+    - [ ] item 158: invented follow-up number 158
+    - [ ] item 159: invented follow-up number 159
+    - [ ] item 160: invented follow-up number 160
+    - [ ] item 161: invented follow-up number 161
+    - [ ] item 162: invented follow-up number 162
+    - [ ] item 163: invented follow-up number 163
+    - [ ] item 164: invented follow-up number 164
+    - [ ] item 165: invented follow-up number 165
+    - [ ] item 166: invented follow-up number 166
+    - [ ] item 167: invented follow-up number 167
+    - [ ] item 168: invented follow-up number 168
+    - [ ] item 169: invented follow-up number 169
+    - [ ] item 170: invented follow-up number 170
+    - [ ] item 171: invented follow-up number 171
+    - [ ] item 172: invented follow-up number 172
+    - [ ] item 173: invented follow-up number 173
+    - [ ] item 174: invented follow-up number 174
+    - [ ] item 175: invented follow-up number 175
+    - [ ] item 176: invented follow-up number 176
+    - [ ] item 177: invented follow-up number 177
+    - [ ] item 178: invented follow-up number 178
+    - [ ] item 179: invented follow-up number 179
+    - [ ] item 180: invented follow-up number 180
+    - [ ] item 181: invented follow-up number 181
+    - [ ] item 182: invented follow-up number 182
+    - [ ] item 183: invented follow-up number 183
+    - [ ] item 184: invented follow-up number 184
+    - [ ] item 185: invented follow-up number 185
+    - [ ] item 186: invented follow-up number 186
+    - [ ] item 187: invented follow-up number 187
+    - [ ] item 188: invented follow-up number 188
+    - [ ] item 189: invented follow-up number 189
+    - [ ] item 190: invented follow-up number 190
+    - [ ] item 191: invented follow-up number 191
+    - [ ] item 192: invented follow-up number 192
+    - [ ] item 193: invented follow-up number 193
+    - [ ] item 194: invented follow-up number 194
+    - [ ] item 195: invented follow-up number 195
+    - [ ] item 196: invented follow-up number 196
+    - [ ] item 197: invented follow-up number 197
+    - [ ] item 198: invented follow-up number 198
+    - [ ] item 199: invented follow-up number 199
+    - [ ] item 200: invented follow-up number 200
+
+ACKNOWLEDGED
+  ack  ph 01  Alpha  2 checks  307 d stale  /gsd-verify-work 01
+    - [ ] Check number 1
+    - [ ] Check number 2

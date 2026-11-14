@@ -484,3 +484,69 @@ fn a_changed_acknowledgment_marker_resurfaces_the_file() {
         );
     }
 }
+
+#[test]
+fn plain_inbox_prints_the_checklist_and_exits_zero() {
+    let (scratch, reg) = tracer();
+    let out = inbox_with(&reg, scratch.path(), &[]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert!(out.stderr.is_empty(), "{out:?}");
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(text.starts_with("Owner inbox: 1 projects"), "{text}");
+    assert!(text.contains("\nTEST — phase stays open\n"), "{text}");
+    assert!(text.contains("    - [ ] "), "{text}");
+    assert!(!text.contains('\u{1b}'), "no color: {text:?}");
+    assert!(serde_json::from_str::<Value>(text.trim()).is_err());
+}
+
+#[test]
+fn a_lane_filter_lists_only_that_lane_in_both_modes() {
+    let (scratch, reg) = tracer();
+    let doc = json(&inbox_with(
+        &reg,
+        scratch.path(),
+        &["--json", "--lane", "test"],
+    ));
+    let groups = doc["projects"][0]["groups"].as_array().unwrap();
+    assert!(!groups.is_empty());
+    assert!(groups.iter().all(|g| g["lane"] == "test"), "{groups:?}");
+    let text =
+        String::from_utf8(inbox_with(&reg, scratch.path(), &["--lane", "test"]).stdout).unwrap();
+    assert!(text.contains("TEST — "), "{text}");
+    assert!(!text.contains("BLOCKED\n"), "{text}");
+}
+
+#[test]
+fn include_todos_fills_the_todo_list_and_only_then() {
+    let project = bare_project();
+    write(
+        &project
+            .path()
+            .join(".planning/todos/pending/2026-01-01-first.md"),
+        "# First todo\n\nbody\n",
+    );
+    let scratch = tempfile::tempdir().unwrap();
+    let reg = registry(scratch.path(), &[("p", project.path())]);
+    let without = json(&inbox_with(&reg, scratch.path(), &["--json"]));
+    assert_eq!(without["projects"][0]["todos"], serde_json::json!([]));
+    assert_eq!(without["projects"][0]["hidden"]["todos"], 1);
+    let with = json(&inbox_with(
+        &reg,
+        scratch.path(),
+        &["--json", "--include", "todos"],
+    ));
+    let todos = with["projects"][0]["todos"].as_array().unwrap();
+    assert_eq!(todos.len(), 1);
+    assert_eq!(todos[0]["title"], "First todo");
+    let text = String::from_utf8(inbox_with(&reg, scratch.path(), &[]).stdout).unwrap();
+    assert!(
+        text.contains("Triage: 1 pending todos in 1 projects"),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_bogus_lane_is_a_usage_error_in_text_mode_too() {
+    let out = inbox(&["--lane", "bogus"]);
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+}

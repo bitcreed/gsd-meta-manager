@@ -1,0 +1,71 @@
+Owner inbox: 6 projects · test 15 · decide 0 · fix 2 phases · blocked 5
+
+TEST — closes a phase
+  six  ph 21  Export  2 checks  307 d stale  /gsd-verify-work 21
+    - [ ] Export button
+    - [ ] File name
+  six  ph 22  Search  2 checks  307 d stale  /gsd-verify-work 22
+    - [ ] Search box
+    - [ ] Result order
+  six  ph 24  Reports  4 checks  307 d stale  /gsd-verify-work 24
+    - [ ] Weekly report
+    - [ ] Monthly report
+    - [ ] Chart colors
+    - [ ] Print layout
+
+TEST — phase stays open
+  old  ph 24  Current  all checks passed, run /gsd-verify-work 24 to finalize  307 d stale
+  six  ph 20  Ledger  2 checks  307 d stale  /gsd-verify-work 20
+    - [ ] Entry form
+    - [ ] Totals row
+  six  ph 23  Billing  1 check  307 d stale  /gsd-verify-work 23
+    - [ ] Invoice mail
+  six  ph 25  Archive  1 check  307 d stale  /gsd-verify-work 25
+    - [ ] Archive view
+  ws  ph 01  Root  1 check  307 d stale  /gsd-verify-work 1
+    - [ ] Root check
+  ws  ph alpha/03  Stream  2 checks  307 d stale  /gsd-verify-work 03 --ws alpha
+    - [ ] Stream check one
+    - [ ] Stream check two
+
+FIX — code needed
+  gaps  ph 01  Alpha  10 failed checks, 14 gaps  307 d stale  /gsd-plan-phase 01 --gaps
+    - [ ] Check number 1
+        - Behavior 1 of check 1 holds
+        - Behavior 2 of check 1 holds
+    - [ ] Check number 2
+        - Behavior 3 of check 2 holds
+    - [ ] Check number 3
+        - Behavior 4 of check 3 holds
+        - Behavior 5 of check 3 holds
+    - [ ] Check number 4
+        - Behavior 6 of check 4 holds
+    - [ ] Check number 5
+        - Behavior 7 of check 5 holds
+    - [ ] Check number 6
+        - Behavior 8 of check 6 holds
+        - Behavior 9 of check 6 holds
+    - [ ] Check number 7
+        - Behavior 10 of check 7 holds
+    - [ ] Check number 8
+        - Behavior 11 of check 8 holds
+    - [ ] Check number 9
+        - Behavior 12 of check 9 holds
+    - [ ] Check number 10
+        - Behavior 13 of check 10 holds
+        - Behavior 14 of check 10 holds
+  six  ph 25  Archive  1 check  307 d stale  /gsd-plan-phase 25 --gaps
+    - [ ] Old import
+
+BLOCKED
+  six  ph 20  Ledger  2 device  307 d stale
+    - [ ] Scanner pairing
+    - [ ] Label printer
+  six  ph 23  Billing  1 build · 1 third party · 1 blocked  307 d stale
+    - [ ] Identity login
+    - [ ] Store listing
+    - [ ] Legal text
+
+Old debt: 16 checks in 2 projects (archived milestones)
+Acknowledged: 1 file
+Deferred: 200 items

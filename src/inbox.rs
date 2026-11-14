@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use serde_json::{json, Value};
 
 use crate::oneoff::todos::PendingTodo;
-use crate::state_reader::owner_items::{Lane, OwnerDigest, OwnerGroup, OwnerItem, Scope};
+use crate::state_reader::owner_items::{Category, Lane, OwnerDigest, OwnerGroup, OwnerItem, Scope};
 use crate::text::terminal_capped;
 
 /// The `schema` field.
@@ -62,12 +62,17 @@ pub struct Filters {
 }
 
 impl Filters {
-    fn lists(&self, lane: Lane) -> bool {
-        if self.lanes.is_empty() {
-            lane != Lane::Deferred
-        } else {
-            self.lanes.contains(&lane)
-        }
+    /// Whether `group` is listed: the lane filter applies to the four owner lanes,
+    /// and archived, deferred and acknowledged work is listed only on request.
+    /// `summary` and `hidden` never depend on this.
+    pub fn lists_group(&self, group: &OwnerGroup) -> bool {
+        let lane_ok = match group.lane {
+            Lane::Deferred => self.deferred,
+            lane => self.lanes.is_empty() || self.lanes.contains(&lane),
+        };
+        lane_ok
+            && (self.archived || matches!(group.scope, Scope::Current))
+            && (self.acknowledged || !group.acknowledged)
     }
 }
 
@@ -141,9 +146,7 @@ fn project_json(entry: &ProjectEntry, filters: &Filters) -> Value {
                 .digest
                 .groups
                 .iter()
-                .filter(|group| {
-                    filters.lists(group.lane) && (filters.acknowledged || !group.acknowledged)
-                })
+                .filter(|group| filters.lists_group(group))
                 .map(group_json)
                 .collect(),
             json!({
@@ -203,6 +206,308 @@ pub fn build_document(entries: &[ProjectEntry], filters: &Filters) -> Value {
         },
         "projects": entries.iter().map(|entry| project_json(entry, filters)).collect::<Vec<_>>(),
     })
+}
+
+// ---------------------------------------------------------------------------
+// Plain checklist (D-21)
+// ---------------------------------------------------------------------------
+
+/// A phase number as a sort key: numeric first, then the raw text.
+fn phase_key(phase: &str) -> (u64, String) {
+    let digits: String = phase.chars().take_while(char::is_ascii_digit).collect();
+    (digits.parse().unwrap_or(u64::MAX), phase.to_string())
+}
+
+fn plural(count: usize, one: &str, many: &str) -> String {
+    format!("{count} {}", if count == 1 { one } else { many })
+}
+
+/// `2 device · 1 third party`: the blocked items by what they wait for.
+fn blocked_tally(group: &OwnerGroup) -> String {
+    const ORDER: [(Category, &str); 5] = [
+        (Category::ServerBlocked, "server"),
+        (Category::DeviceNeeded, "device"),
+        (Category::BuildNeeded, "build"),
+        (Category::ThirdParty, "third party"),
+        (Category::Blocked, "blocked"),
+    ];
+    let mut parts: Vec<String> = ORDER
+        .iter()
+        .filter_map(|(category, label)| {
+            let n = group
+                .items
+                .iter()
+                .filter(|i| i.category == *category)
+                .count();
+            (n > 0).then(|| format!("{n} {label}"))
+        })
+        .collect();
+    let other = group
+        .items
+        .iter()
+        .filter(|i| !ORDER.iter().any(|(category, _)| *category == i.category))
+        .count();
+    if other > 0 {
+        parts.push(format!("{other} other"));
+    }
+    parts.join(" · ")
+}
+
+fn detail(group: &OwnerGroup) -> String {
+    if group.bookkeeping_only {
+        let command = group
+            .command
+            .as_deref()
+            .map_or_else(String::new, terminal_capped);
+        return format!("all checks passed, run {command} to finalize");
+    }
+    match group.lane {
+        Lane::Blocked => blocked_tally(group),
+        Lane::Deferred => plural(group.counts.checks, "item", "items"),
+        Lane::Fix => {
+            let mut parts = Vec::new();
+            if group.counts.failed > 0 {
+                parts.push(format!(
+                    "{}, {}",
+                    plural(group.counts.failed, "failed check", "failed checks"),
+                    plural(group.counts.gaps, "gap", "gaps")
+                ));
+            }
+            if group.counts.unreadable > 0 {
+                parts.push(plural(
+                    group.counts.unreadable,
+                    "unreadable check",
+                    "unreadable checks",
+                ));
+            }
+            if parts.is_empty() {
+                parts.push(plural(group.counts.checks, "check", "checks"));
+            }
+            parts.join(", ")
+        }
+        _ => plural(group.counts.checks, "check", "checks"),
+    }
+}
+
+fn group_line(alias: &str, group: &OwnerGroup) -> String {
+    let phase = match &group.workstream {
+        Some(ws) => format!(
+            "ph {}/{}",
+            terminal_capped(ws),
+            terminal_capped(&group.phase)
+        ),
+        None => format!("ph {}", terminal_capped(&group.phase)),
+    };
+    let mut parts = vec![
+        terminal_capped(alias),
+        phase,
+        terminal_capped(&group.phase_name),
+        detail(group),
+    ];
+    if let Scope::Archived { label, .. } = &group.scope {
+        parts.push(format!("({})", terminal_capped(label)));
+    }
+    if let Some(days) = group.age_days {
+        parts.push(format!(
+            "{days} d{}",
+            if group.stale { " stale" } else { "" }
+        ));
+    }
+    if !group.bookkeeping_only {
+        if let Some(command) = &group.command {
+            parts.push(terminal_capped(command));
+        }
+    }
+    parts.retain(|part| !part.is_empty());
+    parts.join("  ")
+}
+
+fn alias_of(entry: &ProjectEntry) -> String {
+    entry
+        .alias
+        .clone()
+        .or_else(|| entry.target.clone())
+        .unwrap_or_else(|| "(unnamed)".to_string())
+}
+
+struct Row<'a> {
+    entry: &'a ProjectEntry,
+    alias: String,
+    group: &'a OwnerGroup,
+}
+
+fn push_section(out: &mut Vec<String>, heading: &str, rows: &[&Row]) {
+    if rows.is_empty() {
+        return;
+    }
+    out.push(String::new());
+    out.push(heading.to_string());
+    for row in rows {
+        out.push(format!("  {}", group_line(&row.alias, row.group)));
+        for item in &row.group.items {
+            out.push(format!("    - [ ] {}", terminal_capped(&item.name)));
+            for gap in &item.gaps {
+                out.push(format!("        - {}", terminal_capped(&gap.name)));
+            }
+        }
+    }
+}
+
+/// Alias, phase, file: the order of every section but TEST.
+fn by_location(a: &Row, b: &Row) -> std::cmp::Ordering {
+    (&a.alias, phase_key(&a.group.phase), &a.group.file).cmp(&(
+        &b.alias,
+        phase_key(&b.group.phase),
+        &b.group.file,
+    ))
+}
+
+/// The plain checklist for a terminal or a note: no color, no TUI chrome. The
+/// summary line and the folds count everything; the sections list what `filters`
+/// admits.
+pub fn render_text(entries: &[ProjectEntry], filters: &Filters) -> String {
+    let read: Vec<&ProjectEntry> = entries.iter().filter(|e| e.error.is_none()).collect();
+    let sum =
+        |count: fn(&OwnerDigest) -> usize| read.iter().map(|e| count(&e.digest)).sum::<usize>();
+    let mut out = vec![format!(
+        "Owner inbox: {} projects · test {} · decide 0 · fix {} phases · blocked {}",
+        entries.len(),
+        sum(|d| d.test),
+        sum(|d| d.fix_phases),
+        sum(|d| d.blocked),
+    )];
+
+    let rows: Vec<Row> = read
+        .iter()
+        .flat_map(|entry| {
+            entry
+                .digest
+                .groups
+                .iter()
+                .filter(|group| filters.lists_group(group))
+                .map(|group| Row {
+                    entry,
+                    alias: alias_of(entry),
+                    group,
+                })
+        })
+        .collect();
+    let current = |r: &&Row| matches!(r.group.scope, Scope::Current) && !r.group.acknowledged;
+    let mut test: Vec<&Row> = rows
+        .iter()
+        .filter(|r| current(r) && r.group.lane == Lane::Test)
+        .collect();
+    test.sort_by(|a, b| {
+        let remaining = |r: &Row| r.entry.phases_total.saturating_sub(r.entry.phases_done);
+        b.group
+            .closes_phase
+            .cmp(&a.group.closes_phase)
+            .then(remaining(a).cmp(&remaining(b)))
+            .then(b.group.age_days.cmp(&a.group.age_days))
+            .then_with(|| by_location(a, b))
+    });
+    let (closes, stays): (Vec<&Row>, Vec<&Row>) =
+        test.into_iter().partition(|r| r.group.closes_phase);
+    push_section(&mut out, "TEST — closes a phase", &closes);
+    push_section(&mut out, "TEST — phase stays open", &stays);
+    let lane_rows = |lane: Lane| {
+        let mut v: Vec<&Row> = rows
+            .iter()
+            .filter(|r| current(r) && r.group.lane == lane)
+            .collect();
+        v.sort_by(|a, b| by_location(a, b));
+        v
+    };
+    push_section(&mut out, "DECIDE", &lane_rows(Lane::Decide));
+    push_section(&mut out, "FIX — code needed", &lane_rows(Lane::Fix));
+    push_section(&mut out, "BLOCKED", &lane_rows(Lane::Blocked));
+
+    let sorted = |keep: &dyn Fn(&Row) -> bool| {
+        let mut v: Vec<&Row> = rows.iter().filter(|r| keep(r)).collect();
+        v.sort_by(|a, b| by_location(a, b));
+        v
+    };
+    let archived = sorted(&|r| matches!(r.group.scope, Scope::Archived { .. }));
+    push_section(&mut out, "OLD DEBT", &archived);
+    let deferred =
+        sorted(&|r| matches!(r.group.scope, Scope::Current) && r.group.lane == Lane::Deferred);
+    push_section(&mut out, "DEFERRED", &deferred);
+    let acknowledged = sorted(&|r| {
+        matches!(r.group.scope, Scope::Current)
+            && r.group.lane != Lane::Deferred
+            && r.group.acknowledged
+    });
+    push_section(&mut out, "ACKNOWLEDGED", &acknowledged);
+
+    if filters.todos {
+        let with_todos: Vec<&&ProjectEntry> = read.iter().filter(|e| !e.todos.is_empty()).collect();
+        if !with_todos.is_empty() {
+            out.push(String::new());
+            out.push("TODOS".to_string());
+            for entry in with_todos {
+                out.push(format!(
+                    "  {}  {}",
+                    terminal_capped(&alias_of(entry)),
+                    plural(entry.todos.len(), "pending todo", "pending todos")
+                ));
+                for todo in &entry.todos {
+                    out.push(format!("    - [ ] {}", terminal_capped(&todo.title)));
+                }
+            }
+        }
+    }
+
+    let mut folds = Vec::new();
+    let old_debt = |d: &OwnerDigest| d.archived.test + d.archived.blocked + d.archived.fix;
+    let old_total: usize = read.iter().map(|e| old_debt(&e.digest)).sum();
+    let old_projects = read.iter().filter(|e| old_debt(&e.digest) > 0).count();
+    if !filters.archived && old_total > 0 {
+        folds.push(format!(
+            "Old debt: {old_total} checks in {old_projects} projects (archived milestones)"
+        ));
+    }
+    let ack = sum(|d| d.hidden.acknowledged_files);
+    if !filters.acknowledged && ack > 0 {
+        folds.push(format!("Acknowledged: {}", plural(ack, "file", "files")));
+    }
+    let deferred_items = sum(|d| d.hidden.deferred);
+    if !filters.deferred && deferred_items > 0 {
+        folds.push(format!(
+            "Deferred: {}",
+            plural(deferred_items, "item", "items")
+        ));
+    }
+    let todo_total: usize = read.iter().map(|e| e.todos_count).sum();
+    let todo_projects = read.iter().filter(|e| e.todos_count > 0).count();
+    if !filters.todos && todo_total > 0 {
+        folds.push(format!(
+            "Triage: {todo_total} pending todos in {todo_projects} projects"
+        ));
+    }
+    if !folds.is_empty() {
+        out.push(String::new());
+        out.extend(folds);
+    }
+
+    let failed: Vec<String> = entries
+        .iter()
+        .filter_map(|e| {
+            e.error.as_ref().map(|error| {
+                format!(
+                    "{}: {}",
+                    terminal_capped(&alias_of(e)),
+                    terminal_capped(&error.message)
+                )
+            })
+        })
+        .collect();
+    if !failed.is_empty() {
+        out.push(String::new());
+        out.extend(failed);
+    }
+    let mut text = out.join("\n");
+    text.push('\n');
+    text
 }
 
 #[cfg(test)]
