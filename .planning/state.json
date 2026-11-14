@@ -1,7 +1,7 @@
 {
   "contract": "1.0.0",
   "flavor": "core",
-  "milestone": "v2.5.0",
+  "milestone": "v2.5.0 — Owner Inbox",
   "phases": [
     {
       "number": "14",
@@ -87,12 +87,32 @@
       "number": "33",
       "name": "Terminal multiplexer backend seam + herdr support",
       "status": "complete"
+    },
+    {
+      "number": "34",
+      "name": "Owner items reader + inbox CLI",
+      "status": "in_progress"
+    },
+    {
+      "number": "35",
+      "name": "Decisions, code-needed and gates",
+      "status": "pending"
+    },
+    {
+      "number": "36",
+      "name": "Dashboard and detail",
+      "status": "pending"
+    },
+    {
+      "number": "37",
+      "name": "Inbox screen and actions",
+      "status": "pending"
     }
   ],
   "next": {
-    "command": "/gsd-discuss-phase",
-    "label": "Discuss the first phase",
-    "reason": "Project initialized — plan your first phase"
+    "command": "/gsd-progress --next",
+    "label": "Advance to the next step (plan phase 34)",
+    "reason": "Phase 1 of 4 — needs a plan"
   },
-  "updated_at": "2026-11-14T15:56:13.243Z"
+  "updated_at": "2026-11-14T17:17:58.492Z"
 }
