@@ -4,17 +4,17 @@ milestone: v2.5.0
 milestone_name: Owner Inbox
 current_phase: 34
 current_phase_name: Owner items reader + inbox CLI
-status: executing
-stopped_at: Completed 34-04-PLAN.md
-last_updated: "2026-11-14T18:43:52.773Z"
+status: verifying
+stopped_at: Completed 34-05-PLAN.md
+last_updated: "2026-11-14T19:12:47.395Z"
 last_activity: 2026-11-14
 last_activity_desc: Phase 34 execution started
-state_head: 9c645838a83442a67a314fe538b11c17f2a712f7
+state_head: dbb54300f47a240e1659bf85149d3aa81d5df2c3
 progress:
   total_phases: 4
   completed_phases: 0
   total_plans: 6
-  completed_plans: 5
+  completed_plans: 6
   percent: 0
 ---
 
@@ -31,7 +31,7 @@ See: .planning/PROJECT.md (updated 2026-11-14)
 
 Phase: 34 (Owner items reader + inbox CLI) — EXECUTING
 Plan: 6 of 6
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-11-14 — Phase 34 execution started
 
 
@@ -178,6 +178,7 @@ None. Phase 19's deferred human verification was closed by supersession on 2026-
 | Phase 34 P02 | 40min | 2 tasks | 6 files |
 | Phase 34 P03 | 45min | 3 tasks | 30 files |
 | Phase 34 P04 | 1 session | 3 tasks | 10 files |
+| Phase 34 P05 | ~2h | 3 tasks | 9 files |
 
 ## Accumulated Context
 
@@ -340,6 +341,7 @@ Recent decisions affecting current work:
 - [Phase 34]: 34-06: acknowledged groups are built flagged and skipped by counts and default listing; disk_status artifact reads open non-blocking
 - [Phase 34]: 34-02: Gaps tables skip only resolved (oracle), not done/pass [inferred]
 - [Phase 34]: 34-03: out-of-set VERIFICATION status degrades one file to Unreadable::OutOfSetStatus; parse cache keyed (canonical path, kind) -> (mtime,len), bounded 8192, after containment/regular/size checks
+- [Phase 34]: 34-05: Filters::lists_group is the single listing predicate for JSON and text; dev profile optimizes the regex stack so the debug cold run meets the 1 s budget
 
 ### Roadmap Evolution
 
@@ -602,8 +604,8 @@ non-unique bullets in these narrative logs). Disclosed per file instead [inferre
 
 ## Session Continuity
 
-Last session: 2026-11-14T18:43:52.713Z
-Stopped at: Completed 34-04-PLAN.md
+Last session: 2026-11-14T19:12:47.332Z
+Stopped at: Completed 34-05-PLAN.md
 Resume file: None
 
 Next: push master + tag v2.4.0 (tag push publishes to crates.io); then `/gsd-new-milestone`.

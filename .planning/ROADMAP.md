@@ -139,7 +139,7 @@ Requirements: `.planning/REQUIREMENTS.md` (OWN-01..OWN-23). Source of truth: `.p
 **Requirements**: OWN-01, OWN-02, OWN-03, OWN-04, OWN-05, OWN-06, OWN-07, OWN-09, OWN-11, OWN-12, OWN-13, OWN-14, OWN-15
 **Depends on:** Nothing (first phase of v2.5.0)
 **Verification:** Automatic (conformance oracle, fixtures, golden output)
-**Plans:** 5/6 plans executed
+**Plans:** 6/6 plans executed
 
 Plans:
 **Wave 1**
@@ -154,7 +154,7 @@ Plans:
 - [x] 34-04-PLAN.md — `testing` status, owner rules R2/R3/R5/R6/R7, `owner` counts in `status --json` and `status --skill`
 
 **Wave 4** *(blocked on Wave 3 completion)*
-- [ ] 34-05-PLAN.md — Owner-number fixtures, plain checklist with `--lane`/`--include`, README `inbox` section, timing test, container pre-tag run
+- [x] 34-05-PLAN.md — Owner-number fixtures, plain checklist with `--lane`/`--include`, README `inbox` section, timing test, container pre-tag run
 
 **Success Criteria** (what must be TRUE):
 1. On the owner's machine `gsd-meta-manager inbox` lists the missing UATs for all 20 registered projects in one call; wordoclock reports 18 open checks (not 39 or 41), and projects without a phases directory (bitcreed.us, starlink-rv-tracker, usbeehive) return empty groups, not an error.

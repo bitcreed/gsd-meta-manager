@@ -77,7 +77,7 @@ checks the owner can run today (report section 1).
 - [x] **OWN-13**: `gsd-meta-manager inbox --json` emits schema `gsd-meta-manager/inbox` v1 (report
   section 3.5), deterministic (no timestamps, sorted), exit codes as `status`; writes nothing and takes
   no lock. *Test: `tests/inbox_cli.rs` pins every key path against the README contract.*
-- [ ] **OWN-14**: `inbox` without `--json` prints a plain checklist grouped by lane; `--lane
+- [x] **OWN-14**: `inbox` without `--json` prints a plain checklist grouped by lane; `--lane
   test|decide|fix|blocked` and `--include archived,deferred,acknowledged,todos` filter as documented.
   *Test: golden output.*
 - [x] **OWN-15**: `status --json` carries the additive per-project `owner: {test, decide, fix_phases,
@@ -178,7 +178,7 @@ Deferred (report section 6):
 | OWN-11 | Phase 34 | Complete |
 | OWN-12 | Phase 34 | Complete |
 | OWN-13 | Phase 34 | Complete |
-| OWN-14 | Phase 34 | Pending |
+| OWN-14 | Phase 34 | Complete |
 | OWN-15 | Phase 34 | Complete |
 | OWN-16 | Phase 36 | Pending |
 | OWN-17 | Phase 36 | Pending |
