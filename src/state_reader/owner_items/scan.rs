@@ -231,7 +231,19 @@ pub(super) fn parse_document(kind: AuditKind, text: &str) -> Option<ParsedFile> 
             })
         }
         AuditKind::Verification => {
-            let map = frontmatter::extract(text);
+            // A closed frontmatter block that does not parse is not "no status": the
+            // file may be hiding a pending check, so it is unreadable, never clean.
+            let Ok(map) = frontmatter::extract_checked(text) else {
+                return Some(ParsedFile {
+                    status: "unknown".to_owned(),
+                    source: Vec::new(),
+                    updated: None,
+                    acknowledged: false,
+                    unparsed_blocks: 0,
+                    unreadable: Some(Unreadable::Io),
+                    items: Vec::new(),
+                });
+            };
             match verification::report_status(&map) {
                 verification::Gate::Omit => None,
                 verification::Gate::OutOfSet(value) => Some(ParsedFile {
@@ -890,6 +902,25 @@ mod tests {
 
     const HUMAN: &str =
         "---\nstatus: human_needed\nhuman_verification:\n  - first check\n  - second check\n---\n";
+
+    #[test]
+    fn a_verification_with_unparseable_frontmatter_is_unreadable_not_clean() {
+        let dir = project();
+        let phase = dir.path().join(".planning/phases/01-alpha");
+        write(
+            &phase.join("01-VERIFICATION.md"),
+            "---\nstatus: human_needed\n\tbad: [\nhuman_verification:\n  - first check\n---\n",
+        );
+        write(&phase.join("01-b-VERIFICATION.md"), "---\nnote: no status\n---\n");
+        let files = scan_of(dir.path());
+        let by_name = |name: &str| files.iter().find(|f| f.rel_path.ends_with(name));
+        let damaged = by_name("01-VERIFICATION.md").expect("the damaged file is listed");
+        assert_eq!(damaged.unreadable, Some(Unreadable::Io));
+        assert!(
+            by_name("01-b-VERIFICATION.md").is_none(),
+            "a parsed block without a status still contributes nothing"
+        );
+    }
 
     #[test]
     fn a_human_needed_verification_yields_its_checks_and_passed_yields_nothing() {

@@ -95,28 +95,41 @@ fn only_blanks(rest: &str) -> bool {
     rest.chars().all(|c| c == ' ' || c == '\t')
 }
 
+/// A closed frontmatter block whose YAML could not be read (after one repair attempt,
+/// or because it carries an anchor or alias, which the reader refuses).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Unparseable;
+
 /// The frontmatter mapping of `text`: empty when the block is absent, unterminated,
 /// not YAML (after one repair attempt) or not a mapping.
 pub(super) fn extract(text: &str) -> Mapping {
+    extract_checked(text).unwrap_or_default()
+}
+
+/// [`extract`], telling a block that is absent or not a mapping (`Ok`, empty) apart
+/// from a closed block whose YAML did not parse (`Err`): a reader that must not read
+/// a damaged file as clean needs the difference.
+pub(super) fn extract_checked(text: &str) -> Result<Mapping, Unparseable> {
     let Some(fence) = locate_fence(text) else {
-        return Mapping::new();
+        return Ok(Mapping::new());
     };
     if !fence.closed {
-        return Mapping::new();
+        return Ok(Mapping::new());
     }
     // The body loses its last newline; a final `key:` without one is a YAML error.
     let body = format!("{}\n", &text[fence.body]);
     let body = body.as_str();
     if refuses_anchors(body) {
-        return Mapping::new();
+        return Err(Unparseable);
     }
     let parsed = serde_yml::from_str::<Value>(body).ok().or_else(|| {
         crate::state_reader::state_md::repair_frontmatter_block(body)
             .and_then(|(repaired, _)| serde_yml::from_str::<Value>(&repaired).ok())
     });
     match parsed {
-        Some(Value::Mapping(map)) => map,
-        _ => Mapping::new(),
+        Some(Value::Mapping(map)) => Ok(map),
+        Some(_) => Ok(Mapping::new()),
+        None => Err(Unparseable),
     }
 }
 
