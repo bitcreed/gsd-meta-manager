@@ -5,31 +5,31 @@ titles: json
 findings:
   - id: CR-01
     severity: critical
-    disposition: open
+    disposition: fixed
     title: "Quadratic fence rescan per heading in `deferred-items.md` hangs the reader on a hostile file"
   - id: WR-01
     severity: warning
-    disposition: open
+    disposition: fixed
     title: "Containment check is vacuous above the final path component, so the reader follows a symlinked `phases/` or `workstreams/` out of the project"
   - id: WR-02
     severity: warning
-    disposition: open
+    disposition: fixed
     title: "A VERIFICATION file whose frontmatter does not parse reads as clean"
   - id: WR-03
     severity: warning
-    disposition: open
+    disposition: fixed
     title: "The 1 MiB read cap is bypassed by `parse_project_state`, which reads the same files with an unbounded `read_to_string`"
   - id: WR-04
     severity: warning
-    disposition: open
+    disposition: fixed
     title: "Impossible-state guard: `file_unreadable` in `apply_r7` is always false at its use"
   - id: WR-05
     severity: warning
-    disposition: open
+    disposition: fixed
     title: "Wall-clock assertions make `a_cold_inbox_over_twenty_projects_is_under_a_second` flaky"
   - id: IN-01
     severity: info
-    disposition: open
+    disposition: fixed
     title: "Stale `allow(dead_code)` attributes hide an unused production function"
   - id: IN-02
     severity: info
@@ -37,7 +37,7 @@ findings:
     title: "Item ids can collide after `terminal_capped` truncation"
   - id: IN-03
     severity: info
-    disposition: open
+    disposition: fixed
     title: "`fix_phases` compares raw phase tokens, unlike every other phase comparison"
   - id: IN-04
     severity: info
@@ -47,24 +47,24 @@ findings:
     severity: info
     disposition: open
     title: "`inbox` reports zero pending todos when listing them failed"
-open: 11
+open: 3
 total: 11
-recorded: 2026-11-14T19:40:38.418Z
+recorded: 2026-11-14T19:40:47.730Z
 ---
 
 # Phase 34: Code Review Disposition
 
 | Finding | Severity | Disposition | Source |
 |---------|----------|-------------|--------|
-| CR-01 | critical | open | - |
-| WR-01 | warning | open | - |
-| WR-02 | warning | open | - |
-| WR-03 | warning | open | - |
-| WR-04 | warning | open | - |
-| WR-05 | warning | open | - |
-| IN-01 | info | open | - |
+| CR-01 | critical | fixed | 34-REVIEW-FIX.md |
+| WR-01 | warning | fixed | 34-REVIEW-FIX.md |
+| WR-02 | warning | fixed | 34-REVIEW-FIX.md |
+| WR-03 | warning | fixed | 34-REVIEW-FIX.md |
+| WR-04 | warning | fixed | 34-REVIEW-FIX.md |
+| WR-05 | warning | fixed | 34-REVIEW-FIX.md |
+| IN-01 | info | fixed | 34-REVIEW-FIX.md |
 | IN-02 | info | open | - |
-| IN-03 | info | open | - |
+| IN-03 | info | fixed | 34-REVIEW-FIX.md |
 | IN-04 | info | open | - |
 | IN-05 | info | open | - |
 
