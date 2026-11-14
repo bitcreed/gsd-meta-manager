@@ -431,12 +431,14 @@ fn parse_review_disposition(content: &str) -> Option<ReviewDisposition> {
 /// `std::fs::read_to_string` for a file inside a project that may belong to somebody
 /// else: the open never blocks (a FIFO named like an artifact cannot park the
 /// reader) and anything but a regular file is an error, as a directory already was.
-/// Symlinks are followed, as before.
+/// At most [`READ_TEXT_CAP`] bytes are read: a larger file is an error, so a hostile
+/// project cannot make the reader allocate without bound (WR-03). Symlinks are
+/// followed, as before.
 pub(crate) fn read_text_file(path: impl AsRef<Path>) -> std::io::Result<String> {
     use std::io::Read;
     let path = path.as_ref();
     #[cfg(unix)]
-    let mut file = {
+    let file = {
         use std::os::unix::fs::OpenOptionsExt;
         let flags = rustix::fs::OFlags::NONBLOCK.bits();
         let custom = i32::try_from(flags)
@@ -447,17 +449,29 @@ pub(crate) fn read_text_file(path: impl AsRef<Path>) -> std::io::Result<String> 
             .open(path)?
     };
     #[cfg(not(unix))]
-    let mut file = std::fs::File::open(path)?;
+    let file = std::fs::File::open(path)?;
     if !file.metadata()?.file_type().is_file() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             "not a regular file",
         ));
     }
+    let too_large =
+        || std::io::Error::new(std::io::ErrorKind::InvalidInput, "larger than the read cap");
+    if file.metadata()?.len() > READ_TEXT_CAP {
+        return Err(too_large());
+    }
+    // The length can grow after the check: bound the read itself too.
     let mut text = String::new();
-    file.read_to_string(&mut text)?;
+    file.take(READ_TEXT_CAP + 1).read_to_string(&mut text)?;
+    if text.len() as u64 > READ_TEXT_CAP {
+        return Err(too_large());
+    }
     Ok(text)
 }
+
+/// The most [`read_text_file`] reads: 1 MiB, the cap of the owner-items reader.
+const READ_TEXT_CAP: u64 = 1 << 20;
 
 /// The sorted-first ledger in `names`, read through the cap and counted.
 /// Every failure mode — none, unreadable, no rows — is `None`.
@@ -1844,6 +1858,28 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::tempdir;
+
+    #[test]
+    fn read_text_file_refuses_a_file_over_one_mib_and_reads_exactly_one_mib() {
+        let dir = tempdir().unwrap();
+        let exact = dir.path().join("exact.md");
+        fs::write(&exact, "x".repeat(READ_TEXT_CAP as usize)).unwrap();
+        assert_eq!(
+            read_text_file(&exact).unwrap().len() as u64,
+            READ_TEXT_CAP,
+            "exactly the cap is read"
+        );
+        let over = dir.path().join("over.md");
+        fs::write(&over, "x".repeat(READ_TEXT_CAP as usize + 1)).unwrap();
+        assert!(read_text_file(&over).is_err(), "one byte over is refused");
+        // A sparse file: the length is huge, no byte of it is read.
+        let sparse = dir.path().join("sparse.md");
+        fs::File::create(&sparse)
+            .unwrap()
+            .set_len(1 << 32)
+            .unwrap();
+        assert!(read_text_file(&sparse).is_err(), "a sparse giant is refused");
+    }
 
     #[test]
     fn test_empty_directory_returns_empty() {
