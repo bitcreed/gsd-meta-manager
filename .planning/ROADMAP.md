@@ -139,7 +139,7 @@ Requirements: `.planning/REQUIREMENTS.md` (OWN-01..OWN-23). Source of truth: `.p
 **Requirements**: OWN-01, OWN-02, OWN-03, OWN-04, OWN-05, OWN-06, OWN-07, OWN-09, OWN-11, OWN-12, OWN-13, OWN-14, OWN-15
 **Depends on:** Nothing (first phase of v2.5.0)
 **Verification:** Automatic (conformance oracle, fixtures, golden output)
-**Plans:** 3/6 plans executed
+**Plans:** 4/6 plans executed
 
 Plans:
 **Wave 1**
@@ -150,7 +150,7 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2 completion)*
 - [x] 34-02-PLAN.md — UAT parser parity with gsd-core 1.21.0 (parse-gap tally, fenced blocks, block scalars, `## Gaps` bullets/tables)
-- [ ] 34-03-PLAN.md — VERIFICATION, deferred-items, workstreams, archives, no-phases case; parse cache with eviction
+- [x] 34-03-PLAN.md — VERIFICATION, deferred-items, workstreams, archives, no-phases case; parse cache with eviction
 - [ ] 34-04-PLAN.md — `testing` status, owner rules R2/R3/R5/R6/R7, `owner` counts in `status --json` and `status --skill`
 
 **Wave 4** *(blocked on Wave 3 completion)*

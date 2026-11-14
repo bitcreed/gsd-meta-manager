@@ -36,7 +36,7 @@ checks the owner can run today (report section 1).
   `ALLOW_MISSING_ORACLE` is set, fails if any fixture produced no comparison; a source scan asserts no
   non-comment line under `src/` names `audit-uat` as a spawned verb. *Test: itself, and it passes in
   `pre-tag-check.sh --container`.*
-- [ ] **OWN-03**: R2: a VERIFICATION named in a same-phase UAT `source:` contributes no items; a
+- [x] **OWN-03**: R2: a VERIFICATION named in a same-phase UAT `source:` contributes no items; a
   `gaps_found` VERIFICATION is never superseded; no `source:` match shows both (D3 strict). *Test:
   fixture modeled on wordoclock ph 20-25 yields 18 items, not 39.*
 - [x] **OWN-04**: R3: `## Gaps` entries with `test: N` merge into issue row N; Fix groups report failed
@@ -47,7 +47,7 @@ checks the owner can run today (report section 1).
   or the marker is malformed; they are counted, never listed by default. *Test: four fixtures (match,
   changed count, changed status, marker missing `at`), each also compared with the oracle's
   `acknowledged_files`.*
-- [ ] **OWN-06**: R5/R6: archived and deferred items never enter current counts; a `complete` archived
+- [x] **OWN-06**: R5/R6: archived and deferred items never enter current counts; a `complete` archived
   UAT with skipped rows yields an Archived group; `deferred-items.md` entries are a count only. *Test:
   daily-vow-v1.5 fixture; deferred-items fixture with 200 entries yields `hidden.deferred == 200` and
   zero groups.*
@@ -68,7 +68,7 @@ checks the owner can run today (report section 1).
 - [x] **OWN-11**: Safety: 1 MiB read cap, symlink containment, no panic on invalid UTF-8 or
   unterminated frontmatter, every rendered string through `text::render_for_terminal`. *Test: hostile
   fixtures plus the existing `render_escape_guard` coverage extended to the new screens.*
-- [ ] **OWN-12**: Cost: parsed files are cached by (path, mtime, len) and invalidated by the watcher; a
+- [x] **OWN-12**: Cost: parsed files are cached by (path, mtime, len) and invalidated by the watcher; a
   cold `inbox --json` over 20 projects finishes in < 1 s; no parse runs on the render path. *Test:
   `async_blocking_guard` extended; a timing assertion on a 20-project synthetic tree.*
 
@@ -167,16 +167,16 @@ Deferred (report section 6):
 |---|---|---|
 | OWN-01 | Phase 34 | Complete |
 | OWN-02 | Phase 34 | Complete |
-| OWN-03 | Phase 34 | Pending |
+| OWN-03 | Phase 34 | Complete |
 | OWN-04 | Phase 34 | Complete |
 | OWN-05 | Phase 34 | Complete |
-| OWN-06 | Phase 34 | Pending |
+| OWN-06 | Phase 34 | Complete |
 | OWN-07 | Phase 34 | Pending |
 | OWN-08 | Phase 35 | Pending |
 | OWN-09 | Phase 34 | Pending |
 | OWN-10 | Phase 35 | Pending |
 | OWN-11 | Phase 34 | Complete |
-| OWN-12 | Phase 34 | Pending |
+| OWN-12 | Phase 34 | Complete |
 | OWN-13 | Phase 34 | Complete |
 | OWN-14 | Phase 34 | Pending |
 | OWN-15 | Phase 34 | Pending |
