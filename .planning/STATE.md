@@ -1,38 +1,34 @@
 ---
 gsd_state_version: "1.0"
-milestone: v2.4.0
-current_phase_name: v2.4.0 shipped; no milestone open
-status: shipped
-stopped_at: v2.4.0 released locally (release commit + annotated tag v2.4.0, not pushed) — Sessions multiplexer location column + glyph overflow fix
-last_updated: "2026-11-13T17:39:02.283Z"
-last_activity: 2026-11-13
-last_activity_desc: v2.4.0 released — Session Locations
-state_head: 1ac98325e87304b4dc475a8a2b7516370f612540
+milestone: v2.5.0
+milestone_name: Owner Inbox
+status: planning
+last_updated: "2026-11-14T15:56:13.236Z"
+last_activity: 2026-11-14
 progress:
-  total_phases: 1
-  completed_phases: 1
-  total_plans: 2
-  completed_plans: 2
-  percent: 100
-milestone_name: Session Locations
-current_phase: 33
+  total_phases: 0
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
+  percent: 0
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-11-10)
+See: .planning/PROJECT.md (updated 2026-11-14)
 
 **Core value:** See the state of every GSD project at a glance and act on any of them without leaving the TUI.
-**Current focus:** Planning next milestone (v2.4.0 shipped 2026-11-11)
+**Current focus:** v2.5.0 Owner Inbox — defining requirements and roadmap (phases 34-37)
 
 ## Current Position
 
-Phase: — (v2.4.0 shipped; no milestone open)
+Phase: Not started (defining requirements)
 Plan: —
-Status: Shipped v2.4.0 Session Locations — release commit and annotated tag v2.4.0 created locally; not pushed (pushing the tag triggers the crates.io publish). v2.3.1 is on crates.io.
-Last activity: 2026-11-13 - Completed quick task 261113-fi0: Sync against gsd-core v1.21.0
+Status: Defining requirements
+Last activity: 2026-11-14 — Milestone v2.5.0 started
+
 
 ## Deferred Verification
 
