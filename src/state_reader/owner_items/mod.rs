@@ -22,11 +22,13 @@
 //! `parse_project_state` never computes the digest (D-15): it is a separate entry
 //! point, so a refresh that does not need the inbox never pays for it.
 
+mod deferred;
 mod frontmatter;
 mod markdown;
 mod rules;
 mod scan;
 mod uat;
+mod verification;
 
 use std::path::Path;
 
@@ -143,6 +145,19 @@ pub struct AuditFile {
     pub modified: Option<DateTime<Utc>>,
     pub acknowledged: bool,
     /// Rows the parser could not turn into items (upstream's `unparsed_blocks`).
+    pub unparsed_blocks: usize,
+    pub unreadable: Option<Unreadable>,
+    pub items: Vec<AuditItem>,
+}
+
+/// What parsing one document produced: everything of an [`AuditFile`] that depends on
+/// the text alone, not on where the file lives.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ParsedFile {
+    pub status: String,
+    pub source: Vec<String>,
+    pub updated: Option<DateTime<Utc>>,
+    pub acknowledged: bool,
     pub unparsed_blocks: usize,
     pub unreadable: Option<Unreadable>,
     pub items: Vec<AuditItem>,

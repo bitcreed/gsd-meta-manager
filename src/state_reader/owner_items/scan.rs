@@ -1,8 +1,6 @@
-//! Layer A's file selection and read path: which UAT files of the current
-//! milestone's phase directories are read, and how they are read safely.
-//!
-//! Only the project's own active tree is scanned here; plan 34-03 adds workstreams,
-//! archives, VERIFICATION and deferred files.
+//! Layer A's file selection and read path: which UAT, VERIFICATION and
+//! `deferred-items.md` files of the phase directories are read, and how they are read
+//! safely.
 //!
 //! # The read path (D-17, OWN-11)
 //!
@@ -22,7 +20,9 @@ use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 
-use super::{frontmatter, uat, AuditFile, AuditKind, Scope, Unreadable};
+use super::{
+    deferred, frontmatter, uat, verification, AuditFile, AuditKind, ParsedFile, Scope, Unreadable,
+};
 use crate::state_reader::phase_num::same_phase;
 use crate::state_reader::ProjectState;
 
@@ -171,13 +171,90 @@ fn current_phase_dirs(phases_dir: &Path, state: &ProjectState) -> Vec<String> {
     names
 }
 
-/// One UAT file as an [`AuditFile`]; `None` when it escapes its phase directory.
-fn read_uat(root: &Path, phase_dir: &Path, dir: &str, file_name: &str) -> Option<AuditFile> {
+/// Whether `file` is a VERIFICATION document name: contains `-VERIFICATION` and ends
+/// in `.md`.
+fn is_verification_name(file: &str) -> bool {
+    file.contains("-VERIFICATION") && file.ends_with(".md")
+}
+
+/// The one deferred-items document name.
+const DEFERRED_NAME: &str = "deferred-items.md";
+
+/// Parse one document's text. `None` when the file contributes nothing: a
+/// VERIFICATION that passed or has no usable status.
+pub(super) fn parse_document(kind: AuditKind, text: &str) -> Option<ParsedFile> {
+    let lines: Vec<&str> = text.split('\n').collect();
+    match kind {
+        AuditKind::Uat => {
+            let map = frontmatter::extract(text);
+            let status = frontmatter::fm_str(&map, "status")
+                .filter(|status| !status.is_empty())
+                .map_or_else(|| "unknown".to_owned(), |status| status.to_lowercase());
+            let parse = uat::parse_uat_items_with_stats(text);
+            Some(ParsedFile {
+                acknowledged: frontmatter::is_acknowledged(
+                    &map,
+                    "gap_snapshot",
+                    &frontmatter::uat_gap_snapshot(&status, text),
+                ),
+                source: frontmatter::source(&map),
+                updated: frontmatter::updated(&map),
+                unparsed_blocks: parse.headings_seen,
+                unreadable: None,
+                items: parse.items,
+                status,
+            })
+        }
+        AuditKind::Verification => {
+            let map = frontmatter::extract(text);
+            match verification::report_status(&map) {
+                verification::Gate::Omit => None,
+                verification::Gate::OutOfSet(value) => Some(ParsedFile {
+                    status: value.clone(),
+                    source: Vec::new(),
+                    updated: None,
+                    acknowledged: false,
+                    unparsed_blocks: 0,
+                    unreadable: Some(Unreadable::OutOfSetStatus(value)),
+                    items: Vec::new(),
+                }),
+                verification::Gate::Open(status) => Some(ParsedFile {
+                    acknowledged: frontmatter::is_acknowledged(&map, "status", &status),
+                    source: frontmatter::source(&map),
+                    updated: frontmatter::updated(&map),
+                    unparsed_blocks: 0,
+                    unreadable: None,
+                    items: verification::parse_verification_items(&lines, &map, &status),
+                    status,
+                }),
+            }
+        }
+        AuditKind::Deferred => Some(ParsedFile {
+            status: "unresolved".to_owned(),
+            source: Vec::new(),
+            updated: None,
+            acknowledged: false,
+            unparsed_blocks: 0,
+            unreadable: None,
+            items: deferred::parse_deferred_items(&lines),
+        }),
+    }
+}
+
+/// One document as an [`AuditFile`]; `None` when it escapes its phase directory or,
+/// for a VERIFICATION, has a status that contributes nothing.
+fn read_audit(
+    root: &Path,
+    phase_dir: &Path,
+    dir: &str,
+    file_name: &str,
+    kind: AuditKind,
+) -> Option<AuditFile> {
     let path = phase_dir.join(file_name);
     let real = contained(phase_dir, &path)?;
     let mut audit = AuditFile {
         rel_path: posix_relative(root, &path),
-        kind: AuditKind::Uat,
+        kind,
         scope: Scope::Current,
         workstream: None,
         phase: dir_token(dir),
@@ -193,21 +270,15 @@ fn read_uat(root: &Path, phase_dir: &Path, dir: &str, file_name: &str) -> Option
     };
     match read_capped(&real) {
         Ok((text, modified)) => {
-            let map = frontmatter::extract(&text);
-            audit.status = frontmatter::fm_str(&map, "status")
-                .filter(|status| !status.is_empty())
-                .map_or_else(|| "unknown".to_owned(), |status| status.to_lowercase());
-            audit.source = frontmatter::source(&map);
-            audit.updated = frontmatter::updated(&map);
             audit.modified = modified;
-            audit.acknowledged = frontmatter::is_acknowledged(
-                &map,
-                "gap_snapshot",
-                &frontmatter::uat_gap_snapshot(&audit.status, &text),
-            );
-            let parse = uat::parse_uat_items_with_stats(&text);
-            audit.items = parse.items;
-            audit.unparsed_blocks = parse.headings_seen;
+            let parsed = parse_document(kind, &text)?;
+            audit.status = parsed.status;
+            audit.source = parsed.source;
+            audit.updated = parsed.updated;
+            audit.acknowledged = parsed.acknowledged;
+            audit.unparsed_blocks = parsed.unparsed_blocks;
+            audit.unreadable = parsed.unreadable;
+            audit.items = parsed.items;
         }
         Err(reason) => audit.unreadable = Some(reason),
     }
@@ -227,11 +298,22 @@ pub(super) fn scan_planning(planning_dir: &Path, state: &ProjectState) -> Vec<Au
         let mut names: Vec<String> = entries
             .flatten()
             .filter_map(|entry| entry.file_name().into_string().ok())
-            .filter(|name| is_uat_name(name) && is_phase_artifact(name, &dir))
             .collect();
         names.sort();
-        for name in names {
-            if let Some(file) = read_uat(root, &phase_dir, &dir, &name) {
+        let uats = names
+            .iter()
+            .filter(|name| is_uat_name(name) && is_phase_artifact(name, &dir))
+            .map(|name| (name, AuditKind::Uat));
+        let verifications = names
+            .iter()
+            .filter(|name| is_verification_name(name) && is_phase_artifact(name, &dir))
+            .map(|name| (name, AuditKind::Verification));
+        let deferred = names
+            .iter()
+            .filter(|name| name.as_str() == DEFERRED_NAME)
+            .map(|name| (name, AuditKind::Deferred));
+        for (name, kind) in uats.chain(verifications).chain(deferred) {
+            if let Some(file) = read_audit(root, &phase_dir, &dir, name, kind) {
                 files.push(file);
             }
         }
@@ -283,7 +365,7 @@ mod tests {
         write(
             &dir.path()
                 .join(".planning/phases/01-alpha/01-VERIFICATION.md"),
-            ROW,
+            "---\nstatus: passed\n---\n",
         );
         let files = scan_of(dir.path());
         let paths: Vec<&str> = files.iter().map(|f| f.rel_path.as_str()).collect();
@@ -574,5 +656,146 @@ mod tests {
         );
         assert_eq!(files[0].status, "unknown", "the block was refused");
         assert_eq!(files[0].items.len(), 1, "the rows are still read");
+    }
+
+    const HUMAN: &str =
+        "---\nstatus: human_needed\nhuman_verification:\n  - first check\n  - second check\n---\n";
+
+    #[test]
+    fn a_human_needed_verification_yields_its_checks_and_passed_yields_nothing() {
+        let dir = project();
+        let phase = dir.path().join(".planning/phases/01-alpha");
+        write(&phase.join("01-VERIFICATION.md"), HUMAN);
+        write(
+            &phase.join("01-b-VERIFICATION.md"),
+            "---\nstatus: passed\n---\n",
+        );
+        write(
+            &phase.join("01-c-VERIFICATION.md"),
+            "no frontmatter at all\n",
+        );
+        let files = scan_of(dir.path());
+        assert_eq!(files.len(), 1, "{files:?}");
+        assert_eq!(files[0].kind, AuditKind::Verification);
+        assert_eq!(files[0].status, "human_needed");
+        assert_eq!(files[0].items.len(), 2);
+    }
+
+    #[test]
+    fn an_out_of_set_verification_status_degrades_that_file_only() {
+        let dir = project();
+        let phase = dir.path().join(".planning/phases/01-alpha");
+        write(
+            &phase.join("01-VERIFICATION.md"),
+            "---\nstatus: complete\n---\n",
+        );
+        write(&phase.join("01-UAT.md"), ROW);
+        write(
+            &phase.join("01-b-VERIFICATION.md"),
+            "---\nstatus: Human_Needed\n---\n",
+        );
+        let files = scan_of(dir.path());
+        assert_eq!(files.len(), 3);
+        let bad = by_name(&files, "01-VERIFICATION.md");
+        assert_eq!(
+            bad.unreadable,
+            Some(Unreadable::OutOfSetStatus("complete".to_owned()))
+        );
+        assert!(bad.items.is_empty());
+        assert_eq!(
+            by_name(&files, "01-b-VERIFICATION.md").unreadable,
+            Some(Unreadable::OutOfSetStatus("Human_Needed".to_owned()))
+        );
+        assert_eq!(
+            by_name(&files, "01-UAT.md").items.len(),
+            1,
+            "others still read"
+        );
+    }
+
+    #[test]
+    fn an_acknowledged_verification_keeps_its_items_and_is_flagged() {
+        let dir = project();
+        let phase = dir.path().join(".planning/phases/01-alpha");
+        write(
+            &phase.join("01-VERIFICATION.md"),
+            "---\nstatus: human_needed\nhuman_verification:\n  - one\naudit_acknowledged:\n  milestone: v1.0\n  at: \"2026-01-12T09:00:00Z\"\n  status: human_needed\n---\n",
+        );
+        write(
+            &phase.join("01-b-VERIFICATION.md"),
+            "---\nstatus: human_needed\nhuman_verification:\n  - one\naudit_acknowledged:\n  milestone: v1.0\n  at: \"2026-01-12T09:00:00Z\"\n  status: gaps_found\n---\n",
+        );
+        let files = scan_of(dir.path());
+        assert!(by_name(&files, "01-VERIFICATION.md").acknowledged);
+        assert_eq!(by_name(&files, "01-VERIFICATION.md").items.len(), 1);
+        assert!(!by_name(&files, "01-b-VERIFICATION.md").acknowledged);
+    }
+
+    #[test]
+    fn an_oversize_verification_or_deferred_file_is_unreadable_not_passed() {
+        let dir = project();
+        let phase = dir.path().join(".planning/phases/01-alpha");
+        let big = "x".repeat(READ_CAP as usize + 1);
+        write(&phase.join("01-VERIFICATION.md"), &big);
+        write(&phase.join("deferred-items.md"), &big);
+        let files = scan_of(dir.path());
+        assert_eq!(files.len(), 2);
+        for file in &files {
+            assert_eq!(
+                file.unreadable,
+                Some(Unreadable::TooLarge),
+                "{}",
+                file.rel_path
+            );
+            assert!(file.items.is_empty());
+        }
+        assert_eq!(
+            by_name(&files, "01-VERIFICATION.md").kind,
+            AuditKind::Verification
+        );
+        assert_eq!(
+            by_name(&files, "deferred-items.md").kind,
+            AuditKind::Deferred
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_fifo_verification_or_deferred_file_is_not_regular_and_returns_promptly() {
+        use crate::state_reader::driver_frontmatter::fifo_test_support::{mkfifo, within_5s};
+        let dir = project();
+        let phase = dir.path().join(".planning/phases/01-alpha");
+        std::fs::create_dir_all(&phase).unwrap();
+        mkfifo(&phase.join("01-VERIFICATION.md"));
+        mkfifo(&phase.join("deferred-items.md"));
+        let root = dir.path().to_path_buf();
+        let files = within_5s(move || scan_of(&root));
+        assert_eq!(files.len(), 2);
+        assert!(files
+            .iter()
+            .all(|f| f.unreadable == Some(Unreadable::NotRegular)));
+    }
+
+    #[test]
+    fn a_deferred_items_file_lists_its_open_entries_as_unresolved() {
+        let dir = project();
+        write(
+            &dir.path()
+                .join(".planning/phases/01-alpha/deferred-items.md"),
+            "## Deferred Items\n\n- one\n- two\n  status: resolved\n- three\n",
+        );
+        write(
+            &dir.path()
+                .join(".planning/phases/02-beta/deferred-items.md"),
+            "# Notes\n\nnothing to defer\n",
+        );
+        let files = scan_of(dir.path());
+        let first = by_name(&files, "01-alpha/deferred-items.md");
+        assert_eq!(first.kind, AuditKind::Deferred);
+        assert_eq!(first.status, "unresolved");
+        assert_eq!(first.items.len(), 2);
+        assert!(by_name(&files, "02-beta/deferred-items.md")
+            .items
+            .is_empty());
     }
 }
