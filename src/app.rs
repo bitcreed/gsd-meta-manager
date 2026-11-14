@@ -2730,6 +2730,10 @@ impl App {
                 project_path,
                 changed_path,
             } => {
+                // Drop the owner reader's parsed files for this project (D-16): a map
+                // removal, no read and no parse, so it costs nothing on a render
+                // path and stays right when a later phase fills the digest in.
+                crate::state_reader::owner_items::evict_project(&project_path);
                 // Find the alias matching this project path
                 let alias = self
                     .ctx

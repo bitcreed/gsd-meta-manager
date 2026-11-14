@@ -20,8 +20,11 @@ use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 
+use std::sync::Arc;
+
 use super::{
-    deferred, frontmatter, uat, verification, AuditFile, AuditKind, ParsedFile, Scope, Unreadable,
+    deferred, frontmatter, uat, verification, AuditFile, AuditKind, CacheKey, ParseCache,
+    ParsedFile, Scope, Unreadable,
 };
 use crate::state_reader::phase_num::same_phase;
 use crate::state_reader::ProjectState;
@@ -104,8 +107,17 @@ fn contained(phase_dir: &Path, file: &Path) -> Option<PathBuf> {
     (real_dir.starts_with(&real_parent) && real_file.starts_with(&real_dir)).then_some(real_file)
 }
 
-/// The text and modification time of an audit file, or why it could not be read.
-fn read_capped(path: &Path) -> Result<(String, Option<DateTime<Utc>>), Unreadable> {
+/// A regular file opened for reading, its size within the cap.
+struct Opened {
+    file: std::fs::File,
+    modified: Option<DateTime<Utc>>,
+    key: CacheKey,
+}
+
+/// Open `path` without blocking and without following a final symlink, and require a
+/// regular file of at most [`READ_CAP`] bytes. Everything the cache must not
+/// short-circuit happens here, on the open handle.
+fn open_checked(path: &Path) -> Result<Opened, Unreadable> {
     #[cfg(unix)]
     let opened = {
         use std::os::unix::fs::OpenOptionsExt;
@@ -123,10 +135,22 @@ fn read_capped(path: &Path) -> Result<(String, Option<DateTime<Utc>>), Unreadabl
     if !metadata.file_type().is_file() {
         return Err(Unreadable::NotRegular);
     }
-    let modified = metadata.modified().ok().map(DateTime::<Utc>::from);
     if metadata.len() > READ_CAP {
         return Err(Unreadable::TooLarge);
     }
+    let mtime = metadata.modified().ok();
+    Ok(Opened {
+        file,
+        modified: mtime.map(DateTime::<Utc>::from),
+        key: CacheKey {
+            mtime,
+            len: metadata.len(),
+        },
+    })
+}
+
+/// The text of an opened file, at most [`READ_CAP`] bytes, line endings normalized.
+fn read_text(file: std::fs::File) -> Result<String, Unreadable> {
     let mut bytes = Vec::new();
     file.take(READ_CAP + 1)
         .read_to_end(&mut bytes)
@@ -134,10 +158,9 @@ fn read_capped(path: &Path) -> Result<(String, Option<DateTime<Utc>>), Unreadabl
     if bytes.len() as u64 > READ_CAP {
         return Err(Unreadable::TooLarge);
     }
-    Ok((
-        uat::normalize_line_endings(&String::from_utf8_lossy(&bytes)),
-        modified,
-    ))
+    Ok(uat::normalize_line_endings(&String::from_utf8_lossy(
+        &bytes,
+    )))
 }
 
 /// A path relative to `root` spelled with `/`.
@@ -243,7 +266,13 @@ pub(super) fn parse_document(kind: AuditKind, text: &str) -> Option<ParsedFile> 
 
 /// One document as an [`AuditFile`]; `None` when it escapes its phase directory or,
 /// for a VERIFICATION, has a status that contributes nothing.
-fn read_audit(root: &Path, target: &Target, file_name: &str, kind: AuditKind) -> Option<AuditFile> {
+fn read_audit(
+    cache: &ParseCache,
+    root: &Path,
+    target: &Target,
+    file_name: &str,
+    kind: AuditKind,
+) -> Option<AuditFile> {
     let path = target.path.join(file_name);
     let real = contained(&target.path, &path)?;
     let mut audit = AuditFile {
@@ -262,17 +291,33 @@ fn read_audit(root: &Path, target: &Target, file_name: &str, kind: AuditKind) ->
         unreadable: None,
         items: Vec::new(),
     };
-    match read_capped(&real) {
-        Ok((text, modified)) => {
-            audit.modified = modified;
-            let parsed = parse_document(kind, &text)?;
-            audit.status = parsed.status;
-            audit.source = parsed.source;
+    match open_checked(&real) {
+        Ok(opened) => {
+            audit.modified = opened.modified;
+            // The cache sits after containment, the regular-file check and the size
+            // check: a hostile path never gets as far as a lookup.
+            let parsed = match cache.get(&real, kind, opened.key) {
+                Some(hit) => hit,
+                None => match read_text(opened.file) {
+                    Ok(text) => {
+                        let parsed = Arc::new(parse_document(kind, &text));
+                        cache.insert(real, kind, opened.key, Arc::clone(&parsed));
+                        parsed
+                    }
+                    Err(reason) => {
+                        audit.unreadable = Some(reason);
+                        return Some(audit);
+                    }
+                },
+            };
+            let parsed = parsed.as_ref().as_ref()?;
+            audit.status = parsed.status.clone();
+            audit.source = parsed.source.clone();
             audit.updated = parsed.updated;
             audit.acknowledged = parsed.acknowledged;
             audit.unparsed_blocks = parsed.unparsed_blocks;
-            audit.unreadable = parsed.unreadable;
-            audit.items = parsed.items;
+            audit.unreadable = parsed.unreadable.clone();
+            audit.items = parsed.items.clone();
         }
         Err(reason) => audit.unreadable = Some(reason),
     }
@@ -423,7 +468,11 @@ fn targets(planning_dir: &Path, state: &ProjectState) -> Vec<Target> {
 /// Layer A over the project's own tree, its workstreams and every archive, sorted by
 /// `rel_path`. The same `rel_path` reached from two targets is listed once, the first
 /// in enumeration order.
-pub(super) fn scan_planning(planning_dir: &Path, state: &ProjectState) -> Vec<AuditFile> {
+pub(super) fn scan_planning(
+    cache: &ParseCache,
+    planning_dir: &Path,
+    state: &ProjectState,
+) -> Vec<AuditFile> {
     let root = planning_dir.parent().unwrap_or(planning_dir);
     let mut files = Vec::new();
     let mut seen = std::collections::HashSet::new();
@@ -449,7 +498,7 @@ pub(super) fn scan_planning(planning_dir: &Path, state: &ProjectState) -> Vec<Au
             .filter(|name| name.as_str() == DEFERRED_NAME)
             .map(|name| (name, AuditKind::Deferred));
         for (name, kind) in uats.chain(verifications).chain(deferred) {
-            if let Some(file) = read_audit(root, &target, name, kind) {
+            if let Some(file) = read_audit(cache, root, &target, name, kind) {
                 if seen.insert(file.rel_path.clone()) {
                     files.push(file);
                 }
@@ -488,7 +537,7 @@ mod tests {
 
     fn scan_of(root: &Path) -> Vec<AuditFile> {
         let planning = root.join(".planning");
-        scan_planning(&planning, &parse_project_state(&planning))
+        crate::state_reader::owner_items::scan(&planning, &parse_project_state(&planning))
     }
 
     #[test]
@@ -1054,7 +1103,13 @@ mod tests {
         let mut seen = std::collections::HashSet::new();
         let mut files = Vec::new();
         for target in &doubled {
-            if let Some(file) = read_audit(root, target, "01-UAT.md", AuditKind::Uat) {
+            if let Some(file) = read_audit(
+                &ParseCache::new(16),
+                root,
+                target,
+                "01-UAT.md",
+                AuditKind::Uat,
+            ) {
                 if seen.insert(file.rel_path.clone()) {
                     files.push(file);
                 }
@@ -1074,5 +1129,143 @@ mod tests {
         std::fs::create_dir_all(&milestones).unwrap();
         std::os::unix::fs::symlink(outside.path(), milestones.join("v1.0-phases")).unwrap();
         assert!(scan_of(dir.path()).is_empty());
+    }
+
+    fn hits() -> usize {
+        crate::state_reader::owner_items::CACHE_HITS.with(std::cell::Cell::get)
+    }
+
+    fn scan_with(cache: &ParseCache, root: &Path) -> Vec<AuditFile> {
+        let planning = root.join(".planning");
+        scan_planning(cache, &planning, &parse_project_state(&planning))
+    }
+
+    #[test]
+    fn a_second_scan_of_an_unchanged_tree_reads_every_file_from_the_cache() {
+        let dir = project();
+        let phase = dir.path().join(".planning/phases/01-alpha");
+        write(&phase.join("01-UAT.md"), ROW);
+        write(&phase.join("01-VERIFICATION.md"), HUMAN);
+        write(
+            &phase.join("01-b-VERIFICATION.md"),
+            "---\nstatus: passed\n---\n",
+        );
+        write(&phase.join("deferred-items.md"), "- one\n");
+        let cache = ParseCache::new(64);
+        let before = hits();
+        let first = scan_with(&cache, dir.path());
+        assert_eq!(hits(), before, "a cold scan hits nothing");
+        let second = scan_with(&cache, dir.path());
+        assert_eq!(hits() - before, 4, "every document, a passed one included");
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn a_changed_length_or_mtime_reparses() {
+        let dir = project();
+        let path = dir.path().join(".planning/phases/01-alpha/01-UAT.md");
+        write(&path, ROW);
+        let cache = ParseCache::new(64);
+        assert_eq!(scan_with(&cache, dir.path())[0].items.len(), 1);
+        write(
+            &path,
+            "---\nstatus: testing\n---\n\n### 1. One\nresult: pending\n### 2. Two\nresult: pending\n",
+        );
+        assert_eq!(
+            scan_with(&cache, dir.path())[0].items.len(),
+            2,
+            "new length"
+        );
+        // Same length, different content, different mtime.
+        let swapped = "---\nstatus: testing\n---\n\n### 1. One\nresult: pending\n### 2. Two\nresult: skippd\n";
+        write(&path, swapped);
+        let stamp = std::time::SystemTime::now() + std::time::Duration::from_secs(120);
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(stamp)
+            .unwrap();
+        let files = scan_with(&cache, dir.path());
+        assert_eq!(files[0].items[1].result, "skippd", "new mtime");
+    }
+
+    #[test]
+    fn the_same_file_read_as_two_kinds_is_cached_per_kind() {
+        let dir = project();
+        // Matches both the UAT and the VERIFICATION name rules.
+        write(
+            &dir.path().join(".planning/phases/01-alpha/01-UAT-VERIFICATION.md"),
+            "---\nstatus: human_needed\nhuman_verification:\n  - x\n---\n### 1. One\nresult: pending\n",
+        );
+        let cache = ParseCache::new(64);
+        let first = scan_with(&cache, dir.path());
+        let second = scan_with(&cache, dir.path());
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn evicting_a_project_drops_only_its_entries() {
+        let one = project();
+        let two = project();
+        write(&one.path().join(".planning/phases/01-alpha/01-UAT.md"), ROW);
+        write(&two.path().join(".planning/phases/01-alpha/01-UAT.md"), ROW);
+        let scan_both = || {
+            crate::state_reader::owner_items::scan(
+                &one.path().join(".planning"),
+                &parse_project_state(&one.path().join(".planning")),
+            );
+            crate::state_reader::owner_items::scan(
+                &two.path().join(".planning"),
+                &parse_project_state(&two.path().join(".planning")),
+            );
+        };
+        scan_both();
+        let before = hits();
+        scan_both();
+        assert_eq!(hits() - before, 2, "both are cached");
+        crate::state_reader::owner_items::evict_project(one.path());
+        let before = hits();
+        scan_both();
+        assert_eq!(hits() - before, 1, "only the other project still hits");
+    }
+
+    #[test]
+    fn a_full_cache_starts_over_and_the_scan_stays_correct() {
+        let dir = project();
+        let phase = dir.path().join(".planning/phases/01-alpha");
+        for n in 0..6 {
+            write(&phase.join(format!("01-{n}-UAT.md")), ROW);
+        }
+        let cache = ParseCache::new(3);
+        let first = scan_with(&cache, dir.path());
+        assert_eq!(first.len(), 6);
+        assert!(cache.len() <= 3, "{} entries", cache.len());
+        assert_eq!(scan_with(&cache, dir.path()), first);
+    }
+
+    #[test]
+    fn a_poisoned_cache_lock_degrades_to_an_uncached_scan() {
+        let dir = project();
+        write(&dir.path().join(".planning/phases/01-alpha/01-UAT.md"), ROW);
+        let cache = std::sync::Arc::new(ParseCache::new(64));
+        let poisoner = std::sync::Arc::clone(&cache);
+        let joined = std::thread::spawn(move || {
+            poisoner.hold_lock_and_panic();
+        })
+        .join();
+        assert!(joined.is_err(), "the thread panicked holding the lock");
+        let before = hits();
+        let first = scan_with(&cache, dir.path());
+        let second = scan_with(&cache, dir.path());
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].items.len(), 1);
+        assert_eq!(first, second);
+        assert_eq!(
+            hits(),
+            before,
+            "nothing is cached while the lock is poisoned"
+        );
+        cache.evict_under(dir.path());
     }
 }

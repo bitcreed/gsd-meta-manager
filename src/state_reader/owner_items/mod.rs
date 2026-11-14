@@ -30,14 +30,17 @@ mod scan;
 mod uat;
 mod verification;
 
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, LazyLock, Mutex, PoisonError};
+use std::time::SystemTime;
 
 use chrono::{DateTime, Utc};
 
 use super::ProjectState;
 
 /// What kind of document an [`AuditFile`] was read from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AuditKind {
     Uat,
     Verification,
@@ -163,9 +166,115 @@ pub(crate) struct ParsedFile {
     pub items: Vec<AuditItem>,
 }
 
+/// What identifies one version of a file's content: its modification time and length,
+/// read from the handle the text was (or would be) read from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CacheKey {
+    pub mtime: Option<SystemTime>,
+    pub len: u64,
+}
+
+/// A parse result as the cache holds it: `None` for a document that contributes
+/// nothing (a passed VERIFICATION), which is worth remembering too.
+pub(crate) type Parsed = Option<ParsedFile>;
+
+type CacheMap = HashMap<(PathBuf, AuditKind), (CacheKey, Arc<Parsed>)>;
+
+/// The most entries the process-wide cache holds before it starts over.
+const CACHE_MAX_ENTRIES: usize = 8192;
+
+#[cfg(test)]
+thread_local! {
+    /// Cache hits seen by this thread, so a test can assert that a second scan read
+    /// nothing from disk.
+    pub(crate) static CACHE_HITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Parsed documents by canonical path, valid while the file's [`CacheKey`] is
+/// unchanged (D-16, OWN-12).
+///
+/// The lock is held for one map operation and never across file I/O or parsing.
+/// A poisoned lock turns lookups and inserts into no-ops, so the scan reads the
+/// file instead; it is never a panic.
+pub(crate) struct ParseCache {
+    map: Mutex<CacheMap>,
+    max_entries: usize,
+}
+
+impl ParseCache {
+    pub(crate) fn new(max_entries: usize) -> Self {
+        ParseCache {
+            map: Mutex::new(HashMap::new()),
+            max_entries,
+        }
+    }
+
+    /// The cached parse of `kind` at `path` when its key still equals `key`.
+    pub(crate) fn get(&self, path: &Path, kind: AuditKind, key: CacheKey) -> Option<Arc<Parsed>> {
+        let map = self.map.lock().ok()?;
+        let (stored, parsed) = map.get(&(path.to_path_buf(), kind))?;
+        let hit = (*stored == key).then(|| Arc::clone(parsed));
+        #[cfg(test)]
+        if hit.is_some() {
+            CACHE_HITS.with(|hits| hits.set(hits.get() + 1));
+        }
+        hit
+    }
+
+    /// Remember a parse. An insert into a full map clears it first.
+    pub(crate) fn insert(
+        &self,
+        path: PathBuf,
+        kind: AuditKind,
+        key: CacheKey,
+        parsed: Arc<Parsed>,
+    ) {
+        let Ok(mut map) = self.map.lock() else {
+            return;
+        };
+        let entry = (path, kind);
+        if map.len() >= self.max_entries && !map.contains_key(&entry) {
+            map.clear();
+        }
+        map.insert(entry, (key, parsed));
+    }
+
+    /// Drop every entry whose path is inside `root`.
+    pub(crate) fn evict_under(&self, root: &Path) {
+        let mut map = self.map.lock().unwrap_or_else(PoisonError::into_inner);
+        map.retain(|(path, _), _| !path.starts_with(root));
+    }
+
+    /// Poison the lock the way a panicking holder would.
+    #[cfg(test)]
+    pub(crate) fn hold_lock_and_panic(&self) {
+        let _held = self.map.lock().ok();
+        panic!("poisoning the parse cache lock on purpose");
+    }
+
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.map
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len()
+    }
+}
+
+static PARSE_CACHE: LazyLock<ParseCache> = LazyLock::new(|| ParseCache::new(CACHE_MAX_ENTRIES));
+
+/// Forget everything the parse cache holds about the project at `root` (D-16).
+///
+/// Called when the watcher reports a change under the project. It is a map removal:
+/// nothing is read or parsed, and a path that was never cached costs nothing.
+pub fn evict_project(root: &Path) {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    PARSE_CACHE.evict_under(&root);
+}
+
 /// Layer A: every audit file of the project, process-free, sorted by `rel_path`.
 pub fn scan(planning_dir: &Path, state: &ProjectState) -> Vec<AuditFile> {
-    scan::scan_planning(planning_dir, state)
+    scan::scan_planning(&PARSE_CACHE, planning_dir, state)
 }
 
 /// The inbox lane an item or group is listed under.
