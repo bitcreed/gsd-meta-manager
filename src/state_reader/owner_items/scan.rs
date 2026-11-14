@@ -8,9 +8,10 @@
 //! `phases/` is untrusted:
 //!
 //! - a file is read only when its canonical path stays inside its canonical phase
-//!   directory and that directory stays inside its canonical parent (upstream's
-//!   `isReportContained`): a symlink that stays inside is followed, one that
-//!   escapes makes the file absent;
+//!   directory and that directory stays inside the canonical planning tree (upstream's
+//!   `isReportContained`, bounded to the tree so a symlinked `phases/` or
+//!   `workstreams/` cannot lead out): a symlink that stays inside is followed, one
+//!   that escapes makes the file absent;
 //! - the open is non-blocking (a FIFO cannot park the reader), the handle must be a
 //!   regular file, and at most [`READ_CAP`] bytes are read, so a larger file is
 //!   marked unreadable instead of being parsed or reported clean.
@@ -99,12 +100,13 @@ fn is_uat_name(file: &str) -> bool {
 }
 
 /// Whether the canonical `file` stays in the canonical `phase_dir`, which stays in
-/// its canonical parent. Anything unresolvable is not contained.
-fn contained(phase_dir: &Path, file: &Path) -> Option<PathBuf> {
+/// the canonical planning tree `root_real`. Bounding the directory to the tree (not to
+/// its own parent, which resolves through the same symlinked ancestor) is what rejects
+/// a symlinked `phases/` or `workstreams/`. Anything unresolvable is not contained.
+fn contained(root_real: &Path, phase_dir: &Path, file: &Path) -> Option<PathBuf> {
     let real_dir = phase_dir.canonicalize().ok()?;
-    let real_parent = phase_dir.parent()?.canonicalize().ok()?;
     let real_file = file.canonicalize().ok()?;
-    (real_dir.starts_with(&real_parent) && real_file.starts_with(&real_dir)).then_some(real_file)
+    (real_dir.starts_with(root_real) && real_file.starts_with(&real_dir)).then_some(real_file)
 }
 
 /// A regular file opened for reading, its size within the cap.
@@ -274,12 +276,13 @@ pub(super) fn parse_document(kind: AuditKind, text: &str) -> Option<ParsedFile> 
 fn read_audit(
     cache: &ParseCache,
     root: &Path,
+    root_real: &Path,
     target: &Target,
     file_name: &str,
     kind: AuditKind,
 ) -> Option<AuditFile> {
     let path = target.path.join(file_name);
-    let real = contained(&target.path, &path)?;
+    let real = contained(root_real, &target.path, &path)?;
     let mut audit = AuditFile {
         rel_path: posix_relative(root, &path),
         kind,
@@ -479,6 +482,9 @@ pub(super) fn scan_planning(
     state: &ProjectState,
 ) -> Vec<AuditFile> {
     let root = planning_dir.parent().unwrap_or(planning_dir);
+    let Ok(root_real) = planning_dir.canonicalize() else {
+        return Vec::new();
+    };
     let mut files = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for target in targets(planning_dir, state) {
@@ -503,7 +509,7 @@ pub(super) fn scan_planning(
             .filter(|name| name.as_str() == DEFERRED_NAME)
             .map(|name| (name, AuditKind::Deferred));
         for (name, kind) in uats.chain(verifications).chain(deferred) {
-            if let Some(file) = read_audit(cache, root, &target, name, kind) {
+            if let Some(file) = read_audit(cache, root, &root_real, &target, name, kind) {
                 if seen.insert(file.rel_path.clone()) {
                     files.push(file);
                 }
@@ -658,6 +664,38 @@ mod tests {
         std::fs::create_dir_all(dir.path().join(".planning/phases/01-alpha/01-UAT.md")).unwrap();
         let files = scan_of(dir.path());
         assert_eq!(files[0].unreadable, Some(Unreadable::NotRegular));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_phases_or_workstreams_directory_cannot_lead_out_of_the_project() {
+        use std::os::unix::fs::symlink;
+        let dir = project();
+        let outside = tempfile::tempdir().unwrap();
+        write(&outside.path().join("phases/01-alpha/01-UAT.md"), ROW);
+        let planning = dir.path().join(".planning");
+        std::fs::remove_dir_all(planning.join("phases")).ok();
+        symlink(outside.path().join("phases"), planning.join("phases")).unwrap();
+        assert!(
+            scan_of(dir.path()).is_empty(),
+            "a symlinked phases/ reads nothing"
+        );
+
+        // A workstream tree reached through a symlinked workstreams/ directory.
+        std::fs::remove_file(planning.join("phases")).unwrap();
+        write(
+            &outside.path().join("streams/alpha/phases/01-alpha/01-UAT.md"),
+            ROW,
+        );
+        write(
+            &outside.path().join("streams/alpha/ROADMAP.md"),
+            "# Roadmap\n\n- [ ] **Phase 1: Alpha**\n",
+        );
+        symlink(outside.path().join("streams"), planning.join("workstreams")).unwrap();
+        assert!(
+            scan_of(dir.path()).is_empty(),
+            "a symlinked workstreams/ reads nothing"
+        );
     }
 
     #[test]
@@ -1105,12 +1143,14 @@ mod tests {
         let again = targets(&planning, &state);
         doubled.extend(again);
         let root = dir.path();
+        let root_real = planning.canonicalize().unwrap();
         let mut seen = std::collections::HashSet::new();
         let mut files = Vec::new();
         for target in &doubled {
             if let Some(file) = read_audit(
                 &ParseCache::new(16),
                 root,
+                &root_real,
                 target,
                 "01-UAT.md",
                 AuditKind::Uat,
