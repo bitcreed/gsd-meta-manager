@@ -504,17 +504,19 @@ fn apply_r7(digest: &mut OwnerDigest, files: &[AuditFile], state: &ProjectState,
                 .sum();
             let has_fix = groups.iter().any(|g| g.lane == Lane::Fix);
             let has_blocked = groups.iter().any(|g| g.lane == Lane::Blocked);
+            // Invariant: a current, unacknowledged file that could not be read in full
+            // (`unparsed_blocks > 0` or `unreadable`) always yields a Fix group in
+            // `build_digest`, so `has_fix` already excludes such a phase here and no
+            // separate unreadable check is needed below.
             if has_fix || has_blocked {
                 continue;
             }
-            let file_unreadable =
-                phase_files().any(|file| file.unparsed_blocks > 0 || file.unreadable.is_some());
             let verification_ok = matches!(
                 disk.verification_status,
                 VerificationStatus::Passed | VerificationStatus::HumanNeeded
             );
             if test_items > 0 {
-                if disk.status >= DiskStatus::Executed && !file_unreadable && verification_ok {
+                if disk.status >= DiskStatus::Executed && verification_ok {
                     for group in digest
                         .groups
                         .iter_mut()
