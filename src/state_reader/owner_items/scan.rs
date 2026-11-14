@@ -415,4 +415,164 @@ mod tests {
         assert_eq!(files[1].status, "unknown");
         assert!(files[1].modified.is_some());
     }
+
+    fn by_name<'a>(files: &'a [AuditFile], name: &str) -> &'a AuditFile {
+        files
+            .iter()
+            .find(|f| f.rel_path.ends_with(name))
+            .unwrap_or_else(|| panic!("{name} was not scanned: {files:?}"))
+    }
+
+    #[test]
+    fn a_file_of_exactly_one_mib_is_read() {
+        let dir = project();
+        let mut text = String::from(ROW);
+        text.push_str(&"x".repeat(READ_CAP as usize - text.len()));
+        assert_eq!(text.len() as u64, READ_CAP);
+        write(
+            &dir.path().join(".planning/phases/01-alpha/01-UAT.md"),
+            &text,
+        );
+        let files = scan_of(dir.path());
+        assert_eq!(files[0].unreadable, None);
+        assert_eq!(files[0].items.len(), 1);
+    }
+
+    #[test]
+    fn a_file_one_byte_over_the_cap_is_too_large() {
+        let dir = project();
+        let mut text = String::from(ROW);
+        text.push_str(&"x".repeat(READ_CAP as usize + 1 - text.len()));
+        assert_eq!(text.len() as u64, READ_CAP + 1);
+        write(
+            &dir.path().join(".planning/phases/01-alpha/01-UAT.md"),
+            &text,
+        );
+        let files = scan_of(dir.path());
+        assert_eq!(files[0].unreadable, Some(Unreadable::TooLarge));
+        assert!(files[0].items.is_empty(), "never parsed, never clean");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_sibling_dir_sharing_the_prefix_is_outside_the_phase_dir() {
+        use std::os::unix::fs::symlink;
+        let dir = project();
+        let phases = dir.path().join(".planning/phases");
+        write(&phases.join("01-alphabet/01-UAT.md"), ROW);
+        std::fs::create_dir_all(phases.join("01-alpha")).unwrap();
+        symlink(
+            phases.join("01-alphabet/01-UAT.md"),
+            phases.join("01-alpha/01-link-UAT.md"),
+        )
+        .unwrap();
+        let files = scan_of(dir.path());
+        let paths: Vec<&str> = files.iter().map(|f| f.rel_path.as_str()).collect();
+        assert_eq!(
+            paths,
+            [".planning/phases/01-alphabet/01-UAT.md"],
+            "the link out of 01-alpha is absent, not followed"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_escaping_symlink_to_a_fifo_is_absent_not_unregular() {
+        use crate::state_reader::driver_frontmatter::fifo_test_support::{mkfifo, within_5s};
+        let dir = project();
+        let outside = tempfile::tempdir().unwrap();
+        mkfifo(&outside.path().join("pipe"));
+        let phase = dir.path().join(".planning/phases/01-alpha");
+        std::fs::create_dir_all(&phase).unwrap();
+        std::os::unix::fs::symlink(outside.path().join("pipe"), phase.join("01-UAT.md")).unwrap();
+        let root = dir.path().to_path_buf();
+        let files = within_5s(move || scan_of(&root));
+        assert!(files.is_empty(), "{files:?}");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_fifo_uat_is_not_regular_and_returns_promptly() {
+        use crate::state_reader::driver_frontmatter::fifo_test_support::{mkfifo, within_5s};
+        let dir = project();
+        let phase = dir.path().join(".planning/phases/01-alpha");
+        std::fs::create_dir_all(&phase).unwrap();
+        mkfifo(&phase.join("01-UAT.md"));
+        let root = dir.path().to_path_buf();
+        let files = within_5s(move || scan_of(&root));
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].unreadable, Some(Unreadable::NotRegular));
+        assert!(files[0].items.is_empty());
+    }
+
+    #[test]
+    fn invalid_utf8_in_a_row_name_decodes_lossily() {
+        let dir = project();
+        let path = dir.path().join(".planning/phases/01-alpha/01-UAT.md");
+        let mut bytes = b"### 1. Caf".to_vec();
+        bytes.extend([0xff, 0xfe]);
+        bytes.extend(b"\nresult: pending\n");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, bytes).unwrap();
+        let files = scan_of(dir.path());
+        assert_eq!(files[0].unreadable, None);
+        assert!(files[0].items[0].name.contains('\u{fffd}'));
+    }
+
+    #[test]
+    fn an_unterminated_frontmatter_reads_as_empty_and_rows_are_still_parsed() {
+        let dir = project();
+        let phase = dir.path().join(".planning/phases/01-alpha");
+        write(
+            &phase.join("01-UAT.md"),
+            "---\nstatus: complete\n\n### 1. One\nresult: pending\n",
+        );
+        write(
+            &phase.join("01-b-UAT.md"),
+            "---\n---\n### 1. One\nresult: pending\n",
+        );
+        let files = scan_of(dir.path());
+        for name in ["01-UAT.md", "01-b-UAT.md"] {
+            let file = by_name(&files, name);
+            assert_eq!(file.status, "unknown", "{name}");
+            assert_eq!(file.items.len(), 1, "{name}");
+        }
+    }
+
+    #[test]
+    fn a_zero_byte_uat_yields_no_items() {
+        let dir = project();
+        write(&dir.path().join(".planning/phases/01-alpha/01-UAT.md"), "");
+        let files = scan_of(dir.path());
+        assert_eq!(files[0].status, "unknown");
+        assert!(files[0].items.is_empty());
+        assert_eq!(files[0].unreadable, None);
+        assert!(!files[0].acknowledged);
+    }
+
+    #[test]
+    fn an_alias_bomb_is_refused_quickly() {
+        let dir = project();
+        let mut head = String::from("---\nstatus: complete\na0: &a0 [x, x, x, x, x, x, x, x, x]\n");
+        for level in 1..=12 {
+            let prev = level - 1;
+            head.push_str(&format!(
+                "a{level}: &a{level} [*a{prev}, *a{prev}, *a{prev}, *a{prev}, *a{prev}, *a{prev}, *a{prev}, *a{prev}, *a{prev}]\n"
+            ));
+        }
+        head.push_str("---\n### 1. One\nresult: pending\n");
+        write(
+            &dir.path().join(".planning/phases/01-alpha/01-UAT.md"),
+            &head,
+        );
+        let started = std::time::Instant::now();
+        let files = scan_of(dir.path());
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(1),
+            "took {:?}",
+            started.elapsed()
+        );
+        assert_eq!(files[0].status, "unknown", "the block was refused");
+        assert_eq!(files[0].items.len(), 1, "the rows are still read");
+    }
 }
