@@ -252,15 +252,20 @@ pub(super) fn parse_document(kind: AuditKind, text: &str) -> Option<ParsedFile> 
                 }),
             }
         }
-        AuditKind::Deferred => Some(ParsedFile {
-            status: "unresolved".to_owned(),
-            source: Vec::new(),
-            updated: None,
-            acknowledged: false,
-            unparsed_blocks: 0,
-            unreadable: None,
-            items: deferred::parse_deferred_items(&lines),
-        }),
+        AuditKind::Deferred => {
+            // A pathological file spends its fence-scan budget (CR-01): it is
+            // unreadable, never clean.
+            let items = deferred::parse_deferred_items(&lines);
+            Some(ParsedFile {
+                status: "unresolved".to_owned(),
+                source: Vec::new(),
+                updated: None,
+                acknowledged: false,
+                unparsed_blocks: 0,
+                unreadable: items.is_none().then_some(Unreadable::TooLarge),
+                items: items.unwrap_or_default(),
+            })
+        }
     }
 }
 

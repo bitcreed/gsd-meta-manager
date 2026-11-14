@@ -15,8 +15,9 @@ use super::uat::{js_space, js_trim, line_terminator};
 use super::{AuditItem, Category, Origin};
 
 /// Port of `parseDeferredItems`: every entry that is not resolved, as an item with
-/// result `unresolved`.
-pub(super) fn parse_deferred_items(lines: &[&str]) -> Vec<AuditItem> {
+/// result `unresolved`. `None` when the fence bookkeeping outgrew its work budget (a
+/// pathological file): the caller marks the file unreadable instead of clean.
+pub(super) fn parse_deferred_items(lines: &[&str]) -> Option<Vec<AuditItem>> {
     let section = markdown::collect_section(
         lines,
         |heading| heading.level == 2 && is_deferred_items_heading(&heading.text),
@@ -24,7 +25,7 @@ pub(super) fn parse_deferred_items(lines: &[&str]) -> Vec<AuditItem> {
     );
     let body = section.map_or_else(|| lines.join("\n"), |found| found.body);
     let mut names: Vec<String> = Vec::new();
-    for entry in entries_of(&body) {
+    for entry in entries_of(&body)? {
         let text = raw_entry_text(&entry);
         if text.is_empty() {
             continue;
@@ -36,19 +37,21 @@ pub(super) fn parse_deferred_items(lines: &[&str]) -> Vec<AuditItem> {
         }
     }
     names.extend(table_items(&body));
-    names
-        .into_iter()
-        .map(|name| AuditItem {
-            origin: Origin::Deferred,
-            test: None,
-            name,
-            expected: None,
-            result: "unresolved".to_owned(),
-            category: Category::Deferred,
-            reason: None,
-            blocked_by: None,
-        })
-        .collect()
+    Some(
+        names
+            .into_iter()
+            .map(|name| AuditItem {
+                origin: Origin::Deferred,
+                test: None,
+                name,
+                expected: None,
+                result: "unresolved".to_owned(),
+                category: Category::Deferred,
+                reason: None,
+                blocked_by: None,
+            })
+            .collect(),
+    )
 }
 
 /// `^deferred\s+items$` ignoring ASCII case, over an already trimmed heading text.
@@ -79,9 +82,13 @@ struct Entry {
 
 /// `entries` of `parseDeferredItemsWithStatus`: heading-delimited when the body has
 /// headings, else list-delimited.
-fn entries_of(body: &str) -> Vec<Entry> {
+fn entries_of(body: &str) -> Option<Vec<Entry>> {
     let lines: Vec<&str> = body.split('\n').collect();
-    split_heading_entries(&lines).unwrap_or_else(|| split_list_entries(&lines))
+    let work = Work::for_lines(lines.len());
+    match split_heading_entries(&lines, &work)? {
+        Some(entries) => Some(entries),
+        None => split_list_entries(&lines, &work),
+    }
 }
 
 // ---------------------------------------------------------------------------------
@@ -203,30 +210,96 @@ fn deindented<'a>(lines: &[&'a str]) -> Vec<&'a str> {
 
 /// `scanFencesFrom`'s result.
 struct FenceScan {
+    /// The line the scan began at; it knew nothing about the lines before it.
+    start: usize,
     fenced: HashSet<usize>,
     openers: HashSet<usize>,
     unterminated_from: Option<usize>,
 }
 
-fn scan_fences_from(lines: &[&str], from: usize) -> FenceScan {
-    let mut scan = FenceScan {
-        fenced: HashSet::new(),
-        openers: HashSet::new(),
-        unterminated_from: None,
-    };
-    let tail = lines.get(from..).unwrap_or(&[]);
-    for block in scan_fenced_blocks(&deindented(tail)) {
-        let open = block.open_line + from;
-        scan.openers.insert(open);
-        match block.close_line {
-            None => {
-                scan.unterminated_from = Some(open);
-                break;
-            }
-            Some(close) => scan.fenced.extend(open..=close + from),
+impl FenceScan {
+    /// Whether no fence is open going into `line`. A scan is a forward state machine,
+    /// so a scan begun earlier that is closed at `line` continues exactly as a scan
+    /// begun at `line` would: the one can stand in for the other.
+    fn closed_before(&self, line: usize) -> bool {
+        self.start <= line
+            && self.unterminated_from.is_none_or(|open| line <= open)
+            && (!self.fenced.contains(&line) || self.openers.contains(&line))
+    }
+}
+
+/// How many line visits the fence bookkeeping of one body may spend, in multiples of
+/// its length. An honest file needs about one visit per line; a hostile one can force
+/// a re-scan of the tail per line, which would be quadratic (CR-01).
+const WORK_PER_LINE: usize = 8;
+
+/// The remaining fence work of one body, shared by its nested splits.
+struct Work(std::cell::Cell<usize>);
+
+impl Work {
+    fn for_lines(count: usize) -> Self {
+        Work(std::cell::Cell::new(
+            count
+                .saturating_mul(WORK_PER_LINE)
+                .saturating_add(WORK_PER_LINE * 1024),
+        ))
+    }
+
+    /// Spend `visits`; `None` when the budget is gone.
+    fn spend(&self, visits: usize) -> Option<()> {
+        let left = self.0.get().checked_sub(visits)?;
+        self.0.set(left);
+        Some(())
+    }
+}
+
+/// The de-indented lines of one body, scanned for fences on demand.
+struct Fences<'a> {
+    deindented: Vec<&'a str>,
+    work: &'a Work,
+}
+
+impl<'a> Fences<'a> {
+    fn new(lines: &[&'a str], work: &'a Work) -> Self {
+        Fences {
+            deindented: deindented(lines),
+            work,
         }
     }
-    scan
+
+    /// `scanFencesFrom`: a scan that starts closed at `from`. `None` when the work
+    /// budget is spent.
+    fn scan_from(&self, from: usize) -> Option<FenceScan> {
+        let mut scan = FenceScan {
+            start: from,
+            fenced: HashSet::new(),
+            openers: HashSet::new(),
+            unterminated_from: None,
+        };
+        let tail = self.deindented.get(from..).unwrap_or(&[]);
+        self.work.spend(tail.len())?;
+        for block in scan_fenced_blocks(tail) {
+            let open = block.open_line + from;
+            scan.openers.insert(open);
+            match block.close_line {
+                None => {
+                    scan.unterminated_from = Some(open);
+                    break;
+                }
+                Some(close) => scan.fenced.extend(open..=close + from),
+            }
+        }
+        Some(scan)
+    }
+
+    /// Make `scan` valid for `from` onward: keep it when it is closed there (the
+    /// result would be the same), else scan afresh.
+    fn refresh(&self, scan: &mut FenceScan, from: usize) -> Option<()> {
+        if !scan.closed_before(from) {
+            *scan = self.scan_from(from)?;
+        }
+        Some(())
+    }
 }
 
 /// `fencedLineSet`: the fenced lines of one entry, delimiters included.
@@ -245,12 +318,13 @@ fn fenced_line_set(lines: &[&str]) -> HashSet<usize> {
 
 /// `splitGapsEntriesCore` with the deferred markers: entries on top-level list
 /// openers.
-fn split_list_entries(lines: &[&str]) -> Vec<Entry> {
+fn split_list_entries(lines: &[&str], work: &Work) -> Option<Vec<Entry>> {
+    let fences = Fences::new(lines, work);
     let mut entries = Vec::new();
     let mut current: Option<Entry> = None;
     let mut base_indent: Option<usize> = None;
     let mut runs = ListRuns::default();
-    let mut scan = scan_fences_from(lines, 0);
+    let mut scan = fences.scan_from(0)?;
     let mut blank_seen = false;
     for (idx, raw) in lines.iter().enumerate() {
         let line = raw.strip_suffix('\r').unwrap_or(raw);
@@ -264,7 +338,7 @@ fn split_list_entries(lines: &[&str]) -> Vec<Entry> {
         if scan.unterminated_from.is_some_and(|from| idx > from)
             && top_level_item_shape(line, base_indent)
         {
-            scan = scan_fences_from(lines, idx);
+            fences.refresh(&mut scan, idx)?;
         }
         if scan.fenced.contains(&idx) || scan.unterminated_from.is_some_and(|from| idx >= from) {
             if scan.openers.contains(&idx) {
@@ -308,7 +382,7 @@ fn split_list_entries(lines: &[&str]) -> Vec<Entry> {
         }
     }
     entries.extend(current);
-    entries
+    Some(entries)
 }
 
 /// Add a line to the open entry, or to the pending list-shaped region.
@@ -323,13 +397,15 @@ fn push_line(current: &mut Option<Entry>, pending: &mut Vec<String>, line: &str,
 }
 
 /// `splitDeferredHeadingEntriesDetailed`: an entry per leaf heading that has a list
-/// item under it, plus the list-shaped entries of the text outside any leaf. `None`
-/// when the body has no headings.
-fn split_heading_entries(lines: &[&str]) -> Option<Vec<Entry>> {
+/// item under it, plus the list-shaped entries of the text outside any leaf.
+/// `Ok(None)` (the outer `Some`) is "the body has no headings"; the outer `None` is a
+/// spent work budget.
+fn split_heading_entries(lines: &[&str], work: &Work) -> Option<Option<Vec<Entry>>> {
     let headings = markdown::tokenize_headings(lines);
     if headings.is_empty() {
-        return None;
+        return Some(None);
     }
+    let fences = Fences::new(lines, work);
     let mut heading_at = std::collections::HashMap::new();
     for (index, heading) in headings.iter().enumerate() {
         let container = headings
@@ -344,7 +420,7 @@ fn split_heading_entries(lines: &[&str]) -> Option<Vec<Entry>> {
     let mut runs = ListRuns::default();
     let mut blank_seen = false;
     let mut body_base: Option<usize> = None;
-    let mut scan = scan_fences_from(lines, 0);
+    let mut scan = fences.scan_from(0)?;
 
     let flush_current =
         |entries: &mut Vec<Entry>, current: &mut Option<Entry>, has_bullet: &mut bool| {
@@ -355,12 +431,12 @@ fn split_heading_entries(lines: &[&str]) -> Option<Vec<Entry>> {
             }
             *has_bullet = false;
         };
-    let flush_pending = |entries: &mut Vec<Entry>, pending: &mut Vec<String>| {
+    let flush_pending = |entries: &mut Vec<Entry>, pending: &mut Vec<String>| -> Option<()> {
         if !pending.is_empty() {
             let region = pending.join("\n");
             let region_lines: Vec<&str> = region.split('\n').collect();
             entries.extend(
-                split_list_entries(&region_lines)
+                split_list_entries(&region_lines, work)?
                     .into_iter()
                     .map(|entry| Entry {
                         flagged: true,
@@ -369,16 +445,17 @@ fn split_heading_entries(lines: &[&str]) -> Option<Vec<Entry>> {
             );
         }
         pending.clear();
+        Some(())
     };
 
     for (i, raw) in lines.iter().enumerate() {
         if let Some((text, container)) = heading_at.get(&i) {
             flush_current(&mut entries, &mut current, &mut has_bullet);
-            flush_pending(&mut entries, &mut pending);
+            flush_pending(&mut entries, &mut pending)?;
             runs.clear();
             blank_seen = false;
             body_base = None;
-            scan = scan_fences_from(lines, i + 1);
+            fences.refresh(&mut scan, i + 1)?;
             if !container {
                 current = Some(Entry {
                     lines: vec![text.clone()],
@@ -400,7 +477,7 @@ fn split_heading_entries(lines: &[&str]) -> Option<Vec<Entry>> {
         if scan.unterminated_from.is_some_and(|from| i > from)
             && top_level_item_shape(line, body_base)
         {
-            scan = scan_fences_from(lines, i);
+            fences.refresh(&mut scan, i)?;
         }
         if scan.fenced.contains(&i) || scan.unterminated_from.is_some_and(|from| i >= from) {
             if scan.openers.contains(&i) {
@@ -434,8 +511,8 @@ fn split_heading_entries(lines: &[&str]) -> Option<Vec<Entry>> {
         }
     }
     flush_current(&mut entries, &mut current, &mut has_bullet);
-    flush_pending(&mut entries, &mut pending);
-    Some(entries)
+    flush_pending(&mut entries, &mut pending)?;
+    Some(Some(entries))
 }
 
 // ---------------------------------------------------------------------------------
@@ -613,6 +690,7 @@ mod tests {
     fn parse(text: &str) -> Vec<String> {
         let lines: Vec<&str> = text.split('\n').collect();
         parse_deferred_items(&lines)
+            .expect("within the fence budget")
             .into_iter()
             .map(|item| item.name)
             .collect()
@@ -680,7 +758,7 @@ mod tests {
     #[test]
     fn the_items_are_unresolved_deferred() {
         let lines = ["- one"];
-        let items = parse_deferred_items(&lines);
+        let items = parse_deferred_items(&lines).expect("within the fence budget");
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].result, "unresolved");
         assert_eq!(items[0].category, Category::Deferred);
@@ -694,5 +772,55 @@ mod tests {
             text.push_str(&format!("- item {n}: something\n"));
         }
         assert_eq!(parse(&text).len(), 200);
+    }
+
+    /// Time the parse of a hostile file and require that it ends well inside a
+    /// generous bound (a hang detector, not a benchmark: the quadratic rescan took
+    /// minutes at this size).
+    fn finishes_quickly(text: &str) -> Option<Vec<AuditItem>> {
+        let lines: Vec<&str> = text.split('\n').collect();
+        let started = std::time::Instant::now();
+        let parsed = parse_deferred_items(&lines);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(15),
+            "parsing {} bytes took {:?}",
+            text.len(),
+            started.elapsed()
+        );
+        parsed
+    }
+
+    #[test]
+    fn a_megabyte_of_headings_does_not_rescan_the_tail_per_heading() {
+        let text = "# a\n".repeat((1 << 20) / 4);
+        assert!(finishes_quickly(&text).is_some());
+    }
+
+    #[test]
+    fn a_megabyte_of_fence_openers_between_list_items_terminates() {
+        // An unterminated opener followed by top-level items forces a fresh scan per
+        // item; the work budget turns the pathological case into "unreadable".
+        let text = "```x\n- a\n".repeat((1 << 20) / 9);
+        let _ = finishes_quickly(&text);
+        let text = "# a\n\t```\n".repeat((1 << 20) / 9);
+        let _ = finishes_quickly(&text);
+    }
+
+    #[test]
+    fn reusing_a_closed_scan_matches_a_fresh_one() {
+        let text = "# h1\n- a\n```\n# not a heading\n```\n# h2\n- b\n";
+        let lines: Vec<&str> = text.split('\n').collect();
+        let work = Work::for_lines(lines.len());
+        let fences = Fences::new(&lines, &work);
+        let mut scan = fences.scan_from(0).expect("budget");
+        for from in 0..lines.len() {
+            let fresh = fences.scan_from(from).expect("budget");
+            fences.refresh(&mut scan, from).expect("budget");
+            for line in from..lines.len() {
+                assert_eq!(scan.fenced.contains(&line), fresh.fenced.contains(&line));
+                assert_eq!(scan.openers.contains(&line), fresh.openers.contains(&line));
+            }
+            assert_eq!(scan.unterminated_from, fresh.unterminated_from);
+        }
     }
 }
