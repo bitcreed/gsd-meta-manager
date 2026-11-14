@@ -5,16 +5,16 @@ milestone_name: Owner Inbox
 current_phase: 34
 current_phase_name: Owner items reader + inbox CLI
 status: executing
-stopped_at: Completed 34-06-PLAN.md
-last_updated: "2026-11-14T17:58:48.259Z"
+stopped_at: Completed 34-02-PLAN.md
+last_updated: "2026-11-14T18:10:57.434Z"
 last_activity: 2026-11-14
 last_activity_desc: Phase 34 execution started
-state_head: 1f2fddfe204bc0e2239d3a31386bf532f13d0973
+state_head: f4ac331454b113960fbc121d7556ba5c69ab99e6
 progress:
   total_phases: 4
   completed_phases: 0
   total_plans: 6
-  completed_plans: 2
+  completed_plans: 3
   percent: 0
 ---
 
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-11-14)
 ## Current Position
 
 Phase: 34 (Owner items reader + inbox CLI) — EXECUTING
-Plan: 3 of 6
+Plan: 4 of 6
 Status: Ready to execute
 Last activity: 2026-11-14 — Phase 34 execution started
 
@@ -175,6 +175,7 @@ None. Phase 19's deferred human verification was closed by supersession on 2026-
 | Phase 31 P07 | 45min | 3 tasks | 42 files |
 | Phase 34 P01 | 1 session | 2 tasks | 22 files |
 | Phase 34 P06 | single session | 2 tasks | 14 files |
+| Phase 34 P02 | 40min | 2 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -335,6 +336,7 @@ Recent decisions affecting current work:
 - [Phase 34]: 34-01: owner scan filters phase dirs by state.in_current_milestone as well as state.phases [inferred]
 - [Phase 34]: 34-01: a Fix group with unreadable checks carries command null [inferred, schema decision 4]
 - [Phase 34]: 34-06: acknowledged groups are built flagged and skipped by counts and default listing; disk_status artifact reads open non-blocking
+- [Phase 34]: 34-02: Gaps tables skip only resolved (oracle), not done/pass [inferred]
 
 ### Roadmap Evolution
 
@@ -597,8 +599,8 @@ non-unique bullets in these narrative logs). Disclosed per file instead [inferre
 
 ## Session Continuity
 
-Last session: 2026-11-14T17:58:48.200Z
-Stopped at: Completed 34-06-PLAN.md
+Last session: 2026-11-14T18:10:57.372Z
+Stopped at: Completed 34-02-PLAN.md
 Resume file: None
 
 Next: push master + tag v2.4.0 (tag push publishes to crates.io); then `/gsd-new-milestone`.

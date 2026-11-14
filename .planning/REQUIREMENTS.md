@@ -39,7 +39,7 @@ checks the owner can run today (report section 1).
 - [ ] **OWN-03**: R2: a VERIFICATION named in a same-phase UAT `source:` contributes no items; a
   `gaps_found` VERIFICATION is never superseded; no `source:` match shows both (D3 strict). *Test:
   fixture modeled on wordoclock ph 20-25 yields 18 items, not 39.*
-- [ ] **OWN-04**: R3: `## Gaps` entries with `test: N` merge into issue row N; Fix groups report failed
+- [x] **OWN-04**: R3: `## Gaps` entries with `test: N` merge into issue row N; Fix groups report failed
   checks and gaps separately. *Test: mailbot-ph09 fixture yields 10 failed checks and 14 gaps in one
   Fix group.*
 - [x] **OWN-05**: R4: acknowledged files (`audit_acknowledged`, matched as gsd-core's
@@ -168,7 +168,7 @@ Deferred (report section 6):
 | OWN-01 | Phase 34 | Complete |
 | OWN-02 | Phase 34 | Complete |
 | OWN-03 | Phase 34 | Pending |
-| OWN-04 | Phase 34 | Pending |
+| OWN-04 | Phase 34 | Complete |
 | OWN-05 | Phase 34 | Complete |
 | OWN-06 | Phase 34 | Pending |
 | OWN-07 | Phase 34 | Pending |
