@@ -232,7 +232,7 @@ fn every_entry_group_and_item_carries_the_schema_v1_keys() {
     );
     assert_eq!(
         keys(&doc["summary"]["archived"]),
-        set(&["test", "blocked", "fix"])
+        set(&["test", "blocked", "fix", "decide"])
     );
     let project_keys = set(&[
         "target",
@@ -626,6 +626,7 @@ const INBOX_PATHS: &[&str] = &[
     "summary.archived.test",
     "summary.archived.blocked",
     "summary.archived.fix",
+    "summary.archived.decide",
     "summary.deferred",
     "summary.acknowledged_files",
     "summary.superseded",

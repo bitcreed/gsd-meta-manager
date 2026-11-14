@@ -478,3 +478,82 @@ fn debug_sessions_fill_decide_and_fix() {
     assert_eq!(doc["summary"]["decide"], 5);
     assert_eq!(doc["summary"]["fix_debug"], 4);
 }
+
+#[test]
+fn context_questions_fill_decide() {
+    let (_g, e) = entry_of("context-questions", "ctx");
+    let d = &e.digest;
+    assert_eq!(d.decide, 6);
+    assert_eq!(d.archived.decide, 1);
+    assert_eq!(d.hidden.acknowledged_files, 1);
+
+    let doc = build_document(std::slice::from_ref(&e), &include_all());
+    let listed: Vec<(String, usize, bool)> = groups(&doc)
+        .iter()
+        .filter(|g| g["kind"] == "context_questions")
+        .map(|g| {
+            (
+                g["file"].as_str().unwrap().to_owned(),
+                g["items"].as_array().unwrap().len(),
+                g["acknowledged"] == true,
+            )
+        })
+        .collect();
+    let find = |suffix: &str| listed.iter().find(|(file, _, _)| file.ends_with(suffix));
+    assert_eq!(find("phases/02-alpha/02-CONTEXT.md").map(|g| g.1), Some(3));
+    assert_eq!(find("phases/03-bravo/03-CONTEXT.md"), None);
+    assert_eq!(
+        find("phases/04-charlie/04-CONTEXT.md").map(|g| g.1),
+        Some(2)
+    );
+    assert_eq!(
+        find("phases/05-delta/05-CONTEXT.md").map(|g| (g.1, g.2)),
+        Some((1, true))
+    );
+    assert_eq!(find("phases/01-old/01-CONTEXT.md"), None);
+    assert_eq!(
+        find("ws1/phases/01-stream/01-CONTEXT.md").map(|g| g.1),
+        Some(1)
+    );
+    assert_eq!(
+        find("v0.9-phases/00-legacy/00-CONTEXT.md").map(|g| g.1),
+        Some(1)
+    );
+
+    let archived = groups(&doc)
+        .iter()
+        .find(|g| g["kind"] == "context_questions" && g["scope"] == "archived")
+        .unwrap();
+    assert_eq!(archived["archived_milestone"], "v0.9");
+    assert_eq!(archived["lane"], "decide");
+    assert!(archived["command"].is_null());
+    let ws = groups(&doc)
+        .iter()
+        .find(|g| g["workstream"] == "ws1" && g["kind"] == "context_questions")
+        .unwrap();
+    assert_eq!(ws["lane"], "decide");
+    assert_eq!(doc["summary"]["decide"], 6);
+    assert_eq!(doc["summary"]["archived"]["decide"], 1);
+
+    let alpha = groups(&doc)
+        .iter()
+        .find(|g| {
+            g["file"]
+                .as_str()
+                .is_some_and(|f| f.ends_with("02-CONTEXT.md"))
+        })
+        .unwrap();
+    let ids: Vec<&str> = alpha["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        ids,
+        ["02-CONTEXT.md#q4", "02-CONTEXT.md#q5", "02-CONTEXT.md#q6"]
+    );
+
+    let text = render_text(std::slice::from_ref(&e), &Filters::default());
+    assert!(text.contains("3 open questions in 02-CONTEXT.md"), "{text}");
+}

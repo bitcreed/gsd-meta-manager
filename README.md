@@ -562,7 +562,7 @@ Schema version 1:
   "schema_version": 1,
   "summary": {
     "projects": 2, "test": 3, "decide": 0, "fix_phases": 1, "fix_debug": 0, "blocked": 1, "closeable_phases": 1,
-    "archived": {"test": 0, "blocked": 0, "fix": 0},
+    "archived": {"test": 0, "blocked": 0, "fix": 0, "decide": 0},
     "deferred": 0, "acknowledged_files": 0, "superseded": 0, "noise": 0
   },
   "projects": [
@@ -639,6 +639,7 @@ Schema version 1:
 | `summary.archived.test` | integer | archived checks waiting to be run |
 | `summary.archived.blocked` | integer | archived checks that are blocked |
 | `summary.archived.fix` | integer | archived checks that failed |
+| `summary.archived.decide` | integer | archived open CONTEXT questions |
 | `summary.deferred` | integer | items in `deferred-items.md` files |
 | `summary.acknowledged_files` | integer | UAT files hidden because the owner acknowledged them |
 | `summary.superseded` | integer | raw items dropped because a UAT replaces their VERIFICATION file |
@@ -667,7 +668,7 @@ Schema version 1:
 | `projects[].groups[].acknowledged` | bool | the owner acknowledged this file (listed only with `--include acknowledged`) |
 | `projects[].groups[].age_days` | integer or null | days since the file's `updated:` value |
 | `projects[].groups[].stale` | bool | older than the staleness threshold |
-| `projects[].groups[].command` | string or null | the advisory `/gsd-*` command; null for blocked, deferred and archived groups |
+| `projects[].groups[].command` | string or null | the advisory `/gsd-*` command; null for blocked, deferred, archived and `context_questions` groups |
 | `projects[].groups[].supersedes` | array of strings | names of the VERIFICATION files whose open checks this UAT replaces |
 | `projects[].groups[].counts` | object | sizes of the group |
 | `projects[].groups[].counts.checks` | integer | listed items |

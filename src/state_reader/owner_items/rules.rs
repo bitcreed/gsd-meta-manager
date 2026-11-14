@@ -11,6 +11,10 @@
 //!   A `deferred` category is only counted. An `unknown` result is noise in a file
 //!   that declares itself complete, resolved or passed, and a fix otherwise
 //!   [inferred: the fail-safe direction].
+//! - **Open CONTEXT questions** (Phase 35, D-04, D-10, D-11). Each question not marked
+//!   RESOLVED, ANSWERED or CLOSED ([`is_answered`]) is one Decide item of its file's
+//!   group; a file outside the current milestone's active phases is not listed, and an
+//!   archived one is Old debt. Only an explicit marker drops a question.
 //! - **R9 age.** Whole days between `updated` (else the file's modification time)
 //!   and the caller's `now`, floored at zero; stale past `stale_days`.
 //! - **R10 command.** Built only from a phase token of the shape `^\d+[A-Za-z]?(\.\d+)*$`
@@ -22,8 +26,8 @@ use std::collections::{BTreeSet, HashMap};
 use chrono::{DateTime, Utc};
 
 use super::{
-    AuditFile, AuditItem, AuditKind, Category, DebugSession, GroupCounts, Kind, Lane, OpenScan,
-    Origin, OwnerDigest, OwnerGap, OwnerGroup, OwnerItem, Scope,
+    AuditFile, AuditItem, AuditKind, Category, ContextFile, DebugSession, GroupCounts, Kind, Lane,
+    OpenScan, Origin, OwnerDigest, OwnerGap, OwnerGroup, OwnerItem, Scope,
 };
 use crate::state_reader::disk_status::{DiskStatus, VerificationStatus};
 use crate::state_reader::phase_num::{phase_key, same_phase, PhaseNum};
@@ -656,6 +660,162 @@ fn debug_groups(digest: &mut OwnerDigest, sessions: &[DebugSession], ctx: &Conte
     }
 }
 
+/// The first ASCII-letter word of `text` when it is RESOLVED, ANSWERED or CLOSED
+/// (any case) as a whole word.
+fn starts_with_answered_word(text: &str) -> bool {
+    let end = text
+        .bytes()
+        .position(|b| !b.is_ascii_alphabetic())
+        .unwrap_or(text.len());
+    let word = &text[..end];
+    let whole = !text[end..]
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_alphanumeric() || c == '_');
+    whole
+        && ["resolved", "answered", "closed"]
+            .iter()
+            .any(|marker| word.eq_ignore_ascii_case(marker))
+}
+
+/// Strip leading whitespace, emphasis openers (`**`, `__`, `~~`, `*`, `_`, a backtick)
+/// and a checkbox, repeatedly.
+fn strip_openers(mut text: &str) -> &str {
+    loop {
+        let before = text.len();
+        text = text.trim_start_matches(|c: char| c.is_whitespace());
+        for opener in ["**", "__", "~~", "*", "_", "`", "[x]", "[X]", "[ ]"] {
+            if let Some(rest) = text.strip_prefix(opener) {
+                text = rest;
+                break;
+            }
+        }
+        if text.len() == before {
+            return text;
+        }
+    }
+}
+
+/// One list marker: `-`, `*` or `+` followed by whitespace, or digits then `.` or `)`.
+fn strip_list_marker(text: &str) -> &str {
+    let text = text.trim_start_matches(|c: char| c.is_whitespace());
+    if let Some(rest) = text.strip_prefix(['-', '*', '+']) {
+        if rest.is_empty() || rest.starts_with(|c: char| c.is_whitespace()) {
+            return rest;
+        }
+        return text;
+    }
+    let digits = text.bytes().take_while(u8::is_ascii_digit).count();
+    if digits > 0 {
+        if let Some(rest) = text[digits..].strip_prefix(['.', ')']) {
+            return rest;
+        }
+    }
+    text
+}
+
+static QUESTION_LABEL: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(r"^[A-Za-z]{1,6}[-.]?[0-9][A-Za-z0-9.-]*[ \t]*[—–:\s-]+")
+        .expect("a valid static pattern")
+});
+
+/// D-04 D11, [INFERRED] F3: whether a question line carries an explicit answered
+/// marker. After the list marker, emphasis openers, a checkbox and an optional
+/// question-ID label that holds a digit (`OQ-06-01 — `, `Q3: `), the first word is
+/// RESOLVED, ANSWERED or CLOSED; or the line holds a bracketed tag (`(` or `[`,
+/// optional spaces, backticks or `*`) whose first word is one of them. Prose that only
+/// mentions answering, an `[OPEN]` label and a word that merely starts like a marker
+/// are open.
+pub(super) fn is_answered(line: &str) -> bool {
+    let rest = strip_openers(strip_list_marker(line));
+    let rest = QUESTION_LABEL
+        .find(rest)
+        .map_or(rest, |label| &rest[label.end()..]);
+    if starts_with_answered_word(strip_openers(rest)) {
+        return true;
+    }
+    line.char_indices()
+        .filter(|(_, c)| matches!(c, '(' | '['))
+        .any(|(at, c)| {
+            let tag = line[at + c.len_utf8()..]
+                .trim_start_matches(|c: char| c.is_whitespace() || c == '`' || c == '*');
+            starts_with_answered_word(tag)
+        })
+}
+
+/// D-04, D-10, D-11: one Decide group per CONTEXT file with listed questions. An
+/// active file outside the current milestone is not listed; an archived one keeps its
+/// scope (Old debt). A file that could not be read is a group without items and
+/// `counts.unreadable` 1 (fail-safe). Item ids use the Layer A position of the
+/// question, so they do not shift when another one is marked answered.
+fn context_groups(
+    digest: &mut OwnerDigest,
+    files: &[ContextFile],
+    state: &ProjectState,
+    ctx: &Context,
+) {
+    for file in files {
+        let archived = matches!(file.scope, Scope::Archived { .. });
+        if !archived && !file.in_current_milestone {
+            continue;
+        }
+        let unreadable = file.unreadable.is_some();
+        let base = basename(&file.rel_path);
+        let items: Vec<OwnerItem> = file
+            .questions
+            .iter()
+            .enumerate()
+            .filter(|(_, question)| !is_answered(question))
+            .map(|(at, question)| {
+                signal_item(
+                    format!("{base}#q{}", at + 1),
+                    question.clone(),
+                    "open".to_owned(),
+                    None,
+                )
+            })
+            .collect();
+        if items.is_empty() && !unreadable {
+            continue;
+        }
+        if file.acknowledged {
+            digest.hidden.acknowledged_files += 1;
+        }
+        let slug = slug_after_token(&file.phase_dir, &file.phase);
+        let roadmap_phase = (!archived)
+            .then(|| scope_state(state, file.workstream.as_deref()).roadmap_phase(&file.phase))
+            .flatten();
+        let age_days = file
+            .updated
+            .or(file.modified)
+            .map(|moment| days_since(moment, ctx.now));
+        digest.groups.push(OwnerGroup {
+            lane: Lane::Decide,
+            kind: Kind::ContextQuestions,
+            scope: file.scope.clone(),
+            workstream: file.workstream.clone(),
+            phase: file.phase.clone(),
+            phase_name: roadmap_phase.map_or(slug, |phase| phase.name.clone()),
+            file: file.rel_path.clone(),
+            file_status: file.status.clone(),
+            closes_phase: false,
+            bookkeeping_only: false,
+            acknowledged: file.acknowledged,
+            age_days,
+            stale: age_days.is_some_and(|days| days > i64::from(ctx.stale_days)),
+            command: None,
+            supersedes: Vec::new(),
+            counts: GroupCounts {
+                checks: items.len(),
+                failed: 0,
+                gaps: 0,
+                unreadable: usize::from(unreadable),
+            },
+            items,
+        });
+    }
+}
+
 /// The caller-supplied inputs the group builders share.
 struct Context {
     now: DateTime<Utc>,
@@ -708,6 +868,7 @@ pub(super) fn build_digest(
     }
     apply_r7(&mut digest, &files, state, &ctx);
     debug_groups(&mut digest, &open.debug_sessions, &ctx);
+    context_groups(&mut digest, &open.context_files, state, &ctx);
     digest.groups.sort_by_key(sort_key);
 
     let mut fix_phases: BTreeSet<(Option<&str>, String)> = BTreeSet::new();
@@ -731,6 +892,7 @@ pub(super) fn build_digest(
             (Scope::Archived { .. }, Lane::Test) => digest.archived.test += group.items.len(),
             (Scope::Archived { .. }, Lane::Blocked) => digest.archived.blocked += group.items.len(),
             (Scope::Archived { .. }, Lane::Fix) => digest.archived.fix += group.items.len(),
+            (Scope::Archived { .. }, Lane::Decide) => digest.archived.decide += group.items.len(),
             _ => {}
         }
     }
@@ -1664,5 +1826,136 @@ mod tests {
         assert!(aged(31).stale);
         // A future date is age zero.
         assert_eq!(aged(-3).age_days, Some(0));
+    }
+    #[test]
+    fn is_answered_reads_explicit_markers_only() {
+        for line in [
+            "- **OQ-06-01 — ANSWERED: yes, for free.** text",
+            "- **OQ-02 — RESOLVED by H-02 (2026-08-27).** text",
+            "1. Which scheme? (CLOSED)",
+            "- [x] RESOLVED: done",
+            "- Resolved: kept",
+            "- ~~Old?~~ (ANSWERED)",
+            "* Q3: closed — moved on",
+            "- (Resolved 2026-01-02) note",
+            "- **OQ-03.1-02 – ANSWERED.** x",
+            "2) [Answered 2026-01-02] which one?",
+        ] {
+            assert!(is_answered(line), "{line}");
+        }
+        for line in [
+            "**Six of the original nine were answered by the human.**",
+            "- **OQ-04-01 — `[OPEN]`, HUMAN, non-blocking.** text",
+            "- Resolvedly done?",
+            "- Note: resolved later?",
+            "- Unresolved: x",
+            "- the CLOSED-loop test?",
+            "- Is the archive view in scope?",
+            "",
+        ] {
+            assert!(!is_answered(line), "{line}");
+        }
+    }
+
+    fn context_file(rel: &str, scope: Scope, questions: &[&str]) -> ContextFile {
+        ContextFile {
+            rel_path: rel.to_owned(),
+            scope,
+            workstream: None,
+            phase: "01".to_owned(),
+            phase_dir: "01-alpha".to_owned(),
+            in_current_milestone: true,
+            questions: questions.iter().map(|q| (*q).to_owned()).collect(),
+            status: "unknown".to_owned(),
+            updated: None,
+            modified: None,
+            acknowledged: false,
+            unreadable: None,
+        }
+    }
+
+    fn digest_of_context(files: Vec<ContextFile>) -> OwnerDigest {
+        let open = OpenScan {
+            context_files: files,
+            ..Default::default()
+        };
+        build_digest(Vec::new(), open, &state(), now(), 30)
+    }
+
+    const CONTEXT: &str = ".planning/phases/01-alpha/01-CONTEXT.md";
+
+    #[test]
+    fn context_item_ids_follow_the_layer_a_position() {
+        let d = digest_of_context(vec![context_file(
+            CONTEXT,
+            Scope::Current,
+            &[
+                "- one?",
+                "- RESOLVED: two",
+                "- three?",
+                "- (CLOSED) four",
+                "- five?",
+            ],
+        )]);
+        assert_eq!(d.groups.len(), 1);
+        let group = &d.groups[0];
+        assert_eq!(
+            (group.lane, group.kind),
+            (Lane::Decide, Kind::ContextQuestions)
+        );
+        let ids: Vec<&str> = group.items.iter().map(|i| i.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["01-CONTEXT.md#q1", "01-CONTEXT.md#q3", "01-CONTEXT.md#q5"]
+        );
+        assert_eq!(group.counts.checks, 3);
+        assert_eq!(group.command, None);
+        assert_eq!(group.phase_name, "Alpha");
+        assert_eq!(d.decide, 3);
+    }
+
+    #[test]
+    fn context_groups_follow_scope_and_milestone() {
+        let mut outside = context_file(CONTEXT, Scope::Current, &["- a?"]);
+        outside.in_current_milestone = false;
+        let archived = context_file(
+            ".planning/milestones/v0.9-phases/01-alpha/01-CONTEXT.md",
+            Scope::Archived {
+                label: "v0.9".to_owned(),
+                rank: 0,
+            },
+            &["- b?", "- c?"],
+        );
+        let all_answered = context_file(
+            ".planning/phases/01-alpha/02-CONTEXT.md",
+            Scope::Current,
+            &["- RESOLVED: x"],
+        );
+        let d = digest_of_context(vec![outside, archived, all_answered]);
+        assert_eq!(d.groups.len(), 1);
+        assert_eq!((d.decide, d.archived.decide), (0, 2));
+        assert!(matches!(d.groups[0].scope, Scope::Archived { .. }));
+        assert_eq!(d.groups[0].phase_name, "alpha");
+    }
+
+    #[test]
+    fn an_acknowledged_context_file_is_flagged_and_uncounted() {
+        let mut acked = context_file(CONTEXT, Scope::Current, &["- a?"]);
+        acked.acknowledged = true;
+        let d = digest_of_context(vec![acked]);
+        assert_eq!(d.groups.len(), 1);
+        assert!(d.groups[0].acknowledged);
+        assert_eq!((d.decide, d.hidden.acknowledged_files), (0, 1));
+    }
+
+    #[test]
+    fn an_unreadable_context_file_is_a_decide_group_without_items() {
+        let mut broken = context_file(CONTEXT, Scope::Current, &[]);
+        broken.unreadable = Some(Unreadable::Io);
+        let d = digest_of_context(vec![broken]);
+        assert_eq!(d.groups.len(), 1);
+        assert_eq!(d.groups[0].counts.unreadable, 1);
+        assert!(d.groups[0].items.is_empty());
+        assert_eq!(d.decide, 0);
     }
 }

@@ -201,6 +201,7 @@ pub fn build_document(entries: &[ProjectEntry], filters: &Filters) -> Value {
                 "test": sum(|d| d.archived.test),
                 "blocked": sum(|d| d.archived.blocked),
                 "fix": sum(|d| d.archived.fix),
+                "decide": sum(|d| d.archived.decide),
             },
             "deferred": sum(|d| d.hidden.deferred),
             "acknowledged_files": sum(|d| d.hidden.acknowledged_files),
@@ -273,6 +274,16 @@ fn detail(group: &OwnerGroup) -> String {
                 format!("open investigation ({})", terminal_capped(status))
             }
         };
+    }
+    if group.kind == Kind::ContextQuestions {
+        let file = terminal_capped(group.file.rsplit('/').next().unwrap_or(&group.file));
+        if group.counts.unreadable > 0 && group.items.is_empty() {
+            return format!("unreadable file {file}");
+        }
+        return format!(
+            "{} in {file}",
+            plural(group.counts.checks, "open question", "open questions")
+        );
     }
     match group.lane {
         Lane::Blocked => blocked_tally(group),
@@ -496,7 +507,8 @@ pub fn render_text(entries: &[ProjectEntry], filters: &Filters) -> String {
     }
 
     let mut folds = Vec::new();
-    let old_debt = |d: &OwnerDigest| d.archived.test + d.archived.blocked + d.archived.fix;
+    let old_debt =
+        |d: &OwnerDigest| d.archived.test + d.archived.blocked + d.archived.fix + d.archived.decide;
     let old_total: usize = read.iter().map(|e| old_debt(&e.digest)).sum();
     let old_projects = read.iter().filter(|e| old_debt(&e.digest) > 0).count();
     if !filters.archived && old_total > 0 {
