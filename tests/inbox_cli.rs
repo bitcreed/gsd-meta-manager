@@ -550,3 +550,402 @@ fn a_bogus_lane_is_a_usage_error_in_text_mode_too() {
     let out = inbox(&["--lane", "bogus"]);
     assert_eq!(out.status.code(), Some(2), "{out:?}");
 }
+
+// ── The README contract (OWN-13) ──
+
+const README: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md"));
+
+/// Every key path of the schema v1 document: `.` between object keys, `[]` for
+/// an array element (the same notation as the README table).
+const INBOX_PATHS: &[&str] = &[
+    "schema",
+    "schema_version",
+    "summary",
+    "summary.projects",
+    "summary.test",
+    "summary.decide",
+    "summary.fix_phases",
+    "summary.blocked",
+    "summary.closeable_phases",
+    "summary.archived",
+    "summary.archived.test",
+    "summary.archived.blocked",
+    "summary.archived.fix",
+    "summary.deferred",
+    "summary.acknowledged_files",
+    "summary.superseded",
+    "summary.noise",
+    "projects",
+    "projects[].target",
+    "projects[].alias",
+    "projects[].path",
+    "projects[].error",
+    "projects[].error.kind",
+    "projects[].error.message",
+    "projects[].milestone",
+    "projects[].milestone.version",
+    "projects[].groups",
+    "projects[].groups[].lane",
+    "projects[].groups[].kind",
+    "projects[].groups[].scope",
+    "projects[].groups[].archived_milestone",
+    "projects[].groups[].workstream",
+    "projects[].groups[].phase",
+    "projects[].groups[].phase_name",
+    "projects[].groups[].file",
+    "projects[].groups[].file_status",
+    "projects[].groups[].closes_phase",
+    "projects[].groups[].bookkeeping_only",
+    "projects[].groups[].acknowledged",
+    "projects[].groups[].age_days",
+    "projects[].groups[].stale",
+    "projects[].groups[].command",
+    "projects[].groups[].supersedes",
+    "projects[].groups[].counts",
+    "projects[].groups[].counts.checks",
+    "projects[].groups[].counts.failed",
+    "projects[].groups[].counts.gaps",
+    "projects[].groups[].counts.unreadable",
+    "projects[].groups[].items",
+    "projects[].groups[].items[].id",
+    "projects[].groups[].items[].test",
+    "projects[].groups[].items[].name",
+    "projects[].groups[].items[].expected",
+    "projects[].groups[].items[].result",
+    "projects[].groups[].items[].category",
+    "projects[].groups[].items[].reason",
+    "projects[].groups[].items[].blocked_by",
+    "projects[].groups[].items[].gaps",
+    "projects[].groups[].items[].gaps[].name",
+    "projects[].groups[].items[].gaps[].result",
+    "projects[].groups[].items[].gaps[].reason",
+    "projects[].hidden",
+    "projects[].hidden.deferred",
+    "projects[].hidden.acknowledged_files",
+    "projects[].hidden.todos",
+    "projects[].hidden.noise",
+    "projects[].todos",
+    "projects[].todos[].file",
+    "projects[].todos[].title",
+];
+
+fn inbox_set() -> BTreeSet<String> {
+    INBOX_PATHS.iter().map(|p| (*p).to_string()).collect()
+}
+
+fn key_paths(doc: &Value) -> BTreeSet<String> {
+    fn walk(value: &Value, prefix: &str, out: &mut BTreeSet<String>) {
+        match value {
+            Value::Object(map) => {
+                for (key, child) in map {
+                    let path = if prefix.is_empty() {
+                        key.clone()
+                    } else {
+                        format!("{prefix}.{key}")
+                    };
+                    out.insert(path.clone());
+                    walk(child, &path, out);
+                }
+            }
+            Value::Array(items) => {
+                for item in items {
+                    walk(item, &format!("{prefix}[]"), out);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut out = BTreeSet::new();
+    walk(value_ref(doc), "", &mut out);
+    out
+}
+
+fn value_ref(value: &Value) -> &Value {
+    value
+}
+
+/// The body of the first fenced `json` block in `doc` that contains `needle`.
+fn json_fence(doc: &str, needle: &str) -> Value {
+    let mut rest = doc;
+    while let Some(start) = rest.find("```json\n") {
+        let body_start = start + "```json\n".len();
+        let body_len = rest[body_start..]
+            .find("\n```")
+            .expect("a json fence is closed");
+        let body = &rest[body_start..body_start + body_len];
+        if body.contains(needle) {
+            return serde_json::from_str(body)
+                .unwrap_or_else(|e| panic!("the json fence parses: {e}\n{body}"));
+        }
+        rest = &rest[body_start + body_len..];
+    }
+    panic!("no json fence containing {needle:?}");
+}
+
+/// The README's inbox subsection only: the status table shares paths such as
+/// `projects[].alias`, so the rows must be looked up in this slice.
+fn inbox_section() -> &'static str {
+    let start = README
+        .find("#### Owner work: `inbox`")
+        .expect("the README has the inbox subsection");
+    let rest = &README[start..];
+    let end = rest
+        .match_indices("\n### ")
+        .next()
+        .map_or(rest.len(), |(at, _)| at);
+    &rest[..end]
+}
+
+#[test]
+fn the_inbox_key_paths_are_exactly_schema_v1() {
+    let scratch = tempfile::tempdir().unwrap();
+    let gaps = tempfile::tempdir().unwrap();
+    copy_tree(&fixture("uat-gaps-merge"), gaps.path());
+    write(
+        &gaps
+            .path()
+            .join(".planning/todos/pending/2026-01-01-first.md"),
+        "# First todo\n",
+    );
+    let six = tempfile::tempdir().unwrap();
+    copy_tree(&fixture("supersede-six-phases"), six.path());
+    let reg = registry(
+        scratch.path(),
+        &[("gaps", gaps.path()), ("six", six.path())],
+    );
+    let doc = json(&inbox_with(
+        &reg,
+        scratch.path(),
+        &[
+            "gaps",
+            "six",
+            "no-such-project",
+            "--json",
+            "--include",
+            "archived,deferred,acknowledged,todos",
+        ],
+    ));
+    // Every array the two fixtures fill is non-empty, so no path is excused.
+    assert_eq!(key_paths(&doc), inbox_set());
+}
+
+fn copy_tree(from: &Path, to: &Path) {
+    for entry in std::fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let target = to.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            std::fs::create_dir_all(&target).unwrap();
+            copy_tree(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), &target).unwrap();
+        }
+    }
+}
+
+#[test]
+fn the_readme_inbox_fence_has_exactly_the_schema_v1_key_paths() {
+    let doc = json_fence(README, "\"schema\": \"gsd-meta-manager/inbox\"");
+    assert_eq!(key_paths(&doc), inbox_set());
+}
+
+#[test]
+fn the_readme_inbox_table_documents_every_path() {
+    let section = inbox_section();
+    for path in INBOX_PATHS {
+        assert!(
+            section.contains(&format!("| `{path}` |")),
+            "the README inbox section has no table row for {path}"
+        );
+    }
+    let rows = section.lines().filter(|l| l.starts_with("| `")).count();
+    assert_eq!(rows, INBOX_PATHS.len(), "one row per path, no extras");
+    assert!(section.contains("project-authored") || section.contains("project data"));
+}
+
+// ── Hostile text and cost ──
+
+const ESC: char = '\u{1b}';
+const RLO: char = '\u{202e}';
+const BEL: char = '\u{7}';
+
+fn strings_of(value: &Value, out: &mut Vec<(String, String)>, key: &str) {
+    match value {
+        Value::String(text) => out.push((key.to_string(), text.clone())),
+        Value::Array(items) => items.iter().for_each(|v| strings_of(v, out, key)),
+        Value::Object(map) => map.iter().for_each(|(k, v)| strings_of(v, out, k)),
+        _ => {}
+    }
+}
+
+#[test]
+fn hostile_strings_are_escaped_in_json_and_text() {
+    let project = tempfile::tempdir().unwrap();
+    let long = "A".repeat(500);
+    write(
+        &project.path().join(".planning/ROADMAP.md"),
+        &format!(
+            "# Roadmap\n\n## Phases\n\n- [ ] **Phase 01: Evil{ESC}[31mred{RLO}name** - x\n\n### Phase 01: Evil{ESC}[31mred{RLO}name\n\n**Goal**: g\n**Depends on**: Nothing\n"
+        ),
+    );
+    write(
+        &project.path().join(".planning/STATE.md"),
+        "---\nmilestone: v1.0\nstatus: in_progress\n---\n\n# State\n",
+    );
+    write(
+        &project.path().join(".planning/phases/01-evil/01-UAT.md"),
+        &format!(
+            "---\nstatus: testing\nupdated: 2026-01-10T12:00:00Z\n---\n\n# UAT\n\n## Tests\n\n### 1. Ring{BEL}bell {ESC}]0;pwned{BEL}\nexpected: see {RLO}txt.exe{ESC}[2J\nresult: pending\n\n### 2. {long}\nexpected: {long}\nresult: pending\n\n### 3. Skipped{ESC}[1m\nexpected: x\nresult: skipped\nreason: needs {ESC}[31mdevice{RLO}\n"
+        ),
+    );
+    let scratch = tempfile::tempdir().unwrap();
+    let reg = registry(scratch.path(), &[("evil", project.path())]);
+
+    let out = inbox_with(
+        &reg,
+        scratch.path(),
+        &["--json", "--include", "archived,deferred"],
+    );
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let doc = json(&out);
+    let mut strings = Vec::new();
+    strings_of(&doc, &mut strings, "");
+    assert!(strings.len() > 10);
+    let mut capped = 0;
+    for (key, text) in &strings {
+        for bad in [ESC, RLO, BEL] {
+            assert!(!text.contains(bad), "{key}: {text:?} carries {bad:?}");
+        }
+        if key != "path" && key != "file" {
+            assert!(
+                text.chars().count() <= 201,
+                "{key}: {} chars",
+                text.chars().count()
+            );
+        }
+        if text.chars().count() == 201 {
+            assert!(text.ends_with('…'), "{key}: {text:?}");
+            capped += 1;
+        }
+    }
+    assert!(
+        capped >= 2,
+        "the 500-character name and expectation were cut"
+    );
+
+    let text = String::from_utf8(inbox_with(&reg, scratch.path(), &[]).stdout).unwrap();
+    for bad in [ESC, RLO, BEL] {
+        assert!(
+            !text.contains(bad),
+            "plain output carries {bad:?}: {text:?}"
+        );
+    }
+    for line in text.lines() {
+        assert!(line.chars().count() <= 1000, "bounded line: {}", line.len());
+    }
+    assert!(text.contains("- [ ] "), "{text}");
+}
+
+fn generate_project(root: &Path, index: usize) {
+    write(
+        &root.join(".planning/STATE.md"),
+        "---\nmilestone: v2.0\nstatus: in_progress\n---\n\n# State\n",
+    );
+    let mut roadmap = String::from("# Roadmap\n\n## Phases\n\n");
+    for n in 1..=15 {
+        roadmap.push_str(&format!("- [ ] **Phase {n:02}: Part {n}** - x\n"));
+    }
+    roadmap.push('\n');
+    for n in 1..=15 {
+        roadmap.push_str(&format!(
+            "### Phase {n:02}: Part {n}\n\n**Goal**: g\n**Depends on**: Nothing\n\n"
+        ));
+    }
+    write(&root.join(".planning/ROADMAP.md"), &roadmap);
+    let results = ["pending", "pass", "issue", "skipped", "blocked"];
+    for n in 1..=15 {
+        let dir = root.join(format!(".planning/phases/{n:02}-part-{n}"));
+        let mut uat = String::from(
+            "---\nstatus: testing\nupdated: 2026-10-01T12:00:00Z\n---\n\n# UAT\n\n## Tests\n\n",
+        );
+        for t in 1..=10 {
+            let result = results[(t + n + index) % results.len()];
+            uat.push_str(&format!(
+                "### {t}. Check {t} of phase {n}\nexpected: it works for case {t}\nresult: {result}\n"
+            ));
+            if result == "issue" || result == "skipped" || result == "blocked" {
+                uat.push_str("reason: waits for a device\n");
+            }
+            if result == "blocked" {
+                uat.push_str("blocked_by: device\n");
+            }
+            uat.push('\n');
+        }
+        write(&dir.join(format!("{n:02}-UAT.md")), &uat);
+        write(
+            &dir.join(format!("{n:02}-VERIFICATION.md")),
+            "---\nstatus: human_needed\nupdated: 2026-10-01T12:00:00Z\nhuman_verification:\n  - \"look at the first screen\"\n  - \"look at the second screen\"\n  - \"look at the third screen\"\n---\n\n# Verification\n",
+        );
+    }
+    for n in 1..=5 {
+        let dir = root.join(format!(".planning/milestones/v1.0-phases/{n:02}-old-{n}"));
+        write(
+            &dir.join(format!("{n:02}-UAT.md")),
+            "---\nstatus: complete\nupdated: 2026-01-01T12:00:00Z\n---\n\n# UAT\n\n## Tests\n\n### 1. Old check\nexpected: e\nresult: pending\n\n### 2. Other old check\nexpected: e\nresult: skipped\nreason: waits for a device\n",
+        );
+    }
+}
+
+#[test]
+fn a_cold_inbox_over_twenty_projects_is_under_a_second() {
+    let scratch = tempfile::tempdir().unwrap();
+    let roots: Vec<TempDir> = (0..20)
+        .map(|index| {
+            let dir = tempfile::tempdir().unwrap();
+            generate_project(dir.path(), index);
+            dir
+        })
+        .collect();
+    let named: Vec<(String, PathBuf)> = roots
+        .iter()
+        .enumerate()
+        .map(|(i, dir)| (format!("p{i:02}"), dir.path().to_path_buf()))
+        .collect();
+    let pairs: Vec<(&str, &Path)> = named
+        .iter()
+        .map(|(a, p)| (a.as_str(), p.as_path()))
+        .collect();
+    let reg = registry(scratch.path(), &pairs);
+
+    let started = std::time::Instant::now();
+    let out = inbox_with(&reg, scratch.path(), &["--json"]);
+    let cold = started.elapsed();
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let doc = json(&out);
+    assert_eq!(doc["summary"]["projects"], 20);
+    assert!(doc["summary"]["test"].as_u64().unwrap() > 0);
+    assert!(
+        cold < std::time::Duration::from_secs(1),
+        "a cold `inbox --json` took {cold:?}"
+    );
+
+    let started = std::time::Instant::now();
+    let mut seen = 0;
+    for (_, root) in &named {
+        let planning = root.join(".planning");
+        let state = gsd_meta_manager::state_reader::parse_project_state(&planning);
+        let digest = gsd_meta_manager::state_reader::owner_items::read_owner_digest(
+            &planning,
+            &state,
+            chrono::Utc::now(),
+            30,
+        );
+        seen += digest.test;
+    }
+    let lib = started.elapsed();
+    eprintln!("cold inbox --json: {cold:?}; lib loop: {lib:?}");
+    assert!(seen > 0);
+    assert!(
+        lib < std::time::Duration::from_secs(1),
+        "the lib loop took {lib:?}"
+    );
+}

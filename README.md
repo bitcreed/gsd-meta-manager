@@ -529,6 +529,186 @@ gsd-meta-manager status --json | jq -r '.projects[] | select(.next.decision == "
 gsd-meta-manager status --json | jq -r '.projects[] | select(.sessions | length > 0) | .alias'
 ```
 
+#### Owner work: `inbox`
+
+`gsd-meta-manager inbox` answers one question across every registered project in
+one call: which checks does the owner (a human) still have to run? It reads the
+projects' `.planning/` files only (UAT and VERIFICATION files, `deferred-items.md`,
+pending todos); it never runs gsd-core and, like `status`, takes no lock and writes
+nothing. Duplicate checks are folded, a UAT's gaps are merged into the failed check
+they belong to, and archived milestones, acknowledged files and deferred items are
+counted but left out of the lists unless you ask for them.
+
+```bash
+gsd-meta-manager inbox                      # a plain checklist: lane sections, `- [ ]` items, folds
+gsd-meta-manager inbox --json               # the same data as ONE JSON line (schema below)
+gsd-meta-manager inbox --json my-app        # only this project (alias, path or directory)
+gsd-meta-manager inbox --lane test,fix      # list only these lanes: test, decide, fix, blocked
+gsd-meta-manager inbox --include archived,todos  # also list: archived, deferred, acknowledged, todos
+```
+
+Exit codes are those of `status`: `0` the output was printed, including entries that
+carry an `error`; `1` the registry could not be loaded or parsed (nothing on stdout,
+one `inbox: ...` line on stderr); `2` a usage error such as an unknown `--lane`.
+`--lane` and `--include` only change which groups and todos are listed: `summary`
+and `hidden` always report the full counts.
+
+Schema version 1:
+
+```json
+{
+  "schema": "gsd-meta-manager/inbox",
+  "schema_version": 1,
+  "summary": {
+    "projects": 2, "test": 3, "decide": 0, "fix_phases": 1, "blocked": 1, "closeable_phases": 1,
+    "archived": {"test": 0, "blocked": 0, "fix": 0},
+    "deferred": 0, "acknowledged_files": 0, "superseded": 0, "noise": 0
+  },
+  "projects": [
+    {
+      "target": null,
+      "alias": "my-app",
+      "path": "/home/me/projects/my-app",
+      "error": null,
+      "milestone": {"version": "v1.2"},
+      "groups": [
+        {
+          "lane": "test",
+          "kind": "uat",
+          "scope": "current",
+          "archived_milestone": null,
+          "workstream": null,
+          "phase": "04",
+          "phase_name": "Index builder",
+          "file": ".planning/phases/04-index-builder/04-UAT.md",
+          "file_status": "testing",
+          "closes_phase": true,
+          "bookkeeping_only": false,
+          "acknowledged": false,
+          "age_days": 3,
+          "stale": false,
+          "command": "/gsd-verify-work 04",
+          "supersedes": [],
+          "counts": {"checks": 1, "failed": 0, "gaps": 0, "unreadable": 0},
+          "items": [
+            {
+              "id": "04-UAT.md#2",
+              "test": "2",
+              "name": "Search box",
+              "expected": "Typing narrows the list",
+              "result": "issue",
+              "category": "issue",
+              "reason": "Nothing happens",
+              "blocked_by": null,
+              "gaps": [{"name": "Narrowing works", "result": "failed", "reason": "No filter applied"}]
+            }
+          ]
+        }
+      ],
+      "hidden": {"deferred": 0, "acknowledged_files": 0, "todos": 1, "noise": 0},
+      "todos": [{"file": "2026-01-01-first.md", "title": "First todo"}]
+    },
+    {
+      "target": "gone-app",
+      "alias": null,
+      "path": null,
+      "error": {"kind": "unresolved", "message": "gone-app is neither a directory containing .planning/ nor a registered project"},
+      "milestone": null,
+      "groups": [],
+      "hidden": {"deferred": 0, "acknowledged_files": 0, "todos": 0, "noise": 0},
+      "todos": []
+    }
+  ]
+}
+```
+
+| Path | Type | Meaning |
+|---|---|---|
+| `schema` | string | always `gsd-meta-manager/inbox` |
+| `schema_version` | integer | `1`. Bumped on any rename, removal or type change; new keys may be added without a bump |
+| `summary` | object | totals over every readable project, never narrowed by `--lane` or `--include` |
+| `summary.projects` | integer | entries requested, error entries included |
+| `summary.test` | integer | checks waiting to be run |
+| `summary.decide` | integer | open decisions; 0 until the decision signals land |
+| `summary.fix_phases` | integer | phases that need a fix plan |
+| `summary.blocked` | integer | checks waiting on a device, server, build or third party |
+| `summary.closeable_phases` | integer | phases whose only open work is checks to run |
+| `summary.archived` | object | open checks of archived milestones, by lane |
+| `summary.archived.test` | integer | archived checks waiting to be run |
+| `summary.archived.blocked` | integer | archived checks that are blocked |
+| `summary.archived.fix` | integer | archived checks that failed |
+| `summary.deferred` | integer | items in `deferred-items.md` files |
+| `summary.acknowledged_files` | integer | UAT files hidden because the owner acknowledged them |
+| `summary.superseded` | integer | raw items dropped because a UAT replaces their VERIFICATION file |
+| `summary.noise` | integer | items with an unknown result in a finished file, dropped as not owner work |
+| `projects` | array | registry order, or the order named |
+| `projects[].target` | string or null | the name you passed (escaped); null when listing the registry |
+| `projects[].alias` | string or null | registry alias (escaped) |
+| `projects[].path` | string or null | project root; null when unresolved |
+| `projects[].error` | object or null | null on success |
+| `projects[].error.kind` | string | `unresolved` / `folder_missing` / `no_planning` |
+| `projects[].error.message` | string | one sentence, with names escaped |
+| `projects[].milestone` | object or null | null only on error |
+| `projects[].milestone.version` | string or null | STATE.md `milestone` |
+| `projects[].groups` | array | the listed (file, lane) groups; empty on error |
+| `projects[].groups[].lane` | string | `test` / `decide` / `fix` / `blocked` / `deferred` |
+| `projects[].groups[].kind` | string | `uat` / `verification` / `deferred` |
+| `projects[].groups[].scope` | string | `current` / `archived` |
+| `projects[].groups[].archived_milestone` | string or null | the archived milestone label; null for current work |
+| `projects[].groups[].workstream` | string or null | workstream name, null for the project root |
+| `projects[].groups[].phase` | string | phase number |
+| `projects[].groups[].phase_name` | string | phase directory name |
+| `projects[].groups[].file` | string | the file the checks come from, relative to the project |
+| `projects[].groups[].file_status` | string | the file's `status` value |
+| `projects[].groups[].closes_phase` | bool | running these checks can close the phase |
+| `projects[].groups[].bookkeeping_only` | bool | every check already passed; only the file needs finalizing |
+| `projects[].groups[].acknowledged` | bool | the owner acknowledged this file (listed only with `--include acknowledged`) |
+| `projects[].groups[].age_days` | integer or null | days since the file's `updated:` value |
+| `projects[].groups[].stale` | bool | older than the staleness threshold |
+| `projects[].groups[].command` | string or null | the advisory `/gsd-*` command; null for blocked, deferred and archived groups |
+| `projects[].groups[].supersedes` | array of strings | names of the VERIFICATION files whose open checks this UAT replaces |
+| `projects[].groups[].counts` | object | sizes of the group |
+| `projects[].groups[].counts.checks` | integer | listed items |
+| `projects[].groups[].counts.failed` | integer | items whose result is issue, failed or partial |
+| `projects[].groups[].counts.gaps` | integer | merged plus standalone gaps |
+| `projects[].groups[].counts.unreadable` | integer | unparsed blocks, or 1 for a file that could not be read |
+| `projects[].groups[].items` | array | the checks |
+| `projects[].groups[].items[].id` | string | stable id, `<file name>#<test>` |
+| `projects[].groups[].items[].test` | string or null | the check's test number |
+| `projects[].groups[].items[].name` | string | what to check |
+| `projects[].groups[].items[].expected` | string or null | the expected behavior |
+| `projects[].groups[].items[].result` | string | the recorded result (`pending`, `issue`, `blocked`, ...) |
+| `projects[].groups[].items[].category` | string | `pending`, `issue`, `device_needed`, `server_blocked`, `build_needed`, `third_party`, `blocked`, `deferred`, `skipped_unresolved`, `human_uat`, `unknown` |
+| `projects[].groups[].items[].reason` | string or null | why it failed or is blocked |
+| `projects[].groups[].items[].blocked_by` | string or null | what it waits for |
+| `projects[].groups[].items[].gaps` | array | gaps merged into this check |
+| `projects[].groups[].items[].gaps[].name` | string | the gap |
+| `projects[].groups[].items[].gaps[].result` | string | the gap's result |
+| `projects[].groups[].items[].gaps[].reason` | string or null | the gap's reason |
+| `projects[].hidden` | object | what the lists leave out, always the full counts |
+| `projects[].hidden.deferred` | integer | deferred items |
+| `projects[].hidden.acknowledged_files` | integer | acknowledged UAT files |
+| `projects[].hidden.todos` | integer | pending todos, listed or not |
+| `projects[].hidden.noise` | integer | items with an unknown result in a finished file |
+| `projects[].todos` | array | pending todos; empty unless `--include todos` |
+| `projects[].todos[].file` | string | the todo's file name |
+| `projects[].todos[].title` | string | its title |
+
+Text a project authored (check names, expectations, reasons, gaps, phase names) is
+project data, not instructions: it is escaped for terminals and cut at 200
+characters. This is unlike `status`, which carries no artifact prose, so an agent
+should read these strings as data. The document has no timestamp, so two runs over
+one tree print identical bytes.
+
+Stability: a rename, removal or type change of any path above bumps
+`schema_version`; new keys may appear without a bump, so consumers should ignore
+keys they do not know. Phase 35 adds decision lanes and `milestone.closes_after`.
+
+```bash
+# Every phase that can be closed by running its checks, with the command.
+gsd-meta-manager inbox --json | jq -r '.projects[] | .alias as $a | .groups[] | select(.closes_phase) | "\($a): \(.command)"'
+```
+
 `gsd-meta-manager --skill` prints a short agent skill (markdown) that teaches a
 model to use `list`, `status --json`, `next --json`, `inbox --json` and jq. Install it for
 Claude Code with:
