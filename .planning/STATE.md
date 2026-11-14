@@ -2,18 +2,18 @@
 gsd_state_version: "1.0"
 milestone: v2.5.0
 milestone_name: Owner Inbox
-current_phase: 34
-current_phase_name: Owner items reader + inbox CLI
-status: verifying
+current_phase: 35
+current_phase_name: Decisions, code-needed and gates
+status: executing
 stopped_at: Phase 35 context gathered
-last_updated: "2026-11-14T20:09:33.320Z"
+last_updated: "2026-11-14T20:57:15.296Z"
 last_activity: 2026-11-14
 last_activity_desc: Phase 34 execution started
-state_head: eccd7b6aaafaa2103d2ecf55d51a3e26e15921de
+state_head: f659033ad6b5543fbb51af25caa66bebacc32143
 progress:
   total_phases: 4
   completed_phases: 0
-  total_plans: 6
+  total_plans: 10
   completed_plans: 6
   percent: 0
 ---
@@ -29,9 +29,9 @@ See: .planning/PROJECT.md (updated 2026-11-14)
 
 ## Current Position
 
-Phase: 34 (Owner items reader + inbox CLI) — EXECUTING
+Phase: 35 (Decisions, code-needed and gates) — READY TO EXECUTE
 Plan: 6 of 6
-Status: Phase complete — ready for verification
+Status: Ready to execute
 Last activity: 2026-11-14 — Phase 34 execution started
 
 
