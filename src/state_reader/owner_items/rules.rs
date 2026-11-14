@@ -26,7 +26,7 @@ use super::{
     OwnerGap, OwnerGroup, OwnerItem, Scope,
 };
 use crate::state_reader::disk_status::{DiskStatus, VerificationStatus};
-use crate::state_reader::phase_num::{same_phase, PhaseNum};
+use crate::state_reader::phase_num::{phase_key, same_phase, PhaseNum};
 use crate::state_reader::ProjectState;
 
 /// Where an item is listed, or that it is only counted.
@@ -603,13 +603,13 @@ pub(super) fn build_digest(
     apply_r7(&mut digest, &files, state, &ctx);
     digest.groups.sort_by_key(sort_key);
 
-    let mut fix_phases: BTreeSet<(Option<&str>, &str)> = BTreeSet::new();
+    let mut fix_phases: BTreeSet<(Option<&str>, String)> = BTreeSet::new();
     for group in digest.groups.iter().filter(|group| !group.acknowledged) {
         match (&group.scope, group.lane) {
             (Scope::Current, Lane::Test) => digest.test += group.items.len(),
             (Scope::Current, Lane::Blocked) => digest.blocked += group.items.len(),
             (Scope::Current, Lane::Fix) => {
-                fix_phases.insert((group.workstream.as_deref(), group.phase.as_str()));
+                fix_phases.insert((group.workstream.as_deref(), phase_key(&group.phase)));
             }
             (Scope::Archived { .. }, Lane::Test) => digest.archived.test += group.items.len(),
             (Scope::Archived { .. }, Lane::Blocked) => digest.archived.blocked += group.items.len(),
@@ -1142,6 +1142,19 @@ mod tests {
             (fix.counts.checks, fix.counts.failed, fix.counts.gaps),
             (6, 3, 6)
         );
+    }
+
+    #[test]
+    fn two_spellings_of_one_phase_are_one_fix_phase() {
+        let mut padded = file(vec![row("1", "issue", Category::Issue)]);
+        padded.rel_path = ".planning/phases/01-alpha/01-UAT.md".to_owned();
+        let mut plain = file(vec![row("1", "issue", Category::Issue)]);
+        plain.rel_path = ".planning/phases/1-alpha-extra/1-UAT.md".to_owned();
+        plain.phase = "1".to_owned();
+        plain.phase_dir = "1-alpha-extra".to_owned();
+        let d = digest(vec![padded, plain]);
+        assert_eq!(d.groups.len(), 2);
+        assert_eq!(d.fix_phases, 1);
     }
 
     #[test]
