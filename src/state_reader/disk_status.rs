@@ -100,7 +100,7 @@ impl VerificationStatus {
     /// Classify a raw frontmatter value. Case-insensitive on the known arms;
     /// anything else is carried verbatim by [`VerificationStatus::Unknown`].
     pub fn from_raw(raw: &str) -> Self {
-        let trimmed = raw.trim();
+        let trimmed = strip_one_quote_pair(raw.trim());
         match trimmed.to_ascii_lowercase().as_str() {
             "passed" => VerificationStatus::Passed,
             "gaps_found" => VerificationStatus::GapsFound,
@@ -156,6 +156,10 @@ pub enum UatStatus {
     InProgress,
     /// UAT failed — outstanding.
     Failed,
+    /// UAT checks are underway (`/gsd-verify-work` writes this status while items
+    /// are open). Outstanding for the owner, but NOT in upstream's
+    /// `BLOCKING_UAT_FM_STATUSES`, so it never gates the router.
+    Testing,
     /// Any other value, carried verbatim. **Not outstanding**: this repository's
     /// own phase 19 carries `status: deferred`, which is a human's explicit
     /// decision to proceed and must not read as an unanswered gate.
@@ -165,7 +169,7 @@ pub enum UatStatus {
 impl UatStatus {
     /// Classify a raw frontmatter value. Case-insensitive on the known arms.
     pub fn from_raw(raw: &str) -> Self {
-        let trimmed = raw.trim();
+        let trimmed = strip_one_quote_pair(raw.trim());
         match trimmed.to_ascii_lowercase().as_str() {
             "partial" => UatStatus::Partial,
             "diagnosed" => UatStatus::Diagnosed,
@@ -173,6 +177,7 @@ impl UatStatus {
             "blocked" => UatStatus::Blocked,
             "in_progress" => UatStatus::InProgress,
             "failed" => UatStatus::Failed,
+            "testing" => UatStatus::Testing,
             _ => UatStatus::Other(trimmed.to_string()),
         }
     }
@@ -187,15 +192,17 @@ impl UatStatus {
             UatStatus::Blocked => "blocked",
             UatStatus::InProgress => "in_progress",
             UatStatus::Failed => "failed",
+            UatStatus::Testing => "testing",
             UatStatus::Other(observed) => observed,
         }
     }
 
     /// Whether this status sets the outstanding-UAT gate (G7).
     ///
-    /// The set is `uat-predicate.cjs:30-32`'s, taken as written. Everything
-    /// outside it — including `passed` and `deferred` — is not a gate.
-    pub fn is_outstanding(&self) -> bool {
+    /// The set is `uat-predicate.cjs`'s `BLOCKING_UAT_FM_STATUSES`, taken as
+    /// written. Everything outside it, including `passed`, `deferred` and
+    /// [`UatStatus::Testing`], is not a gate. The router's G7 uses this predicate.
+    pub fn is_upstream_blocking(&self) -> bool {
         matches!(
             self,
             UatStatus::Partial
@@ -206,6 +213,27 @@ impl UatStatus {
                 | UatStatus::Failed
         )
     }
+
+    /// Whether this status is outstanding for the owner: the upstream set plus
+    /// [`UatStatus::Testing`]. The item half of the owner predicate (a non-terminal
+    /// status with at least one open item) lives in the owner reader, because this
+    /// enum carries no item data.
+    pub fn is_owner_outstanding(&self) -> bool {
+        self.is_upstream_blocking() || matches!(self, UatStatus::Testing)
+    }
+}
+
+/// Strip exactly one matching pair of `"` or `'` around a frontmatter scalar.
+fn strip_one_quote_pair(value: &str) -> &str {
+    for quote in ['"', '\''] {
+        if let Some(inner) = value
+            .strip_prefix(quote)
+            .and_then(|rest| rest.strip_suffix(quote))
+        {
+            return inner.trim();
+        }
+    }
+    value
 }
 
 /// The planned and realised token cost of ONE plan, as GSD records them.
@@ -472,7 +500,7 @@ pub struct DiskInference {
     /// The `status` read from the phase's `*-UAT.md` frontmatter (G7).
     ///
     /// Presence is `has_uat`; whether anyone still owes an answer is this.
-    /// [`UatStatus::is_outstanding`] is the gate predicate.
+    /// [`UatStatus::is_upstream_blocking`] is the gate predicate.
     pub uat_status: UatStatus,
     /// A phase-directory `.continue-here.md` carrying **at least one
     /// blocking-severity row** (G13).
@@ -2358,7 +2386,7 @@ mod tests {
             .unwrap();
             let result = infer_disk_status(dir.path());
             assert!(
-                result.uat_status.is_outstanding(),
+                result.uat_status.is_upstream_blocking(),
                 "`{raw}` is in GSD's blocking UAT set and must set the gate"
             );
             assert_eq!(result.uat_status.as_str(), raw);
@@ -2382,12 +2410,71 @@ mod tests {
             .unwrap();
             let result = infer_disk_status(dir.path());
             assert!(
-                !result.uat_status.is_outstanding(),
+                !result.uat_status.is_upstream_blocking(),
                 "`{raw}` is outside GSD's blocking set; a gate that fires on \
                  everything is as useless as one that fires on nothing"
             );
             assert_eq!(result.uat_status, UatStatus::Other(raw.to_string()));
+            assert!(
+                !result.uat_status.is_owner_outstanding(),
+                "`{raw}` is terminal for the owner too (D-03)"
+            );
         }
+    }
+
+    #[test]
+    fn test_testing_uat_is_owner_outstanding_but_not_upstream_blocking() {
+        for raw in [
+            "testing",
+            "TESTING",
+            "\"testing\"",
+            "'testing'",
+            " Testing ",
+        ] {
+            let status = UatStatus::from_raw(raw);
+            assert_eq!(status, UatStatus::Testing, "{raw}");
+            assert!(status.is_owner_outstanding(), "{raw}");
+            assert!(!status.is_upstream_blocking(), "{raw}");
+            assert_eq!(status.as_str(), "testing");
+        }
+        for raw in ["testing2", "test", "\"testing'"] {
+            assert!(
+                matches!(UatStatus::from_raw(raw), UatStatus::Other(_)),
+                "{raw}"
+            );
+        }
+        for raw in [
+            "partial",
+            "diagnosed",
+            "pending",
+            "blocked",
+            "in_progress",
+            "failed",
+        ] {
+            assert!(UatStatus::from_raw(raw).is_owner_outstanding(), "{raw}");
+        }
+    }
+
+    #[test]
+    fn test_quoted_statuses_classify_like_bare_ones() {
+        assert_eq!(
+            VerificationStatus::from_raw("\"gaps_found\""),
+            VerificationStatus::GapsFound
+        );
+        assert_eq!(
+            VerificationStatus::from_raw("'human_needed'"),
+            VerificationStatus::HumanNeeded
+        );
+        assert_eq!(UatStatus::from_raw("\"pending\""), UatStatus::Pending);
+        // A lone quote is kept, and a value in Other is the unquoted text.
+        assert_eq!(
+            UatStatus::from_raw("\""),
+            UatStatus::Other("\"".to_string())
+        );
+        assert_eq!(
+            UatStatus::from_raw("'deferred'"),
+            UatStatus::Other("deferred".to_string())
+        );
     }
 
     #[test]
@@ -2395,7 +2482,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let result = infer_disk_status(dir.path());
         assert_eq!(result.uat_status, UatStatus::Missing);
-        assert!(!result.uat_status.is_outstanding());
+        assert!(!result.uat_status.is_upstream_blocking());
         assert!(!result.has_uat);
     }
 

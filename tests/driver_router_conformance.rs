@@ -600,6 +600,25 @@ const FIXTURES: &[Fixture] = &[
             )
         },
     },
+    // D-02 tripwire. A `status: testing` UAT counts for the owner but is outside
+    // upstream's BLOCKING_UAT_FM_STATUSES, so it must not gate the router. If
+    // gsd-core ever adds `testing` to that set this fixture fails by name; the
+    // router adopts `testing` only if gsd-core does (CONTEXT, deferred idea).
+    Fixture {
+        name: "uat_testing_does_not_gate",
+        target: TARGET,
+        upstream: Upstream::NoAction,
+        build: |root| {
+            skeleton(root);
+            plan(root, "01");
+            summary(root, "01");
+            verification(root, "passed");
+            write(
+                &phase_dir(root).join("01-UAT.md"),
+                "---\nphase: 01\nstatus: testing\n---\n\n# UAT\n",
+            );
+        },
+    },
     Fixture {
         name: "complete",
         target: TARGET,
@@ -968,6 +987,7 @@ fn every_fixture_reaches_the_state_it_is_named_for() {
                     "milestone_prefixed fixture shape `{other}` has no expected state mapped"
                 ),
             })
+            .or_else(|| (fixture.name == "uat_testing_does_not_gate").then_some("complete"))
             .or_else(|| {
                 fixture
                     .name

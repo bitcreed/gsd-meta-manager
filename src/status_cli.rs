@@ -149,7 +149,7 @@ fn attention_json(state: &ProjectState) -> Vec<Value> {
             if disk.verification_status == VerificationStatus::HumanNeeded {
                 items.push(attention_item("verification_human_needed", id, ws, None));
             }
-            if disk.uat_status.is_outstanding() {
+            if disk.uat_status.is_owner_outstanding() {
                 items.push(attention_item(
                     "uat_outstanding",
                     id,
