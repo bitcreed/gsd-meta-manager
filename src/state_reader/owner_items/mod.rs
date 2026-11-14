@@ -26,6 +26,7 @@ mod context;
 mod debug;
 mod deferred;
 mod frontmatter;
+mod handoff;
 mod markdown;
 mod rules;
 mod scan;
@@ -517,9 +518,14 @@ pub fn read_owner_digest(
     now: DateTime<Utc>,
     stale_days: u32,
 ) -> OwnerDigest {
-    rules::build_digest(
+    let pause = rules::PauseScan {
+        handoffs: handoff::read_handoffs(planning_dir, state),
+        checkpoints: handoff::read_checkpoints(planning_dir, state),
+    };
+    rules::build_digest_with(
         scan(planning_dir, state),
         scan_open(planning_dir, state),
+        pause,
         state,
         now,
         stale_days,

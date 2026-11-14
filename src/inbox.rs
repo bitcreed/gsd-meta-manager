@@ -275,6 +275,35 @@ fn detail(group: &OwnerGroup) -> String {
             }
         };
     }
+    if group.kind == Kind::Handoff {
+        if group.counts.unreadable > 0 && group.items.is_empty() {
+            return "unreadable handoff".to_owned();
+        }
+        let count = |result: &str| group.items.iter().filter(|i| i.result == result).count();
+        let mut parts = Vec::new();
+        if group.file_status != "unknown" {
+            parts.push(terminal_capped(&group.file_status));
+        }
+        let actions = count("human_action");
+        if actions > 0 {
+            parts.push(format!(
+                "{} pending",
+                plural(actions, "human action", "human actions")
+            ));
+        }
+        let blockers = count("blocker");
+        if blockers > 0 {
+            parts.push(plural(blockers, "blocker", "blockers"));
+        }
+        return parts.join(" · ");
+    }
+    if group.kind == Kind::Checkpoint {
+        return if group.counts.unreadable > 0 && group.items.is_empty() {
+            "unreadable checkpoint".to_owned()
+        } else {
+            format!("checkpoint: {}", terminal_capped(&group.file_status))
+        };
+    }
     if group.kind == Kind::ContextQuestions {
         let file = terminal_capped(group.file.rsplit('/').next().unwrap_or(&group.file));
         if group.counts.unreadable > 0 && group.items.is_empty() {
@@ -314,10 +343,16 @@ fn detail(group: &OwnerGroup) -> String {
 }
 
 fn group_line(alias: &str, group: &OwnerGroup) -> String {
-    if group.kind == Kind::Debug {
+    let label = match (group.kind, &group.workstream) {
+        (Kind::Debug, _) => Some("debug".to_owned()),
+        (Kind::Handoff, None) => Some("handoff".to_owned()),
+        (Kind::Handoff, Some(ws)) => Some(format!("handoff {}", terminal_capped(ws))),
+        _ => None,
+    };
+    if let Some(label) = label {
         let mut parts = vec![
             terminal_capped(alias),
-            "debug".to_owned(),
+            label,
             terminal_capped(&group.phase_name),
             detail(group),
         ];
@@ -330,6 +365,7 @@ fn group_line(alias: &str, group: &OwnerGroup) -> String {
         if let Some(command) = &group.command {
             parts.push(terminal_capped(command));
         }
+        parts.retain(|part| !part.is_empty());
         return parts.join("  ");
     }
     let phase = match &group.workstream {

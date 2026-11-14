@@ -660,7 +660,7 @@ Schema version 1:
 | `projects[].groups[].archived_milestone` | string or null | the archived milestone label; null for current work |
 | `projects[].groups[].workstream` | string or null | workstream name, null for the project root |
 | `projects[].groups[].phase` | string | phase number; `""` for debug groups |
-| `projects[].groups[].phase_name` | string | phase directory name; the session slug for debug groups |
+| `projects[].groups[].phase_name` | string | phase directory name; the session slug for debug groups; the handoff's `next_action` for handoff groups |
 | `projects[].groups[].file` | string | the file the checks come from, relative to the project |
 | `projects[].groups[].file_status` | string | the file's `status` value |
 | `projects[].groups[].closes_phase` | bool | running these checks can close the phase |
@@ -668,7 +668,7 @@ Schema version 1:
 | `projects[].groups[].acknowledged` | bool | the owner acknowledged this file (listed only with `--include acknowledged`) |
 | `projects[].groups[].age_days` | integer or null | days since the file's `updated:` value |
 | `projects[].groups[].stale` | bool | older than the staleness threshold |
-| `projects[].groups[].command` | string or null | the advisory `/gsd-*` command; null for blocked, deferred, archived and `context_questions` groups |
+| `projects[].groups[].command` | string or null | the advisory `/gsd-*` command (`/gsd-verify-work`, `/gsd-plan-phase`, `/gsd-debug`, `/gsd-resume-work [--ws <name>]`); null for blocked, deferred, archived and `context_questions` groups |
 | `projects[].groups[].supersedes` | array of strings | names of the VERIFICATION files whose open checks this UAT replaces |
 | `projects[].groups[].counts` | object | sizes of the group |
 | `projects[].groups[].counts.checks` | integer | listed items |

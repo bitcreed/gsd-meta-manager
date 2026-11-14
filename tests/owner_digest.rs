@@ -557,3 +557,121 @@ fn context_questions_fill_decide() {
     let text = render_text(std::slice::from_ref(&e), &Filters::default());
     assert!(text.contains("3 open questions in 02-CONTEXT.md"), "{text}");
 }
+
+fn handoff_groups_of(doc: &Value) -> Vec<&Value> {
+    groups(doc)
+        .iter()
+        .filter(|g| g["kind"] == "handoff")
+        .collect()
+}
+
+#[test]
+fn handoff_paused_is_one_stale_decide_group() {
+    let (guard, entry) = entry_of("handoff-paused", "usb");
+    // ProjectState judges this handoff stale (StateNewer) and so not paused; the owner
+    // reader lists it anyway, flagged (D-05, D-09).
+    let state = parse_project_state(&guard.path().join(".planning"));
+    assert!(state.stale_handoff.is_some());
+    assert!(!state.paused);
+    assert_eq!(entry.digest.decide, 1);
+    let doc = build_document(std::slice::from_ref(&entry), &include_all());
+    let found = handoff_groups_of(&doc);
+    assert_eq!(found.len(), 1, "{found:?}");
+    let group = found[0];
+    assert_eq!(group["lane"], "decide");
+    assert_eq!(group["stale"], true);
+    assert_eq!(group["file"], ".planning/HANDOFF.json");
+    assert_eq!(group["file_status"], "paused");
+    assert_eq!(group["phase"], "04");
+    assert_eq!(group["phase_name"], "Run the device check");
+    assert_eq!(group["command"], "/gsd-resume-work");
+    let ids: Vec<(&str, &str, &str)> = group["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| {
+            (
+                i["id"].as_str().unwrap(),
+                i["name"].as_str().unwrap(),
+                i["result"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        ids,
+        [
+            ("HANDOFF.json#a1", "Pair the test device", "human_action"),
+            ("HANDOFF.json#b1", "Vendor key missing", "blocker"),
+        ]
+    );
+    assert_eq!(group["items"][0]["reason"], "needs the lab bench");
+    assert_eq!(group["items"][1]["reason"], "use the sandbox key");
+    assert_eq!(doc["summary"]["decide"], 1);
+    let text = render_text(std::slice::from_ref(&entry), &Filters::default());
+    let row = text.lines().find(|l| l.contains("handoff")).unwrap();
+    assert!(
+        row.contains("paused")
+            && row.contains("1 human action pending")
+            && row.contains("1 blocker"),
+        "{row}"
+    );
+    assert!(
+        row.contains("stale") && row.contains("/gsd-resume-work"),
+        "{row}"
+    );
+}
+
+#[test]
+fn handoff_workstreams_carry_ws_commands() {
+    let (_g, entry) = entry_of("handoff-workstreams", "ws");
+    assert_eq!(entry.digest.decide, 3);
+    let doc = build_document(std::slice::from_ref(&entry), &include_all());
+    let found = handoff_groups_of(&doc);
+    assert_eq!(found.len(), 3, "{found:?}");
+    let by_file = |file: &str| {
+        *found
+            .iter()
+            .find(|g| g["file"] == file)
+            .unwrap_or_else(|| panic!("{file}"))
+    };
+    let root = by_file(".planning/HANDOFF.md");
+    assert_eq!(root["command"], "/gsd-resume-work");
+    assert_eq!(root["phase_name"], "Resume the import work");
+    assert_eq!(root["file_status"], "unknown");
+    assert!(root["workstream"].is_null());
+    let a = by_file(".planning/workstreams/a/HANDOFF.json");
+    assert_eq!(a["command"], "/gsd-resume-work --ws a");
+    assert_eq!(a["file_status"], "ready");
+    assert_eq!(a["workstream"], "a");
+    assert_eq!(a["items"].as_array().unwrap().len(), 1);
+    let b = by_file(".planning/workstreams/b/HANDOFF.json");
+    assert_eq!(b["command"], "/gsd-resume-work --ws b");
+    assert_eq!(b["file_status"], "unknown");
+    assert_eq!(b["items"].as_array().unwrap().len(), 0);
+    assert_eq!(b["counts"]["unreadable"], 0);
+    assert_eq!(doc["summary"]["decide"], 3);
+}
+
+#[test]
+fn checkpoint_phase_lists_only_the_open_checkpoint() {
+    let (_g, entry) = entry_of("checkpoint-phase", "cp");
+    assert_eq!(entry.digest.decide, 1);
+    let doc = build_document(std::slice::from_ref(&entry), &include_all());
+    assert!(handoff_groups_of(&doc).is_empty());
+    let found: Vec<&Value> = groups(&doc)
+        .iter()
+        .filter(|g| g["kind"] == "checkpoint")
+        .collect();
+    assert_eq!(found.len(), 1, "{found:?}");
+    let group = found[0];
+    assert_eq!(group["phase"], "02");
+    assert_eq!(group["phase_name"], "Open");
+    assert_eq!(group["file"], ".planning/phases/02-open/.continue-here.md");
+    assert_eq!(group["file_status"], "planning_incomplete");
+    assert_eq!(group["command"], "/gsd-resume-work");
+    assert_eq!(group["items"][0]["name"], "02-open");
+    assert_eq!(group["items"][0]["result"], "planning_incomplete");
+    assert_eq!(doc["summary"]["decide"], 1);
+    let text = render_text(std::slice::from_ref(&entry), &Filters::default());
+    assert!(text.contains("checkpoint: planning_incomplete"), "{text}");
+}

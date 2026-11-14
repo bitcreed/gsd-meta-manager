@@ -177,7 +177,7 @@ pub(super) fn posix_relative(root: &Path, path: &Path) -> String {
 
 /// The current milestone's phase directories: real directories (a symlinked one is
 /// skipped) whose token names a roadmap phase of the current milestone.
-fn current_phase_dirs(phases_dir: &Path, state: &ProjectState) -> Vec<String> {
+pub(super) fn current_phase_dirs(phases_dir: &Path, state: &ProjectState) -> Vec<String> {
     let Ok(entries) = std::fs::read_dir(phases_dir) else {
         return Vec::new();
     };

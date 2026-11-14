@@ -1018,3 +1018,53 @@ fn a_cold_inbox_over_twenty_projects_is_under_a_second() {
     assert!(seen > 0);
     assert!(lib < bound, "the lib loop took {lib:?} (bound {bound:?})");
 }
+
+#[test]
+fn sc1_decide_lane_lists_the_awaiting_sessions_and_the_paused_handoff() {
+    let scratch = tempfile::tempdir().unwrap();
+    let debug = tempfile::tempdir().unwrap();
+    let paused = tempfile::tempdir().unwrap();
+    copy_tree(&fixture("debug-sessions"), debug.path());
+    copy_tree(&fixture("handoff-paused"), paused.path());
+    let reg = registry(
+        scratch.path(),
+        &[("one", debug.path()), ("two", paused.path())],
+    );
+
+    let out = inbox_with(&reg, scratch.path(), &["--json", "--lane", "decide"]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let doc = json(&out);
+    let kinds = |project: usize, kind: &str| -> Vec<Value> {
+        doc["projects"][project]["groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|g| g["kind"] == kind)
+            .cloned()
+            .collect()
+    };
+    assert_eq!(kinds(0, "debug").len(), 5, "{doc}");
+    assert!(kinds(0, "handoff").is_empty());
+    let handoffs = kinds(1, "handoff");
+    assert_eq!(handoffs.len(), 1, "{doc}");
+    assert_eq!(handoffs[0]["stale"], true);
+    assert_eq!(handoffs[0]["command"], "/gsd-resume-work");
+    let ids: Vec<&str> = handoffs[0]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, ["HANDOFF.json#a1", "HANDOFF.json#b1"]);
+    assert_eq!(doc["summary"]["decide"], 6);
+
+    let text = inbox_with(&reg, scratch.path(), &["--lane", "decide"]);
+    let text = String::from_utf8_lossy(&text.stdout).into_owned();
+    assert!(text.contains("DECIDE"), "{text}");
+    for heading in ["TEST", "FIX", "BLOCKED"] {
+        assert!(
+            !text.lines().any(|l| l.starts_with(heading)),
+            "{heading} in {text}"
+        );
+    }
+}

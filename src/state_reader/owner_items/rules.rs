@@ -25,6 +25,7 @@ use std::collections::{BTreeSet, HashMap};
 
 use chrono::{DateTime, Utc};
 
+use super::handoff::{CheckpointRecord, HandoffRecord};
 use super::{
     AuditFile, AuditItem, AuditKind, Category, ContextFile, DebugSession, GroupCounts, Kind, Lane,
     OpenScan, Origin, OwnerDigest, OwnerGap, OwnerGroup, OwnerItem, Scope,
@@ -70,7 +71,7 @@ fn place(item: &AuditItem, file_status: &str) -> Placement {
 }
 
 /// `^\d+[A-Za-z]?(\.\d+)*$`.
-fn is_command_token(token: &str) -> bool {
+pub(super) fn is_command_token(token: &str) -> bool {
     let bytes = token.as_bytes();
     let mut at = bytes.iter().take_while(|b| b.is_ascii_digit()).count();
     if at == 0 {
@@ -816,16 +817,170 @@ fn context_groups(
     }
 }
 
+/// Layer A's pause files: the handoffs and phase checkpoints of one project.
+#[derive(Debug, Clone, Default)]
+pub(super) struct PauseScan {
+    pub handoffs: Vec<HandoffRecord>,
+    pub checkpoints: Vec<CheckpointRecord>,
+}
+
+/// The command that resumes a paused scope: `/gsd-resume-work`, with ` --ws <name>`
+/// for a workstream. A workstream name outside the identity alphabet gives none
+/// (T-35-11).
+fn resume_command(workstream: Option<&str>) -> Option<String> {
+    match workstream {
+        None => Some("/gsd-resume-work".to_owned()),
+        Some(name) if is_workstream_name(name) => Some(format!("/gsd-resume-work --ws {name}")),
+        Some(_) => None,
+    }
+}
+
+/// D-05, D-11, R10: one Decide group per non-empty handoff, stale or not (a stale one
+/// is flagged, never dropped, [INFERRED] F1). It counts 1 however many items it lists.
+fn handoff_groups(
+    digest: &mut OwnerDigest,
+    handoffs: &[HandoffRecord],
+    state: &ProjectState,
+    ctx: &Context,
+) {
+    for handoff in handoffs {
+        let scope = scope_state(state, handoff.workstream.as_deref());
+        let base = basename(&handoff.rel_path);
+        let mut items: Vec<OwnerItem> = Vec::new();
+        for (at, (name, reason)) in handoff.actions.iter().enumerate() {
+            items.push(signal_item(
+                format!("{base}#a{}", at + 1),
+                name.clone(),
+                "human_action".to_owned(),
+                reason.clone(),
+            ));
+        }
+        for (at, (name, reason)) in handoff.blockers.iter().enumerate() {
+            items.push(signal_item(
+                format!("{base}#b{}", at + 1),
+                name.clone(),
+                "blocker".to_owned(),
+                reason.clone(),
+            ));
+        }
+        let phase_name = handoff
+            .next_action
+            .clone()
+            .or_else(|| {
+                scope
+                    .roadmap_phase(&handoff.phase)
+                    .map(|phase| phase.name.clone())
+            })
+            .unwrap_or_default();
+        let age_days = handoff
+            .written
+            .or(handoff.modified)
+            .map(|moment| days_since(moment, ctx.now));
+        digest.groups.push(OwnerGroup {
+            lane: Lane::Decide,
+            kind: Kind::Handoff,
+            scope: Scope::Current,
+            workstream: handoff.workstream.clone(),
+            phase: handoff.phase.clone(),
+            phase_name,
+            file: handoff.rel_path.clone(),
+            file_status: handoff.status.clone(),
+            closes_phase: false,
+            bookkeeping_only: false,
+            acknowledged: false,
+            age_days,
+            stale: scope.stale_handoff.is_some()
+                || age_days.is_some_and(|days| days > i64::from(ctx.stale_days)),
+            command: resume_command(handoff.workstream.as_deref()),
+            supersedes: Vec::new(),
+            counts: GroupCounts {
+                checks: items.len(),
+                failed: 0,
+                gaps: 0,
+                unreadable: usize::from(handoff.unreadable),
+            },
+            items,
+        });
+    }
+}
+
+/// D-06, D-11: one Decide group with one item per open phase checkpoint.
+fn checkpoint_groups(
+    digest: &mut OwnerDigest,
+    checkpoints: &[CheckpointRecord],
+    state: &ProjectState,
+    ctx: &Context,
+) {
+    for checkpoint in checkpoints {
+        let scope = scope_state(state, checkpoint.workstream.as_deref());
+        let phase_name = scope.roadmap_phase(&checkpoint.phase).map_or_else(
+            || slug_after_token(&checkpoint.phase_dir, &checkpoint.phase),
+            |phase| phase.name.clone(),
+        );
+        let items = if checkpoint.unreadable {
+            Vec::new()
+        } else {
+            vec![signal_item(
+                ".continue-here.md#1".to_owned(),
+                checkpoint.name.clone(),
+                checkpoint.status.clone(),
+                None,
+            )]
+        };
+        let age_days = checkpoint
+            .written
+            .or(checkpoint.modified)
+            .map(|moment| days_since(moment, ctx.now));
+        digest.groups.push(OwnerGroup {
+            lane: Lane::Decide,
+            kind: Kind::Checkpoint,
+            scope: Scope::Current,
+            workstream: checkpoint.workstream.clone(),
+            phase: checkpoint.phase.clone(),
+            phase_name,
+            file: checkpoint.rel_path.clone(),
+            file_status: checkpoint.status.clone(),
+            closes_phase: false,
+            bookkeeping_only: false,
+            acknowledged: false,
+            age_days,
+            stale: age_days.is_some_and(|days| days > i64::from(ctx.stale_days)),
+            command: resume_command(checkpoint.workstream.as_deref()),
+            supersedes: Vec::new(),
+            counts: GroupCounts {
+                checks: items.len(),
+                failed: 0,
+                gaps: 0,
+                unreadable: usize::from(checkpoint.unreadable),
+            },
+            items,
+        });
+    }
+}
+
 /// The caller-supplied inputs the group builders share.
 struct Context {
     now: DateTime<Utc>,
     stale_days: u32,
 }
 
-/// Build the digest of one project from Layer A's files.
+/// [`build_digest_with`] without handoffs or checkpoints.
+#[cfg(test)]
 pub(super) fn build_digest(
     files: Vec<AuditFile>,
     open: OpenScan,
+    state: &ProjectState,
+    now: DateTime<Utc>,
+    stale_days: u32,
+) -> OwnerDigest {
+    build_digest_with(files, open, PauseScan::default(), state, now, stale_days)
+}
+
+/// Build the digest of one project from Layer A's files.
+pub(super) fn build_digest_with(
+    files: Vec<AuditFile>,
+    open: OpenScan,
+    pause: PauseScan,
     state: &ProjectState,
     now: DateTime<Utc>,
     stale_days: u32,
@@ -869,6 +1024,8 @@ pub(super) fn build_digest(
     apply_r7(&mut digest, &files, state, &ctx);
     debug_groups(&mut digest, &open.debug_sessions, &ctx);
     context_groups(&mut digest, &open.context_files, state, &ctx);
+    handoff_groups(&mut digest, &pause.handoffs, state, &ctx);
+    checkpoint_groups(&mut digest, &pause.checkpoints, state, &ctx);
     digest.groups.sort_by_key(sort_key);
 
     let mut fix_phases: BTreeSet<(Option<&str>, String)> = BTreeSet::new();
@@ -877,9 +1034,10 @@ pub(super) fn build_digest(
             (Scope::Current, Lane::Test) => digest.test += group.items.len(),
             (Scope::Current, Lane::Blocked) => digest.blocked += group.items.len(),
             (Scope::Current, Lane::Decide) => {
-                // A handoff is one decision whatever it lists; every other kind counts
-                // its items.
-                digest.decide += if group.kind == Kind::Handoff {
+                // A handoff or checkpoint is one decision whatever it lists (an
+                // unreadable checkpoint lists nothing and still counts); every other
+                // kind counts its items.
+                digest.decide += if matches!(group.kind, Kind::Handoff | Kind::Checkpoint) {
                     1
                 } else {
                     group.items.len()
@@ -1957,5 +2115,140 @@ mod tests {
         assert_eq!(d.groups[0].counts.unreadable, 1);
         assert!(d.groups[0].items.is_empty());
         assert_eq!(d.decide, 0);
+    }
+
+    fn handoff(workstream: Option<&str>, actions: usize, blockers: usize) -> HandoffRecord {
+        let entry = |n: usize| (format!("entry {n}"), None);
+        HandoffRecord {
+            rel_path: ".planning/HANDOFF.json".to_owned(),
+            workstream: workstream.map(str::to_owned),
+            status: "paused".to_owned(),
+            next_action: Some("Do the next thing".to_owned()),
+            phase: "01".to_owned(),
+            actions: (0..actions).map(entry).collect(),
+            blockers: (0..blockers).map(entry).collect(),
+            written: Some(now() - chrono::Duration::days(2)),
+            modified: None,
+            unreadable: false,
+        }
+    }
+
+    fn checkpoint(status: &str) -> CheckpointRecord {
+        CheckpointRecord {
+            rel_path: ".planning/phases/01-alpha/.continue-here.md".to_owned(),
+            workstream: None,
+            phase: "01".to_owned(),
+            phase_dir: "01-alpha".to_owned(),
+            status: status.to_owned(),
+            name: "01-alpha".to_owned(),
+            written: None,
+            modified: None,
+            unreadable: false,
+        }
+    }
+
+    fn digest_of_pause(state: &ProjectState, pause: PauseScan) -> OwnerDigest {
+        build_digest_with(Vec::new(), OpenScan::default(), pause, state, now(), 30)
+    }
+
+    #[test]
+    fn a_handoff_counts_one_whatever_it_lists() {
+        for (actions, blockers) in [(0, 0), (4, 2)] {
+            let d = digest_of_pause(
+                &state(),
+                PauseScan {
+                    handoffs: vec![handoff(None, actions, blockers)],
+                    checkpoints: Vec::new(),
+                },
+            );
+            assert_eq!(d.decide, 1, "{actions}+{blockers}");
+            assert_eq!(d.groups[0].items.len(), actions + blockers);
+            assert_eq!((d.fix_phases, d.closeable_phases), (0, 0));
+        }
+    }
+
+    #[test]
+    fn a_stale_handoff_is_listed_flagged_and_a_fresh_one_is_not() {
+        let mut stale = state();
+        stale.stale_handoff = Some(crate::state_reader::StaleHandoff {
+            phase: None,
+            state_phase: None,
+            written: None,
+            reason: crate::state_reader::StaleHandoffReason::StateNewer,
+        });
+        let pause = || PauseScan {
+            handoffs: vec![handoff(None, 1, 0)],
+            checkpoints: Vec::new(),
+        };
+        let d = digest_of_pause(&stale, pause());
+        assert_eq!(d.groups.len(), 1);
+        assert!(d.groups[0].stale);
+        let d = digest_of_pause(&state(), pause());
+        assert!(!d.groups[0].stale);
+        let mut old = handoff(None, 0, 0);
+        old.written = Some(now() - chrono::Duration::days(31));
+        let d = digest_of_pause(
+            &state(),
+            PauseScan {
+                handoffs: vec![old],
+                checkpoints: Vec::new(),
+            },
+        );
+        assert!(d.groups[0].stale);
+    }
+
+    #[test]
+    fn a_handoff_command_names_the_workstream_only_when_it_is_safe() {
+        let mut st = state();
+        for name in ["a", "bad name"] {
+            st.workstreams
+                .push(crate::state_reader::workstreams::WorkstreamState {
+                    name: name.to_owned(),
+                    active: false,
+                    state: state(),
+                    claim: None,
+                });
+        }
+        let d = digest_of_pause(
+            &st,
+            PauseScan {
+                handoffs: vec![
+                    handoff(None, 0, 0),
+                    handoff(Some("a"), 0, 0),
+                    handoff(Some("bad name"), 0, 0),
+                ],
+                checkpoints: Vec::new(),
+            },
+        );
+        let commands: Vec<(Option<&str>, Option<&str>)> = d
+            .groups
+            .iter()
+            .map(|g| (g.workstream.as_deref(), g.command.as_deref()))
+            .collect();
+        assert!(commands.contains(&(None, Some("/gsd-resume-work"))));
+        assert!(commands.contains(&(Some("a"), Some("/gsd-resume-work --ws a"))));
+        assert!(commands.contains(&(Some("bad name"), None)));
+        assert_eq!(d.decide, 3);
+    }
+
+    #[test]
+    fn a_checkpoint_is_one_decide_item_and_never_phase_work() {
+        let mut broken = checkpoint("unknown");
+        broken.unreadable = true;
+        let d = digest_of_pause(
+            &state(),
+            PauseScan {
+                handoffs: Vec::new(),
+                checkpoints: vec![checkpoint("planning_incomplete"), broken],
+            },
+        );
+        assert_eq!(d.groups.len(), 2);
+        assert_eq!(d.decide, 2);
+        assert!(d.groups.iter().all(|g| g.kind == Kind::Checkpoint
+            && g.lane == Lane::Decide
+            && g.command.as_deref() == Some("/gsd-resume-work")));
+        assert_eq!(d.groups.iter().map(|g| g.items.len()).sum::<usize>(), 1);
+        assert_eq!(d.groups[0].phase_name, "Alpha");
+        assert_eq!((d.fix_phases, d.closeable_phases), (0, 0));
     }
 }
