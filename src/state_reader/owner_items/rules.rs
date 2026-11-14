@@ -1567,4 +1567,100 @@ mod tests {
         assert!(digest.groups.iter().any(|g| g.kind == Kind::Debug));
         assert!(!digest.has_open_uat_items(None, ""));
     }
+    fn digest_of_sessions(sessions: Vec<DebugSession>) -> OwnerDigest {
+        let open = OpenScan {
+            debug_sessions: sessions,
+        };
+        build_digest(Vec::new(), open, &state(), now(), 30)
+    }
+
+    #[test]
+    fn debug_statuses_normalize_and_pick_a_lane() {
+        assert_eq!(normalize_debug_status("Awaiting-User"), "awaiting_user");
+        assert_eq!(
+            normalize_debug_status(" AWAITING_HUMAN_VERIFY "),
+            "awaiting_human_verify"
+        );
+        let lanes: Vec<(&str, Lane)> = vec![
+            ("awaiting", Lane::Decide),
+            ("Awaiting-User", Lane::Decide),
+            ("AWAITING_HUMAN_VERIFY", Lane::Decide),
+            ("await_user", Lane::Fix),
+            ("root_cause_found", Lane::Fix),
+            ("diagnosed", Lane::Fix),
+            ("unknown", Lane::Fix),
+            ("7", Lane::Fix),
+        ];
+        for (status, lane) in lanes {
+            let digest = digest_of_sessions(vec![debug_session("s", status)]);
+            assert_eq!(digest.groups.len(), 1, "{status}");
+            assert_eq!(digest.groups[0].lane, lane, "{status}");
+            assert_eq!(digest.groups[0].file_status, status, "{status}");
+        }
+    }
+
+    #[test]
+    fn a_terminal_status_after_normalization_is_not_listed() {
+        let mut recovered = debug_session("r", "unknown");
+        recovered.fm_unparseable = true;
+        recovered.recovered_status = Some("resolved".to_owned());
+        let digest = digest_of_sessions(vec![
+            debug_session("a", "resolved "),
+            debug_session("b", "complete"),
+            recovered,
+        ]);
+        assert!(digest.groups.is_empty());
+        assert_eq!(digest.fix_debug, 0);
+    }
+
+    #[test]
+    fn a_recovered_status_decides_the_lane() {
+        let mut broken = debug_session("g", "unknown");
+        broken.fm_unparseable = true;
+        broken.recovered_status = Some("awaiting_human_verify".to_owned());
+        let digest = digest_of_sessions(vec![broken]);
+        assert_eq!(digest.groups[0].lane, Lane::Decide);
+        assert_eq!(digest.groups[0].file_status, "unknown");
+        assert_eq!((digest.decide, digest.fix_debug), (1, 0));
+    }
+
+    #[test]
+    fn an_unreadable_session_is_fix_work_with_no_items() {
+        let mut bad = debug_session("big", "unknown");
+        bad.unreadable = Some(Unreadable::TooLarge);
+        let digest = digest_of_sessions(vec![bad]);
+        let group = &digest.groups[0];
+        assert_eq!(group.lane, Lane::Fix);
+        assert_eq!(group.counts.unreadable, 1);
+        assert!(group.items.is_empty());
+        assert_eq!(group.command.as_deref(), Some("/gsd-debug"));
+        assert_eq!(digest.fix_debug, 1);
+    }
+
+    #[test]
+    fn an_acknowledged_session_is_flagged_and_counted_nowhere_else() {
+        let mut acked = debug_session("p", "investigating");
+        acked.acknowledged = true;
+        let mut waiting = debug_session("q", "awaiting_human_verify");
+        waiting.acknowledged = true;
+        let digest = digest_of_sessions(vec![acked, waiting]);
+        assert_eq!(digest.groups.len(), 2);
+        assert!(digest.groups.iter().all(|g| g.acknowledged));
+        assert_eq!(digest.hidden.acknowledged_files, 2);
+        assert_eq!((digest.decide, digest.fix_debug), (0, 0));
+    }
+
+    #[test]
+    fn a_debug_group_is_stale_only_past_the_threshold() {
+        let aged = |days: i64| {
+            let mut session = debug_session("a", "diagnosed");
+            session.updated = Some(now() - chrono::Duration::days(days));
+            digest_of_sessions(vec![session]).groups.remove(0)
+        };
+        assert!(!aged(30).stale);
+        assert_eq!(aged(30).age_days, Some(30));
+        assert!(aged(31).stale);
+        // A future date is age zero.
+        assert_eq!(aged(-3).age_days, Some(0));
+    }
 }

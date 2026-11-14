@@ -609,4 +609,41 @@ mod tests {
             "unknown::scenarios=2"
         );
     }
+
+    fn moment_iso(value: &str) -> Option<String> {
+        moment(value).map(|m| m.to_rfc3339())
+    }
+
+    #[test]
+    fn a_bare_date_is_midnight_utc() {
+        assert_eq!(
+            moment_iso("2026-11-10").as_deref(),
+            Some("2026-11-10T00:00:00+00:00")
+        );
+    }
+
+    #[test]
+    fn rfc_3339_offsets_and_milliseconds_are_exact() {
+        assert_eq!(
+            moment_iso("2026-07-27T07:28:24.815Z").as_deref(),
+            Some("2026-07-27T07:28:24.815+00:00")
+        );
+        assert_eq!(
+            moment_iso("2026-11-10T09:00:00-05:00").as_deref(),
+            Some("2026-11-10T14:00:00+00:00")
+        );
+    }
+
+    #[test]
+    fn quotes_are_dropped_and_prose_is_none() {
+        assert_eq!(
+            moment_iso("\"2026-11-10\"").as_deref(),
+            Some("2026-11-10T00:00:00+00:00")
+        );
+        assert_eq!(
+            moment_iso("'2026-11-10'").as_deref(),
+            Some("2026-11-10T00:00:00+00:00")
+        );
+        assert_eq!(moment_iso("yesterday"), None);
+    }
 }

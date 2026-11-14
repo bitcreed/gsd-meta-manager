@@ -417,3 +417,64 @@ fn closing_groups_sort_before_open_ones_inside_test() {
     );
     assert!(p21 < p22 && p22 < p24, "{block}");
 }
+
+#[test]
+fn debug_sessions_fill_decide_and_fix() {
+    let (_g, e) = entry_of("debug-sessions", "dbg");
+    let d = &e.digest;
+    assert_eq!(d.decide, 5);
+    assert_eq!(d.fix_debug, 4);
+    assert_eq!(d.fix_phases, 0);
+    assert_eq!(d.hidden.acknowledged_files, 1);
+
+    let slugs = |lane: Lane| -> Vec<&str> {
+        let mut names: Vec<&str> = d
+            .groups
+            .iter()
+            .filter(|g| g.lane == lane && !g.acknowledged)
+            .map(|g| g.phase_name.as_str())
+            .collect();
+        names.sort_unstable();
+        names
+    };
+    assert_eq!(
+        slugs(Lane::Decide),
+        [
+            "delta-await",
+            "echo-hyphen",
+            "foxtrot-upper",
+            "golf-recovered",
+            "hotel-second"
+        ]
+    );
+    assert_eq!(
+        slugs(Lane::Fix),
+        ["india-root", "juliet-diagnosed", "kilo-bare", "lima-seven"]
+    );
+    for ignored in [
+        "knowledge-base",
+        "old",
+        "notes",
+        "oscar-complete",
+        "mike-trailing",
+        "november-resolved",
+    ] {
+        assert!(
+            d.groups.iter().all(|g| g.phase_name != ignored),
+            "{ignored} must not be listed"
+        );
+    }
+
+    // The default listing leaves the acknowledged session out; `include_all` lists it.
+    let doc = build_document(std::slice::from_ref(&e), &Filters::default());
+    assert_eq!(groups(&doc).len(), 9);
+    let doc = build_document(std::slice::from_ref(&e), &include_all());
+    let acked: Vec<&Value> = groups(&doc)
+        .iter()
+        .filter(|g| g["acknowledged"] == true)
+        .collect();
+    assert_eq!(acked.len(), 1);
+    assert_eq!(acked[0]["phase_name"], "papa-acked");
+    assert_eq!(doc["summary"]["decide"], 5);
+    assert_eq!(doc["summary"]["fix_debug"], 4);
+}
