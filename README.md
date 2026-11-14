@@ -604,6 +604,7 @@ Schema version 1:
               "test": "2",
               "name": "Search box",
               "expected": "Typing narrows the list",
+              "why_human": null,
               "result": "issue",
               "category": "issue",
               "reason": "Nothing happens",
@@ -692,8 +693,9 @@ Schema version 1:
 | `projects[].groups[].items` | array | the checks |
 | `projects[].groups[].items[].id` | string | stable id, `<file name>#<test>` |
 | `projects[].groups[].items[].test` | string or null | the check's test number |
-| `projects[].groups[].items[].name` | string | what to check |
+| `projects[].groups[].items[].name` | string | what to check; for a VERIFICATION `human_verification` entry the entry's `test` text (else `truth`, `name`, `description`), never the flattened mapping |
 | `projects[].groups[].items[].expected` | string or null | the expected behavior |
+| `projects[].groups[].items[].why_human` | string or null | why the check needs a human, from a VERIFICATION `human_verification` entry; null for every other item |
 | `projects[].groups[].items[].result` | string | the recorded result (`pending`, `issue`, `blocked`, ...) |
 | `projects[].groups[].items[].category` | string | `pending`, `issue`, `device_needed`, `server_blocked`, `build_needed`, `third_party`, `blocked`, `deferred`, `skipped_unresolved`, `human_uat`, `unknown` |
 | `projects[].groups[].items[].reason` | string or null | why it failed or is blocked |

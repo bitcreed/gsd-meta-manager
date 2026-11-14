@@ -288,6 +288,7 @@ fn every_entry_group_and_item_carries_the_schema_v1_keys() {
         "test",
         "name",
         "expected",
+        "why_human",
         "result",
         "category",
         "reason",
@@ -684,6 +685,7 @@ const INBOX_PATHS: &[&str] = &[
     "projects[].groups[].items[].test",
     "projects[].groups[].items[].name",
     "projects[].groups[].items[].expected",
+    "projects[].groups[].items[].why_human",
     "projects[].groups[].items[].result",
     "projects[].groups[].items[].category",
     "projects[].groups[].items[].reason",
@@ -1043,6 +1045,66 @@ fn a_cold_inbox_over_twenty_projects_is_under_a_second() {
     eprintln!("cold inbox --json: {cold:?}; lib loop: {lib:?}");
     assert!(seen > 0);
     assert!(lib < bound, "the lib loop took {lib:?} (bound {bound:?})");
+}
+
+#[test]
+fn human_verification_names_are_the_test_text() {
+    let scratch = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    copy_tree(&fixture("verification-human-mapping"), project.path());
+    let reg = registry(scratch.path(), &[("map", project.path())]);
+
+    let doc = json(&inbox_with(&reg, scratch.path(), &["--json"]));
+    let mut found: Vec<(String, Value, Value, String)> = Vec::new();
+    for group in doc["projects"][0]["groups"].as_array().unwrap() {
+        for item in group["items"].as_array().unwrap() {
+            found.push((
+                item["name"].as_str().unwrap().to_owned(),
+                item["expected"].clone(),
+                item["why_human"].clone(),
+                item["id"].as_str().unwrap().to_owned(),
+            ));
+        }
+    }
+    found.sort_by(|a, b| a.0.cmp(&b.0));
+    let null = Value::Null;
+    let text = |s: &str| Value::String(s.to_owned());
+    let by_name = |name: &str| {
+        found
+            .iter()
+            .find(|f| f.0 == name)
+            .unwrap_or_else(|| panic!("{name} in {found:?}"))
+    };
+    assert_eq!(found.len(), 4, "{found:?}");
+    let weekly = by_name("Weekly summary sends");
+    assert_eq!(
+        (&weekly.1, &weekly.2),
+        (&text("Mail arrives"), &text("Needs a real inbox"))
+    );
+    assert_eq!(weekly.3, "16-VERIFICATION.md#1");
+    let scalar = by_name("Check the footer link");
+    assert_eq!((&scalar.1, &scalar.2), (&null, &null));
+    assert_eq!(scalar.3, "16-VERIFICATION.md#2");
+    let truth = by_name("Footer shows the year");
+    assert_eq!((&truth.1, &truth.2), (&text("Current year"), &null));
+    assert_eq!(truth.3, "16-VERIFICATION.md#3");
+    let gap = by_name("Export skips the header");
+    assert_eq!((&gap.1, &gap.2), (&null, &null));
+    for (name, ..) in &found {
+        assert!(
+            !name.contains("expected:") && !name.contains("why_human:"),
+            "{name}"
+        );
+    }
+
+    let plain = inbox_with(&reg, scratch.path(), &[]);
+    let plain = String::from_utf8_lossy(&plain.stdout).into_owned();
+    assert!(
+        plain.lines().any(|l| l == "    - [ ] Weekly summary sends"),
+        "{plain}"
+    );
+    assert!(!plain.contains("why_human"), "{plain}");
+    assert!(!plain.contains("Needs a real inbox"), "{plain}");
 }
 
 #[test]

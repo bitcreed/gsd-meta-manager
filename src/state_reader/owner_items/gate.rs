@@ -142,6 +142,7 @@ mod tests {
             reason: None,
             blocked_by: None,
             gaps: Vec::new(),
+            why_human: None,
         }
     }
 

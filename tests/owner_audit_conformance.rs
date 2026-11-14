@@ -227,6 +227,50 @@ fn our_tuples(files: &[AuditFile]) -> Vec<Tuple> {
     out
 }
 
+/// The fixture whose Layer A item names are compared with the oracle's as well (D-16a):
+/// owner-facing naming lives only in Layer B, so Layer A must still print the
+/// flattened `test: ..., expected: ..., why_human: ...` strings upstream prints.
+const NAME_CHECKED: &str = "verification-human-mapping";
+
+/// Sorted `(file, test, name)` of the oracle's items and ours.
+fn assert_names_equal(fixture: &str, files: &[AuditFile], results: &[Value]) {
+    let mut theirs: Vec<Tuple> = Vec::new();
+    for result in results {
+        let file = result["file_path"].as_str().unwrap_or("").to_owned();
+        for item in result["items"].as_array().into_iter().flatten() {
+            let test = match &item["test"] {
+                Value::Number(number) => number.to_string(),
+                Value::String(text) => text.clone(),
+                _ => NO_TEST.to_owned(),
+            };
+            let name = item["name"].as_str().unwrap_or("").to_owned();
+            theirs.push((file.clone(), test, name, String::new()));
+        }
+    }
+    let mut ours: Vec<Tuple> = Vec::new();
+    for file in files
+        .iter()
+        .filter(|f| !f.acknowledged && f.unreadable.is_none())
+    {
+        for item in &file.items {
+            ours.push((
+                file.rel_path.clone(),
+                item.test.clone().unwrap_or_else(|| NO_TEST.to_owned()),
+                item.name.clone(),
+                String::new(),
+            ));
+        }
+    }
+    ours.sort();
+    theirs.sort();
+    assert_eq!(
+        ours,
+        theirs,
+        "fixture {fixture}: Layer A names differ from the oracle's\n{}",
+        diff(&ours, &theirs)
+    );
+}
+
 /// Recursively copy `from` into `to`. Committed fixtures hold no symlinks.
 fn copy_tree(from: &Path, to: &Path) {
     std::fs::create_dir_all(to).expect("the copy target is creatable");
@@ -333,6 +377,9 @@ fn ours_equals_the_oracle_on_every_owner_fixture() {
                     "fixture {name}: our items differ from the oracle's\n{}",
                     diff(&ours_tuples, &their_tuples)
                 );
+                if name == NAME_CHECKED {
+                    assert_names_equal(&name, &files, &results);
+                }
                 let our_gaps = files
                     .iter()
                     .filter(|f| {

@@ -49,6 +49,7 @@ pub(super) fn parse_deferred_items(lines: &[&str]) -> Option<Vec<AuditItem>> {
                 category: Category::Deferred,
                 reason: None,
                 blocked_by: None,
+                fields: None,
             })
             .collect(),
     )

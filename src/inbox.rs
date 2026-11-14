@@ -105,6 +105,7 @@ fn item_json(item: &OwnerItem) -> Value {
         "test": opt_text(item.test.as_deref()),
         "name": terminal_capped(&item.name),
         "expected": opt_text(item.expected.as_deref()),
+        "why_human": opt_text(item.why_human.as_deref()),
         "result": terminal_capped(&item.result),
         "category": item.category.as_str(),
         "reason": opt_text(item.reason.as_deref()),
@@ -717,6 +718,7 @@ mod tests {
                 reason: None,
                 blocked_by: None,
                 gaps: Vec::new(),
+                why_human: None,
             }],
         }
     }

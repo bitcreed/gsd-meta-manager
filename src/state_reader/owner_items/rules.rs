@@ -180,12 +180,36 @@ impl Ids {
     }
 }
 
+/// The owner-facing name of an item (D-14): a VERIFICATION mapping entry is named by
+/// its own text (`test`, else `truth`, `name`, `description`; a gap skips `test`, which
+/// can be a row number), everything else by the Layer A name.
+fn display_name(item: &AuditItem) -> String {
+    let Some(fields) = &item.fields else {
+        return item.name.clone();
+    };
+    let test = if item.origin == Origin::VerificationGap {
+        None
+    } else {
+        fields.test.as_ref()
+    };
+    test.or(fields.truth.as_ref())
+        .or(fields.name.as_ref())
+        .or(fields.description.as_ref())
+        .unwrap_or(&item.name)
+        .clone()
+}
+
 fn owner_item(item: &AuditItem, id: String) -> OwnerItem {
+    let fields = item.fields.as_ref();
     OwnerItem {
         id,
         test: item.test.clone(),
-        name: item.name.clone(),
-        expected: item.expected.clone(),
+        name: display_name(item),
+        expected: item
+            .expected
+            .clone()
+            .or_else(|| fields.and_then(|f| f.expected.clone())),
+        why_human: fields.and_then(|f| f.why_human.clone()),
         result: item.result.clone(),
         category: item.category,
         reason: item.reason.clone(),
@@ -577,6 +601,7 @@ fn signal_item(id: String, name: String, result: String, reason: Option<String>)
         reason,
         blocked_by: None,
         gaps: Vec::new(),
+        why_human: None,
     }
 }
 
@@ -1093,7 +1118,7 @@ impl OwnerDigest {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state_reader::owner_items::{Origin, Unreadable};
+    use crate::state_reader::owner_items::{EntryFields, Origin, Unreadable};
     use crate::state_reader::roadmap_md::RoadmapPhase;
 
     fn state() -> ProjectState {
@@ -1121,6 +1146,7 @@ mod tests {
             category,
             reason: None,
             blocked_by: None,
+            fields: None,
         }
     }
 
@@ -2333,11 +2359,45 @@ mod tests {
                 category: Category::Issue,
                 reason: None,
                 blocked_by: None,
+                fields: None,
             }],
         );
         let d = digest(vec![listed]);
         assert_eq!(d.groups.len(), 1);
         assert_eq!(d.groups[0].counts.unreadable, 0);
         assert_eq!(d.groups[0].items.len(), 1);
+    }
+
+    #[test]
+    fn owner_names_come_from_the_entry_fields() {
+        let fields = |test: Option<&str>, truth: Option<&str>, description: Option<&str>| {
+            Some(EntryFields {
+                test: test.map(str::to_owned),
+                truth: truth.map(str::to_owned),
+                description: description.map(str::to_owned),
+                expected: Some("fields expected".to_owned()),
+                why_human: Some("needs a person".to_owned()),
+                ..Default::default()
+            })
+        };
+        let mut human = human("1");
+        human.name = "test: Send, expected: Mail".to_owned();
+        human.fields = fields(Some("Send"), Some("Truth"), None);
+        let item = owner_item(&human, "16-VERIFICATION.md#1".to_owned());
+        assert_eq!(item.name, "Send");
+        assert_eq!(item.expected.as_deref(), Some("fields expected"));
+        assert_eq!(item.why_human.as_deref(), Some("needs a person"));
+        assert_eq!(item.id, "16-VERIFICATION.md#1");
+        human.fields = fields(None, Some("Truth"), Some("Desc"));
+        assert_eq!(owner_item(&human, String::new()).name, "Truth");
+        human.fields = fields(None, None, Some("Desc"));
+        assert_eq!(owner_item(&human, String::new()).name, "Desc");
+        human.fields = None;
+        let plain = owner_item(&human, String::new());
+        assert_eq!(plain.name, "test: Send, expected: Mail");
+        assert_eq!(plain.why_human, None);
+        let mut gap = gap(None, Origin::VerificationGap);
+        gap.fields = fields(Some("3"), None, Some("Header lost"));
+        assert_eq!(owner_item(&gap, String::new()).name, "Header lost");
     }
 }

@@ -14,7 +14,7 @@
 use serde_yml::{Mapping, Value};
 
 use super::uat::{categorize_item, js_space, js_trim, line_terminator};
-use super::{frontmatter, markdown, AuditItem, Category, Origin};
+use super::{frontmatter, markdown, AuditItem, Category, EntryFields, Origin};
 
 /// What the `status` key of a report says about reading it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,6 +73,7 @@ fn human_needed(test: Option<String>, name: String) -> AuditItem {
         category: Category::HumanUat,
         reason: None,
         blocked_by: None,
+        fields: None,
     }
 }
 
@@ -84,6 +85,18 @@ fn entry_field(entry: &Mapping, key: &str) -> Option<String> {
         Value::Number(number) => Some(number.to_string()),
         Value::Bool(flag) => Some(flag.to_string()),
         _ => None,
+    }
+}
+
+/// The structured fields of a mapping entry (D-14), read as upstream's `entryField`.
+fn entry_fields(entry: &Mapping) -> EntryFields {
+    EntryFields {
+        test: entry_field(entry, "test"),
+        truth: entry_field(entry, "truth"),
+        name: entry_field(entry, "name"),
+        description: entry_field(entry, "description"),
+        expected: entry_field(entry, "expected"),
+        why_human: entry_field(entry, "why_human"),
     }
 }
 
@@ -138,6 +151,7 @@ fn gap_items(fm: &Mapping) -> Vec<AuditItem> {
                 category: categorize_item("unknown", None, None),
                 reason: None,
                 blocked_by: None,
+                fields: None,
             });
             continue;
         };
@@ -157,6 +171,7 @@ fn gap_items(fm: &Mapping) -> Vec<AuditItem> {
             result,
             reason,
             blocked_by: None,
+            fields: Some(entry_fields(entry)),
         });
     }
     items
@@ -175,8 +190,13 @@ fn human_verification_items(lines: &[&str], fm: &Mapping) -> Vec<AuditItem> {
                 .filter(|(_, (entry, _))| {
                     !matches!(entry, Value::Mapping(map) if human_entry_resolved(map))
                 })
-                .map(|(index, (_, display))| {
-                    human_needed(Some((index + 1).to_string()), normalize_entry(display))
+                .map(|(index, (entry, display))| {
+                    let mut item =
+                        human_needed(Some((index + 1).to_string()), normalize_entry(display));
+                    if let Value::Mapping(map) = entry {
+                        item.fields = Some(entry_fields(map));
+                    }
+                    item
                 })
                 .collect();
         }
@@ -353,6 +373,45 @@ mod tests {
             "test: still open, status: failed, resolution: attempted a retry"
         );
         assert_eq!(tests_of(&items), [Some("1"), Some("4")]);
+    }
+
+    #[test]
+    fn mapping_entries_carry_their_fields_and_scalars_do_not() {
+        let items = parse(
+            "---\nhuman_verification:\n  - test: Weekly summary sends\n    expected: Mail arrives\n    why_human: Needs a real inbox\n  - plain scalar\n  - test: closed\n    status: resolved\n  - truth: Footer shows the year\n---\n",
+            "human_needed",
+        );
+        assert_eq!(items.len(), 3);
+        let first = items[0].fields.as_ref().expect("a mapping has fields");
+        assert_eq!(first.test.as_deref(), Some("Weekly summary sends"));
+        assert_eq!(first.expected.as_deref(), Some("Mail arrives"));
+        assert_eq!(first.why_human.as_deref(), Some("Needs a real inbox"));
+        assert_eq!(items[1].fields, None);
+        assert_eq!(items[1].name, "plain scalar");
+        assert_eq!(items[2].test.as_deref(), Some("4"));
+        assert_eq!(
+            items[2].fields.as_ref().and_then(|f| f.truth.as_deref()),
+            Some("Footer shows the year")
+        );
+        assert_eq!(
+            items[0].name,
+            "test: Weekly summary sends, expected: Mail arrives, why_human: Needs a real inbox"
+        );
+    }
+
+    #[test]
+    fn a_gap_mapping_without_truth_carries_its_description() {
+        let items = parse(
+            "---\nstatus: gaps_found\ngaps:\n  - description: Export skips the header\n    status: failed\n---\n",
+            "gaps_found",
+        );
+        assert_eq!(items.len(), 1);
+        let fields = items[0].fields.as_ref().expect("fields");
+        assert_eq!(
+            fields.description.as_deref(),
+            Some("Export skips the header")
+        );
+        assert_eq!(fields.truth, None);
     }
 
     #[test]

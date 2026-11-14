@@ -120,6 +120,19 @@ impl Category {
     }
 }
 
+/// The structured fields of a VERIFICATION frontmatter mapping entry (Layer A extra,
+/// never compared with the oracle; D-14). Each is a non-blank string, a number or a
+/// boolean as text, else absent.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct EntryFields {
+    pub test: Option<String>,
+    pub truth: Option<String>,
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub expected: Option<String>,
+    pub why_human: Option<String>,
+}
+
 /// One open check as upstream reports it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuditItem {
@@ -131,6 +144,8 @@ pub struct AuditItem {
     pub category: Category,
     pub reason: Option<String>,
     pub blocked_by: Option<String>,
+    /// Set for a VERIFICATION mapping entry; `None` for every other item.
+    pub fields: Option<EntryFields>,
 }
 
 /// One document read by Layer A.
@@ -438,6 +453,8 @@ pub struct OwnerItem {
     pub reason: Option<String>,
     pub blocked_by: Option<String>,
     pub gaps: Vec<OwnerGap>,
+    /// Why the check needs a human, from a VERIFICATION `human_verification` entry.
+    pub why_human: Option<String>,
 }
 
 /// The counts a group reports about itself.

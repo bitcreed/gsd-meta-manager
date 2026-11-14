@@ -809,6 +809,7 @@ fn parse_gaps_table_items(body: &str) -> Vec<AuditItem> {
                 result: status,
                 reason,
                 blocked_by: None,
+                fields: None,
             });
         }
     }
@@ -853,6 +854,7 @@ fn read_gaps(lines: &[&str]) -> GapsReading {
             result: status,
             reason,
             blocked_by: None,
+            fields: None,
         });
     }
     reading.items.extend(parse_gaps_table_items(&body));
@@ -939,6 +941,7 @@ pub(super) fn parse_uat_items_with_stats(text: &str) -> UatParse {
             result,
             reason,
             blocked_by,
+            fields: None,
         });
     }
     parse.items.extend(gaps.items);
