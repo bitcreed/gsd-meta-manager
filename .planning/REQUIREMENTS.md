@@ -51,12 +51,12 @@ checks the owner can run today (report section 1).
   UAT with skipped rows yields an Archived group; `deferred-items.md` entries are a count only. *Test:
   daily-vow-v1.5 fixture; deferred-items fixture with 200 entries yields `hidden.deferred == 200` and
   zero groups.*
-- [ ] **OWN-07**: R7: `closes_phase` and the bookkeeping-only case are computed as specified. *Test:
+- [x] **OWN-07**: R7: `closes_phase` and the bookkeeping-only case are computed as specified. *Test:
   table-driven unit test over the 8 combinations (fix present, blocked present, gaps_found, stale,
   missing summary, parse gap, zero open, clean).*
 - [ ] **OWN-08**: R8: `closes_after` lists lane totals and open phases for the current milestone only;
   phases with no plans are named "not built", not counted as owner work.
-- [ ] **OWN-09**: `status: testing` (and any non-terminal UAT status with open items) counts as
+- [x] **OWN-09**: `status: testing` (and any non-terminal UAT status with open items) counts as
   outstanding; `status_cli`'s `uat_outstanding` attention item fires for it. *Test: regression
   fixture; existing `tests/status_cli.rs` key paths unchanged.*
 - [ ] **OWN-10**: The Decide/Fix signals of report section 4 ("Other signals") are read with the stated
@@ -80,7 +80,7 @@ checks the owner can run today (report section 1).
 - [ ] **OWN-14**: `inbox` without `--json` prints a plain checklist grouped by lane; `--lane
   test|decide|fix|blocked` and `--include archived,deferred,acknowledged,todos` filter as documented.
   *Test: golden output.*
-- [ ] **OWN-15**: `status --json` carries the additive per-project `owner: {test, decide, fix_phases,
+- [x] **OWN-15**: `status --json` carries the additive per-project `owner: {test, decide, fix_phases,
   blocked, closeable_phases}` (no schema bump); `status --skill` documents `inbox` as the way to find
   missing UATs and pending owner work.
 
@@ -171,15 +171,15 @@ Deferred (report section 6):
 | OWN-04 | Phase 34 | Complete |
 | OWN-05 | Phase 34 | Complete |
 | OWN-06 | Phase 34 | Complete |
-| OWN-07 | Phase 34 | Pending |
+| OWN-07 | Phase 34 | Complete |
 | OWN-08 | Phase 35 | Pending |
-| OWN-09 | Phase 34 | Pending |
+| OWN-09 | Phase 34 | Complete |
 | OWN-10 | Phase 35 | Pending |
 | OWN-11 | Phase 34 | Complete |
 | OWN-12 | Phase 34 | Complete |
 | OWN-13 | Phase 34 | Complete |
 | OWN-14 | Phase 34 | Pending |
-| OWN-15 | Phase 34 | Pending |
+| OWN-15 | Phase 34 | Complete |
 | OWN-16 | Phase 36 | Pending |
 | OWN-17 | Phase 36 | Pending |
 | OWN-18 | Phase 36 | Pending |
