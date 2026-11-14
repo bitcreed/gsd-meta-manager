@@ -243,22 +243,16 @@ pub(super) fn parse_document(kind: AuditKind, text: &str) -> Option<ParsedFile> 
 
 /// One document as an [`AuditFile`]; `None` when it escapes its phase directory or,
 /// for a VERIFICATION, has a status that contributes nothing.
-fn read_audit(
-    root: &Path,
-    phase_dir: &Path,
-    dir: &str,
-    file_name: &str,
-    kind: AuditKind,
-) -> Option<AuditFile> {
-    let path = phase_dir.join(file_name);
-    let real = contained(phase_dir, &path)?;
+fn read_audit(root: &Path, target: &Target, file_name: &str, kind: AuditKind) -> Option<AuditFile> {
+    let path = target.path.join(file_name);
+    let real = contained(&target.path, &path)?;
     let mut audit = AuditFile {
         rel_path: posix_relative(root, &path),
         kind,
-        scope: Scope::Current,
-        workstream: None,
-        phase: dir_token(dir),
-        phase_dir: dir.to_owned(),
+        scope: target.scope.clone(),
+        workstream: target.workstream.clone(),
+        phase: dir_token(&target.dir),
+        phase_dir: target.dir.clone(),
         status: "unknown".to_owned(),
         source: Vec::new(),
         updated: None,
@@ -285,14 +279,156 @@ fn read_audit(
     Some(audit)
 }
 
-/// Layer A over the project's own tree, sorted by `rel_path`.
+/// One phase directory to read, with where it came from.
+struct Target {
+    /// The directory's name.
+    dir: String,
+    path: PathBuf,
+    scope: Scope,
+    workstream: Option<String>,
+}
+
+/// The names of the real subdirectories of `path` (a symlinked one is skipped),
+/// sorted ascending.
+fn subdirectories(path: &Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = entries
+        .flatten()
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .collect();
+    names.sort();
+    names
+}
+
+/// The version of a `v<digits and dots>-phases` directory name, as numeric segments
+/// (`compareArchiveVersionDesc`); `None` for any other name.
+fn archive_version(name: &str) -> Option<Vec<f64>> {
+    let version = name.strip_prefix('v')?.strip_suffix("-phases")?;
+    if version.is_empty() || !version.bytes().all(|b| b.is_ascii_digit() || b == b'.') {
+        return None;
+    }
+    Some(
+        version
+            .split('.')
+            .map(|segment| segment.parse::<f64>().unwrap_or(0.0))
+            .collect(),
+    )
+}
+
+/// Newest first: segments compared numerically, a missing one as 0.
+fn compare_versions_desc(a: &[f64], b: &[f64]) -> std::cmp::Ordering {
+    for index in 0..a.len().max(b.len()) {
+        let left = a.get(index).copied().unwrap_or(0.0);
+        let right = b.get(index).copied().unwrap_or(0.0);
+        if left != right {
+            return right
+                .partial_cmp(&left)
+                .unwrap_or(std::cmp::Ordering::Equal);
+        }
+    }
+    std::cmp::Ordering::Equal
+}
+
+/// `listArchiveVersionDirs` for one planning tree: `(label, directory holding the
+/// phase directories)`, flat `vX.Y-phases` directories newest first, then
+/// `ws-*` directories (their phase directories one level down, under `phases/`) by
+/// name, descending.
+fn archive_dirs(tree: &Path) -> Vec<(String, PathBuf)> {
+    let milestones = tree.join("milestones");
+    if std::fs::symlink_metadata(&milestones).is_ok_and(|meta| meta.file_type().is_symlink()) {
+        return Vec::new();
+    }
+    let names = subdirectories(&milestones);
+    let mut flat: Vec<(&String, Vec<f64>)> = names
+        .iter()
+        .filter_map(|name| archive_version(name).map(|version| (name, version)))
+        .collect();
+    flat.sort_by(|a, b| compare_versions_desc(&a.1, &b.1));
+    let mut out: Vec<(String, PathBuf)> = flat
+        .into_iter()
+        .map(|(name, _)| {
+            let label = name.strip_suffix("-phases").unwrap_or(name).to_owned();
+            (label, milestones.join(name))
+        })
+        .collect();
+    let mut streams: Vec<&String> = names
+        .iter()
+        .filter(|name| name.starts_with("ws-"))
+        .collect();
+    streams.sort();
+    streams.reverse();
+    out.extend(
+        streams
+            .into_iter()
+            .map(|name| (name.clone(), milestones.join(name).join("phases"))),
+    );
+    out
+}
+
+/// Every phase directory Layer A reads, in upstream's enumeration order: the active
+/// phases of the project's own tree, then of each workstream, then every archive
+/// tree (root first, then the workstreams by name descending), unfiltered by
+/// milestone.
+fn targets(planning_dir: &Path, state: &ProjectState) -> Vec<Target> {
+    let mut out = Vec::new();
+    for (workstream, scope_state) in state.scopes() {
+        let tree = match workstream {
+            None => planning_dir.to_path_buf(),
+            Some(stream) => planning_dir.join("workstreams").join(&stream.name),
+        };
+        let phases_dir = tree.join("phases");
+        for dir in current_phase_dirs(&phases_dir, scope_state) {
+            out.push(Target {
+                path: phases_dir.join(&dir),
+                dir,
+                scope: Scope::Current,
+                workstream: workstream.map(|stream| stream.name.clone()),
+            });
+        }
+    }
+    let mut trees: Vec<(Option<String>, PathBuf)> = vec![(None, planning_dir.to_path_buf())];
+    let mut streams = subdirectories(&planning_dir.join("workstreams"));
+    streams.reverse();
+    trees.extend(streams.into_iter().map(|name| {
+        let path = planning_dir.join("workstreams").join(&name);
+        (Some(name), path)
+    }));
+    let mut rank = 0usize;
+    for (workstream, tree) in trees {
+        for (label, archive) in archive_dirs(&tree) {
+            let label = match &workstream {
+                Some(stream) => format!("{stream}/{label}"),
+                None => label,
+            };
+            for dir in subdirectories(&archive) {
+                out.push(Target {
+                    path: archive.join(&dir),
+                    dir,
+                    scope: Scope::Archived {
+                        label: label.clone(),
+                        rank,
+                    },
+                    workstream: workstream.clone(),
+                });
+            }
+            rank += 1;
+        }
+    }
+    out
+}
+
+/// Layer A over the project's own tree, its workstreams and every archive, sorted by
+/// `rel_path`. The same `rel_path` reached from two targets is listed once, the first
+/// in enumeration order.
 pub(super) fn scan_planning(planning_dir: &Path, state: &ProjectState) -> Vec<AuditFile> {
     let root = planning_dir.parent().unwrap_or(planning_dir);
-    let phases_dir = planning_dir.join("phases");
     let mut files = Vec::new();
-    for dir in current_phase_dirs(&phases_dir, state) {
-        let phase_dir = phases_dir.join(&dir);
-        let Ok(entries) = std::fs::read_dir(&phase_dir) else {
+    let mut seen = std::collections::HashSet::new();
+    for target in targets(planning_dir, state) {
+        let Ok(entries) = std::fs::read_dir(&target.path) else {
             continue;
         };
         let mut names: Vec<String> = entries
@@ -302,19 +438,21 @@ pub(super) fn scan_planning(planning_dir: &Path, state: &ProjectState) -> Vec<Au
         names.sort();
         let uats = names
             .iter()
-            .filter(|name| is_uat_name(name) && is_phase_artifact(name, &dir))
+            .filter(|name| is_uat_name(name) && is_phase_artifact(name, &target.dir))
             .map(|name| (name, AuditKind::Uat));
         let verifications = names
             .iter()
-            .filter(|name| is_verification_name(name) && is_phase_artifact(name, &dir))
+            .filter(|name| is_verification_name(name) && is_phase_artifact(name, &target.dir))
             .map(|name| (name, AuditKind::Verification));
         let deferred = names
             .iter()
             .filter(|name| name.as_str() == DEFERRED_NAME)
             .map(|name| (name, AuditKind::Deferred));
         for (name, kind) in uats.chain(verifications).chain(deferred) {
-            if let Some(file) = read_audit(root, &phase_dir, &dir, name, kind) {
-                files.push(file);
+            if let Some(file) = read_audit(root, &target, name, kind) {
+                if seen.insert(file.rel_path.clone()) {
+                    files.push(file);
+                }
             }
         }
     }
@@ -797,5 +935,144 @@ mod tests {
         assert!(by_name(&files, "02-beta/deferred-items.md")
             .items
             .is_empty());
+    }
+
+    #[test]
+    fn an_archived_phase_and_a_current_phase_with_the_same_number_are_two_files() {
+        let dir = project();
+        write(&dir.path().join(".planning/phases/01-alpha/01-UAT.md"), ROW);
+        write(
+            &dir.path()
+                .join(".planning/milestones/v0.9-phases/01-alpha/01-UAT.md"),
+            ROW,
+        );
+        let files = scan_of(dir.path());
+        assert_eq!(files.len(), 2);
+        let current = by_name(&files, ".planning/phases/01-alpha/01-UAT.md");
+        let archived = by_name(&files, "v0.9-phases/01-alpha/01-UAT.md");
+        assert_eq!(current.scope, Scope::Current);
+        assert_eq!(
+            archived.scope,
+            Scope::Archived {
+                label: "v0.9".to_owned(),
+                rank: 0
+            }
+        );
+        assert_eq!(current.items.len(), 1);
+        assert_eq!(archived.items.len(), 1);
+    }
+
+    #[test]
+    fn archives_are_labeled_and_ranked_in_upstream_enumeration_order() {
+        let dir = project();
+        let planning = dir.path().join(".planning");
+        for version in ["v1.9", "v1.10", "v1.2"] {
+            write(
+                &planning.join(format!("milestones/{version}-phases/01-x/01-UAT.md")),
+                ROW,
+            );
+        }
+        write(
+            &planning.join("milestones/ws-a-2026/phases/01-x/01-UAT.md"),
+            ROW,
+        );
+        write(
+            &planning.join("milestones/ws-b-2026/phases/01-x/01-UAT.md"),
+            ROW,
+        );
+        write(
+            &planning.join("workstreams/zeta/milestones/v0.1-phases/01-x/01-UAT.md"),
+            ROW,
+        );
+        write(&planning.join("milestones/notes/01-x/01-UAT.md"), ROW);
+        let state = parse_project_state(&planning);
+        let mut labels: Vec<(usize, String, Option<String>)> = targets(&planning, &state)
+            .into_iter()
+            .filter_map(|target| match target.scope {
+                Scope::Archived { label, rank } => Some((rank, label, target.workstream)),
+                Scope::Current => None,
+            })
+            .collect();
+        labels.sort();
+        let order: Vec<&str> = labels.iter().map(|(_, label, _)| label.as_str()).collect();
+        assert_eq!(
+            order,
+            [
+                "v1.10",
+                "v1.9",
+                "v1.2",
+                "ws-b-2026",
+                "ws-a-2026",
+                "zeta/v0.1"
+            ]
+        );
+        assert_eq!(labels.last().unwrap().2.as_deref(), Some("zeta"));
+        assert_eq!(labels[0].0, 0);
+    }
+
+    #[test]
+    fn a_workstreams_active_phases_are_read_with_its_own_roadmap() {
+        let dir = project();
+        let stream = dir.path().join(".planning/workstreams/alpha");
+        write(
+            &stream.join("ROADMAP.md"),
+            "# Roadmap\n\n## Phases\n\n- [ ] **Phase 3: Stream** - s\n\n### Phase 3: Stream\n\n**Goal**: s\n**Depends on**: Nothing\n",
+        );
+        write(&stream.join("STATE.md"), "---\nstatus: in_progress\n---\n");
+        write(&stream.join("phases/03-stream/03-UAT.md"), ROW);
+        write(&stream.join("phases/09-gone/09-UAT.md"), ROW);
+        write(&dir.path().join(".planning/phases/01-alpha/01-UAT.md"), ROW);
+        let files = scan_of(dir.path());
+        assert_eq!(files.len(), 2, "{files:?}");
+        let ws = by_name(&files, "03-UAT.md");
+        assert_eq!(ws.workstream.as_deref(), Some("alpha"));
+        assert_eq!(ws.scope, Scope::Current);
+        assert_eq!(by_name(&files, "01-UAT.md").workstream, None);
+    }
+
+    #[test]
+    fn a_project_without_phases_or_archives_yields_nothing() {
+        let dir = project();
+        assert!(scan_of(dir.path()).is_empty());
+        std::fs::create_dir_all(dir.path().join(".planning/phases/01-alpha")).unwrap();
+        assert!(
+            scan_of(dir.path()).is_empty(),
+            "a phase directory with no documents"
+        );
+    }
+
+    #[test]
+    fn the_same_rel_path_reached_twice_is_listed_once() {
+        let dir = project();
+        let planning = dir.path().join(".planning");
+        write(&planning.join("phases/01-alpha/01-UAT.md"), ROW);
+        let state = parse_project_state(&planning);
+        let mut doubled = targets(&planning, &state);
+        let again = targets(&planning, &state);
+        doubled.extend(again);
+        let root = dir.path();
+        let mut seen = std::collections::HashSet::new();
+        let mut files = Vec::new();
+        for target in &doubled {
+            if let Some(file) = read_audit(root, target, "01-UAT.md", AuditKind::Uat) {
+                if seen.insert(file.rel_path.clone()) {
+                    files.push(file);
+                }
+            }
+        }
+        assert_eq!(files.len(), 1);
+        assert_eq!(scan_of(dir.path()).len(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_archive_directory_is_not_entered() {
+        let dir = project();
+        let outside = tempfile::tempdir().unwrap();
+        write(&outside.path().join("01-x/01-UAT.md"), ROW);
+        let milestones = dir.path().join(".planning/milestones");
+        std::fs::create_dir_all(&milestones).unwrap();
+        std::os::unix::fs::symlink(outside.path(), milestones.join("v1.0-phases")).unwrap();
+        assert!(scan_of(dir.path()).is_empty());
     }
 }

@@ -125,7 +125,9 @@ jobs:
           node-version: 24
 
       # tests/driver_router_conformance.rs compares this crate's router rule
-      # table against GSD's OWN router, and fails BY DESIGN when that oracle is
+      # table against GSD's OWN router, and tests/owner_audit_conformance.rs
+      # compares the owner-items reader with GSD's OWN audit-uat over committed
+      # fixtures. Both fail BY DESIGN when that oracle is
       # absent — an absent oracle means nothing checked that the transcription
       # still holds. An ubuntu-24.04 runner has Node but no GSD, which is how
       # v1.7.1 died here. THE POINT IS TO PROVIDE THE DEPENDENCY, not to switch

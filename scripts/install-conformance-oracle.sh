@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
 #
 # install-conformance-oracle.sh — put GSD's own `gsd-tools` where
-# `tests/driver_router_conformance.rs` looks for it, and refuse to report
-# success unless it actually answers.
+# `tests/driver_router_conformance.rs` and `tests/owner_audit_conformance.rs`
+# look for it, and refuse to report success unless it actually answers.
+#
+# The second consumer is the owner-items reader's Layer A test: it compares the
+# files and items this crate reads from committed fixtures with the same
+# GSD's `audit-uat` over the same tree, and fails by design for the same reason
+# when the oracle is absent.
 #
 # WHY THIS EXISTS. That test compares this crate's router rule table against
 # GSD's own router, and it FAILS BY DESIGN when the oracle is absent — an
