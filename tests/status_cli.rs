@@ -215,6 +215,7 @@ const SCHEMA_PATHS: &[&str] = &[
     "projects[].owner.fix_phases",
     "projects[].owner.blocked",
     "projects[].owner.closeable_phases",
+    "projects[].owner.fix_debug",
 ];
 
 /// The twelve keys every project entry carries.
@@ -583,16 +584,56 @@ fn owner_counts_cover_the_current_milestone() {
     let (_, owner) = uat_attention(&dir);
     assert_eq!(
         owner,
-        serde_json::json!({"test": 2, "decide": 0, "fix_phases": 0, "blocked": 1, "closeable_phases": 0}),
+        serde_json::json!({"test": 2, "decide": 0, "fix_phases": 0, "fix_debug": 0, "blocked": 1, "closeable_phases": 0}),
         "{owner}"
     );
     let dir = uat_project("testing", &["pending", "pending"]);
     let (_, owner) = uat_attention(&dir);
     assert_eq!(
         owner,
-        serde_json::json!({"test": 2, "decide": 0, "fix_phases": 0, "blocked": 0, "closeable_phases": 1}),
+        serde_json::json!({"test": 2, "decide": 0, "fix_phases": 0, "fix_debug": 0, "blocked": 0, "closeable_phases": 1}),
         "{owner}"
     );
+}
+
+fn copy_tree(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let target = to.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_tree(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), &target).unwrap();
+        }
+    }
+}
+
+#[test]
+fn owner_counts_include_debug_sessions() {
+    let scratch = tempfile::tempdir().unwrap();
+    let root = scratch.path().join("project");
+    copy_tree(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/owner/debug-awaiting"),
+        &root,
+    );
+    let entry = |root: &Path| {
+        let doc = json(&status(&[root.to_str().unwrap(), "--json"]));
+        entries(&doc)[0].clone()
+    };
+    let with = entry(&root);
+    assert_eq!(
+        with["owner"],
+        serde_json::json!({"test": 0, "decide": 1, "fix_phases": 0, "fix_debug": 1, "blocked": 0, "closeable_phases": 0}),
+        "{}",
+        with["owner"]
+    );
+    // The debug files add no attention item: the same tree without them reads alike.
+    std::fs::remove_dir_all(root.join(".planning/debug")).unwrap();
+    let without = entry(&root);
+    assert_eq!(with["attention"], without["attention"]);
+    assert_eq!(without["owner"]["decide"], 0);
+    assert_eq!(without["owner"]["fix_debug"], 0);
 }
 
 #[test]
@@ -774,7 +815,7 @@ fn the_emitted_key_paths_are_exactly_schema_v1_and_every_entry_has_twelve_keys()
     }
     let schema: std::collections::BTreeSet<String> =
         SCHEMA_PATHS.iter().map(|p| (*p).to_string()).collect();
-    assert_eq!(SCHEMA_PATHS.len(), 50);
+    assert_eq!(SCHEMA_PATHS.len(), 51);
     let emitted = key_paths(&doc);
     let unknown: Vec<_> = emitted.difference(&schema).collect();
     assert!(unknown.is_empty(), "paths outside schema v1: {unknown:?}");

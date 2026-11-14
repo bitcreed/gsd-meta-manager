@@ -148,6 +148,60 @@ fn the_tracer_fixture_lists_one_test_group_and_one_blocked_group() {
 }
 
 #[test]
+fn a_debug_session_awaiting_confirmation_is_a_decide_row() {
+    let scratch = tempfile::tempdir().unwrap();
+    let root = fixture("debug-awaiting");
+    let reg = registry(scratch.path(), &[("dbg", &root)]);
+
+    let out = inbox_with(&reg, scratch.path(), &["--json", "--lane", "decide"]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let doc = json(&out);
+    let groups = doc["projects"][0]["groups"].as_array().unwrap();
+    assert_eq!(groups.len(), 1, "{groups:?}");
+    let group = &groups[0];
+    assert_eq!(group["lane"], "decide");
+    assert_eq!(group["kind"], "debug");
+    assert_eq!(group["phase"], "");
+    assert_eq!(group["phase_name"], "alpha-awaiting");
+    assert_eq!(group["file"], ".planning/debug/alpha-awaiting.md");
+    assert_eq!(group["file_status"], "awaiting_human_verify");
+    assert_eq!(group["command"], "/gsd-debug");
+    let items = group["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["name"], "Alpha screen stays blank");
+    assert_eq!(doc["summary"]["decide"], 1);
+    assert_eq!(doc["summary"]["fix_debug"], 1);
+
+    // Without a lane filter the open investigation is a Fix group with the same command.
+    let all = json(&inbox_with(&reg, scratch.path(), &["--json"]));
+    let fix: Vec<&Value> = all["projects"][0]["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|g| g["lane"] == "fix")
+        .collect();
+    assert_eq!(fix.len(), 1, "{fix:?}");
+    assert_eq!(fix[0]["phase_name"], "bravo-root-cause");
+    assert_eq!(fix[0]["command"], "/gsd-debug");
+    assert_eq!(all["summary"]["fix_phases"], 0);
+
+    let text = inbox_with(&reg, scratch.path(), &["--lane", "decide"]);
+    let text = String::from_utf8_lossy(&text.stdout).into_owned();
+    let row = text
+        .lines()
+        .find(|l| l.contains("alpha-awaiting"))
+        .unwrap_or_else(|| panic!("a DECIDE row: {text}"));
+    assert!(text.contains("DECIDE"), "{text}");
+    assert!(
+        row.contains("debug") && row.contains("awaiting your confirmation"),
+        "{row}"
+    );
+    assert!(row.contains("/gsd-debug"), "{row}");
+    assert!(text.lines().next().unwrap().contains("decide 1"), "{text}");
+    assert!(text.lines().next().unwrap().contains("+ 1 debug"), "{text}");
+}
+
+#[test]
 fn every_entry_group_and_item_carries_the_schema_v1_keys() {
     let (scratch, reg) = tracer();
     let doc = json(&inbox_with(
@@ -166,6 +220,7 @@ fn every_entry_group_and_item_carries_the_schema_v1_keys() {
             "test",
             "decide",
             "fix_phases",
+            "fix_debug",
             "blocked",
             "closeable_phases",
             "archived",
@@ -627,6 +682,7 @@ const INBOX_PATHS: &[&str] = &[
     "projects[].todos",
     "projects[].todos[].file",
     "projects[].todos[].title",
+    "summary.fix_debug",
 ];
 
 fn inbox_set() -> BTreeSet<String> {
@@ -959,8 +1015,5 @@ fn a_cold_inbox_over_twenty_projects_is_under_a_second() {
     let lib = started.elapsed();
     eprintln!("cold inbox --json: {cold:?}; lib loop: {lib:?}");
     assert!(seen > 0);
-    assert!(
-        lib < bound,
-        "the lib loop took {lib:?} (bound {bound:?})"
-    );
+    assert!(lib < bound, "the lib loop took {lib:?} (bound {bound:?})");
 }

@@ -207,13 +207,15 @@ fn owning_root<'a>(cwd: &Path, roots: &'a [PathBuf]) -> Option<&'a Path> {
 }
 
 /// The `owner` counts of one project: numbers only, current milestone of the root
-/// and every workstream, after the owner rules. `decide` stays 0 until the decision
-/// signals land.
+/// and every workstream, after the owner rules. `decide` counts the open decisions
+/// (debug sessions awaiting confirmation so far) and `fix_debug` the open debug
+/// investigations, which are root-scoped and never counted as phases.
 fn owner_json(digest: &OwnerDigest) -> Value {
     json!({
         "test": digest.test,
-        "decide": 0,
+        "decide": digest.decide,
         "fix_phases": digest.fix_phases,
+        "fix_debug": digest.fix_debug,
         "blocked": digest.blocked,
         "closeable_phases": digest.closeable_phases,
     })

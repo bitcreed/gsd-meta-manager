@@ -22,8 +22,8 @@ use std::collections::{BTreeSet, HashMap};
 use chrono::{DateTime, Utc};
 
 use super::{
-    AuditFile, AuditItem, AuditKind, Category, GroupCounts, Kind, Lane, Origin, OwnerDigest,
-    OwnerGap, OwnerGroup, OwnerItem, Scope,
+    AuditFile, AuditItem, AuditKind, Category, DebugSession, GroupCounts, Kind, Lane, OpenScan,
+    Origin, OwnerDigest, OwnerGap, OwnerGroup, OwnerItem, Scope,
 };
 use crate::state_reader::disk_status::{DiskStatus, VerificationStatus};
 use crate::state_reader::phase_num::{phase_key, same_phase, PhaseNum};
@@ -198,10 +198,13 @@ fn slug_after_token(phase_dir: &str, phase: &str) -> String {
         .to_owned()
 }
 
+/// R9: whole days from `moment` to `now`, floored at zero.
+fn days_since(moment: DateTime<Utc>, now: DateTime<Utc>) -> i64 {
+    (now - moment).num_days().max(0)
+}
+
 fn age_of(file: &AuditFile, now: DateTime<Utc>) -> Option<i64> {
-    file.updated
-        .or(file.modified)
-        .map(|moment| (now - moment).num_days().max(0))
+    file.updated.or(file.modified).map(|m| days_since(m, now))
 }
 
 /// The numeric test of an item, for the item sort.
@@ -551,6 +554,108 @@ fn apply_r7(digest: &mut OwnerDigest, files: &[AuditFile], state: &ProjectState,
     digest.groups.extend(extra);
 }
 
+/// D-03: a debug status as the rules read it: trimmed, lower-cased, `-` as `_`.
+pub(super) fn normalize_debug_status(raw: &str) -> String {
+    raw.trim().to_lowercase().replace('-', "_")
+}
+
+/// A non-UAT item: no test number, no expectation, category `unknown`; the meaning
+/// travels in `result` (A6).
+fn signal_item(id: String, name: String, result: String, reason: Option<String>) -> OwnerItem {
+    OwnerItem {
+        id,
+        test: None,
+        name,
+        expected: None,
+        result,
+        category: Category::Unknown,
+        reason,
+        blocked_by: None,
+        gaps: Vec::new(),
+    }
+}
+
+/// The command that works a debug session (root-scoped, so never `--ws`).
+const DEBUG_COMMAND: &str = "/gsd-debug";
+
+/// D-03: one group per open debug session, in the Decide lane while it awaits the
+/// owner and in the Fix lane otherwise; an unreadable file is Fix work with
+/// `unreadable` 1 (A9). A session that normalizes to `resolved` or `complete` is not
+/// listed, which also covers `resolved ` (upstream keeps it open) and a recovered
+/// status.
+fn debug_groups(digest: &mut OwnerDigest, sessions: &[DebugSession], ctx: &Context) {
+    for session in sessions {
+        let normalized = if session.unreadable.is_some() {
+            String::new()
+        } else {
+            let raw = match (&session.recovered_status, session.fm_unparseable) {
+                (Some(recovered), true) => recovered,
+                _ => &session.status,
+            };
+            normalize_debug_status(raw)
+        };
+        if matches!(normalized.as_str(), "resolved" | "complete") {
+            continue;
+        }
+        if session.acknowledged {
+            digest.hidden.acknowledged_files += 1;
+        }
+        let unreadable = session.unreadable.is_some();
+        let lane = if normalized.starts_with("awaiting") {
+            Lane::Decide
+        } else {
+            Lane::Fix
+        };
+        let items = if unreadable {
+            Vec::new()
+        } else {
+            let name = session
+                .trigger
+                .clone()
+                .or_else(|| session.hypothesis.clone())
+                .unwrap_or_else(|| session.slug.clone());
+            vec![signal_item(
+                format!("{}.md#1", session.slug),
+                name,
+                normalized,
+                None,
+            )]
+        };
+        let age_days = session
+            .updated
+            .or(session.modified)
+            .map(|m| days_since(m, ctx.now));
+        digest.groups.push(OwnerGroup {
+            lane,
+            kind: Kind::Debug,
+            scope: Scope::Current,
+            workstream: None,
+            phase: String::new(),
+            phase_name: session.slug.clone(),
+            file: session.rel_path.clone(),
+            file_status: if unreadable {
+                "unknown".to_owned()
+            } else {
+                session.status.clone()
+            },
+            closes_phase: false,
+            bookkeeping_only: false,
+            acknowledged: session.acknowledged,
+            age_days,
+            stale: age_days.is_some_and(|days| days > i64::from(ctx.stale_days)),
+            command: Some(DEBUG_COMMAND.to_owned()),
+            supersedes: Vec::new(),
+            counts: GroupCounts {
+                checks: items.len(),
+                failed: 0,
+                gaps: 0,
+                unreadable: usize::from(unreadable),
+            },
+            items,
+        });
+    }
+}
+
 /// The caller-supplied inputs the group builders share.
 struct Context {
     now: DateTime<Utc>,
@@ -560,6 +665,7 @@ struct Context {
 /// Build the digest of one project from Layer A's files.
 pub(super) fn build_digest(
     files: Vec<AuditFile>,
+    open: OpenScan,
     state: &ProjectState,
     now: DateTime<Utc>,
     stale_days: u32,
@@ -601,6 +707,7 @@ pub(super) fn build_digest(
         }
     }
     apply_r7(&mut digest, &files, state, &ctx);
+    debug_groups(&mut digest, &open.debug_sessions, &ctx);
     digest.groups.sort_by_key(sort_key);
 
     let mut fix_phases: BTreeSet<(Option<&str>, String)> = BTreeSet::new();
@@ -608,6 +715,16 @@ pub(super) fn build_digest(
         match (&group.scope, group.lane) {
             (Scope::Current, Lane::Test) => digest.test += group.items.len(),
             (Scope::Current, Lane::Blocked) => digest.blocked += group.items.len(),
+            (Scope::Current, Lane::Decide) => {
+                // A handoff is one decision whatever it lists; every other kind counts
+                // its items.
+                digest.decide += if group.kind == Kind::Handoff {
+                    1
+                } else {
+                    group.items.len()
+                };
+            }
+            (Scope::Current, Lane::Fix) if group.kind == Kind::Debug => digest.fix_debug += 1,
             (Scope::Current, Lane::Fix) => {
                 fix_phases.insert((group.workstream.as_deref(), phase_key(&group.phase)));
             }
@@ -702,7 +819,7 @@ mod tests {
     }
 
     fn digest(files: Vec<AuditFile>) -> OwnerDigest {
-        build_digest(files, &state(), now(), 30)
+        build_digest(files, OpenScan::default(), &state(), now(), 30)
     }
 
     fn lanes(digest: &OwnerDigest) -> Vec<(&'static str, Vec<&str>)> {
@@ -805,9 +922,12 @@ mod tests {
     fn r9_stale_needs_strictly_more_days_than_the_threshold() {
         let mut f = file(vec![row("1", "pending", Category::Pending)]);
         f.updated = Some(now() - chrono::Duration::days(30));
-        assert!(!build_digest(vec![f.clone()], &state(), now(), 30).groups[0].stale);
+        assert!(
+            !build_digest(vec![f.clone()], OpenScan::default(), &state(), now(), 30).groups[0]
+                .stale
+        );
         f.updated = Some(now() - chrono::Duration::days(31));
-        assert!(build_digest(vec![f], &state(), now(), 30).groups[0].stale);
+        assert!(build_digest(vec![f], OpenScan::default(), &state(), now(), 30).groups[0].stale);
     }
 
     #[test]
@@ -1325,7 +1445,7 @@ mod tests {
             );
             let mut f = file(case.items);
             f.unparsed_blocks = case.unparsed;
-            let d = build_digest(vec![f], &st, now(), 30);
+            let d = build_digest(vec![f], OpenScan::default(), &st, now(), 30);
             assert_eq!(
                 d.closeable_phases,
                 usize::from(case.closeable),
@@ -1366,17 +1486,17 @@ mod tests {
         done.phases[0].completed = true;
         let f = file(vec![row("1", "pending", Category::Pending)]);
         assert_eq!(
-            build_digest(vec![f.clone()], &done, now(), 30).closeable_phases,
+            build_digest(vec![f.clone()], OpenScan::default(), &done, now(), 30).closeable_phases,
             0
         );
         assert_eq!(
-            build_digest(vec![f.clone()], &st, now(), 30).closeable_phases,
+            build_digest(vec![f.clone()], OpenScan::default(), &st, now(), 30).closeable_phases,
             1
         );
         let mut acked = f;
         acked.acknowledged = true;
         assert_eq!(
-            build_digest(vec![acked], &st, now(), 30).closeable_phases,
+            build_digest(vec![acked], OpenScan::default(), &st, now(), 30).closeable_phases,
             0
         );
     }
@@ -1412,5 +1532,39 @@ mod tests {
         let d = digest(vec![file(vec![row("1", "pending", Category::Pending)])]);
         assert!(!d.has_open_uat_items(Some("other"), "01"));
         assert!(d.has_open_uat_items(None, "1"));
+    }
+    fn debug_session(slug: &str, status: &str) -> DebugSession {
+        DebugSession {
+            rel_path: format!(".planning/debug/{slug}.md"),
+            slug: slug.to_owned(),
+            status: status.to_owned(),
+            trigger: None,
+            hypothesis: None,
+            updated: None,
+            modified: None,
+            acknowledged: false,
+            unreadable: None,
+            fm_unparseable: false,
+            recovered_status: None,
+        }
+    }
+
+    #[test]
+    fn root_scoped_groups_never_count_as_phases() {
+        let open = OpenScan {
+            debug_sessions: vec![debug_session("delta", "diagnosed")],
+        };
+        let digest = build_digest(
+            vec![file(vec![row("1", "pending", Category::Pending)])],
+            open,
+            &state(),
+            now(),
+            30,
+        );
+        assert_eq!(digest.fix_phases, 0);
+        assert_eq!(digest.fix_debug, 1);
+        assert_eq!(digest.closeable_phases, 0);
+        assert!(digest.groups.iter().any(|g| g.kind == Kind::Debug));
+        assert!(!digest.has_open_uat_items(None, ""));
     }
 }

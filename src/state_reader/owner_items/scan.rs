@@ -24,7 +24,7 @@ use chrono::{DateTime, Utc};
 use std::sync::Arc;
 
 use super::{
-    deferred, frontmatter, uat, verification, AuditFile, AuditKind, CacheKey, ParseCache,
+    deferred, frontmatter, uat, verification, AuditFile, AuditKind, CacheKey, ParseCache, Parsed,
     ParsedFile, Scope, Unreadable,
 };
 use crate::state_reader::phase_num::same_phase;
@@ -103,23 +103,23 @@ fn is_uat_name(file: &str) -> bool {
 /// the canonical planning tree `root_real`. Bounding the directory to the tree (not to
 /// its own parent, which resolves through the same symlinked ancestor) is what rejects
 /// a symlinked `phases/` or `workstreams/`. Anything unresolvable is not contained.
-fn contained(root_real: &Path, phase_dir: &Path, file: &Path) -> Option<PathBuf> {
+pub(super) fn contained(root_real: &Path, phase_dir: &Path, file: &Path) -> Option<PathBuf> {
     let real_dir = phase_dir.canonicalize().ok()?;
     let real_file = file.canonicalize().ok()?;
     (real_dir.starts_with(root_real) && real_file.starts_with(&real_dir)).then_some(real_file)
 }
 
 /// A regular file opened for reading, its size within the cap.
-struct Opened {
-    file: std::fs::File,
-    modified: Option<DateTime<Utc>>,
-    key: CacheKey,
+pub(super) struct Opened {
+    pub(super) file: std::fs::File,
+    pub(super) modified: Option<DateTime<Utc>>,
+    pub(super) key: CacheKey,
 }
 
 /// Open `path` without blocking and without following a final symlink, and require a
 /// regular file of at most [`READ_CAP`] bytes. Everything the cache must not
 /// short-circuit happens here, on the open handle.
-fn open_checked(path: &Path) -> Result<Opened, Unreadable> {
+pub(super) fn open_checked(path: &Path) -> Result<Opened, Unreadable> {
     #[cfg(unix)]
     let opened = {
         use std::os::unix::fs::OpenOptionsExt;
@@ -152,7 +152,7 @@ fn open_checked(path: &Path) -> Result<Opened, Unreadable> {
 }
 
 /// The text of an opened file, at most [`READ_CAP`] bytes, line endings normalized.
-fn read_text(file: std::fs::File) -> Result<String, Unreadable> {
+pub(super) fn read_text(file: std::fs::File) -> Result<String, Unreadable> {
     let mut bytes = Vec::new();
     file.take(READ_CAP + 1)
         .read_to_end(&mut bytes)
@@ -166,7 +166,7 @@ fn read_text(file: std::fs::File) -> Result<String, Unreadable> {
 }
 
 /// A path relative to `root` spelled with `/`.
-fn posix_relative(root: &Path, path: &Path) -> String {
+pub(super) fn posix_relative(root: &Path, path: &Path) -> String {
     let relative = path.strip_prefix(root).unwrap_or(path);
     relative
         .components()
@@ -286,7 +286,7 @@ pub(super) fn parse_document(kind: AuditKind, text: &str) -> Option<ParsedFile> 
 /// One document as an [`AuditFile`]; `None` when it escapes its phase directory or,
 /// for a VERIFICATION, has a status that contributes nothing.
 fn read_audit(
-    cache: &ParseCache,
+    cache: &ParseCache<AuditKind, Parsed>,
     root: &Path,
     root_real: &Path,
     target: &Target,
@@ -489,7 +489,7 @@ fn targets(planning_dir: &Path, state: &ProjectState) -> Vec<Target> {
 /// `rel_path`. The same `rel_path` reached from two targets is listed once, the first
 /// in enumeration order.
 pub(super) fn scan_planning(
-    cache: &ParseCache,
+    cache: &ParseCache<AuditKind, Parsed>,
     planning_dir: &Path,
     state: &ProjectState,
 ) -> Vec<AuditFile> {
@@ -696,7 +696,9 @@ mod tests {
         // A workstream tree reached through a symlinked workstreams/ directory.
         std::fs::remove_file(planning.join("phases")).unwrap();
         write(
-            &outside.path().join("streams/alpha/phases/01-alpha/01-UAT.md"),
+            &outside
+                .path()
+                .join("streams/alpha/phases/01-alpha/01-UAT.md"),
             ROW,
         );
         write(
@@ -911,7 +913,10 @@ mod tests {
             &phase.join("01-VERIFICATION.md"),
             "---\nstatus: human_needed\n\tbad: [\nhuman_verification:\n  - first check\n---\n",
         );
-        write(&phase.join("01-b-VERIFICATION.md"), "---\nnote: no status\n---\n");
+        write(
+            &phase.join("01-b-VERIFICATION.md"),
+            "---\nnote: no status\n---\n",
+        );
         let files = scan_of(dir.path());
         let by_name = |name: &str| files.iter().find(|f| f.rel_path.ends_with(name));
         let damaged = by_name("01-VERIFICATION.md").expect("the damaged file is listed");
@@ -1211,7 +1216,7 @@ mod tests {
         crate::state_reader::owner_items::CACHE_HITS.with(std::cell::Cell::get)
     }
 
-    fn scan_with(cache: &ParseCache, root: &Path) -> Vec<AuditFile> {
+    fn scan_with(cache: &ParseCache<AuditKind, Parsed>, root: &Path) -> Vec<AuditFile> {
         let planning = root.join(".planning");
         scan_planning(cache, &planning, &parse_project_state(&planning))
     }

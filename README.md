@@ -434,7 +434,7 @@ Schema version 1:
       "sessions": [{"agent": "claude", "pid": 4242, "session_id": "0f3c9a", "cwd": "/home/me/projects/my-app", "tty": "pts/3"}],
       "next": {"advisory": true, "source": "phase-20-router", "project": "/home/me/projects/my-app", "target_phase": "4", "decision": "park", "command": null, "reason": "gate_verification_human_needed", "detail": "human_needed"},
       "warnings": [],
-      "owner": {"test": 2, "decide": 0, "fix_phases": 0, "blocked": 0, "closeable_phases": 1}
+      "owner": {"test": 2, "decide": 0, "fix_phases": 0, "fix_debug": 0, "blocked": 0, "closeable_phases": 1}
     },
     {
       "target": "gone-app",
@@ -502,8 +502,9 @@ Schema version 1:
 | `projects[].warnings` | array of strings | `state_md_unreadable`, `state_md_recovered` |
 | `projects[].owner` | object or null | how much owner work the project holds: the checks a human has to run, over the current milestone of the project and every workstream, after the owner rules (duplicates folded, archived and acknowledged work left out); null on error |
 | `projects[].owner.test` | integer | checks waiting to be run |
-| `projects[].owner.decide` | integer | open decisions; 0 until the decision signals land |
+| `projects[].owner.decide` | integer | open decisions: debug sessions awaiting your confirmation, handoffs, checkpoints and open CONTEXT questions |
 | `projects[].owner.fix_phases` | integer | phases that need a fix plan (failed checks or unreadable files) |
+| `projects[].owner.fix_debug` | integer | open debug investigations (`.planning/debug/`, root-scoped, not counted as phases) |
 | `projects[].owner.blocked` | integer | checks waiting on a device, server, build or third party |
 | `projects[].owner.closeable_phases` | integer | phases whose only open work is checks to run, so running them can close the phase |
 
@@ -560,7 +561,7 @@ Schema version 1:
   "schema": "gsd-meta-manager/inbox",
   "schema_version": 1,
   "summary": {
-    "projects": 2, "test": 3, "decide": 0, "fix_phases": 1, "blocked": 1, "closeable_phases": 1,
+    "projects": 2, "test": 3, "decide": 0, "fix_phases": 1, "fix_debug": 0, "blocked": 1, "closeable_phases": 1,
     "archived": {"test": 0, "blocked": 0, "fix": 0},
     "deferred": 0, "acknowledged_files": 0, "superseded": 0, "noise": 0
   },
@@ -629,8 +630,9 @@ Schema version 1:
 | `summary` | object | totals over every readable project, never narrowed by `--lane` or `--include` |
 | `summary.projects` | integer | entries requested, error entries included |
 | `summary.test` | integer | checks waiting to be run |
-| `summary.decide` | integer | open decisions; 0 until the decision signals land |
+| `summary.decide` | integer | open decisions: debug sessions awaiting your confirmation, handoffs, checkpoints and open CONTEXT questions |
 | `summary.fix_phases` | integer | phases that need a fix plan |
+| `summary.fix_debug` | integer | open debug investigations (root-scoped, not counted as phases) |
 | `summary.blocked` | integer | checks waiting on a device, server, build or third party |
 | `summary.closeable_phases` | integer | phases whose only open work is checks to run |
 | `summary.archived` | object | open checks of archived milestones, by lane |
@@ -652,12 +654,12 @@ Schema version 1:
 | `projects[].milestone.version` | string or null | STATE.md `milestone` |
 | `projects[].groups` | array | the listed (file, lane) groups; empty on error |
 | `projects[].groups[].lane` | string | `test` / `decide` / `fix` / `blocked` / `deferred` |
-| `projects[].groups[].kind` | string | `uat` / `verification` / `deferred` |
+| `projects[].groups[].kind` | string | `uat` / `verification` / `deferred` / `debug` / `handoff` / `checkpoint` / `context_questions` |
 | `projects[].groups[].scope` | string | `current` / `archived` |
 | `projects[].groups[].archived_milestone` | string or null | the archived milestone label; null for current work |
 | `projects[].groups[].workstream` | string or null | workstream name, null for the project root |
-| `projects[].groups[].phase` | string | phase number |
-| `projects[].groups[].phase_name` | string | phase directory name |
+| `projects[].groups[].phase` | string | phase number; `""` for debug groups |
+| `projects[].groups[].phase_name` | string | phase directory name; the session slug for debug groups |
 | `projects[].groups[].file` | string | the file the checks come from, relative to the project |
 | `projects[].groups[].file_status` | string | the file's `status` value |
 | `projects[].groups[].closes_phase` | bool | running these checks can close the phase |

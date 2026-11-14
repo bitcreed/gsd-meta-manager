@@ -259,6 +259,36 @@ pub(super) fn updated(map: &Mapping) -> Option<DateTime<Utc>> {
         .map(|moment| moment.with_timezone(&Utc))
 }
 
+/// A frontmatter moment: RFC 3339 (an offset or milliseconds are read exactly) or a
+/// bare `YYYY-MM-DD`, which is midnight UTC. Surrounding whitespace and one pair of
+/// quotes are dropped; anything else is `None`.
+pub(super) fn moment(value: &str) -> Option<DateTime<Utc>> {
+    let value = value.trim();
+    let value = ['"', '\'']
+        .iter()
+        .find_map(|quote| {
+            value
+                .strip_prefix(*quote)
+                .and_then(|rest| rest.strip_suffix(*quote))
+        })
+        .unwrap_or(value)
+        .trim();
+    if let Ok(parsed) = DateTime::parse_from_rfc3339(value) {
+        return Some(parsed.with_timezone(&Utc));
+    }
+    chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d")
+        .ok()?
+        .and_hms_opt(0, 0, 0)
+        .map(|midnight| midnight.and_utc())
+}
+
+/// The body of a closed frontmatter fence, as written (not parsed): what a reader
+/// scans when the YAML inside it is rejected. `None` without a closed fence.
+pub(super) fn fence_body(text: &str) -> Option<&str> {
+    let fence = locate_fence(text)?;
+    fence.closed.then(|| &text[fence.body])
+}
+
 /// A display string for any value inside a list item: null is empty, a list is
 /// `[a, b]`, a mapping is [`flatten_object_list_item`].
 fn flatten_for_display(value: &Value) -> String {

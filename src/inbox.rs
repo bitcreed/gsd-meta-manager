@@ -15,7 +15,9 @@ use std::path::PathBuf;
 use serde_json::{json, Value};
 
 use crate::oneoff::todos::PendingTodo;
-use crate::state_reader::owner_items::{Category, Lane, OwnerDigest, OwnerGroup, OwnerItem, Scope};
+use crate::state_reader::owner_items::{
+    Category, Kind, Lane, OwnerDigest, OwnerGroup, OwnerItem, Scope,
+};
 use crate::text::terminal_capped;
 
 /// The `schema` field.
@@ -190,8 +192,9 @@ pub fn build_document(entries: &[ProjectEntry], filters: &Filters) -> Value {
         "summary": {
             "projects": entries.len(),
             "test": sum(|d| d.test),
-            "decide": 0,
+            "decide": sum(|d| d.decide),
             "fix_phases": sum(|d| d.fix_phases),
+            "fix_debug": sum(|d| d.fix_debug),
             "blocked": sum(|d| d.blocked),
             "closeable_phases": sum(|d| d.closeable_phases),
             "archived": {
@@ -261,6 +264,16 @@ fn detail(group: &OwnerGroup) -> String {
             .map_or_else(String::new, terminal_capped);
         return format!("all checks passed, run {command} to finalize");
     }
+    if group.kind == Kind::Debug {
+        return match group.lane {
+            Lane::Decide => "awaiting your confirmation".to_owned(),
+            _ if group.counts.unreadable > 0 => "unreadable session".to_owned(),
+            _ => {
+                let status = group.items.first().map_or("", |item| item.result.as_str());
+                format!("open investigation ({})", terminal_capped(status))
+            }
+        };
+    }
     match group.lane {
         Lane::Blocked => blocked_tally(group),
         Lane::Deferred => plural(group.counts.checks, "item", "items"),
@@ -290,6 +303,24 @@ fn detail(group: &OwnerGroup) -> String {
 }
 
 fn group_line(alias: &str, group: &OwnerGroup) -> String {
+    if group.kind == Kind::Debug {
+        let mut parts = vec![
+            terminal_capped(alias),
+            "debug".to_owned(),
+            terminal_capped(&group.phase_name),
+            detail(group),
+        ];
+        if let Some(days) = group.age_days {
+            parts.push(format!(
+                "{days} d{}",
+                if group.stale { " stale" } else { "" }
+            ));
+        }
+        if let Some(command) = &group.command {
+            parts.push(terminal_capped(command));
+        }
+        return parts.join("  ");
+    }
     let phase = match &group.workstream {
         Some(ws) => format!(
             "ph {}/{}",
@@ -369,10 +400,17 @@ pub fn render_text(entries: &[ProjectEntry], filters: &Filters) -> String {
     let read: Vec<&ProjectEntry> = entries.iter().filter(|e| e.error.is_none()).collect();
     let sum =
         |count: fn(&OwnerDigest) -> usize| read.iter().map(|e| count(&e.digest)).sum::<usize>();
+    let fix_debug = sum(|d| d.fix_debug);
+    let debug_tail = if fix_debug > 0 {
+        format!(" + {fix_debug} debug")
+    } else {
+        String::new()
+    };
     let mut out = vec![format!(
-        "Owner inbox: {} projects · test {} · decide 0 · fix {} phases · blocked {}",
+        "Owner inbox: {} projects · test {} · decide {} · fix {} phases{debug_tail} · blocked {}",
         entries.len(),
         sum(|d| d.test),
+        sum(|d| d.decide),
         sum(|d| d.fix_phases),
         sum(|d| d.blocked),
     )];
@@ -574,6 +612,7 @@ mod tests {
         assert_eq!(doc["summary"]["projects"], 2);
         assert_eq!(doc["summary"]["test"], 2);
         assert_eq!(doc["summary"]["decide"], 0);
+        assert_eq!(doc["summary"]["fix_debug"], 0);
         assert!(doc["projects"][0]["milestone"]["version"].is_null());
     }
 

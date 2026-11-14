@@ -22,6 +22,7 @@
 //! `parse_project_state` never computes the digest (D-15): it is a separate entry
 //! point, so a refresh that does not need the inbox never pays for it.
 
+mod debug;
 mod deferred;
 mod frontmatter;
 mod markdown;
@@ -178,7 +179,7 @@ pub(crate) struct CacheKey {
 /// nothing (a passed VERIFICATION), which is worth remembering too.
 pub(crate) type Parsed = Option<ParsedFile>;
 
-type CacheMap = HashMap<(PathBuf, AuditKind), (CacheKey, Arc<Parsed>)>;
+type CacheMap<K, V> = HashMap<(PathBuf, K), (CacheKey, Arc<V>)>;
 
 /// The most entries the process-wide cache holds before it starts over.
 const CACHE_MAX_ENTRIES: usize = 8192;
@@ -196,12 +197,12 @@ thread_local! {
 /// The lock is held for one map operation and never across file I/O or parsing.
 /// A poisoned lock turns lookups and inserts into no-ops, so the scan reads the
 /// file instead; it is never a panic.
-pub(crate) struct ParseCache {
-    map: Mutex<CacheMap>,
+pub(crate) struct ParseCache<K, V> {
+    map: Mutex<CacheMap<K, V>>,
     max_entries: usize,
 }
 
-impl ParseCache {
+impl<K: Copy + Eq + std::hash::Hash, V> ParseCache<K, V> {
     pub(crate) fn new(max_entries: usize) -> Self {
         ParseCache {
             map: Mutex::new(HashMap::new()),
@@ -210,7 +211,7 @@ impl ParseCache {
     }
 
     /// The cached parse of `kind` at `path` when its key still equals `key`.
-    pub(crate) fn get(&self, path: &Path, kind: AuditKind, key: CacheKey) -> Option<Arc<Parsed>> {
+    pub(crate) fn get(&self, path: &Path, kind: K, key: CacheKey) -> Option<Arc<V>> {
         let map = self.map.lock().ok()?;
         let (stored, parsed) = map.get(&(path.to_path_buf(), kind))?;
         let hit = (*stored == key).then(|| Arc::clone(parsed));
@@ -222,13 +223,7 @@ impl ParseCache {
     }
 
     /// Remember a parse. An insert into a full map clears it first.
-    pub(crate) fn insert(
-        &self,
-        path: PathBuf,
-        kind: AuditKind,
-        key: CacheKey,
-        parsed: Arc<Parsed>,
-    ) {
+    pub(crate) fn insert(&self, path: PathBuf, kind: K, key: CacheKey, parsed: Arc<V>) {
         let Ok(mut map) = self.map.lock() else {
             return;
         };
@@ -261,7 +256,22 @@ impl ParseCache {
     }
 }
 
-static PARSE_CACHE: LazyLock<ParseCache> = LazyLock::new(|| ParseCache::new(CACHE_MAX_ENTRIES));
+static PARSE_CACHE: LazyLock<ParseCache<AuditKind, Parsed>> =
+    LazyLock::new(|| ParseCache::new(CACHE_MAX_ENTRIES));
+
+/// Which open-signal reader a cache entry belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum OpenKind {
+    Debug,
+    /// Read by the CONTEXT question reader that plan 35-02 adds.
+    #[allow(dead_code)]
+    Context,
+}
+
+/// Parsed debug sessions (and, later, context files) by canonical path, with the same
+/// validity rule and lock discipline as [`PARSE_CACHE`].
+pub(crate) static OPEN_CACHE: LazyLock<ParseCache<OpenKind, debug::ParsedSession>> =
+    LazyLock::new(|| ParseCache::new(CACHE_MAX_ENTRIES));
 
 /// Forget everything the parse cache holds about the project at `root` (D-16).
 ///
@@ -270,11 +280,48 @@ static PARSE_CACHE: LazyLock<ParseCache> = LazyLock::new(|| ParseCache::new(CACH
 pub fn evict_project(root: &Path) {
     let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     PARSE_CACHE.evict_under(&root);
+    OPEN_CACHE.evict_under(&root);
 }
 
 /// Layer A: every audit file of the project, process-free, sorted by `rel_path`.
 pub fn scan(planning_dir: &Path, state: &ProjectState) -> Vec<AuditFile> {
     scan::scan_planning(&PARSE_CACHE, planning_dir, state)
+}
+
+/// One debug session as Layer A reads it (`.planning/debug/<slug>.md`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct DebugSession {
+    /// POSIX path relative to the project root.
+    pub rel_path: String,
+    /// The file name without `.md`.
+    pub slug: String,
+    /// Lower-cased frontmatter `status`, not trimmed; `unknown` when absent.
+    pub status: String,
+    pub trigger: Option<String>,
+    /// First line of the `## Current Focus` section.
+    pub hypothesis: Option<String>,
+    pub updated: Option<DateTime<Utc>>,
+    pub modified: Option<DateTime<Utc>>,
+    pub acknowledged: bool,
+    pub unreadable: Option<Unreadable>,
+    /// The frontmatter fence is closed but its YAML was rejected (Layer B input).
+    pub fm_unparseable: bool,
+    /// A column-0 `status:` line recovered from such a fence (Layer B input, never
+    /// compared with the oracle).
+    pub recovered_status: Option<String>,
+}
+
+/// Layer A for the open signals: what `audit-open` reports besides UAT files.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct OpenScan {
+    pub debug_sessions: Vec<DebugSession>,
+}
+
+/// Layer A: the open-signal sources of the project, process-free.
+pub fn scan_open(planning_dir: &Path, _state: &ProjectState) -> OpenScan {
+    OpenScan {
+        debug_sessions: debug::scan_debug_sessions(planning_dir),
+    }
 }
 
 /// The inbox lane an item or group is listed under.
@@ -316,6 +363,10 @@ pub enum Kind {
     Uat,
     Verification,
     Deferred,
+    Debug,
+    Handoff,
+    Checkpoint,
+    ContextQuestions,
 }
 
 impl Kind {
@@ -324,6 +375,10 @@ impl Kind {
             Kind::Uat => "uat",
             Kind::Verification => "verification",
             Kind::Deferred => "deferred",
+            Kind::Debug => "debug",
+            Kind::Handoff => "handoff",
+            Kind::Checkpoint => "checkpoint",
+            Kind::ContextQuestions => "context_questions",
         }
     }
 }
@@ -406,7 +461,12 @@ pub struct ArchivedCounts {
 pub struct OwnerDigest {
     pub groups: Vec<OwnerGroup>,
     pub test: usize,
+    /// Open decisions: debug sessions awaiting confirmation, handoffs, checkpoints and
+    /// open CONTEXT questions.
+    pub decide: usize,
     pub fix_phases: usize,
+    /// Open debug investigations (root-scoped, never counted as phases).
+    pub fix_debug: usize,
     pub blocked: usize,
     pub closeable_phases: usize,
     pub archived: ArchivedCounts,
@@ -424,7 +484,13 @@ pub fn read_owner_digest(
     now: DateTime<Utc>,
     stale_days: u32,
 ) -> OwnerDigest {
-    rules::build_digest(scan(planning_dir, state), state, now, stale_days)
+    rules::build_digest(
+        scan(planning_dir, state),
+        scan_open(planning_dir, state),
+        state,
+        now,
+        stale_days,
+    )
 }
 
 #[cfg(test)]
@@ -448,6 +514,22 @@ mod tests {
         ];
         for (category, token) in all {
             assert_eq!(category.as_str(), token);
+        }
+    }
+
+    #[test]
+    fn kind_tokens_are_the_schema_tokens() {
+        let all = [
+            (Kind::Uat, "uat"),
+            (Kind::Verification, "verification"),
+            (Kind::Deferred, "deferred"),
+            (Kind::Debug, "debug"),
+            (Kind::Handoff, "handoff"),
+            (Kind::Checkpoint, "checkpoint"),
+            (Kind::ContextQuestions, "context_questions"),
+        ];
+        for (kind, token) in all {
+            assert_eq!(kind.as_str(), token);
         }
     }
 
