@@ -345,17 +345,17 @@ fn read_audit(
 }
 
 /// One phase directory to read, with where it came from.
-struct Target {
+pub(super) struct Target {
     /// The directory's name.
-    dir: String,
-    path: PathBuf,
-    scope: Scope,
-    workstream: Option<String>,
+    pub(super) dir: String,
+    pub(super) path: PathBuf,
+    pub(super) scope: Scope,
+    pub(super) workstream: Option<String>,
 }
 
 /// The names of the real subdirectories of `path` (a symlinked one is skipped),
 /// sorted ascending.
-fn subdirectories(path: &Path) -> Vec<String> {
+pub(super) fn subdirectories(path: &Path) -> Vec<String> {
     let Ok(entries) = std::fs::read_dir(path) else {
         return Vec::new();
     };
@@ -433,27 +433,11 @@ fn archive_dirs(tree: &Path) -> Vec<(String, PathBuf)> {
     out
 }
 
-/// Every phase directory Layer A reads, in upstream's enumeration order: the active
-/// phases of the project's own tree, then of each workstream, then every archive
-/// tree (root first, then the workstreams by name descending), unfiltered by
-/// milestone.
-fn targets(planning_dir: &Path, state: &ProjectState) -> Vec<Target> {
+/// Every archived phase directory of the project's own tree and of each workstream,
+/// in upstream's enumeration order (root first, then the workstreams by name
+/// descending), unfiltered by milestone.
+pub(super) fn archived_targets(planning_dir: &Path) -> Vec<Target> {
     let mut out = Vec::new();
-    for (workstream, scope_state) in state.scopes() {
-        let tree = match workstream {
-            None => planning_dir.to_path_buf(),
-            Some(stream) => planning_dir.join("workstreams").join(&stream.name),
-        };
-        let phases_dir = tree.join("phases");
-        for dir in current_phase_dirs(&phases_dir, scope_state) {
-            out.push(Target {
-                path: phases_dir.join(&dir),
-                dir,
-                scope: Scope::Current,
-                workstream: workstream.map(|stream| stream.name.clone()),
-            });
-        }
-    }
     let mut trees: Vec<(Option<String>, PathBuf)> = vec![(None, planning_dir.to_path_buf())];
     let mut streams = subdirectories(&planning_dir.join("workstreams"));
     streams.reverse();
@@ -482,6 +466,31 @@ fn targets(planning_dir: &Path, state: &ProjectState) -> Vec<Target> {
             rank += 1;
         }
     }
+    out
+}
+
+/// Every phase directory Layer A reads, in upstream's enumeration order: the active
+/// phases of the project's own tree, then of each workstream, then every archive
+/// tree (root first, then the workstreams by name descending), unfiltered by
+/// milestone.
+fn targets(planning_dir: &Path, state: &ProjectState) -> Vec<Target> {
+    let mut out = Vec::new();
+    for (workstream, scope_state) in state.scopes() {
+        let tree = match workstream {
+            None => planning_dir.to_path_buf(),
+            Some(stream) => planning_dir.join("workstreams").join(&stream.name),
+        };
+        let phases_dir = tree.join("phases");
+        for dir in current_phase_dirs(&phases_dir, scope_state) {
+            out.push(Target {
+                path: phases_dir.join(&dir),
+                dir,
+                scope: Scope::Current,
+                workstream: workstream.map(|stream| stream.name.clone()),
+            });
+        }
+    }
+    out.extend(archived_targets(planning_dir));
     out
 }
 

@@ -22,6 +22,7 @@
 //! `parse_project_state` never computes the digest (D-15): it is a separate entry
 //! point, so a refresh that does not need the inbox never pays for it.
 
+mod context;
 mod debug;
 mod deferred;
 mod frontmatter;
@@ -263,10 +264,13 @@ static PARSE_CACHE: LazyLock<ParseCache<AuditKind, Parsed>> =
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum OpenKind {
     Debug,
-    /// Read by the CONTEXT question reader that plan 35-02 adds.
-    #[allow(dead_code)]
     Context,
 }
+
+/// Parsed CONTEXT documents by canonical path (same rules as [`OPEN_CACHE`]; a second
+/// map because the parsed value differs).
+pub(crate) static CONTEXT_CACHE: LazyLock<ParseCache<OpenKind, context::ParsedContext>> =
+    LazyLock::new(|| ParseCache::new(CACHE_MAX_ENTRIES));
 
 /// Parsed debug sessions (and, later, context files) by canonical path, with the same
 /// validity rule and lock discipline as [`PARSE_CACHE`].
@@ -281,6 +285,7 @@ pub fn evict_project(root: &Path) {
     let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     PARSE_CACHE.evict_under(&root);
     OPEN_CACHE.evict_under(&root);
+    CONTEXT_CACHE.evict_under(&root);
 }
 
 /// Layer A: every audit file of the project, process-free, sorted by `rel_path`.
@@ -311,16 +316,43 @@ pub struct DebugSession {
     pub recovered_status: Option<String>,
 }
 
+/// One CONTEXT document with open questions as Layer A reads it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ContextFile {
+    /// POSIX path relative to the project root.
+    pub rel_path: String,
+    /// `Current` for an active phase directory (of any milestone), else the archive.
+    pub scope: Scope,
+    /// The workstream directory name, `None` for the project's own tree.
+    pub workstream: Option<String>,
+    /// The phase directory's leading token.
+    pub phase: String,
+    pub phase_dir: String,
+    /// Whether the phase belongs to the current milestone of its own tree (false for
+    /// an archived file).
+    pub in_current_milestone: bool,
+    /// The complete, sanitized question list (the digest input).
+    pub questions: Vec<String>,
+    /// Lower-cased frontmatter `status`, `unknown` when absent.
+    pub status: String,
+    pub updated: Option<DateTime<Utc>>,
+    pub modified: Option<DateTime<Utc>>,
+    pub acknowledged: bool,
+    pub unreadable: Option<Unreadable>,
+}
+
 /// Layer A for the open signals: what `audit-open` reports besides UAT files.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct OpenScan {
     pub debug_sessions: Vec<DebugSession>,
+    pub context_files: Vec<ContextFile>,
 }
 
 /// Layer A: the open-signal sources of the project, process-free.
-pub fn scan_open(planning_dir: &Path, _state: &ProjectState) -> OpenScan {
+pub fn scan_open(planning_dir: &Path, state: &ProjectState) -> OpenScan {
     OpenScan {
         debug_sessions: debug::scan_debug_sessions(planning_dir),
+        context_files: context::scan_context_questions(planning_dir, state),
     }
 }
 
@@ -454,6 +486,7 @@ pub struct ArchivedCounts {
     pub test: usize,
     pub blocked: usize,
     pub fix: usize,
+    pub decide: usize,
 }
 
 /// The owner's view of one project.

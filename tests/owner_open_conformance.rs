@@ -11,6 +11,14 @@
 // into Fix work, as Phase 34 treats unreadable UAT files). Layer B (lanes, groups,
 // commands, the recovered status of a frontmatter YAML rejects) is never compared.
 //
+// **The context-question half.** The oracle runs once from the root and once per
+// workstream directory (`GSD_WORKSTREAM`). For each run the sorted
+// `(archived_milestone or "-", phase, file, question_count)` of its
+// `items.context_questions`, and its `acknowledged.context_questions`, must equal ours
+// over what that run can see: the active phases of its own tree plus the archived ones
+// (every archive in the root run; only the workstream's own, under its bare label, in a
+// workstream run). Debug sessions are root-scoped and compared from the root run only.
+//
 // **A missing oracle FAILS; skipping is opt-in.** As in `owner_audit_conformance.rs`:
 // the default is to fail with the install hint, an environment that cannot run Node
 // says so through `GSD_META_MANAGER_ALLOW_MISSING_ORACLE`, and a run in which no
@@ -20,7 +28,6 @@
 // scans every non-comment line under `src/` for the verb.
 //
 // Shape copied from `tests/owner_audit_conformance.rs`, deliberately not abstracted.
-// Plan 35-02 extends `compare_open` with the context questions.
 // ============================================================================
 
 use std::collections::BTreeMap;
@@ -29,7 +36,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use gsd_meta_manager::state_reader::gsd_install::{install_candidates, InstallRoots};
-use gsd_meta_manager::state_reader::owner_items::{scan_open, OpenScan};
+use gsd_meta_manager::state_reader::owner_items::{scan_open, OpenScan, Scope};
 use gsd_meta_manager::state_reader::parse_project_state;
 use serde_json::Value;
 use tempfile::TempDir;
@@ -112,13 +119,16 @@ impl Oracle {
 
     /// One oracle run from the root of `root`: the parsed `--json` document, or the
     /// combined output of a failed run.
-    fn audit_open(&self, root: &Path) -> Result<Value, String> {
+    fn audit_open(&self, root: &Path, workstream: Option<&str>) -> Result<Value, String> {
         let mut command = self.query_command(ORACLE_VERB);
         command
             .arg("--json")
             .current_dir(root)
             .env_remove("GSD_WORKSTREAM")
             .env_remove("GSD_PROJECT");
+        if let Some(workstream) = workstream {
+            command.env("GSD_WORKSTREAM", workstream);
+        }
         let output = command
             .output()
             .map_err(|err| format!("the oracle did not run: {}", err.kind()))?;
@@ -172,8 +182,111 @@ fn our_debug(open: &OpenScan) -> Vec<(String, String)> {
     out
 }
 
-/// The per-category comparison of one fixture. Plan 35-02 adds the context questions.
+type ContextTuple = (String, String, String, u64);
+
+/// Sorted `(archived_milestone or "-", phase, file, question_count)` of one oracle
+/// run's context questions; a `scan_error` sentinel is an error.
+fn oracle_context(doc: &Value) -> Result<Vec<ContextTuple>, String> {
+    let mut out = Vec::new();
+    for item in doc["items"]["context_questions"]
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        if item["scan_error"].as_bool() == Some(true) {
+            return Err("the oracle reported a scan_error sentinel".to_owned());
+        }
+        out.push((
+            item["archived_milestone"]
+                .as_str()
+                .unwrap_or("-")
+                .to_owned(),
+            item["phase"].as_str().unwrap_or("").to_owned(),
+            item["file"].as_str().unwrap_or("").to_owned(),
+            item["question_count"].as_u64().unwrap_or(0),
+        ));
+    }
+    out.sort();
+    Ok(out)
+}
+
+/// Our readable files of one oracle run: `(milestone label, file)` for the files that
+/// run can see, `workstream` being `None` for the root run.
+fn visible_context<'a>(
+    open: &'a OpenScan,
+    workstream: Option<&str>,
+) -> Vec<(
+    String,
+    &'a gsd_meta_manager::state_reader::owner_items::ContextFile,
+)> {
+    open.context_files
+        .iter()
+        .filter(|file| file.unreadable.is_none())
+        .filter_map(|file| match &file.scope {
+            Scope::Current if file.workstream.as_deref() == workstream => {
+                Some(("-".to_owned(), file))
+            }
+            Scope::Current => None,
+            Scope::Archived { label, .. } => match workstream {
+                None => Some((label.clone(), file)),
+                Some(stream) if file.workstream.as_deref() == Some(stream) => {
+                    let bare = label.strip_prefix(&format!("{stream}/")).unwrap_or(label);
+                    Some((bare.to_owned(), file))
+                }
+                Some(_) => None,
+            },
+        })
+        .collect()
+}
+
+fn basename(rel_path: &str) -> String {
+    rel_path.rsplit('/').next().unwrap_or(rel_path).to_owned()
+}
+
+/// One oracle run's context questions against ours.
+fn compare_context(
+    name: &str,
+    run: &str,
+    open: &OpenScan,
+    workstream: Option<&str>,
+    doc: &Value,
+) -> Result<(), String> {
+    let theirs = oracle_context(doc)?;
+    let visible = visible_context(open, workstream);
+    let mut ours: Vec<ContextTuple> = visible
+        .iter()
+        .filter(|(_, file)| !file.acknowledged)
+        .map(|(label, file)| {
+            (
+                label.clone(),
+                file.phase.clone(),
+                basename(&file.rel_path),
+                file.questions.len() as u64,
+            )
+        })
+        .collect();
+    ours.sort();
+    if ours != theirs {
+        return Err(format!(
+            "fixture {name} ({run}): context questions differ\n  ours:   {ours:?}\n  oracle: {theirs:?}"
+        ));
+    }
+    let our_ack = visible.iter().filter(|(_, file)| file.acknowledged).count() as u64;
+    let their_ack = doc["acknowledged"]["context_questions"]
+        .as_u64()
+        .unwrap_or(0);
+    if our_ack != their_ack {
+        return Err(format!(
+            "fixture {name} ({run}): acknowledged context files: ours {our_ack}, oracle {their_ack}"
+        ));
+    }
+    Ok(())
+}
+
+/// The per-category comparison of one fixture's root run: debug sessions and context
+/// questions.
 fn compare_open(name: &str, open: &OpenScan, doc: &Value) -> Result<(), String> {
+    compare_context(name, "root", open, None, doc)?;
     let theirs = oracle_debug(doc)?;
     let ours = our_debug(open);
     if ours != theirs {
@@ -295,10 +408,28 @@ fn ours_equals_the_open_audit_oracle_on_every_marked_fixture() {
         let state = parse_project_state(&planning);
         let open = scan_open(&planning, &state);
         let doc = oracle
-            .audit_open(tmp.path())
+            .audit_open(tmp.path(), None)
             .unwrap_or_else(|err| panic!("fixture {name}: the oracle failed: {err}"));
         if let Err(message) = compare_open(&name, &open, &doc) {
             panic!("{message}");
+        }
+        let mut streams: Vec<String> = std::fs::read_dir(planning.join("workstreams"))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .collect();
+        streams.sort();
+        for stream in streams {
+            let doc = oracle
+                .audit_open(tmp.path(), Some(&stream))
+                .unwrap_or_else(|err| {
+                    panic!("fixture {name} ({stream}): the oracle failed: {err}")
+                });
+            if let Err(message) = compare_context(&name, &stream, &open, Some(&stream), &doc) {
+                panic!("{message}");
+            }
         }
         compared += 1;
     }

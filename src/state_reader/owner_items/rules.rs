@@ -1553,6 +1553,7 @@ mod tests {
     fn root_scoped_groups_never_count_as_phases() {
         let open = OpenScan {
             debug_sessions: vec![debug_session("delta", "diagnosed")],
+            ..Default::default()
         };
         let digest = build_digest(
             vec![file(vec![row("1", "pending", Category::Pending)])],
@@ -1570,6 +1571,7 @@ mod tests {
     fn digest_of_sessions(sessions: Vec<DebugSession>) -> OwnerDigest {
         let open = OpenScan {
             debug_sessions: sessions,
+            ..Default::default()
         };
         build_digest(Vec::new(), open, &state(), now(), 30)
     }
