@@ -502,14 +502,14 @@ Schema version 1:
 | `projects[].warnings` | array of strings | `state_md_unreadable`, `state_md_recovered` |
 | `projects[].owner` | object or null | how much owner work the project holds: the checks a human has to run, over the current milestone of the project and every workstream, after the owner rules (duplicates folded, archived and acknowledged work left out); null on error |
 | `projects[].owner.test` | integer | checks waiting to be run |
-| `projects[].owner.decide` | integer | open decisions: debug sessions awaiting your confirmation, handoffs, checkpoints and open CONTEXT questions |
+| `projects[].owner.decide` | integer | open decisions: debug sessions awaiting your confirmation, handoffs, checkpoints, open CONTEXT questions and unreadable CONTEXT files |
 | `projects[].owner.fix_phases` | integer | phases that need a fix plan (failed checks or unreadable files) |
 | `projects[].owner.fix_debug` | integer | open debug investigations (`.planning/debug/`, root-scoped, not counted as phases) |
 | `projects[].owner.blocked` | integer | checks waiting on a device, server, build or third party |
 | `projects[].owner.closeable_phases` | integer | phases whose only open work is checks to run, so running them can close the phase |
 | `projects[].owner.closes_after` | object | the milestone gate: which open phases of the current milestone close after which owner work (root project only; debug sessions, handoffs, todos, archived, deferred and acknowledged work never count) |
 | `projects[].owner.closes_after.test` | integer | checks to run in the open phases |
-| `projects[].owner.closes_after.decide` | integer | open decisions (checkpoints, open CONTEXT questions) in the open phases |
+| `projects[].owner.closes_after.decide` | integer | open decisions (checkpoints, open CONTEXT questions, unreadable CONTEXT files) in the open phases |
 | `projects[].owner.closes_after.fix` | integer | failed checks and unreadable files in the open phases |
 | `projects[].owner.closes_after.blocked` | integer | blocked checks in the open phases |
 | `projects[].owner.closes_after.phases_open` | array of strings | open current-milestone phases that have plans, in phase order, spelled as the ROADMAP spells them |
@@ -638,7 +638,7 @@ Schema version 1:
 | `summary` | object | totals over every readable project, never narrowed by `--lane` or `--include` |
 | `summary.projects` | integer | entries requested, error entries included |
 | `summary.test` | integer | checks waiting to be run |
-| `summary.decide` | integer | open decisions: debug sessions awaiting your confirmation, handoffs, checkpoints and open CONTEXT questions |
+| `summary.decide` | integer | open decisions: debug sessions awaiting your confirmation, handoffs, checkpoints, open CONTEXT questions and unreadable CONTEXT files |
 | `summary.fix_phases` | integer | phases that need a fix plan |
 | `summary.fix_debug` | integer | open debug investigations (root-scoped, not counted as phases) |
 | `summary.blocked` | integer | checks waiting on a device, server, build or third party |
@@ -663,7 +663,7 @@ Schema version 1:
 | `projects[].milestone.version` | string or null | STATE.md `milestone` |
 | `projects[].milestone.closes_after` | object | the milestone gate: which open phases of the current milestone close after which owner work (root project only; debug sessions, handoffs, todos, archived, deferred and acknowledged work never count) |
 | `projects[].milestone.closes_after.test` | integer | checks to run in the open phases |
-| `projects[].milestone.closes_after.decide` | integer | open decisions (checkpoints, open CONTEXT questions) in the open phases |
+| `projects[].milestone.closes_after.decide` | integer | open decisions (checkpoints, open CONTEXT questions, unreadable CONTEXT files) in the open phases |
 | `projects[].milestone.closes_after.fix` | integer | failed checks and unreadable files in the open phases |
 | `projects[].milestone.closes_after.blocked` | integer | blocked checks in the open phases |
 | `projects[].milestone.closes_after.phases_open` | array of strings | open current-milestone phases that have plans, in phase order, spelled as the ROADMAP spells them |

@@ -59,10 +59,17 @@ pub(super) fn closes_after(groups: &[OwnerGroup], state: &ProjectState) -> Close
             } else {
                 group.items.len()
             };
+            // An unreadable file is work in Decide as in Fix, never clean (a
+            // checkpoint's unreadable record is already its one decision).
+            let unreadable = if group.kind == Kind::Checkpoint {
+                0
+            } else {
+                group.counts.unreadable
+            };
             match group.lane {
                 Lane::Test => counts[0] += items,
-                Lane::Decide => counts[1] += items,
-                Lane::Fix => counts[2] += items + group.counts.unreadable,
+                Lane::Decide => counts[1] += items + unreadable,
+                Lane::Fix => counts[2] += items + unreadable,
                 Lane::Blocked => counts[3] += items,
                 Lane::Deferred => {}
             }
@@ -188,6 +195,15 @@ mod tests {
         );
         assert_eq!(gate.phases_open, ["1"]);
         assert_eq!(gate.lane_phases.test, ["1"]);
+        assert_eq!(gate.lane_phases.decide, ["1"]);
+    }
+
+    #[test]
+    fn an_unreadable_context_file_is_a_decision_not_a_clean_phase() {
+        let state = state(&[("1", false, 1)]);
+        let groups = vec![group(Lane::Decide, Kind::ContextQuestions, "1", 0, 1)];
+        let gate = closes_after(&groups, &state);
+        assert_eq!(gate.decide, 1);
         assert_eq!(gate.lane_phases.decide, ["1"]);
     }
 

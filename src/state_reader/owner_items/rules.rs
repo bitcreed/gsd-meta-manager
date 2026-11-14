@@ -1088,11 +1088,12 @@ pub(super) fn build_digest_with(
             (Scope::Current, Lane::Decide) => {
                 // A handoff or checkpoint is one decision whatever it lists (an
                 // unreadable checkpoint lists nothing and still counts); every other
-                // kind counts its items.
+                // kind counts its items plus its unreadable files, so an unreadable
+                // CONTEXT file never reads as clean (fail-safe rule 4).
                 digest.decide += if matches!(group.kind, Kind::Handoff | Kind::Checkpoint) {
                     1
                 } else {
-                    group.items.len()
+                    group.items.len() + group.counts.unreadable
                 };
             }
             (Scope::Current, Lane::Fix) if group.kind == Kind::Debug => digest.fix_debug += 1,
@@ -2186,7 +2187,9 @@ mod tests {
         assert_eq!(d.groups.len(), 1);
         assert_eq!(d.groups[0].counts.unreadable, 1);
         assert!(d.groups[0].items.is_empty());
-        assert_eq!(d.decide, 0);
+        // WR-02: fail-safe, the unreadable file counts as one decision (the gate's
+        // side is `gate::tests::an_unreadable_context_file_is_a_decision_not_a_clean_phase`).
+        assert_eq!(d.decide, 1);
     }
 
     fn handoff(workstream: Option<&str>, actions: usize, blockers: usize) -> HandoffRecord {
