@@ -216,6 +216,13 @@ const SCHEMA_PATHS: &[&str] = &[
     "projects[].owner.blocked",
     "projects[].owner.closeable_phases",
     "projects[].owner.fix_debug",
+    "projects[].owner.closes_after",
+    "projects[].owner.closes_after.test",
+    "projects[].owner.closes_after.decide",
+    "projects[].owner.closes_after.fix",
+    "projects[].owner.closes_after.blocked",
+    "projects[].owner.closes_after.phases_open",
+    "projects[].owner.closes_after.not_built",
 ];
 
 /// The twelve keys every project entry carries.
@@ -584,15 +591,34 @@ fn owner_counts_cover_the_current_milestone() {
     let (_, owner) = uat_attention(&dir);
     assert_eq!(
         owner,
-        serde_json::json!({"test": 2, "decide": 0, "fix_phases": 0, "fix_debug": 0, "blocked": 1, "closeable_phases": 0}),
+        serde_json::json!({"test": 2, "decide": 0, "fix_phases": 0, "fix_debug": 0, "blocked": 1, "closeable_phases": 0, "closes_after": {"test": 2, "decide": 0, "fix": 0, "blocked": 1, "phases_open": ["1"], "not_built": []}}),
         "{owner}"
     );
     let dir = uat_project("testing", &["pending", "pending"]);
     let (_, owner) = uat_attention(&dir);
     assert_eq!(
         owner,
-        serde_json::json!({"test": 2, "decide": 0, "fix_phases": 0, "fix_debug": 0, "blocked": 0, "closeable_phases": 1}),
+        serde_json::json!({"test": 2, "decide": 0, "fix_phases": 0, "fix_debug": 0, "blocked": 0, "closeable_phases": 1, "closes_after": {"test": 2, "decide": 0, "fix": 0, "blocked": 0, "phases_open": ["1"], "not_built": []}}),
         "{owner}"
+    );
+}
+
+#[test]
+fn owner_closes_after_matches_the_inbox_gate() {
+    let scratch = tempfile::tempdir().unwrap();
+    let root = scratch.path().join("project");
+    copy_tree(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/owner/closes-after-milestone"),
+        &root,
+    );
+    let doc = json(&status(&[root.to_str().unwrap(), "--json"]));
+    assert_eq!(
+        entries(&doc)[0]["owner"]["closes_after"],
+        serde_json::json!({
+            "test": 12, "decide": 0, "fix": 1, "blocked": 5,
+            "phases_open": ["20", "21", "22", "23", "24", "25"],
+            "not_built": ["26"],
+        })
     );
 }
 
@@ -624,7 +650,7 @@ fn owner_counts_include_debug_sessions() {
     let with = entry(&root);
     assert_eq!(
         with["owner"],
-        serde_json::json!({"test": 0, "decide": 1, "fix_phases": 0, "fix_debug": 1, "blocked": 0, "closeable_phases": 0}),
+        serde_json::json!({"test": 0, "decide": 1, "fix_phases": 0, "fix_debug": 1, "blocked": 0, "closeable_phases": 0, "closes_after": {"test": 0, "decide": 0, "fix": 0, "blocked": 0, "phases_open": ["01"], "not_built": []}}),
         "{}",
         with["owner"]
     );
@@ -815,7 +841,7 @@ fn the_emitted_key_paths_are_exactly_schema_v1_and_every_entry_has_twelve_keys()
     }
     let schema: std::collections::BTreeSet<String> =
         SCHEMA_PATHS.iter().map(|p| (*p).to_string()).collect();
-    assert_eq!(SCHEMA_PATHS.len(), 51);
+    assert_eq!(SCHEMA_PATHS.len(), 58);
     let emitted = key_paths(&doc);
     let unknown: Vec<_> = emitted.difference(&schema).collect();
     assert!(unknown.is_empty(), "paths outside schema v1: {unknown:?}");

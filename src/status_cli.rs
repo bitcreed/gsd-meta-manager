@@ -218,6 +218,7 @@ fn owner_json(digest: &OwnerDigest) -> Value {
         "fix_debug": digest.fix_debug,
         "blocked": digest.blocked,
         "closeable_phases": digest.closeable_phases,
+        "closes_after": gsd_meta_manager::inbox::closes_after_json(&digest.closes_after),
     })
 }
 

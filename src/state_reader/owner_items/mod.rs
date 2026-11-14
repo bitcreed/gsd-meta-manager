@@ -26,6 +26,7 @@ mod context;
 mod debug;
 mod deferred;
 mod frontmatter;
+mod gate;
 mod handoff;
 mod markdown;
 mod rules;
@@ -497,6 +498,30 @@ pub struct ArchivedCounts {
     pub decide: usize,
 }
 
+/// The phases that hold each lane's counted work (the §3.2 header lists them; they are
+/// not emitted in JSON).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LanePhases {
+    pub test: Vec<String>,
+    pub decide: Vec<String>,
+    pub fix: Vec<String>,
+    pub blocked: Vec<String>,
+}
+
+/// R8: which open phases of the current milestone close after which owner work.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ClosesAfter {
+    pub test: usize,
+    pub decide: usize,
+    pub fix: usize,
+    pub blocked: usize,
+    /// Open current-milestone phases with at least one plan, in phase order.
+    pub phases_open: Vec<String>,
+    /// Open current-milestone phases without any plan on disk.
+    pub not_built: Vec<String>,
+    pub lane_phases: LanePhases,
+}
+
 /// The owner's view of one project.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct OwnerDigest {
@@ -513,6 +538,7 @@ pub struct OwnerDigest {
     pub archived: ArchivedCounts,
     pub superseded: usize,
     pub hidden: Hidden,
+    pub closes_after: ClosesAfter,
 }
 
 /// Layer A plus Layer B: the digest of one project's `.planning/` tree.

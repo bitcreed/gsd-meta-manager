@@ -16,7 +16,7 @@ use serde_json::{json, Value};
 
 use crate::oneoff::todos::PendingTodo;
 use crate::state_reader::owner_items::{
-    Category, Kind, Lane, OwnerDigest, OwnerGroup, OwnerItem, Scope,
+    Category, ClosesAfter, Kind, Lane, OwnerDigest, OwnerGroup, OwnerItem, Scope,
 };
 use crate::text::terminal_capped;
 
@@ -79,6 +79,24 @@ impl Filters {
 
 fn opt_text(value: Option<&str>) -> Value {
     value.map_or(Value::Null, |text| json!(terminal_capped(text)))
+}
+
+/// The R8 gate as JSON: four lane totals and the two phase lists, every phase string
+/// escaped and capped. Shared by `inbox` and `status`.
+pub fn closes_after_json(gate: &ClosesAfter) -> Value {
+    let phases = |list: &[String]| {
+        list.iter()
+            .map(|phase| terminal_capped(phase))
+            .collect::<Vec<_>>()
+    };
+    json!({
+        "test": gate.test,
+        "decide": gate.decide,
+        "fix": gate.fix,
+        "blocked": gate.blocked,
+        "phases_open": phases(&gate.phases_open),
+        "not_built": phases(&gate.not_built),
+    })
 }
 
 fn item_json(item: &OwnerItem) -> Value {
@@ -149,7 +167,10 @@ fn project_json(entry: &ProjectEntry, filters: &Filters) -> Value {
         ),
         None => (
             Value::Null,
-            json!({"version": opt_text(entry.milestone_version.as_deref().filter(|v| !v.trim().is_empty()))}),
+            json!({
+                "version": opt_text(entry.milestone_version.as_deref().filter(|v| !v.trim().is_empty())),
+                "closes_after": closes_after_json(&entry.digest.closes_after),
+            }),
             entry
                 .digest
                 .groups
@@ -456,6 +477,52 @@ fn by_location(a: &Row, b: &Row) -> std::cmp::Ordering {
     ))
 }
 
+/// One `closes after:` line per project with open or not-built current-milestone
+/// phases (D-13, §3.2): the lanes that hold work, each with its phases.
+fn push_closes_after(out: &mut Vec<String>, read: &[&ProjectEntry]) {
+    let lines: Vec<String> = read
+        .iter()
+        .filter_map(|entry| {
+            let gate = &entry.digest.closes_after;
+            if gate.phases_open.is_empty() && gate.not_built.is_empty() {
+                return None;
+            }
+            let lanes = [
+                ("test", gate.test, &gate.lane_phases.test),
+                ("decide", gate.decide, &gate.lane_phases.decide),
+                ("unblock", gate.blocked, &gate.lane_phases.blocked),
+                ("fix", gate.fix, &gate.lane_phases.fix),
+            ];
+            let mut parts: Vec<String> = lanes
+                .iter()
+                .filter(|(_, count, _)| *count > 0)
+                .map(|(label, count, phases)| format!("{label} {count} (ph {})", phases.join(" ")))
+                .collect();
+            if parts.is_empty() && !gate.phases_open.is_empty() {
+                parts.push(format!("no owner work (ph {})", gate.phases_open.join(" ")));
+            }
+            if !gate.not_built.is_empty() {
+                parts.push(format!("not built ph {}", gate.not_built.join(" ")));
+            }
+            let version = entry
+                .milestone_version
+                .as_deref()
+                .filter(|v| !v.trim().is_empty())
+                .map(|v| format!(" · {v}"))
+                .unwrap_or_default();
+            Some(terminal_capped(&format!(
+                "  {}{version} closes after: {}",
+                alias_of(entry),
+                parts.join(" · ")
+            )))
+        })
+        .collect();
+    if !lines.is_empty() {
+        out.push(String::new());
+        out.extend(lines);
+    }
+}
+
 /// The plain checklist for a terminal or a note: no color, no TUI chrome. The
 /// summary line and the folds count everything; the sections list what `filters`
 /// admits.
@@ -477,6 +544,8 @@ pub fn render_text(entries: &[ProjectEntry], filters: &Filters) -> String {
         sum(|d| d.fix_phases),
         sum(|d| d.blocked),
     )];
+
+    push_closes_after(&mut out, &read);
 
     let rows: Vec<Row> = read
         .iter()

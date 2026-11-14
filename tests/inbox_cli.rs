@@ -258,7 +258,10 @@ fn every_entry_group_and_item_carries_the_schema_v1_keys() {
         assert_eq!(keys(project), project_keys);
         assert_eq!(keys(&project["hidden"]), hidden_keys);
     }
-    assert_eq!(keys(&projects[0]["milestone"]), set(&["version"]));
+    assert_eq!(
+        keys(&projects[0]["milestone"]),
+        set(&["version", "closes_after"])
+    );
 
     let group_keys = set(&[
         "lane",
@@ -700,6 +703,13 @@ const INBOX_PATHS: &[&str] = &[
     "projects[].todos[].file",
     "projects[].todos[].title",
     "summary.fix_debug",
+    "projects[].milestone.closes_after",
+    "projects[].milestone.closes_after.test",
+    "projects[].milestone.closes_after.decide",
+    "projects[].milestone.closes_after.fix",
+    "projects[].milestone.closes_after.blocked",
+    "projects[].milestone.closes_after.phases_open",
+    "projects[].milestone.closes_after.not_built",
 ];
 
 fn inbox_set() -> BTreeSet<String> {

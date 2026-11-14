@@ -1037,6 +1037,7 @@ pub(super) fn build_digest_with(
     handoff_groups(&mut digest, &pause.handoffs, state, &ctx);
     checkpoint_groups(&mut digest, &pause.checkpoints, state, &ctx);
     digest.groups.sort_by_key(sort_key);
+    digest.closes_after = super::gate::closes_after(&digest.groups, state);
 
     let mut fix_phases: BTreeSet<(Option<&str>, String)> = BTreeSet::new();
     for group in digest.groups.iter().filter(|group| !group.acknowledged) {

@@ -1,5 +1,12 @@
 Owner inbox: 6 projects · test 15 · decide 0 · fix 2 phases · blocked 5
 
+  six closes after: test 12 (ph 20 21 22 23 24 25) · unblock 5 (ph 20 23) · fix 1 (ph 25)
+  gaps closes after: not built ph 01
+  old closes after: no owner work (ph 24)
+  deferred closes after: no owner work (ph 5)
+  ack closes after: not built ph 01
+  ws closes after: test 1 (ph 1)
+
 TEST — closes a phase
   six  ph 21  Export  2 checks  307 d stale  /gsd-verify-work 21
     - [ ] Export button

@@ -45,7 +45,7 @@ A `<project>` is a registered alias, a path inside a registered project, or a di
       "sessions": [{"agent": "claude", "pid": 4242, "session_id": "0f3c9a", "cwd": "/home/me/projects/my-app", "tty": "pts/3"}],
       "next": {"advisory": true, "source": "phase-20-router", "project": "/home/me/projects/my-app", "target_phase": "4", "decision": "park", "command": null, "reason": "gate_verification_human_needed", "detail": "human_needed"},
       "warnings": [],
-      "owner": {"test": 2, "decide": 0, "fix_phases": 0, "fix_debug": 0, "blocked": 0, "closeable_phases": 1}
+      "owner": {"test": 2, "decide": 0, "fix_phases": 0, "fix_debug": 0, "blocked": 0, "closeable_phases": 1, "closes_after": {"test": 2, "decide": 0, "fix": 0, "blocked": 0, "phases_open": ["4", "5"], "not_built": ["6"]}}
     },
     {
       "target": "gone-app",
@@ -68,7 +68,7 @@ A `<project>` is a registered alias, a path inside a registered project, or a di
 - `error.kind` is `unresolved` (no such alias or path), `folder_missing` (registered folder is gone) or `no_planning` (folder has no `.planning/`). An error entry has null data keys and empty arrays; the run still exits 0.
 - `attention[].kind` is one of `paused`, `external_job_waiting`, `continue_here`, `verification_human_needed`, `uat_outstanding` (its `status` carries the UAT status), `continue_here_blocking`, `deferred_verification`. A non-null `workstream` names the GSD workstream it belongs to.
 - `next.decision` is `run` (`next.command` is the advisory `/gsd-*` command), `park` (a human or a fix is needed first, see `next.reason`), `goal_met`, `no_rule` or `none` (nothing left to route).
-- `owner` counts the owner's open work in the project: `test` checks to run, `fix_phases` phases needing a fix plan, `blocked` checks waiting on something outside the project, `closeable_phases` phases that running their checks can close. `decide` counts open decisions (debug sessions awaiting your confirmation, handoffs, checkpoints, open CONTEXT questions) and `fix_debug` counts open debug investigations. It is null on an error entry. For the checks themselves, run `inbox --json`.
+- `owner` counts the owner's open work in the project: `test` checks to run, `fix_phases` phases needing a fix plan, `blocked` checks waiting on something outside the project, `closeable_phases` phases that running their checks can close. `decide` counts open decisions (debug sessions awaiting your confirmation, handoffs, checkpoints, open CONTEXT questions) and `fix_debug` counts open debug investigations. `closes_after` says which open phases of the current milestone close after which owner work (`test`, `decide`, `fix`, `blocked` totals, `phases_open`, and `not_built` phases that have no plans yet). It is null on an error entry. For the checks themselves, run `inbox --json`.
 - `schema_version` only changes on a rename, removal or type change. New keys may appear without a bump, so ignore keys you do not know.
 - `sessions` lists live `claude`/`codex` processes whose working directory is the project root or below it. It is always empty when `sessions_supported` is false.
 

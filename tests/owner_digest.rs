@@ -93,6 +93,48 @@ fn count_items(digest: &OwnerDigest, lane: Lane) -> usize {
 }
 
 #[test]
+fn closes_after_counts_the_current_milestone() {
+    let (_g, d) = digest_of("closes-after-milestone");
+    let gate = &d.closes_after;
+    assert_eq!(
+        (gate.test, gate.decide, gate.fix, gate.blocked),
+        (12, 0, 1, 5)
+    );
+    assert_eq!(gate.phases_open, ["20", "21", "22", "23", "24", "25"]);
+    assert_eq!(gate.not_built, ["26"]);
+    // Phase 19 (complete) and phase 27 (next milestone) appear nowhere.
+    assert_eq!(gate.lane_phases.fix, ["25"]);
+    assert!(!gate.lane_phases.test.iter().any(|p| p == "19" || p == "27"));
+    let (_g, entry) = entry_of("closes-after-milestone", "x");
+    let doc = build_document(&[entry], &Filters::default());
+    assert_eq!(
+        doc["projects"][0]["milestone"]["closes_after"],
+        serde_json::json!({
+            "test": 12, "decide": 0, "fix": 1, "blocked": 5,
+            "phases_open": ["20", "21", "22", "23", "24", "25"],
+            "not_built": ["26"],
+        })
+    );
+}
+
+#[test]
+fn the_closes_after_line_follows_the_header() {
+    let (_g, entry) = entry_of("closes-after-milestone", "x");
+    let text = render_text(&[entry], &Filters::default());
+    let lines: Vec<&str> = text.lines().collect();
+    assert!(lines[0].starts_with("Owner inbox:"), "{text}");
+    assert_eq!(lines[1], "");
+    assert!(
+        lines[2].starts_with("  x · v2.2 closes after: test 12 (ph 20 21 22 23 24 25)"),
+        "{}",
+        lines[2]
+    );
+    assert!(lines[2].contains(" · unblock 5 (ph "), "{}", lines[2]);
+    assert!(lines[2].contains(" · fix 1 (ph 25)"), "{}", lines[2]);
+    assert!(lines[2].ends_with(" · not built ph 26"), "{}", lines[2]);
+}
+
+#[test]
 fn supersede_six_phases_reports_eighteen_checks() {
     let (_g, d) = digest_of("supersede-six-phases");
     assert_eq!(d.test, 12);

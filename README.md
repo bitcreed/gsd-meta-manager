@@ -434,7 +434,7 @@ Schema version 1:
       "sessions": [{"agent": "claude", "pid": 4242, "session_id": "0f3c9a", "cwd": "/home/me/projects/my-app", "tty": "pts/3"}],
       "next": {"advisory": true, "source": "phase-20-router", "project": "/home/me/projects/my-app", "target_phase": "4", "decision": "park", "command": null, "reason": "gate_verification_human_needed", "detail": "human_needed"},
       "warnings": [],
-      "owner": {"test": 2, "decide": 0, "fix_phases": 0, "fix_debug": 0, "blocked": 0, "closeable_phases": 1}
+      "owner": {"test": 2, "decide": 0, "fix_phases": 0, "fix_debug": 0, "blocked": 0, "closeable_phases": 1, "closes_after": {"test": 2, "decide": 0, "fix": 0, "blocked": 0, "phases_open": ["4", "5"], "not_built": ["6"]}}
     },
     {
       "target": "gone-app",
@@ -507,6 +507,13 @@ Schema version 1:
 | `projects[].owner.fix_debug` | integer | open debug investigations (`.planning/debug/`, root-scoped, not counted as phases) |
 | `projects[].owner.blocked` | integer | checks waiting on a device, server, build or third party |
 | `projects[].owner.closeable_phases` | integer | phases whose only open work is checks to run, so running them can close the phase |
+| `projects[].owner.closes_after` | object | the milestone gate: which open phases of the current milestone close after which owner work (root project only; debug sessions, handoffs, todos, archived, deferred and acknowledged work never count) |
+| `projects[].owner.closes_after.test` | integer | checks to run in the open phases |
+| `projects[].owner.closes_after.decide` | integer | open decisions (checkpoints, open CONTEXT questions) in the open phases |
+| `projects[].owner.closes_after.fix` | integer | failed checks and unreadable files in the open phases |
+| `projects[].owner.closes_after.blocked` | integer | blocked checks in the open phases |
+| `projects[].owner.closes_after.phases_open` | array of strings | open current-milestone phases that have plans, in phase order, spelled as the ROADMAP spells them |
+| `projects[].owner.closes_after.not_built` | array of strings | open current-milestone phases without any plan on disk; they add nothing to the totals |
 
 A session belongs to the deepest project root that contains its working
 directory, so `cd src && claude` still counts for the project. Text a project
@@ -571,7 +578,7 @@ Schema version 1:
       "alias": "my-app",
       "path": "/home/me/projects/my-app",
       "error": null,
-      "milestone": {"version": "v1.2"},
+      "milestone": {"version": "v1.2", "closes_after": {"test": 2, "decide": 0, "fix": 0, "blocked": 0, "phases_open": ["4", "5"], "not_built": ["6"]}},
       "groups": [
         {
           "lane": "test",
@@ -653,6 +660,13 @@ Schema version 1:
 | `projects[].error.message` | string | one sentence, with names escaped |
 | `projects[].milestone` | object or null | null only on error |
 | `projects[].milestone.version` | string or null | STATE.md `milestone` |
+| `projects[].milestone.closes_after` | object | the milestone gate: which open phases of the current milestone close after which owner work (root project only; debug sessions, handoffs, todos, archived, deferred and acknowledged work never count) |
+| `projects[].milestone.closes_after.test` | integer | checks to run in the open phases |
+| `projects[].milestone.closes_after.decide` | integer | open decisions (checkpoints, open CONTEXT questions) in the open phases |
+| `projects[].milestone.closes_after.fix` | integer | failed checks and unreadable files in the open phases |
+| `projects[].milestone.closes_after.blocked` | integer | blocked checks in the open phases |
+| `projects[].milestone.closes_after.phases_open` | array of strings | open current-milestone phases that have plans, in phase order, spelled as the ROADMAP spells them |
+| `projects[].milestone.closes_after.not_built` | array of strings | open current-milestone phases without any plan on disk; they add nothing to the totals |
 | `projects[].groups` | array | the listed (file, lane) groups; empty on error |
 | `projects[].groups[].lane` | string | `test` / `decide` / `fix` / `blocked` / `deferred` |
 | `projects[].groups[].kind` | string | `uat` / `verification` / `deferred` / `debug` / `handoff` / `checkpoint` / `context_questions` |
@@ -707,7 +721,7 @@ one tree print identical bytes.
 
 Stability: a rename, removal or type change of any path above bumps
 `schema_version`; new keys may appear without a bump, so consumers should ignore
-keys they do not know. Phase 35 adds decision lanes and `milestone.closes_after`.
+keys they do not know. The schema carries the decision lanes and the `milestone.closes_after` gate.
 
 ```bash
 # Every phase that can be closed by running its checks, with the command.
