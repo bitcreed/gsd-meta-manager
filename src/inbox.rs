@@ -681,6 +681,17 @@ pub fn render_text(entries: &[ProjectEntry], filters: &Filters) -> String {
             "Triage: {todo_total} pending todos in {todo_projects} projects"
         ));
     }
+    // A pending folder that could not be listed counts 0; say so, since nothing is
+    // listed for it even with `--include todos`.
+    let todos_unreadable = read
+        .iter()
+        .filter(|e| e.digest.hidden.todos_unreadable)
+        .count();
+    if todos_unreadable > 0 {
+        folds.push(format!(
+            "Triage: pending todos unreadable in {todos_unreadable} projects"
+        ));
+    }
     if !folds.is_empty() {
         out.push(String::new());
         out.extend(folds);
@@ -841,6 +852,28 @@ mod tests {
             fold(3),
             "Old debt: 5 items in 1 projects (archived milestones)"
         );
+    }
+
+    #[test]
+    fn an_unreadable_todo_folder_has_its_own_fold() {
+        let mut broken = entry(Vec::new());
+        broken.digest.hidden.todos_unreadable = true;
+        for filters in [
+            Filters::default(),
+            Filters {
+                todos: true,
+                ..Default::default()
+            },
+        ] {
+            let text = render_text(&[broken.clone(), entry(Vec::new())], &filters);
+            assert!(
+                text.lines()
+                    .any(|line| line == "Triage: pending todos unreadable in 1 projects"),
+                "{text}"
+            );
+        }
+        let clean = render_text(&[entry(Vec::new())], &Filters::default());
+        assert!(!clean.contains("unreadable"), "{clean}");
     }
 
     #[test]
