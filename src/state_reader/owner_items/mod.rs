@@ -285,13 +285,13 @@ pub(crate) enum OpenKind {
     Context,
 }
 
-/// Parsed CONTEXT documents by canonical path (same rules as [`OPEN_CACHE`]; a second
-/// map because the parsed value differs).
+/// Parsed CONTEXT documents by canonical path (same rules as [`OPEN_CACHE`]; a
+/// separate map because the parsed value differs).
 pub(crate) static CONTEXT_CACHE: LazyLock<ParseCache<OpenKind, context::ParsedContext>> =
     LazyLock::new(|| ParseCache::new(CACHE_MAX_ENTRIES));
 
-/// Parsed debug sessions (and, later, context files) by canonical path, with the same
-/// validity rule and lock discipline as [`PARSE_CACHE`].
+/// Parsed debug sessions by canonical path, with the same validity rule and lock
+/// discipline as [`PARSE_CACHE`].
 pub(crate) static OPEN_CACHE: LazyLock<ParseCache<OpenKind, debug::ParsedSession>> =
     LazyLock::new(|| ParseCache::new(CACHE_MAX_ENTRIES));
 
