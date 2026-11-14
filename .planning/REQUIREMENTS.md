@@ -54,7 +54,7 @@ checks the owner can run today (report section 1).
 - [x] **OWN-07**: R7: `closes_phase` and the bookkeeping-only case are computed as specified. *Test:
   table-driven unit test over the 8 combinations (fix present, blocked present, gaps_found, stale,
   missing summary, parse gap, zero open, clean).*
-- [ ] **OWN-08**: R8: `closes_after` lists lane totals and open phases for the current milestone only;
+- [x] **OWN-08**: R8: `closes_after` lists lane totals and open phases for the current milestone only;
   phases with no plans are named "not built", not counted as owner work.
 - [x] **OWN-09**: `status: testing` (and any non-terminal UAT status with open items) counts as
   outstanding; `status_cli`'s `uat_outstanding` attention item fires for it. *Test: regression
@@ -172,7 +172,7 @@ Deferred (report section 6):
 | OWN-05 | Phase 34 | Complete |
 | OWN-06 | Phase 34 | Complete |
 | OWN-07 | Phase 34 | Complete |
-| OWN-08 | Phase 35 | Pending |
+| OWN-08 | Phase 35 | Complete |
 | OWN-09 | Phase 34 | Complete |
 | OWN-10 | Phase 35 | Complete |
 | OWN-11 | Phase 34 | Complete |
