@@ -28,7 +28,7 @@ worktree was created. Oracle conformance (`tests/owner_audit_conformance.rs`) is
 
 ## Fixed Issues
 
-### CR-01: Quadratic fence rescan per heading in `deferred-items.md`
+### CR-01: Quadratic fence rescan per heading in `deferred-items.md` hangs the reader on a hostile file
 
 **Files modified:** `src/state_reader/owner_items/deferred.rs`, `src/state_reader/owner_items/scan.rs`
 **Commit:** db29f46f
@@ -46,7 +46,7 @@ identical to the old behavior on every honest file. Tests: a 1 MiB file of headi
 Status: fixed (logic change; conformance unchanged, so human review of the budget constant
 is optional).
 
-### WR-01: Containment is vacuous above the final path component
+### WR-01: Containment check is vacuous above the final path component, so the reader follows a symlinked `phases/` or `workstreams/` out of the project
 
 **Files modified:** `src/state_reader/owner_items/scan.rs`
 **Commit:** 5436c6f9
@@ -56,7 +56,7 @@ planning tree (computed once in `scan_planning`) instead of to its own parent. A
 `a_symlinked_phases_or_workstreams_directory_cannot_lead_out_of_the_project` (confirmed to
 fail with the old check). Module header updated.
 
-### WR-02: A VERIFICATION with unparseable frontmatter reads as clean
+### WR-02: A VERIFICATION file whose frontmatter does not parse reads as clean
 
 **Files modified:** `src/state_reader/owner_items/frontmatter.rs`, `src/state_reader/owner_items/scan.rs`
 **Commit:** 1873189b
@@ -68,7 +68,7 @@ block without a status still contributes nothing (upstream behavior).
 Status: fixed: requires human verification (it makes a previously silent case visible; the
 anchor-refusal case is also reported as unreadable, which the reviewer did not list).
 
-### WR-03: `read_text_file` has no size cap
+### WR-03: The 1 MiB read cap is bypassed by `parse_project_state`, which reads the same files with an unbounded `read_to_string`
 
 **Files modified:** `src/state_reader/disk_status.rs`
 **Commit:** 9868af85
@@ -77,7 +77,7 @@ read itself with `take(cap + 1)`; every caller already treats an error as absent
 Test covers exactly 1 MiB (read), 1 MiB + 1 (refused) and a 4 GiB sparse file (refused
 without reading).
 
-### WR-04: Impossible-state guard `file_unreadable` in `apply_r7`
+### WR-04: Impossible-state guard: `file_unreadable` in `apply_r7` is always false at its use
 
 **Files modified:** `src/state_reader/owner_items/rules.rs`
 **Commit:** 02693555
@@ -87,7 +87,7 @@ the guard, and recorded the invariant at the `has_fix || has_blocked` check. The
 "parse gap" row of `r7_closeable_table` covers it.
 Status: fixed: requires human verification (code removal).
 
-### WR-05: Flaky wall-clock assertions in the cold-run test
+### WR-05: Wall-clock assertions make `a_cold_inbox_over_twenty_projects_is_under_a_second` flaky
 
 **Files modified:** `tests/inbox_cli.rs`
 **Commit:** fb6255c0
@@ -96,14 +96,14 @@ restores the one-second target for a quiet machine. The test, its name and its
 `summary.projects` / `test > 0` assertions are kept. The pathological-input proof for the
 real performance hazard is the CR-01 unit tests.
 
-### IN-01: Stale `allow(dead_code)` attributes
+### IN-01: Stale `allow(dead_code)` attributes hide an unused production function
 
 **Files modified:** `src/state_reader/owner_items/markdown.rs`, `src/state_reader/owner_items/frontmatter.rs`
 **Commit:** ffc7611e
 **Applied fix:** Removed the module-wide `#![allow(dead_code)]` and `fm_list`'s attribute;
 `collect_section_stopping_at` (no non-test caller) is `#[cfg(test)]`.
 
-### IN-03: `fix_phases` compared raw phase tokens
+### IN-03: `fix_phases` compares raw phase tokens, unlike every other phase comparison
 
 **Files modified:** `src/state_reader/owner_items/rules.rs`
 **Commit:** 572ef92d
