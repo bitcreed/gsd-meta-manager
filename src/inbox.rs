@@ -478,8 +478,21 @@ fn by_location(a: &Row, b: &Row) -> std::cmp::Ordering {
     ))
 }
 
+/// Project-derived phase numbers, each escaped and capped on its own, space-joined.
+fn phase_list(phases: &[String]) -> String {
+    phases
+        .iter()
+        .map(|phase| terminal_capped(phase))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// One `closes after:` line per project with open or not-built current-milestone
 /// phases (D-13, §3.2): the lanes that hold work, each with its phases.
+///
+/// Only the project-derived pieces (alias, version, each phase) are escaped and
+/// capped; the generated structure is not, so a long line keeps its `fix` and
+/// `not built` tail (WR-03).
 fn push_closes_after(out: &mut Vec<String>, read: &[&ProjectEntry]) {
     let lines: Vec<String> = read
         .iter()
@@ -497,25 +510,30 @@ fn push_closes_after(out: &mut Vec<String>, read: &[&ProjectEntry]) {
             let mut parts: Vec<String> = lanes
                 .iter()
                 .filter(|(_, count, _)| *count > 0)
-                .map(|(label, count, phases)| format!("{label} {count} (ph {})", phases.join(" ")))
+                .map(|(label, count, phases)| {
+                    format!("{label} {count} (ph {})", phase_list(phases))
+                })
                 .collect();
             if parts.is_empty() && !gate.phases_open.is_empty() {
-                parts.push(format!("no owner work (ph {})", gate.phases_open.join(" ")));
+                parts.push(format!(
+                    "no owner work (ph {})",
+                    phase_list(&gate.phases_open)
+                ));
             }
             if !gate.not_built.is_empty() {
-                parts.push(format!("not built ph {}", gate.not_built.join(" ")));
+                parts.push(format!("not built ph {}", phase_list(&gate.not_built)));
             }
             let version = entry
                 .milestone_version
                 .as_deref()
                 .filter(|v| !v.trim().is_empty())
-                .map(|v| format!(" · {v}"))
+                .map(|v| format!(" · {}", terminal_capped(v)))
                 .unwrap_or_default();
-            Some(terminal_capped(&format!(
+            Some(format!(
                 "  {}{version} closes after: {}",
-                alias_of(entry),
+                terminal_capped(&alias_of(entry)),
                 parts.join(" · ")
-            )))
+            ))
         })
         .collect();
     if !lines.is_empty() {
@@ -685,7 +703,7 @@ pub fn render_text(entries: &[ProjectEntry], filters: &Filters) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state_reader::owner_items::{Category, GroupCounts, Kind};
+    use crate::state_reader::owner_items::{Category, GroupCounts, Kind, LanePhases};
 
     fn group(lane: Lane) -> OwnerGroup {
         OwnerGroup {
@@ -794,5 +812,45 @@ mod tests {
         assert_eq!(project["todos"], json!([]));
         assert_eq!(project["hidden"]["noise"], 0);
         assert_eq!(doc["summary"]["projects"], 1);
+    }
+
+    #[test]
+    fn a_long_closes_after_line_keeps_every_lane_and_escapes_each_piece() {
+        let phases = |range: std::ops::Range<u32>| -> Vec<String> {
+            range.map(|n| format!("{n}.1")).collect()
+        };
+        let mut long = entry(Vec::new());
+        long.alias = Some(format!("{}\u{1b}[31m", "a".repeat(60)));
+        long.milestone_version = Some("v9.9\u{1b}[0m".into());
+        long.digest.closes_after = ClosesAfter {
+            test: 12,
+            decide: 12,
+            fix: 12,
+            blocked: 12,
+            phases_open: phases(1..13),
+            not_built: vec!["13".into(), "14\u{7}".into()],
+            lane_phases: LanePhases {
+                test: phases(1..13),
+                decide: phases(1..13),
+                fix: phases(1..13),
+                blocked: phases(1..13),
+            },
+        };
+        let text = render_text(&[long], &Filters::default());
+        let line = text
+            .lines()
+            .find(|line| line.contains("closes after:"))
+            .expect("a closes after line");
+        assert!(line.chars().count() > crate::text::MAX_TEXT_CHARS, "{line}");
+        assert!(!line.ends_with('…'), "{line}");
+        assert!(
+            line.contains(&format!("fix 12 (ph {})", phases(1..13).join(" "))),
+            "{line}"
+        );
+        assert!(line.contains("not built ph 13 "), "{line}");
+        assert!(
+            !line.contains('\u{1b}') && !line.contains('\u{7}'),
+            "{line:?}"
+        );
     }
 }
