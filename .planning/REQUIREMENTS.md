@@ -27,11 +27,11 @@ checks the owner can run today (report section 1).
 
 ### Reader and rules (OWN-01..12)
 
-- [ ] **OWN-01**: The state reader produces per-item UAT/VERIFICATION data natively (Layer A, report
+- [x] **OWN-01**: The state reader produces per-item UAT/VERIFICATION data natively (Layer A, report
   section 4) for active and archived phases, root and workstreams. *Test: for every fixture in
   `tests/fixtures/owner/`, the set of (file, test, result, category) equals
   `gsd-tools query audit-uat --raw`.*
-- [ ] **OWN-02**: The conformance test uses the oracle pattern of `tests/driver_router_conformance.rs`:
+- [x] **OWN-02**: The conformance test uses the oracle pattern of `tests/driver_router_conformance.rs`:
   resolved through `gsd_install::install_candidates`, fails when the oracle is missing unless
   `ALLOW_MISSING_ORACLE` is set, fails if any fixture produced no comparison; a source scan asserts no
   non-comment line under `src/` names `audit-uat` as a spawned verb. *Test: itself, and it passes in
@@ -65,7 +65,7 @@ checks the owner can run today (report section 1).
   RESOLVED/ANSWERED/CLOSED bullets (D11), pending-todo count and oldest age. Debug status is normalized
   (`-`/`_`, case) and `knowledge-base.md` and `resolved/` are ignored. *Test: one fixture per row of
   the signal table.*
-- [ ] **OWN-11**: Safety: 1 MiB read cap, symlink containment, no panic on invalid UTF-8 or
+- [x] **OWN-11**: Safety: 1 MiB read cap, symlink containment, no panic on invalid UTF-8 or
   unterminated frontmatter, every rendered string through `text::render_for_terminal`. *Test: hostile
   fixtures plus the existing `render_escape_guard` coverage extended to the new screens.*
 - [ ] **OWN-12**: Cost: parsed files are cached by (path, mtime, len) and invalidated by the watcher; a
@@ -74,7 +74,7 @@ checks the owner can run today (report section 1).
 
 ### CLI (OWN-13..15)
 
-- [ ] **OWN-13**: `gsd-meta-manager inbox --json` emits schema `gsd-meta-manager/inbox` v1 (report
+- [x] **OWN-13**: `gsd-meta-manager inbox --json` emits schema `gsd-meta-manager/inbox` v1 (report
   section 3.5), deterministic (no timestamps, sorted), exit codes as `status`; writes nothing and takes
   no lock. *Test: `tests/inbox_cli.rs` pins every key path against the README contract.*
 - [ ] **OWN-14**: `inbox` without `--json` prints a plain checklist grouped by lane; `--lane
@@ -165,8 +165,8 @@ Deferred (report section 6):
 
 | Requirement | Phase | Status |
 |---|---|---|
-| OWN-01 | Phase 34 | Pending |
-| OWN-02 | Phase 34 | Pending |
+| OWN-01 | Phase 34 | Complete |
+| OWN-02 | Phase 34 | Complete |
 | OWN-03 | Phase 34 | Pending |
 | OWN-04 | Phase 34 | Pending |
 | OWN-05 | Phase 34 | Pending |
@@ -175,9 +175,9 @@ Deferred (report section 6):
 | OWN-08 | Phase 35 | Pending |
 | OWN-09 | Phase 34 | Pending |
 | OWN-10 | Phase 35 | Pending |
-| OWN-11 | Phase 34 | Pending |
+| OWN-11 | Phase 34 | Complete |
 | OWN-12 | Phase 34 | Pending |
-| OWN-13 | Phase 34 | Pending |
+| OWN-13 | Phase 34 | Complete |
 | OWN-14 | Phase 34 | Pending |
 | OWN-15 | Phase 34 | Pending |
 | OWN-16 | Phase 36 | Pending |

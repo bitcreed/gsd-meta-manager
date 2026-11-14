@@ -139,11 +139,11 @@ Requirements: `.planning/REQUIREMENTS.md` (OWN-01..OWN-23). Source of truth: `.p
 **Requirements**: OWN-01, OWN-02, OWN-03, OWN-04, OWN-05, OWN-06, OWN-07, OWN-09, OWN-11, OWN-12, OWN-13, OWN-14, OWN-15
 **Depends on:** Nothing (first phase of v2.5.0)
 **Verification:** Automatic (conformance oracle, fixtures, golden output)
-**Plans:** 6 plans
+**Plans:** 1/6 plans executed
 
 Plans:
 **Wave 1**
-- [ ] 34-01-PLAN.md — Tracer: thinnest end-to-end `inbox --json`, shared CLI targets, schema v1, `audit-uat` oracle harness and source scan
+- [x] 34-01-PLAN.md — Tracer: thinnest end-to-end `inbox --json`, shared CLI targets, schema v1, `audit-uat` oracle harness and source scan
 
 **Wave 2** *(blocked on Wave 1 completion)*
 - [ ] 34-06-PLAN.md — Shared engines: markdown sectionizer, FAILSAFE frontmatter, acknowledgment (R4), hostile-input tests

@@ -5,16 +5,16 @@ milestone_name: Owner Inbox
 current_phase: 34
 current_phase_name: Owner items reader + inbox CLI
 status: executing
-stopped_at: Phase 34 context gathered
-last_updated: "2026-11-14T17:19:49.000Z"
+stopped_at: Completed 34-01-PLAN.md
+last_updated: "2026-11-14T17:45:05.721Z"
 last_activity: 2026-11-14
 last_activity_desc: Phase 34 execution started
-state_head: 7083509bdc4da9693c360aac2f6083510222a957
+state_head: 51524409aa02c7eb5a39fc8ec298947e38c5b4a5
 progress:
   total_phases: 4
   completed_phases: 0
   total_plans: 6
-  completed_plans: 0
+  completed_plans: 1
   percent: 0
 ---
 
@@ -30,8 +30,8 @@ See: .planning/PROJECT.md (updated 2026-11-14)
 ## Current Position
 
 Phase: 34 (Owner items reader + inbox CLI) — EXECUTING
-Plan: 1 of 6
-Status: Executing Phase 34
+Plan: 2 of 6
+Status: Ready to execute
 Last activity: 2026-11-14 — Phase 34 execution started
 
 
@@ -173,6 +173,7 @@ None. Phase 19's deferred human verification was closed by supersession on 2026-
 | Phase 31 P08 | 40 min | 3 tasks | 11 files |
 | Phase 31 P09 | about 2h | 3 tasks | 6 files |
 | Phase 31 P07 | 45min | 3 tasks | 42 files |
+| Phase 34 P01 | 1 session | 2 tasks | 22 files |
 
 ## Accumulated Context
 
@@ -330,6 +331,8 @@ Recent decisions affecting current work:
 - [Phase 33]: herdr launch is one std-only `layout.apply` socket request; no shell-based herdr path even as fallback [inferred - audit]
 - [Phase 33]: herdr focus joins session id → pid → unique cwd; ambiguity on any tier refused; `agent focus` with `tab focus` fallback [inferred - audit]
 - [Phase 33]: innermost multiplexer chosen by nearest `/proc` ancestor server; tmux detection keeps "any `$TMUX` value counts" [inferred - audit]
+- [Phase 34]: 34-01: owner scan filters phase dirs by state.in_current_milestone as well as state.phases [inferred]
+- [Phase 34]: 34-01: a Fix group with unreadable checks carries command null [inferred, schema decision 4]
 
 ### Roadmap Evolution
 
@@ -592,9 +595,9 @@ non-unique bullets in these narrative logs). Disclosed per file instead [inferre
 
 ## Session Continuity
 
-Last session: 2026-11-14T16:03:03.202Z
-Stopped at: Phase 34 context gathered
-Resume file: .planning/phases/34-owner-items-reader-inbox-cli/34-CONTEXT.md
+Last session: 2026-11-14T17:45:05.660Z
+Stopped at: Completed 34-01-PLAN.md
+Resume file: None
 
 Next: push master + tag v2.4.0 (tag push publishes to crates.io); then `/gsd-new-milestone`.
 Earlier (2026-11-11): v2.3.1 released and published to crates.io — Multiplexer Backends (publish fix).
