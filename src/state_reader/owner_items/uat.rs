@@ -3,8 +3,9 @@
 //!
 //! Rows are column-0 `### N.` headings found fence-aware (through
 //! [`markdown::tokenize_headings`]), with inline and block-scalar `result:`,
-//! `reason:`, `blocked_by:` and `expected:` fields. Plan 34-02 adds the `## Gaps`
-//! bullets and tables, the resolved-gap skip and the shortfall tallies.
+//! `reason:`, `blocked_by:` and `expected:` fields, the parse-gap tallies (fence
+//! shortfall, unowned indented rows, unterminated fence, rows without a result), the
+//! `## Gaps` bullets and tables, and the resolved-issue skip.
 //!
 //! JavaScript's character classes are reproduced where they decide an outcome:
 //! `\w` is ASCII, `\s` is [`js_space`], and `.` excludes four line terminators.
@@ -360,7 +361,505 @@ fn non_empty(value: Option<String>) -> Option<String> {
     value.filter(|text| !text.is_empty())
 }
 
-/// Parse the `### N.` rows of a UAT body.
+/// `FENCE_OPENER_RE`: a fence opener at column 0 (three or more backticks or tildes).
+fn is_column_0_fence_opener(line: &str) -> bool {
+    line.starts_with("```") || line.starts_with("~~~")
+}
+
+/// `dropTopLevelFencedRegions`: `raw_lines` with every column-0 fenced region and its
+/// delimiter lines removed (raw text kept everywhere else).
+fn drop_top_level_fenced_regions(raw_lines: &[&str]) -> String {
+    let mut kept: Vec<&str> = Vec::new();
+    let mut open: Option<(char, usize)> = None;
+    for line in raw_lines {
+        let plain = line.strip_suffix('\r').unwrap_or(line);
+        let run_char = plain.chars().next().filter(|c| matches!(c, '`' | '~'));
+        let delimiter = run_char.and_then(|ch| {
+            let len = plain.chars().take_while(|c| *c == ch).count();
+            let trailing = &plain[len..];
+            (len >= 3 && !trailing.chars().any(line_terminator)).then_some((ch, len, trailing))
+        });
+        if let Some((ch, len, trailing)) = delimiter {
+            match open {
+                None => {
+                    if ch == '`' && trailing.contains('`') {
+                        kept.push(line);
+                        continue;
+                    }
+                    open = Some((ch, len));
+                }
+                Some((open_ch, open_len)) => {
+                    if ch == open_ch && len >= open_len && trailing.chars().all(js_space) {
+                        open = None;
+                    }
+                }
+            }
+            continue;
+        }
+        if open.is_none() {
+            kept.push(line);
+        }
+    }
+    kept.join("\n")
+}
+
+/// `clipBlockAtFirstFence`: the raw block bounded to the part the heading tokenizer
+/// also treated as visible, so a row cannot read a later row's `expected:` through a
+/// fence.
+fn clip_block_at_first_fence(block: &str) -> String {
+    let raw_lines: Vec<&str> = block.split('\n').collect();
+    let Some(first_fence) = raw_lines.iter().position(|l| is_column_0_fence_opener(l)) else {
+        return block.to_owned();
+    };
+    let before_fence = raw_lines[..first_fence].join("\n");
+    if non_empty(extract_scalar_field(&before_fence, "expected")).is_some() {
+        return before_fence;
+    }
+    let visible = drop_top_level_fenced_regions(&raw_lines);
+    if non_empty(extract_scalar_field(&visible, "expected")).is_some() {
+        return visible;
+    }
+    before_fence
+}
+
+/// `^#{3}(?!#)[ \t]+\d+\.(?!\d)` after the optional indent: whether `line` is shaped
+/// like a `### N.` row heading. `indented` selects `INDENTED_TEST_HEADING_LINE_RE`
+/// (`^[ \t]+` first) over `TEST_HEADING_LINE_RE` (column 0).
+fn is_test_heading_line(line: &str, indented: bool) -> bool {
+    let body = line.trim_start_matches([' ', '\t']);
+    if indented == (body.len() == line.len()) {
+        return false;
+    }
+    let Some(after) = body.strip_prefix("###") else {
+        return false;
+    };
+    if after.starts_with('#') {
+        return false;
+    }
+    let after_space = after.trim_start_matches([' ', '\t']);
+    if after_space.len() == after.len() {
+        return false;
+    }
+    let digits = after_space.bytes().take_while(u8::is_ascii_digit).count();
+    let Some(rest) = after_space[digits..].strip_prefix('.') else {
+        return false;
+    };
+    digits > 0 && !rest.bytes().next().is_some_and(|b| b.is_ascii_digit())
+}
+
+/// `ANY_KEY_SCALAR_HEADER_LINE_RE`: `^[A-Za-z_][\w-]*:` then a block-scalar opener.
+fn is_any_key_scalar_header(line: &str) -> bool {
+    let mut chars = line.chars();
+    if !chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+    {
+        return false;
+    }
+    let name_len = line
+        .chars()
+        .take_while(|c| word_char(*c) || *c == '-')
+        .map(char::len_utf8)
+        .sum::<usize>();
+    block_scalar_header(line, &line[..name_len]).is_some()
+}
+
+/// `countUnattributedIndentedRows`: indented `### N.` lines that no preceding
+/// block-scalar header owns. One forward pass tracks the nearest preceding non-blank
+/// column-0 line.
+fn count_unattributed_indented_rows(lines: &[&str]) -> usize {
+    let mut owner: Option<usize> = None;
+    let mut count = 0;
+    for (index, line) in lines.iter().enumerate() {
+        if is_test_heading_line(line, true) {
+            let owned = owner.is_some_and(|at| is_any_key_scalar_header(lines[at]));
+            if !owned {
+                count += 1;
+            }
+        }
+        if !js_trim(line).is_empty() && !line.starts_with([' ', '\t']) {
+            owner = Some(index);
+        }
+    }
+    count
+}
+
+// ---------------------------------------------------------------------------
+// `## Gaps`
+// ---------------------------------------------------------------------------
+
+/// `HYPHEN_BULLET_MARKERS.open` (`^(\s*)(-)\s`): the indent of a hyphen list opener.
+fn list_opener_indent(line: &str) -> Option<usize> {
+    let body = line.trim_start_matches(js_space);
+    let indent = line.chars().count() - body.chars().count();
+    let rest = body.strip_prefix('-')?;
+    rest.chars().next().is_some_and(js_space).then_some(indent)
+}
+
+/// `HYPHEN_BULLET_MARKERS.strip` (`^(\s*)-\s+(.*)$`): the text after the marker.
+fn strip_hyphen_marker(line: &str) -> Option<&str> {
+    let rest = line.trim_start_matches(js_space).strip_prefix('-')?;
+    let body = rest.trim_start_matches(js_space);
+    if body.len() == rest.len() || body.chars().any(line_terminator) {
+        return None;
+    }
+    Some(body)
+}
+
+/// `splitGapsEntries` for the hyphen grammar: top-level `- ` openers start entries;
+/// deeper lines fold into the open one; separator lines (`- - -`) between entries are
+/// skipped; lines before the first opener are dropped.
+fn split_gaps_entries(body: &str) -> Vec<Vec<&str>> {
+    let mut entries: Vec<Vec<&str>> = Vec::new();
+    let mut current: Option<Vec<&str>> = None;
+    let mut base_indent: Option<usize> = None;
+    for line in body.split('\n') {
+        let opener = list_opener_indent(line);
+        if let Some(indent) = opener {
+            let after_marker = line.trim_start_matches(js_space).strip_prefix('-');
+            let remainder = after_marker.map_or("", |rest| {
+                let mut chars = rest.chars();
+                chars.next();
+                chars.as_str()
+            });
+            let separator =
+                remainder.chars().all(|c| c == '-' || js_space(c)) && remainder.contains('-');
+            if separator && (current.is_none() || indent <= base_indent.unwrap_or(0)) {
+                continue;
+            }
+        }
+        if let Some(indent) = opener {
+            let base = *base_indent.get_or_insert(indent);
+            if indent <= base {
+                entries.extend(current.take());
+                current = Some(vec![line]);
+                continue;
+            }
+        }
+        if let Some(open) = current.as_mut() {
+            open.push(line);
+        }
+    }
+    entries.extend(current);
+    entries
+}
+
+/// The fields of one entry that the parsers read, first occurrence of a key wins.
+#[derive(Default)]
+struct GapFields {
+    status: Option<String>,
+    truth: Option<String>,
+    reason: Option<String>,
+    test: Option<String>,
+}
+
+/// `parseGapEntryFieldLine`: a `key: value` line, the marker stripped on the
+/// entry's first line only, a `**Key:**` form unwrapped and lower-cased.
+fn gap_field_line(raw: &str, strip_marker: bool) -> Option<(String, String)> {
+    let bare = if strip_marker {
+        strip_hyphen_marker(raw).unwrap_or_else(|| js_trim(raw))
+    } else {
+        js_trim(raw)
+    };
+    let content = unwrap_bold_key(bare);
+    let name_len = {
+        let mut chars = content.chars();
+        if !chars
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        {
+            return None;
+        }
+        1 + chars
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
+            .count()
+    };
+    let rest = content[name_len..].strip_prefix(':')?;
+    let value = rest.trim_start_matches(js_space);
+    if value.chars().any(line_terminator) {
+        return None;
+    }
+    let mut value = js_trim(value);
+    if value.len() >= 2 && value.starts_with('"') && value.ends_with('"') {
+        value = &value[1..value.len() - 1];
+    }
+    Some((content[..name_len].to_owned(), value.to_owned()))
+}
+
+/// `^\*+([A-Za-z_][A-Za-z0-9_-]*):\*+` rewritten to `key:` with the key lower-cased.
+fn unwrap_bold_key(text: &str) -> std::borrow::Cow<'_, str> {
+    let unstarred = text.trim_start_matches('*');
+    if unstarred.len() == text.len()
+        || !unstarred
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+    {
+        return text.into();
+    }
+    let name_len = unstarred
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
+        .count();
+    let Some(after_colon) = unstarred[name_len..].strip_prefix(':') else {
+        return text.into();
+    };
+    let tail = after_colon.trim_start_matches('*');
+    if tail.len() == after_colon.len() {
+        return text.into();
+    }
+    format!("{}:{tail}", unstarred[..name_len].to_ascii_lowercase()).into()
+}
+
+fn gap_fields(entry: &[&str]) -> GapFields {
+    let mut fields = GapFields::default();
+    for (index, line) in entry.iter().enumerate() {
+        let Some((key, value)) = gap_field_line(line, index == 0) else {
+            continue;
+        };
+        let slot = match key.as_str() {
+            "status" => &mut fields.status,
+            "truth" => &mut fields.truth,
+            "reason" => &mut fields.reason,
+            "test" => &mut fields.test,
+            _ => continue,
+        };
+        slot.get_or_insert(value);
+    }
+    fields
+}
+
+/// `rawGapEntryText`: the display fallback of an entry without a `truth:` field.
+fn raw_gap_entry_text(entry: &[&str]) -> String {
+    let joined: Vec<&str> = entry
+        .iter()
+        .enumerate()
+        .map(|(index, line)| {
+            if index == 0 {
+                strip_hyphen_marker(line).unwrap_or(line)
+            } else {
+                js_trim(line)
+            }
+        })
+        .collect();
+    js_trim(&joined.join(" ")).to_owned()
+}
+
+/// `/^\d+$/`, as the test number a gap names (leading zeros dropped, as `parseInt`).
+fn gap_test_number(value: Option<&str>) -> Option<String> {
+    let value = value.filter(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()))?;
+    let trimmed = value.trim_start_matches('0');
+    Some(if trimmed.is_empty() { "0" } else { trimmed }.to_owned())
+}
+
+/// The body of the first level-2 `Gaps` section.
+fn gaps_section_body(lines: &[&str]) -> Option<String> {
+    markdown::collect_section(
+        lines,
+        |heading| heading.level == 2 && heading.text.eq_ignore_ascii_case("gaps"),
+        true,
+    )
+    .map(|section| section.body)
+}
+
+/// One GFM table of a section body: its header row, if a delimiter row followed it,
+/// and its data rows.
+struct GapsTable {
+    header: Option<Vec<String>>,
+    rows: Vec<Vec<String>>,
+}
+
+/// `collectTableRows`: a header is the row a delimiter row follows, a prose or blank
+/// line ends the table, a headerless table keeps every row.
+fn collect_table_rows(body: &str) -> Vec<GapsTable> {
+    let mut tables = Vec::new();
+    let mut current: Option<GapsTable> = None;
+    let mut pending: Option<Vec<String>> = None;
+    fn ensure(current: &mut Option<GapsTable>) -> &mut GapsTable {
+        current.get_or_insert_with(|| GapsTable {
+            header: None,
+            rows: Vec::new(),
+        })
+    }
+    for raw in body.split('\n') {
+        let line = js_trim(raw);
+        if !line.starts_with('|') {
+            if let Some(row) = pending.take() {
+                ensure(&mut current).rows.push(row);
+            }
+            tables.extend(current.take());
+            continue;
+        }
+        let cells = markdown::split_table_row(line);
+        if markdown::is_delimiter_row(&cells) {
+            ensure(&mut current).header = pending.take();
+            continue;
+        }
+        if let Some(row) = pending.take() {
+            ensure(&mut current).rows.push(row);
+        }
+        pending = Some(cells);
+    }
+    if let Some(row) = pending.take() {
+        ensure(&mut current).rows.push(row);
+    }
+    tables.extend(current);
+    tables
+}
+
+/// Column positions by canonical Gaps field (`GAPS_COLUMN_ALIASES`).
+#[derive(Default)]
+struct GapsColumns {
+    truth: Option<usize>,
+    status: Option<usize>,
+    reason: Option<usize>,
+    test: Option<usize>,
+    /// Any column mapped, including fields the parsers do not read (`severity`).
+    any: bool,
+}
+
+fn map_gaps_header(header: &[String]) -> Option<GapsColumns> {
+    let mut columns = GapsColumns::default();
+    for (index, cell) in header.iter().enumerate() {
+        let name = js_trim(cell).to_lowercase().replace('*', "");
+        let slot = match name.as_str() {
+            "truth" | "gap" | "finding" | "item" | "description" | "issue" | "name" => {
+                Some(&mut columns.truth)
+            }
+            "status" | "result" | "state" => Some(&mut columns.status),
+            "reason" | "note" | "notes" | "detail" | "details" | "evidence" => {
+                Some(&mut columns.reason)
+            }
+            "test" | "#" | "test #" | "test number" => Some(&mut columns.test),
+            // Mapped upstream, never read.
+            "severity" => {
+                columns.any = true;
+                None
+            }
+            // Own properties of a JavaScript object literal's prototype chain
+            // resolve to a truthy value in upstream's alias lookup.
+            "constructor" | "__proto__" => {
+                columns.any = true;
+                None
+            }
+            _ => None,
+        };
+        if let Some(slot) = slot {
+            if slot.is_none() {
+                *slot = Some(index);
+            }
+            columns.any = true;
+        }
+    }
+    columns.any.then_some(columns)
+}
+
+/// `parseGapsTableItems`: one item per data row of the section's tables.
+fn parse_gaps_table_items(body: &str) -> Vec<AuditItem> {
+    let mut items = Vec::new();
+    for table in collect_table_rows(body) {
+        let columns = table.header.as_deref().and_then(map_gaps_header);
+        for cells in &table.rows {
+            let at = |column: Option<usize>| -> String {
+                column
+                    .and_then(|index| cells.get(index))
+                    .map(|cell| js_trim(cell).to_owned())
+                    .unwrap_or_default()
+            };
+            let status_column = columns.as_ref().and_then(|c| c.status);
+            let raw_status = at(status_column);
+            if raw_status.eq_ignore_ascii_case("resolved") {
+                continue;
+            }
+            if status_column.is_none()
+                && cells
+                    .iter()
+                    .any(|cell| js_trim(cell).eq_ignore_ascii_case("resolved"))
+            {
+                continue;
+            }
+            let truth = at(columns.as_ref().and_then(|c| c.truth));
+            let reason = at(columns.as_ref().and_then(|c| c.reason));
+            let test = at(columns.as_ref().and_then(|c| c.test));
+            let name = if truth.is_empty() {
+                cells
+                    .iter()
+                    .filter(|cell| !cell.is_empty())
+                    .map(String::as_str)
+                    .collect::<Vec<_>>()
+                    .join(" \u{2014} ")
+            } else {
+                truth
+            };
+            if name.is_empty() {
+                continue;
+            }
+            let status = if raw_status.is_empty() {
+                "unknown".to_owned()
+            } else {
+                raw_status
+            };
+            let reason = non_empty(Some(reason));
+            items.push(AuditItem {
+                origin: Origin::GapTable,
+                test: gap_test_number(Some(&test)),
+                name,
+                expected: None,
+                category: categorize_item(&status, reason.as_deref(), None),
+                result: status,
+                reason,
+                blocked_by: None,
+            });
+        }
+    }
+    items
+}
+
+/// The gap entries of a body, read once: the `## Gaps` items (bullets, then tables) and
+/// the test numbers the section records as resolved.
+struct GapsReading {
+    items: Vec<AuditItem>,
+    resolved_tests: std::collections::BTreeSet<String>,
+}
+
+/// `parseGapsItems` plus `isTestIssueResolvedInGaps`'s data.
+fn read_gaps(lines: &[&str]) -> GapsReading {
+    let mut reading = GapsReading {
+        items: Vec::new(),
+        resolved_tests: std::collections::BTreeSet::new(),
+    };
+    let Some(body) = gaps_section_body(lines) else {
+        return reading;
+    };
+    for entry in split_gaps_entries(&body) {
+        let fields = gap_fields(&entry);
+        let raw_status = fields.status.as_deref().filter(|s| !s.is_empty());
+        let resolved = raw_status.is_some_and(|s| s.to_lowercase() == "resolved");
+        if resolved {
+            reading
+                .resolved_tests
+                .extend(gap_test_number(fields.test.as_deref()));
+            continue;
+        }
+        let status = raw_status.unwrap_or("unknown").to_owned();
+        let reason = non_empty(fields.reason);
+        let name = non_empty(fields.truth).unwrap_or_else(|| raw_gap_entry_text(&entry));
+        reading.items.push(AuditItem {
+            origin: Origin::Gap,
+            test: gap_test_number(fields.test.as_deref()),
+            name,
+            expected: None,
+            category: categorize_item(&status, reason.as_deref(), None),
+            result: status,
+            reason,
+            blocked_by: None,
+        });
+    }
+    reading.items.extend(parse_gaps_table_items(&body));
+    reading
+}
+
+/// Parse the `### N.` rows and the `## Gaps` entries of a UAT body.
 ///
 /// A row is a column-0 level-3 heading outside every fence whose text starts with
 /// `N.`; its block runs to the next column-0 heading of any level. Delimiters of
@@ -376,6 +875,22 @@ pub(super) fn parse_uat_items_with_stats(text: &str) -> UatParse {
         .filter(|heading| lines[heading.line].starts_with('#'))
         .collect();
     let mut parse = UatParse::default();
+    let rows = headings
+        .iter()
+        .filter(|heading| heading.level == 3 && parse_row_text(&heading.text).is_some())
+        .count();
+    // Row-shaped lines the tokenizer hid (a fence straddling a row), whole document on
+    // both sides of the comparison.
+    let shaped = lines
+        .iter()
+        .filter(|line| is_test_heading_line(line, false))
+        .count();
+    parse.headings_seen += shaped.saturating_sub(rows);
+    parse.headings_seen += count_unattributed_indented_rows(&lines);
+    if markdown::strip_fenced_code(&lines).1 {
+        parse.headings_seen += 1;
+    }
+    let gaps = read_gaps(&lines);
     for (position, heading) in headings.iter().enumerate() {
         if heading.level != 3 {
             continue;
@@ -406,7 +921,13 @@ pub(super) fn parse_uat_items_with_stats(text: &str) -> UatParse {
         if result == "pass" || result == "passed" {
             continue;
         }
-        let expected = non_empty(extract_scalar_field(&block, "expected"));
+        if result == "issue" && gaps.resolved_tests.contains(&number) {
+            continue;
+        }
+        let expected = non_empty(extract_scalar_field(
+            &clip_block_at_first_fence(&block),
+            "expected",
+        ));
         let reason = non_empty(extract_scalar_field(&visible, "reason"));
         let blocked_by = non_empty(extract_scalar_field(&visible, "blocked_by"));
         parse.items.push(AuditItem {
@@ -420,6 +941,7 @@ pub(super) fn parse_uat_items_with_stats(text: &str) -> UatParse {
             blocked_by,
         });
     }
+    parse.items.extend(gaps.items);
     parse
 }
 
@@ -645,5 +1167,137 @@ mod tests {
         let item = &parse_uat_items_with_stats(text).items[0];
         assert_eq!(item.result, "skipped");
         assert_eq!(item.category, Category::DeviceNeeded);
+    }
+
+    fn tallies(text: &str) -> usize {
+        parse_uat_items_with_stats(text).headings_seen
+    }
+
+    #[test]
+    fn a_fence_straddling_two_rows_counts_the_hidden_row_once() {
+        let text = "### 1. One\nresult: pending\n```\n### 2. Hidden\nresult: blocked\n```\n### 3. Three\nresult: pending\n";
+        let parse = parse_uat_items_with_stats(text);
+        assert_eq!(parse.items.len(), 2);
+        assert_eq!(parse.headings_seen, 1);
+    }
+
+    #[test]
+    fn an_indented_row_counts_unless_a_scalar_header_owns_it() {
+        assert_eq!(tallies("prose\n  ### 5. Row\n  result: pending\n"), 1);
+        assert_eq!(tallies("notes: |\n  ### 5. Row\n"), 0);
+        assert_eq!(tallies("expected:\n  ### 5. Row\n"), 1);
+        assert_eq!(tallies("notes:\n  ### 5. Row\n"), 1);
+        assert_eq!(tallies("reason: >-\n\n  ### 5. Row\n"), 0);
+    }
+
+    #[test]
+    fn an_unterminated_fence_and_a_row_without_a_result_each_count_once() {
+        assert_eq!(tallies("### 1. One\nresult: pending\n```\nopen\n"), 1);
+        assert_eq!(tallies("### 1. One\nexpected: x\n"), 1);
+        assert_eq!(tallies("### 1. One\nresult: pending\n"), 0);
+    }
+
+    #[test]
+    fn expected_stops_at_the_blocks_first_fence() {
+        let text = "### 1. One\nresult: pending\nexpected: before\n```\nexpected: inside\n```\n";
+        assert_eq!(
+            parse_uat_items_with_stats(text).items[0]
+                .expected
+                .as_deref(),
+            Some("before")
+        );
+        let late = "### 1. One\nresult: pending\n```\nexpected: inside\n```\nexpected: after\n";
+        assert_eq!(
+            parse_uat_items_with_stats(late).items[0]
+                .expected
+                .as_deref(),
+            Some("after")
+        );
+        let hidden = "### 1. One\nresult: pending\n```\nexpected: inside\n```\n";
+        assert_eq!(parse_uat_items_with_stats(hidden).items[0].expected, None);
+    }
+
+    #[test]
+    fn a_multi_byte_row_and_gap_parse_without_slicing_a_character() {
+        let text = "### 7. Überprüfung 確認 🔒\nresult: pending\nreason: 🔒 für Gäste\n\n## Gaps\n\n- truth: \"確認 ✓ fehlt\"\n  status: failed\n  test: 7\n";
+        let parse = parse_uat_items_with_stats(text);
+        assert_eq!(parse.items[0].name, "Überprüfung 確認 🔒");
+        assert_eq!(parse.items[0].reason.as_deref(), Some("🔒 für Gäste"));
+        assert_eq!(parse.items[1].name, "確認 ✓ fehlt");
+        assert_eq!(parse.items[1].test.as_deref(), Some("7"));
+    }
+
+    fn gap_summary(text: &str) -> Vec<(Origin, Option<String>, String, String)> {
+        parse_uat_items_with_stats(text)
+            .items
+            .into_iter()
+            .filter(|i| i.origin != Origin::Row)
+            .map(|i| (i.origin, i.test, i.name, i.result))
+            .collect()
+    }
+
+    #[test]
+    fn the_gaps_section_is_level_bounded_and_separators_are_skipped() {
+        let text = "## Gaps\n\n<!-- template comment -->\n- truth: \"first\"\n  status: failed\n- - -\n- truth: \"second\"\n  status: open\n    - nested: item\n\n### Sub\n- truth: \"still inside\"\n  status: failed\n\n## After\n- truth: \"outside\"\n  status: failed\n";
+        let names: Vec<_> = gap_summary(text).into_iter().map(|g| g.2).collect();
+        assert_eq!(names, ["first", "second", "still inside"]);
+    }
+
+    #[test]
+    fn gap_fields_unwrap_bold_keys_keep_the_first_and_strip_one_pair_of_quotes() {
+        let text = "## gaps\n- **Status:** failed\n  truth: \"say \"hi\"\"\n  truth: second\n  test: 12\n- no fields here\n- truth: x\n  status: RESOLVED\n  test: 3\n";
+        let got = gap_summary(text);
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0].2, "say \"hi\"");
+        assert_eq!(got[0].1.as_deref(), Some("12"));
+        assert_eq!(got[0].3, "failed");
+        assert_eq!(got[1].2, "no fields here");
+        assert_eq!(got[1].3, "unknown");
+        assert_eq!(got[1].1, None);
+    }
+
+    #[test]
+    fn a_non_numeric_test_value_is_no_test_number() {
+        let text = "## Gaps\n- truth: a\n  status: failed\n  test: 2b\n";
+        assert_eq!(gap_summary(text)[0].1, None);
+    }
+
+    #[test]
+    fn a_resolved_gap_removes_only_the_matching_issue_row() {
+        let text = "### 1. One\nresult: issue\n\n### 2. Two\nresult: issue\n\n### 3. Three\nresult: failed\n\n## Gaps\n- truth: a\n  status: resolved\n  test: 1\n- truth: b\n  status: resolved\n  test: 3\n- truth: c\n  status: open\n  test: 2\n";
+        let parse = parse_uat_items_with_stats(text);
+        let rows: Vec<_> = parse
+            .items
+            .iter()
+            .filter(|i| i.origin == Origin::Row)
+            .map(|i| i.test.as_deref().unwrap())
+            .collect();
+        assert_eq!(rows, ["2", "3"]);
+        assert_eq!(gap_summary(text).len(), 1);
+    }
+
+    #[test]
+    fn gap_tables_map_aliases_and_skip_resolved_rows() {
+        let text = "## Gaps\n\n| **Finding** | State | Test # | Details |\n|---|---|---|---|\n| open one | failed | 4 | needs a physical device |\n| done one | Resolved | 5 | x |\n| no status | | | |\n";
+        let parse = parse_uat_items_with_stats(text);
+        assert_eq!(parse.items.len(), 2);
+        assert_eq!(parse.items[0].origin, Origin::GapTable);
+        assert_eq!(parse.items[0].test.as_deref(), Some("4"));
+        assert_eq!(
+            parse.items[0].reason.as_deref(),
+            Some("needs a physical device")
+        );
+        assert_eq!(parse.items[1].result, "unknown");
+        let headerless =
+            parse_uat_items_with_stats("## Gaps\n| alpha | resolved |\n| beta | open |\n");
+        assert_eq!(headerless.items.len(), 1);
+        assert_eq!(headerless.items[0].name, "beta \u{2014} open");
+    }
+
+    #[test]
+    fn bullet_and_table_gaps_are_unioned_bullets_first() {
+        let text = "## Gaps\n| truth | status |\n|---|---|\n| tabled | failed |\n\n- truth: bulleted\n  status: failed\n";
+        let origins: Vec<_> = gap_summary(text).into_iter().map(|g| g.0).collect();
+        assert_eq!(origins, [Origin::Gap, Origin::GapTable]);
     }
 }
