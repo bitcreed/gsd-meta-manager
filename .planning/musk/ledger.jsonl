@@ -140,3 +140,4 @@
 {"ts":"2026-11-14T20:09:32.502Z","type":"pass","phase":"35","point":"discuss:pre"}
 {"id":"M-0051-926790","ts":"2026-11-14T20:55:28.637Z","type":"cut","class":"impl","unit":"flag","ref":"hidden.todos_acknowledged count; per-workstream closes_after in JSON","reason":"D-08 keeps hidden.todos meaning and D-12 makes the project gate the root's; no consumer asked for either before Phase 36","phase":"35","point":"plan:pre","status":"applied","qty":2,"inferred":true}
 {"id":"M-0052-31f846","ts":"2026-11-14T20:55:29.071Z","type":"cut","class":"impl","unit":"file","ref":"dedicated SC1 decide-lane fixture","reason":"debug-sessions plus handoff-paused already reproduce SC1 through the CLI","phase":"35","point":"plan:pre","status":"applied","qty":1,"inferred":true}
+{"ts":"2026-11-14T23:04:20.044Z","type":"pass","phase":"36","point":"discuss:pre"}
