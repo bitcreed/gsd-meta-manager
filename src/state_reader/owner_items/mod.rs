@@ -278,21 +278,15 @@ impl<K: Copy + Eq + std::hash::Hash, V> ParseCache<K, V> {
 static PARSE_CACHE: LazyLock<ParseCache<AuditKind, Parsed>> =
     LazyLock::new(|| ParseCache::new(CACHE_MAX_ENTRIES));
 
-/// Which open-signal reader a cache entry belongs to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum OpenKind {
-    Debug,
-    Context,
-}
-
 /// Parsed CONTEXT documents by canonical path (same rules as [`OPEN_CACHE`]; a
-/// separate map because the parsed value differs).
-pub(crate) static CONTEXT_CACHE: LazyLock<ParseCache<OpenKind, context::ParsedContext>> =
+/// separate map because the parsed value differs). Each of these maps holds one kind
+/// of document, so its kind key is `()`.
+pub(crate) static CONTEXT_CACHE: LazyLock<ParseCache<(), context::ParsedContext>> =
     LazyLock::new(|| ParseCache::new(CACHE_MAX_ENTRIES));
 
 /// Parsed debug sessions by canonical path, with the same validity rule and lock
 /// discipline as [`PARSE_CACHE`].
-pub(crate) static OPEN_CACHE: LazyLock<ParseCache<OpenKind, debug::ParsedSession>> =
+pub(crate) static OPEN_CACHE: LazyLock<ParseCache<(), debug::ParsedSession>> =
     LazyLock::new(|| ParseCache::new(CACHE_MAX_ENTRIES));
 
 /// Forget everything the parse cache holds about the project at `root` (D-16).

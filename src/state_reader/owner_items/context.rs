@@ -39,7 +39,7 @@ use super::scan::{
     subdirectories, Target,
 };
 use super::uat::js_trim;
-use super::{frontmatter, markdown, ContextFile, OpenKind, ParseCache, Scope, CONTEXT_CACHE};
+use super::{frontmatter, markdown, ContextFile, ParseCache, Scope, CONTEXT_CACHE};
 use crate::state_reader::ProjectState;
 
 /// What the text of one CONTEXT document alone determines.
@@ -250,7 +250,7 @@ fn context_targets(planning_dir: &Path, state: &ProjectState) -> Vec<Target> {
 }
 
 fn scan_with(
-    cache: &ParseCache<OpenKind, ParsedContext>,
+    cache: &ParseCache<(), ParsedContext>,
     planning_dir: &Path,
     state: &ProjectState,
 ) -> Vec<ContextFile> {
@@ -306,17 +306,12 @@ fn scan_with(
             match open_checked(&real) {
                 Ok(opened) => {
                     file.modified = opened.modified;
-                    let parsed = match cache.get(&real, OpenKind::Context, opened.key) {
+                    let parsed = match cache.get(&real, (), opened.key) {
                         Some(hit) => hit,
                         None => match read_text(opened.file) {
                             Ok(text) => {
                                 let parsed = Arc::new(parse_context(&text));
-                                cache.insert(
-                                    real,
-                                    OpenKind::Context,
-                                    opened.key,
-                                    Arc::clone(&parsed),
-                                );
+                                cache.insert(real, (), opened.key, Arc::clone(&parsed));
                                 parsed
                             }
                             Err(reason) => {

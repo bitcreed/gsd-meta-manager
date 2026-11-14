@@ -25,7 +25,7 @@ use std::sync::Arc;
 
 use super::markdown;
 use super::scan::{contained, open_checked, posix_relative, read_text};
-use super::{frontmatter, DebugSession, OpenKind, ParseCache, OPEN_CACHE};
+use super::{frontmatter, DebugSession, ParseCache, OPEN_CACHE};
 
 /// What the text of one session alone determines.
 #[derive(Debug, Clone, PartialEq)]
@@ -116,10 +116,7 @@ pub(super) fn scan_debug_sessions(planning_dir: &Path) -> Vec<DebugSession> {
     scan_with(&OPEN_CACHE, planning_dir)
 }
 
-fn scan_with(
-    cache: &ParseCache<OpenKind, ParsedSession>,
-    planning_dir: &Path,
-) -> Vec<DebugSession> {
+fn scan_with(cache: &ParseCache<(), ParsedSession>, planning_dir: &Path) -> Vec<DebugSession> {
     let debug_dir = planning_dir.join("debug");
     let Ok(entries) = std::fs::read_dir(&debug_dir) else {
         return Vec::new();
@@ -158,12 +155,12 @@ fn scan_with(
         match open_checked(&real) {
             Ok(opened) => {
                 session.modified = opened.modified;
-                let parsed = match cache.get(&real, OpenKind::Debug, opened.key) {
+                let parsed = match cache.get(&real, (), opened.key) {
                     Some(hit) => hit,
                     None => match read_text(opened.file) {
                         Ok(text) => {
                             let parsed = Arc::new(parse_session(&text));
-                            cache.insert(real, OpenKind::Debug, opened.key, Arc::clone(&parsed));
+                            cache.insert(real, (), opened.key, Arc::clone(&parsed));
                             parsed
                         }
                         Err(reason) => {
