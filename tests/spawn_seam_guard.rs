@@ -63,6 +63,9 @@ const SPAWN_ALLOWLIST: &[&str] = &[
     // herdr CLI reads (pane list, pane process-info) and focus (agent focus, tab
     // focus); launch goes over the socket, which is not a spawn. No agent.
     "src/multiplexer/herdr.rs",
+    // Test-only: `cp` writes fixture scripts so no test thread holds their write
+    // descriptor across another thread's fork (ETXTBSY). No agent.
+    "src/multiplexer/fixtures.rs",
     // tmux `new-window`, `list-panes`, `select-window` and `select-pane`, and
     // the live direct-exec test. No agent.
     "src/multiplexer/tmux.rs",
