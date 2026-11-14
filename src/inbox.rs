@@ -652,8 +652,15 @@ pub fn render_text(entries: &[ProjectEntry], filters: &Filters) -> String {
     let old_total: usize = read.iter().map(|e| old_debt(&e.digest)).sum();
     let old_projects = read.iter().filter(|e| old_debt(&e.digest) > 0).count();
     if !filters.archived && old_total > 0 {
+        // Archived open questions are not checks: the fold says "items" once any are
+        // in the total, and keeps the "checks" wording of a checks-only total.
+        let unit = if sum(|d| d.archived.decide) > 0 {
+            "items"
+        } else {
+            "checks"
+        };
         folds.push(format!(
-            "Old debt: {old_total} checks in {old_projects} projects (archived milestones)"
+            "Old debt: {old_total} {unit} in {old_projects} projects (archived milestones)"
         ));
     }
     let ack = sum(|d| d.hidden.acknowledged_files);
@@ -812,6 +819,28 @@ mod tests {
         assert_eq!(project["todos"], json!([]));
         assert_eq!(project["hidden"]["noise"], 0);
         assert_eq!(doc["summary"]["projects"], 1);
+    }
+
+    #[test]
+    fn the_old_debt_fold_says_items_once_archived_questions_are_in_it() {
+        let fold = |decide: usize| {
+            let mut e = entry(Vec::new());
+            e.digest.archived.test = 2;
+            e.digest.archived.decide = decide;
+            render_text(&[e], &Filters::default())
+                .lines()
+                .find(|line| line.starts_with("Old debt: "))
+                .expect("an Old debt fold")
+                .to_owned()
+        };
+        assert_eq!(
+            fold(0),
+            "Old debt: 2 checks in 1 projects (archived milestones)"
+        );
+        assert_eq!(
+            fold(3),
+            "Old debt: 5 items in 1 projects (archived milestones)"
+        );
     }
 
     #[test]

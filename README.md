@@ -649,7 +649,7 @@ Schema version 1:
 | `summary.archived.fix` | integer | archived checks that failed |
 | `summary.archived.decide` | integer | archived open CONTEXT questions |
 | `summary.deferred` | integer | items in `deferred-items.md` files |
-| `summary.acknowledged_files` | integer | UAT files hidden because the owner acknowledged them |
+| `summary.acknowledged_files` | integer | files hidden because the owner acknowledged them: UAT and VERIFICATION files, debug sessions and CONTEXT files |
 | `summary.superseded` | integer | raw items dropped because a UAT replaces their VERIFICATION file |
 | `summary.noise` | integer | items with an unknown result in a finished file, dropped as not owner work |
 | `projects` | array | registry order, or the order named |
@@ -691,7 +691,7 @@ Schema version 1:
 | `projects[].groups[].counts.gaps` | integer | merged plus standalone gaps |
 | `projects[].groups[].counts.unreadable` | integer | unparsed blocks, or 1 for a file that could not be read |
 | `projects[].groups[].items` | array | the checks |
-| `projects[].groups[].items[].id` | string | stable id, `<file name>#<test>` |
+| `projects[].groups[].items[].id` | string | stable id: `<file name>#<test>` for a numbered check; `#q<k>` for the k-th open CONTEXT question (its position in the file's question list), `#a<k>` / `#b<k>` for a handoff's k-th pending action / blocker, `#1` for a debug session or checkpoint |
 | `projects[].groups[].items[].test` | string or null | the check's test number |
 | `projects[].groups[].items[].name` | string | what to check; for a VERIFICATION `human_verification` entry the entry's `test` text (else `truth`, `name`, `description`), never the flattened mapping |
 | `projects[].groups[].items[].expected` | string or null | the expected behavior |
@@ -706,7 +706,7 @@ Schema version 1:
 | `projects[].groups[].items[].gaps[].reason` | string or null | the gap's reason |
 | `projects[].hidden` | object | what the lists leave out, always the full counts |
 | `projects[].hidden.deferred` | integer | deferred items |
-| `projects[].hidden.acknowledged_files` | integer | acknowledged UAT files |
+| `projects[].hidden.acknowledged_files` | integer | acknowledged UAT and VERIFICATION files, debug sessions and CONTEXT files |
 | `projects[].hidden.todos` | integer | pending todos (at most 200), listed or not; 0 when the pending folder could not be read |
 | `projects[].hidden.noise` | integer | items with an unknown result in a finished file |
 | `projects[].hidden.todos_oldest_days` | integer or null | whole days since the oldest pending todo's `created:` value, else its file time; null without todos |
