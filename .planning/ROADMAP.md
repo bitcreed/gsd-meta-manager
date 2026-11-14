@@ -11,6 +11,7 @@
 - ✅ **v1.6.0 GSD 1.8.0 Catch-up** - 1 quick task + 2 fast tasks (shipped 2026-07-22)
 - ✅ **v2.0 Autonomous Orchestration** - Phases 14-31 (shipped 2026-10-29 as v2.0.0; Phases 19, 21, 22, 23 closed by supersession; Phase 32 deferred to backlog 999.8)
 - ✅ **v2.3.0 Multiplexer Backends** - Phase 33 (shipped 2026-11-10 as v2.3.0; number 32 skipped, it names the deferred v2.0 phase now backlog 999.8)
+- 🚧 **v2.5.0 Owner Inbox** - Phases 34-37 (in progress, started 2026-11-14)
 
 ## Phases
 
@@ -122,6 +123,78 @@ Requirements: `.planning/milestones/v2.3.0-REQUIREMENTS.md` (MUX-01..07, all Com
 - [x] **Phase 33: Terminal multiplexer backend seam + herdr support** - `MultiplexerBackend` seam replacing `terminal_switch.rs`, tmux migrated, herdr launch and focus, innermost-wins nesting (2/2 plans; completed 2026-11-10, re-verified after review fixes)
 
 </details>
+
+### 🚧 v2.5.0 Owner Inbox (In Progress)
+
+Requirements: `.planning/REQUIREMENTS.md` (OWN-01..OWN-23). Source of truth: `.planning/research/OWNER-INBOX-UX.md` (section 6 phase split, section 7 decision defaults D1-D12).
+
+- [ ] **Phase 34: Owner items reader + inbox CLI** - Native per-item UAT/VERIFICATION reader matching `audit-uat` (conformance oracle), owner lanes and rules, `inbox [--json]`, `owner` counts in `status --json`
+- [ ] **Phase 35: Decisions, code-needed and gates** - Debug, handoff, context-question, gaps_found and todo signals plus the milestone gate (`closes_after`), surfaced in `inbox` and `status`
+- [ ] **Phase 36: Dashboard and detail** - `You` column, summary line, `has owner work` sort rank, `/y` filter and the Owner block on the detail Phases tab (UI, human UAT)
+- [ ] **Phase 37: Inbox screen and actions** - Cross-project inbox screen (`i`) with run command (`v`), acknowledge via gsd-core (`A`) and copy checklist (`y`) (UI, human UAT)
+
+### Phase 34: Owner items reader + inbox CLI
+
+**Goal:** On any machine, `gsd-meta-manager inbox` answers "what checks do I have to run?" for every registered project in one call, read natively from the files (no gsd-core process spawned), with per-item results that match gsd-core's `audit-uat` and the owner's rules (lanes, dedup, acknowledged, archived and deferred handling, closeable-by-testing) applied on top.
+**Requirements**: OWN-01, OWN-02, OWN-03, OWN-04, OWN-05, OWN-06, OWN-07, OWN-09, OWN-11, OWN-12, OWN-13, OWN-14, OWN-15
+**Depends on:** Nothing (first phase of v2.5.0)
+**Verification:** Automatic (conformance oracle, fixtures, golden output)
+**Plans:** TBD
+
+**Success Criteria** (what must be TRUE):
+1. On the owner's machine `gsd-meta-manager inbox` lists the missing UATs for all 20 registered projects in one call; wordoclock reports 18 open checks (not 39 or 41), and projects without a phases directory (bitcreed.us, starlink-rv-tracker, usbeehive) return empty groups, not an error.
+2. The per-item (file, test, result, category) set equals `gsd-tools query audit-uat --raw` for every fixture under `tests/fixtures/owner/`, and the oracle test is green in `./scripts/pre-tag-check.sh --container`; a source scan proves nothing under `src/` spawns `audit-uat`.
+3. Acknowledged files stay hidden while their snapshot matches and resurface when it changes or the marker is malformed; archived and deferred items never enter current counts, and a `status: testing` UAT with open items counts as outstanding.
+4. `inbox --json` emits deterministic schema v1 (`gsd-meta-manager/inbox`) with `status`-style exit codes, plain `inbox` prints a checklist grouped by lane with working `--lane`/`--include` filters, and `status --json` carries additive `owner` counts documented in `status --skill`.
+5. A cold `inbox --json` over 20 projects finishes in under 1 s, parses are cached by (path, mtime, len), and hostile inputs (oversize, symlink escape, invalid UTF-8, unterminated frontmatter) neither panic nor escape `render_for_terminal`.
+
+### Phase 35: Decisions, code-needed and gates
+
+**Goal:** The inbox also says what waits on the owner's ruling (Decide), where code is needed (Fix) and what blocks the milestone: debug sessions, paused handoffs, context questions, `gaps_found` verifications and the todo count are read natively, and each project reports which phases close after which lane work.
+**Requirements**: OWN-08, OWN-10 (extends OWN-13 and OWN-15 delivered in Phase 34)
+**Depends on:** Phase 34
+**Verification:** Automatic (one fixture per signal-table row)
+**Plans:** TBD
+
+**Success Criteria** (what must be TRUE):
+1. `inbox --json --lane decide` lists sentriq's 5 debug sessions awaiting confirmation and usbee's paused handoff.
+2. `closes_after` for wordoclock names phases 20-25 with the right lane totals, limited to the current milestone.
+3. Each Decide/Fix signal in report section 4 is read from its stated fields; debug status is normalized (`-`/`_`, case), `knowledge-base.md` is ignored, and RESOLVED/ANSWERED open-question bullets are filtered out.
+4. `inbox --json` and `status --json` carry the new lanes and gate data additively; existing key paths in `tests/inbox_cli.rs` and `tests/status_cli.rs` stay unchanged.
+
+### Phase 36: Dashboard and detail
+
+**Goal:** From the dashboard the owner sees at a glance which projects need him and why, without the hard-stop `❢` badge changing meaning, and the detail Phases tab shows the full owner work for one project.
+**Requirements**: OWN-16, OWN-17, OWN-18, OWN-19 (plus the help-overlay and README part of OWN-23)
+**Depends on:** Phase 35
+**Verification:** Automatic buffer snapshots plus human UAT
+**UI hint**: yes
+**Plans:** TBD
+
+**Success Criteria** (what must be TRUE):
+1. At 120 columns the owner can read off the dashboard which three projects to test first; the `You` cell shows at most two lanes in fixed order for the current milestone, a dim `·` when clean, and is hidden below 100 columns.
+2. A project with only blocked or archived items shows no lane text, and the summary line totals (with `[i] inbox`) equal the sum of the visible cells.
+3. AttentionFirst ranks `has owner work` and `/y [lane]` filters by it, while `needs_human` and the `❢` badge are unchanged; no existing snapshot test changes except for the added column.
+4. The detail Phases tab shows the Owner block with expandable groups, the `closes after` header and collapsed Old debt / Acknowledged / Todos folds.
+
+**Human UAT** (from report section 6): cell wording; column at 100 and 140 columns.
+
+### Phase 37: Inbox screen and actions
+
+**Goal:** The owner triages all owner work across projects on one screen and acts on it in a few keys: run the group's GSD command in the right project, acknowledge through gsd-core, or copy the checklist, with the app itself writing nothing into any project.
+**Requirements**: OWN-20, OWN-21, OWN-22, OWN-23
+**Depends on:** Phase 36
+**Verification:** Automatic snapshots plus human UAT
+**UI hint**: yes
+**Plans:** TBD
+
+**Success Criteria** (what must be TRUE):
+1. From the dashboard, `i`, `j`, `v` starts `/gsd-verify-work N` in the right project in 3 keys or fewer, through `multiplexer::launch` (focusing an existing session when one is live), with the argv built only from the validated phase token and workstream name via `ExecArgv::new`.
+2. The inbox screen is legible at 100x30, filters lanes with `1-4`/`a`, follows the ordering rule, expands groups, and supports `g` go to project, `o` open file and `y` copy checklist.
+3. `A` launches `gsd-tools audit acknowledge …` only after a confirm popup, and the row disappears on the next watcher refresh without a restart; after a UAT passes, its row likewise disappears.
+4. The help overlay and README ("Owner inbox" section plus the `inbox` schema) describe every key and the CLI contract.
+
+**Human UAT** (from report section 6): ordering in the inbox; launch into the real multiplexer (tmux/herdr); acknowledge round trip on a throwaway project.
 
 ---
 

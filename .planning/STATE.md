@@ -3,10 +3,10 @@ gsd_state_version: "1.0"
 milestone: v2.5.0
 milestone_name: Owner Inbox
 status: planning
-last_updated: "2026-11-14T15:56:13.236Z"
+last_updated: "2026-11-14T16:30:00.000Z"
 last_activity: 2026-11-14
 progress:
-  total_phases: 0
+  total_phases: 4
   completed_phases: 0
   total_plans: 0
   completed_plans: 0
@@ -20,14 +20,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-11-14)
 
 **Core value:** See the state of every GSD project at a glance and act on any of them without leaving the TUI.
-**Current focus:** v2.5.0 Owner Inbox — defining requirements and roadmap (phases 34-37)
+**Current focus:** v2.5.0 Owner Inbox — Phase 34 (Owner items reader + inbox CLI)
 
 ## Current Position
 
-Phase: Not started (defining requirements)
+Phase: 34 of 34-37 (Owner items reader + inbox CLI)
 Plan: —
-Status: Defining requirements
-Last activity: 2026-11-14 — Milestone v2.5.0 started
+Status: Ready to plan (roadmap created)
+Last activity: 2026-11-14 — Roadmap created: 4 phases (34-37), 23/23 requirements mapped
 
 
 ## Deferred Verification
@@ -587,8 +587,8 @@ non-unique bullets in these narrative logs). Disclosed per file instead [inferre
 
 ## Session Continuity
 
-Last session: 2026-11-11
-Stopped at: v2.4.0 released locally — quick 261111-h9f (Sessions location column + README multiplexer section), quick 261111-ixj (glyph font-fallback overflow fix), release commit and annotated tag v2.4.0; nothing pushed
+Last session: 2026-11-14
+Stopped at: v2.5.0 roadmap created (Phases 34-37); next is Phase 34 discuss/plan
 Resume file: None
 
 Next: push master + tag v2.4.0 (tag push publishes to crates.io); then `/gsd-new-milestone`.
