@@ -882,6 +882,36 @@ fn hostile_strings_are_escaped_in_json_and_text() {
             "---\nstatus: testing\nupdated: 2026-01-10T12:00:00Z\n---\n\n# UAT\n\n## Tests\n\n### 1. Ring{BEL}bell {ESC}]0;pwned{BEL}\nexpected: see {RLO}txt.exe{ESC}[2J\nresult: pending\n\n### 2. {long}\nexpected: {long}\nresult: pending\n\n### 3. Skipped{ESC}[1m\nexpected: x\nresult: skipped\nreason: needs {ESC}[31mdevice{RLO}\n"
         ),
     );
+    // The Phase 35 signals carry hostile text too: a debug trigger, a handoff, an open
+    // CONTEXT question and a VERIFICATION mapping entry (OWN-11).
+    let nasty = format!("evil{ESC}[31m{RLO}x{BEL}{ESC}]0;pwned{BEL}{long}");
+    write(
+        &project.path().join(".planning/debug/hostile.md"),
+        &format!("---\nstatus: awaiting_human_verify\ntrigger: {nasty}\nupdated: 2026-01-10T12:00:00Z\n---\n\n# Debug session: hostile\n"),
+    );
+    write(
+        &project.path().join(".planning/HANDOFF.json"),
+        &serde_json::json!({
+            "status": "paused",
+            "phase": "01",
+            "next_action": nasty,
+            "human_actions_pending": [{"action": nasty, "blocking": true}],
+        })
+        .to_string(),
+    );
+    write(
+        &project
+            .path()
+            .join(".planning/phases/01-evil/01-CONTEXT.md"),
+        &format!("# Context\n\n## Open Questions\n\n- {nasty}\n"),
+    );
+    write(
+        &project.path().join(".planning/phases/01-evil/01-VERIFICATION.md"),
+        &format!(
+            "---\nstatus: human_needed\nhuman_verification:\n  - test: {q}\n    why_human: {q}\n---\n",
+            q = serde_json::json!(nasty)
+        ),
+    );
     let scratch = tempfile::tempdir().unwrap();
     let reg = registry(scratch.path(), &[("evil", project.path())]);
 
@@ -916,6 +946,22 @@ fn hostile_strings_are_escaped_in_json_and_text() {
         capped >= 2,
         "the 500-character name and expectation were cut"
     );
+    let groups = doc["projects"][0]["groups"].as_array().unwrap();
+    for kind in ["debug", "handoff", "context_questions", "verification"] {
+        let of_kind: Vec<&Value> = groups.iter().filter(|g| g["kind"] == kind).collect();
+        assert!(!of_kind.is_empty(), "no {kind} group in {groups:?}");
+        let cut = of_kind.iter().any(|g| {
+            g["items"].as_array().unwrap().iter().any(|i| {
+                [&i["name"], &i["why_human"], &i["reason"]]
+                    .iter()
+                    .any(|v| v.as_str().is_some_and(|s| s.chars().count() == 201))
+            })
+        });
+        assert!(
+            cut,
+            "a {kind} item carries the capped hostile text: {of_kind:?}"
+        );
+    }
 
     let text = String::from_utf8(inbox_with(&reg, scratch.path(), &[]).stdout).unwrap();
     for bad in [ESC, RLO, BEL] {
@@ -971,6 +1017,19 @@ fn generate_project(root: &Path, index: usize) {
             "---\nstatus: human_needed\nupdated: 2026-10-01T12:00:00Z\nhuman_verification:\n  - \"look at the first screen\"\n  - \"look at the second screen\"\n  - \"look at the third screen\"\n---\n\n# Verification\n",
         );
     }
+    // OWN-12: the Phase 35 signals every project now carries.
+    write(
+        &root.join(format!(".planning/debug/session-{index}.md")),
+        "---\nstatus: awaiting_human_verify\ntrigger: the screen stays blank\nupdated: 2026-10-01T12:00:00Z\n---\n\n# Debug session\n\n## Current Focus\n\nhypothesis: the view is never attached\n",
+    );
+    write(
+        &root.join(".planning/phases/01-part-1/01-CONTEXT.md"),
+        "# Context\n\n## Open Questions\n\n- Should the list sort by date?\n- Is the archive view in scope?\n",
+    );
+    write(
+        &root.join(".planning/HANDOFF.json"),
+        r#"{"status": "paused", "phase": "02", "next_action": "Run the device check", "human_actions_pending": [{"action": "Pair the test device", "blocking": true}]}"#,
+    );
     for n in 1..=5 {
         let dir = root.join(format!(".planning/milestones/v1.0-phases/{n:02}-old-{n}"));
         write(
