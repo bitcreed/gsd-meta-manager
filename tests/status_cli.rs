@@ -209,15 +209,22 @@ const SCHEMA_PATHS: &[&str] = &[
     "projects[].next.reason",
     "projects[].next.detail",
     "projects[].warnings",
+    "projects[].owner",
+    "projects[].owner.test",
+    "projects[].owner.decide",
+    "projects[].owner.fix_phases",
+    "projects[].owner.blocked",
+    "projects[].owner.closeable_phases",
 ];
 
-/// The eleven keys every project entry carries.
+/// The twelve keys every project entry carries.
 const ENTRY_KEYS: &[&str] = &[
     "alias",
     "attention",
     "error",
     "milestone",
     "next",
+    "owner",
     "path",
     "phase",
     "progress",
@@ -401,7 +408,7 @@ fn targets_come_back_in_argv_order() {
 fn assert_error_entry(entry: &Value, kind: &str) {
     assert_eq!(entry["error"]["kind"], kind, "{entry}");
     assert!(entry["error"]["message"].is_string(), "{entry}");
-    for key in ["milestone", "phase", "progress", "next"] {
+    for key in ["milestone", "phase", "progress", "next", "owner"] {
         assert!(entry[key].is_null(), "{key} is null in {entry}");
     }
     for key in ["attention", "sessions", "warnings"] {
@@ -497,6 +504,95 @@ fn pending_human_and_uat_items_are_listed_as_attention() {
         keys.sort_unstable();
         assert_eq!(keys, ["kind", "phase", "status", "workstream"], "{item}");
     }
+}
+
+/// One executed phase `1` with a passed VERIFICATION and a UAT of the given status
+/// and result rows (each row is its result word).
+fn uat_project(status: &str, results: &[&str]) -> TempDir {
+    let dir = project(&[("1", "Alpha")]);
+    passed(dir.path(), "1", "alpha");
+    let mut body = format!("---\nstatus: {status}\n---\n\n# UAT\n\n## Tests\n\n");
+    for (at, result) in results.iter().enumerate() {
+        body.push_str(&format!(
+            "### {n}. Check {n}\nexpected: it works\nresult: {result}\n\n",
+            n = at + 1
+        ));
+    }
+    write(&phase_dir(dir.path(), "1", "alpha").join("1-UAT.md"), &body);
+    dir
+}
+
+fn uat_attention(dir: &TempDir) -> (Vec<Value>, Value) {
+    let doc = json(&status(&[dir.path().to_str().unwrap(), "--json"]));
+    let entry = entries(&doc)[0].clone();
+    let items: Vec<Value> = entry["attention"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|i| i["kind"] == "uat_outstanding")
+        .cloned()
+        .collect();
+    (items, entry["owner"].clone())
+}
+
+#[test]
+fn a_testing_uat_fires_uat_outstanding() {
+    let dir = uat_project("testing", &["pending"]);
+    let (items, _) = uat_attention(&dir);
+    assert_eq!(items.len(), 1, "{items:?}");
+    assert_eq!(items[0]["status"], "testing");
+    assert_eq!(items[0]["phase"], "1");
+    // Zero open items: a testing UAT still fires.
+    let dir = uat_project("testing", &["pass"]);
+    assert_eq!(uat_attention(&dir).0.len(), 1);
+}
+
+#[test]
+fn a_non_terminal_uat_with_open_rows_fires_uat_outstanding() {
+    let dir = uat_project("draft", &["pending"]);
+    let (items, _) = uat_attention(&dir);
+    assert_eq!(items.len(), 1, "{items:?}");
+    assert_eq!(items[0]["status"], "draft");
+    // Outside the owner set and nothing open: silent.
+    let dir = uat_project("draft", &["pass"]);
+    assert!(uat_attention(&dir).0.is_empty());
+}
+
+#[test]
+fn a_complete_or_deferred_uat_with_open_rows_does_not_fire() {
+    for terminal in ["complete", "resolved", "passed", "deferred"] {
+        let dir = uat_project(terminal, &["pending"]);
+        assert!(uat_attention(&dir).0.is_empty(), "{terminal}");
+    }
+}
+
+#[test]
+fn owner_counts_cover_the_current_milestone() {
+    let dir = uat_project("testing", &["pending", "pending", "skipped"]);
+    // Row 3 needs a device: blocked, not a test.
+    let path = phase_dir(dir.path(), "1", "alpha").join("1-UAT.md");
+    let text = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(
+        &path,
+        text.replace(
+            "result: skipped",
+            "result: skipped\nreason: needs a physical device",
+        ),
+    )
+    .unwrap();
+    let (_, owner) = uat_attention(&dir);
+    assert_eq!(
+        owner,
+        serde_json::json!({"test": 2, "decide": 0, "fix_phases": 0, "blocked": 1, "closeable_phases": 0}),
+        "{owner}"
+    );
+    let dir = uat_project("testing", &["pending", "pending"]);
+    let (_, owner) = uat_attention(&dir);
+    assert_eq!(
+        owner,
+        serde_json::json!({"test": 2, "decide": 0, "fix_phases": 0, "blocked": 0, "closeable_phases": 1}),
+        "{owner}"
+    );
 }
 
 #[test]
@@ -656,7 +752,7 @@ fn artifact_prose_and_control_characters_never_reach_the_output() {
 }
 
 #[test]
-fn the_emitted_key_paths_are_exactly_schema_v1_and_every_entry_has_eleven_keys() {
+fn the_emitted_key_paths_are_exactly_schema_v1_and_every_entry_has_twelve_keys() {
     let dir = project(&[("1", "Alpha")]);
     discussed(dir.path(), "1", "alpha");
     write(
@@ -678,7 +774,7 @@ fn the_emitted_key_paths_are_exactly_schema_v1_and_every_entry_has_eleven_keys()
     }
     let schema: std::collections::BTreeSet<String> =
         SCHEMA_PATHS.iter().map(|p| (*p).to_string()).collect();
-    assert_eq!(SCHEMA_PATHS.len(), 44);
+    assert_eq!(SCHEMA_PATHS.len(), 50);
     let emitted = key_paths(&doc);
     let unknown: Vec<_> = emitted.difference(&schema).collect();
     assert!(unknown.is_empty(), "paths outside schema v1: {unknown:?}");
@@ -795,7 +891,7 @@ fn the_readme_table_documents_every_schema_v1_path() {
 }
 
 #[test]
-fn the_skill_teaches_the_three_commands_and_at_least_four_jq_recipes() {
+fn the_skill_teaches_the_four_commands_and_at_least_four_jq_recipes() {
     let code_lines: Vec<&str> = SKILL
         .lines()
         .filter(|l| !l.starts_with('-') && !l.starts_with('#'))
@@ -804,6 +900,7 @@ fn the_skill_teaches_the_three_commands_and_at_least_four_jq_recipes() {
         "gsd-meta-manager status --json",
         "gsd-meta-manager next ",
         "gsd-meta-manager list",
+        "gsd-meta-manager inbox --json",
     ] {
         assert!(
             code_lines.iter().any(|l| l.starts_with(command)),

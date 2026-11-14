@@ -433,7 +433,8 @@ Schema version 1:
       "attention": [{"kind": "verification_human_needed", "phase": "4", "workstream": null, "status": null}],
       "sessions": [{"agent": "claude", "pid": 4242, "session_id": "0f3c9a", "cwd": "/home/me/projects/my-app", "tty": "pts/3"}],
       "next": {"advisory": true, "source": "phase-20-router", "project": "/home/me/projects/my-app", "target_phase": "4", "decision": "park", "command": null, "reason": "gate_verification_human_needed", "detail": "human_needed"},
-      "warnings": []
+      "warnings": [],
+      "owner": {"test": 2, "decide": 0, "fix_phases": 0, "blocked": 0, "closeable_phases": 1}
     },
     {
       "target": "gone-app",
@@ -446,7 +447,8 @@ Schema version 1:
       "attention": [],
       "sessions": [],
       "next": null,
-      "warnings": []
+      "warnings": [],
+      "owner": null
     }
   ]
 }
@@ -498,6 +500,12 @@ Schema version 1:
 | `projects[].next.reason` | string | router token |
 | `projects[].next.detail` | string or null | router token |
 | `projects[].warnings` | array of strings | `state_md_unreadable`, `state_md_recovered` |
+| `projects[].owner` | object or null | how much owner work the project holds: the checks a human has to run, over the current milestone of the project and every workstream, after the owner rules (duplicates folded, archived and acknowledged work left out); null on error |
+| `projects[].owner.test` | integer | checks waiting to be run |
+| `projects[].owner.decide` | integer | open decisions; 0 until the decision signals land |
+| `projects[].owner.fix_phases` | integer | phases that need a fix plan (failed checks or unreadable files) |
+| `projects[].owner.blocked` | integer | checks waiting on a device, server, build or third party |
+| `projects[].owner.closeable_phases` | integer | phases whose only open work is checks to run, so running them can close the phase |
 
 A session belongs to the deepest project root that contains its working
 directory, so `cd src && claude` still counts for the project. Text a project
@@ -522,7 +530,7 @@ gsd-meta-manager status --json | jq -r '.projects[] | select(.sessions | length 
 ```
 
 `gsd-meta-manager --skill` prints a short agent skill (markdown) that teaches a
-model to use `list`, `status --json`, `next --json` and jq. Install it for
+model to use `list`, `status --json`, `next --json`, `inbox --json` and jq. Install it for
 Claude Code with:
 
 ```bash
