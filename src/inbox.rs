@@ -141,7 +141,9 @@ fn project_json(entry: &ProjectEntry, filters: &Filters) -> Value {
                 .digest
                 .groups
                 .iter()
-                .filter(|group| filters.lists(group.lane))
+                .filter(|group| {
+                    filters.lists(group.lane) && (filters.acknowledged || !group.acknowledged)
+                })
                 .map(group_json)
                 .collect(),
             json!({

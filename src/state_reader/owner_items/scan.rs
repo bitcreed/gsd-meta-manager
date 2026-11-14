@@ -200,6 +200,11 @@ fn read_uat(root: &Path, phase_dir: &Path, dir: &str, file_name: &str) -> Option
             audit.source = frontmatter::source(&map);
             audit.updated = frontmatter::updated(&map);
             audit.modified = modified;
+            audit.acknowledged = frontmatter::is_acknowledged(
+                &map,
+                "gap_snapshot",
+                &frontmatter::uat_gap_snapshot(&audit.status, &text),
+            );
             let parse = uat::parse_uat_items_with_stats(&text);
             audit.items = parse.items;
             audit.unparsed_blocks = parse.headings_seen;

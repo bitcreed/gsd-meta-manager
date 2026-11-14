@@ -239,9 +239,11 @@ pub(super) fn build_digest(
 ) -> OwnerDigest {
     let mut digest = OwnerDigest::default();
     for file in &files {
+        // R4: an acknowledged file counts once in `hidden.acknowledged_files` and in no
+        // other tally. Its groups are still built, flagged, so a request to include
+        // acknowledged work can list them; the default listing and every count skip them.
         if file.acknowledged {
             digest.hidden.acknowledged_files += 1;
-            continue;
         }
         if file.kind != AuditKind::Uat {
             continue;
@@ -260,8 +262,8 @@ pub(super) fn build_digest(
                         bucket.push((item, id));
                     }
                 }
-                Placement::Deferred => digest.hidden.deferred += 1,
-                Placement::Noise => digest.hidden.noise += 1,
+                Placement::Deferred => digest.hidden.deferred += usize::from(!file.acknowledged),
+                Placement::Noise => digest.hidden.noise += usize::from(!file.acknowledged),
             }
         }
         let unreadable = if file.unreadable.is_some() {
@@ -325,7 +327,7 @@ pub(super) fn build_digest(
     digest.groups.sort_by_key(sort_key);
 
     let mut fix_phases: BTreeSet<(Option<&str>, &str)> = BTreeSet::new();
-    for group in &digest.groups {
+    for group in digest.groups.iter().filter(|group| !group.acknowledged) {
         match (&group.scope, group.lane) {
             (Scope::Current, Lane::Test) => digest.test += group.items.len(),
             (Scope::Current, Lane::Blocked) => digest.blocked += group.items.len(),
@@ -629,12 +631,15 @@ mod tests {
     }
 
     #[test]
-    fn acknowledged_files_are_counted_and_not_listed() {
+    fn acknowledged_files_are_counted_once_and_flagged() {
         let mut f = file(vec![row("1", "pending", Category::Pending)]);
         f.acknowledged = true;
         let d = digest(vec![f]);
-        assert!(d.groups.is_empty());
         assert_eq!(d.hidden.acknowledged_files, 1);
+        assert_eq!(d.groups.len(), 1, "built, flagged, never counted");
+        assert!(d.groups[0].acknowledged);
+        assert_eq!((d.test, d.blocked, d.fix_phases), (0, 0, 0));
+        assert_eq!(d.hidden.deferred + d.hidden.noise, 0);
     }
 
     #[test]

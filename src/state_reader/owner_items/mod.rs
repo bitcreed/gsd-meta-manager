@@ -23,6 +23,7 @@
 //! point, so a refresh that does not need the inbox never pays for it.
 
 mod frontmatter;
+mod markdown;
 mod rules;
 mod scan;
 mod uat;

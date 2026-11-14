@@ -446,3 +446,41 @@ fn inbox_writes_nothing_anywhere() {
     assert_eq!(registry_before, std::fs::read(&reg).unwrap());
     assert_eq!(tree_before, snapshot(&root));
 }
+
+#[test]
+fn an_acknowledged_uat_is_counted_and_not_listed() {
+    let scratch = tempfile::tempdir().unwrap();
+    let root = fixture("uat-ack-match");
+    let reg = registry(scratch.path(), &[("ack", &root)]);
+    let out = inbox_with(&reg, scratch.path(), &["--json"]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let doc = json(&out);
+    let project = &doc["projects"][0];
+    assert_eq!(project["hidden"]["acknowledged_files"], 1);
+    assert_eq!(doc["summary"]["acknowledged_files"], 1);
+    assert_eq!(doc["summary"]["test"], 0);
+    assert!(
+        project["groups"].as_array().unwrap().is_empty(),
+        "{project:?}"
+    );
+}
+
+#[test]
+fn a_changed_acknowledgment_marker_resurfaces_the_file() {
+    for name in [
+        "uat-ack-count-changed",
+        "uat-ack-status-changed",
+        "uat-ack-missing-at",
+    ] {
+        let scratch = tempfile::tempdir().unwrap();
+        let root = fixture(name);
+        let reg = registry(scratch.path(), &[("ack", &root)]);
+        let doc = json(&inbox_with(&reg, scratch.path(), &["--json"]));
+        assert_eq!(doc["summary"]["acknowledged_files"], 0, "{name}");
+        assert_eq!(
+            doc["projects"][0]["groups"].as_array().unwrap().len(),
+            1,
+            "{name}"
+        );
+    }
+}

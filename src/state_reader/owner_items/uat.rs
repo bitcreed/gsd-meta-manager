@@ -1,15 +1,15 @@
 //! The UAT row parser and `categorize_item`, ported from gsd-core 1.21.0's
 //! `uat.cjs` (`parseUatItemsWithStats`, `categorizeItem`).
 //!
-//! This is the first form of the parser: column-0 `### N.` row headings, inline and
-//! block-scalar `result:`, `reason:`, `blocked_by:` and `expected:` fields. Plan
-//! 34-06 makes heading detection fence-aware and plan 34-02 adds the `## Gaps`
+//! Rows are column-0 `### N.` headings found fence-aware (through
+//! [`markdown::tokenize_headings`]), with inline and block-scalar `result:`,
+//! `reason:`, `blocked_by:` and `expected:` fields. Plan 34-02 adds the `## Gaps`
 //! bullets and tables, the resolved-gap skip and the shortfall tallies.
 //!
 //! JavaScript's character classes are reproduced where they decide an outcome:
 //! `\w` is ASCII, `\s` is [`js_space`], and `.` excludes four line terminators.
 
-use super::{AuditItem, Category, Origin};
+use super::{markdown, AuditItem, Category, Origin};
 
 /// What one parse of a UAT body produced.
 #[derive(Debug, Default, PartialEq)]
@@ -21,7 +21,7 @@ pub(super) struct UatParse {
 }
 
 /// JavaScript's `\s` (and `String.prototype.trim`'s whitespace).
-fn js_space(c: char) -> bool {
+pub(super) fn js_space(c: char) -> bool {
     matches!(
         c,
         '\t' | '\n' | '\u{b}' | '\u{c}' | '\r' | ' ' | '\u{a0}' | '\u{1680}' | '\u{2000}'
@@ -35,12 +35,12 @@ fn js_space(c: char) -> bool {
     )
 }
 
-fn js_trim(text: &str) -> &str {
+pub(super) fn js_trim(text: &str) -> &str {
     text.trim_matches(js_space)
 }
 
 /// A JavaScript `.` does not match these.
-fn line_terminator(c: char) -> bool {
+pub(super) fn line_terminator(c: char) -> bool {
     matches!(c, '\n' | '\r' | '\u{2028}' | '\u{2029}')
 }
 
@@ -142,62 +142,80 @@ pub(super) fn categorize_item(
     }
 }
 
-/// An ATX heading line at column 0: one to six `#` then a blank or the end.
-fn is_heading_line(line: &str) -> bool {
-    let hashes = line.bytes().take_while(|b| *b == b'#').count();
-    (1..=6).contains(&hashes)
-        && line[hashes..]
-            .chars()
-            .next()
-            .is_none_or(|c| c == ' ' || c == '\t')
-}
-
-/// The text of a `### N. Name` row heading as `(number, name)`, or `None` when the
-/// line is not a test-row heading (`TEST_HEADING_LINE_RE` plus
-/// `^\d+\.(?!\d)` on the heading text).
-fn parse_row_heading(line: &str) -> Option<(String, String)> {
-    let rest = line.strip_prefix("###")?;
-    if rest.starts_with('#') {
-        return None;
-    }
-    let after_blank = rest.trim_start_matches([' ', '\t']);
-    if after_blank.len() == rest.len() {
-        return None;
-    }
-    let digits = after_blank.bytes().take_while(u8::is_ascii_digit).count();
+/// `isTestRowHeadingText` plus `parseTestRowHeadingText`: `(number, name)` of a
+/// heading text such as `3. Login` (`^\d+\.(?!\d)`, then `^(\d+)\.\s*(.*)$`). The name
+/// falls back to the whole text when empty.
+fn parse_row_text(text: &str) -> Option<(String, String)> {
+    let digits = text.bytes().take_while(u8::is_ascii_digit).count();
     if digits == 0 {
         return None;
     }
-    let after_digits = after_blank[digits..].strip_prefix('.')?;
-    if after_digits
-        .bytes()
-        .next()
-        .is_some_and(|b| b.is_ascii_digit())
-    {
+    let after = text[digits..].strip_prefix('.')?;
+    if after.bytes().next().is_some_and(|b| b.is_ascii_digit()) {
         return None;
     }
-    let text = heading_text(after_blank);
-    let name = js_trim(&text[digits + 1..]);
-    let name = if name.is_empty() {
-        text.clone()
-    } else {
-        name.to_owned()
-    };
-    let number = after_blank[..digits].trim_start_matches('0');
+    let name = js_trim(after);
+    let name = if name.is_empty() { js_trim(text) } else { name };
+    let number = text[..digits].trim_start_matches('0');
     let number = if number.is_empty() { "0" } else { number };
-    Some((number.to_owned(), name))
+    Some((number.to_owned(), name.to_owned()))
 }
 
-/// A heading's text: trimmed, without an ATX closing `###` sequence (which must be
-/// preceded by a blank).
-fn heading_text(text: &str) -> String {
-    let trimmed = js_trim(text);
-    let head = trimmed.trim_end_matches('#');
-    if head.len() < trimmed.len() && head.ends_with([' ', '\t']) {
-        js_trim(head).to_owned()
-    } else {
-        trimmed.to_owned()
+/// `INDENTED_FENCE_DELIM_RE` (`^ {1,3}` then a fence run) when `indented`, else
+/// `INDENT_TOLERANT_DELIM_RE` (`^ {0,3}`).
+fn is_delimiter_shaped(line: &str, indented: bool) -> bool {
+    let line = line.strip_suffix('\r').unwrap_or(line);
+    let spaces = line.bytes().take_while(|b| *b == b' ').count();
+    if spaces > 3 || (indented && spaces == 0) {
+        return false;
     }
+    let rest = &line[spaces..];
+    ["```", "~~~"].iter().any(|run| rest.starts_with(run))
+}
+
+/// Port of `blankIndentedFenceDelimiters`: the lines with the two delimiter lines of
+/// every wholly indented fenced block (and any delimiter-shaped line between them)
+/// overwritten by spaces. Column 0 is structure and indentation is content, so only
+/// delimiters are blanked, never a block's body.
+fn blank_indented_fence_delimiters(lines: &[&str]) -> Vec<String> {
+    let mut blank = std::collections::BTreeSet::new();
+    for block in markdown::scan_fenced_blocks(lines) {
+        if !is_delimiter_shaped(lines[block.open_line], true) {
+            continue;
+        }
+        if block
+            .close_line
+            .is_some_and(|close| !is_delimiter_shaped(lines[close], true))
+        {
+            continue;
+        }
+        blank.insert(block.open_line);
+        let inner = block.close_line.unwrap_or(lines.len());
+        if let Some(close) = block.close_line {
+            blank.insert(close);
+        }
+        for (index, line) in lines
+            .iter()
+            .enumerate()
+            .take(inner)
+            .skip(block.open_line + 1)
+        {
+            if is_delimiter_shaped(line, false) {
+                blank.insert(index);
+            }
+        }
+    }
+    lines
+        .iter()
+        .enumerate()
+        .map(|(index, line)| {
+            if blank.contains(&index) {
+                " ".repeat(line.chars().count())
+            } else {
+                (*line).to_owned()
+            }
+        })
+        .collect()
 }
 
 /// `RESULT_LINE_RE`: `^result:\s*\[?(\w+)\]?[^]*$` with the `i` flag. The lower-cased
@@ -343,26 +361,45 @@ fn non_empty(value: Option<String>) -> Option<String> {
 }
 
 /// Parse the `### N.` rows of a UAT body.
+///
+/// A row is a column-0 level-3 heading outside every fence whose text starts with
+/// `N.`; its block runs to the next column-0 heading of any level. Delimiters of
+/// wholly indented fences are neutralized first so an indented fence inside an
+/// `expected: |` value cannot hide a later column-0 row.
 pub(super) fn parse_uat_items_with_stats(text: &str) -> UatParse {
     let text = normalize_line_endings(text);
     let lines: Vec<&str> = text.split('\n').collect();
+    let blanked = blank_indented_fence_delimiters(&lines);
+    let blanked_refs: Vec<&str> = blanked.iter().map(String::as_str).collect();
+    let headings: Vec<markdown::Heading> = markdown::tokenize_headings(&blanked_refs)
+        .into_iter()
+        .filter(|heading| lines[heading.line].starts_with('#'))
+        .collect();
     let mut parse = UatParse::default();
-    let mut index = 0;
-    while index < lines.len() {
-        let Some((number, name)) = parse_row_heading(lines[index]) else {
-            index += 1;
+    for (position, heading) in headings.iter().enumerate() {
+        if heading.level != 3 {
+            continue;
+        }
+        let Some((number, name)) = parse_row_text(&heading.text) else {
             continue;
         };
-        let mut end = index + 1;
-        while end < lines.len() && !is_heading_line(lines[end]) {
-            end += 1;
-        }
-        let mut block = lines[index..end].join("\n");
-        if end < lines.len() {
+        let next = headings.get(position + 1).map(|next| next.line);
+        let end = next.unwrap_or(lines.len());
+        let mut block = lines[heading.line..end].join("\n");
+        if next.is_some() {
             block.push('\n');
         }
-        index = end;
-        let Some(result) = block.split('\n').find_map(result_token) else {
+        let (kept, unterminated) = markdown::strip_fenced_code(&lines[heading.line..end]);
+        let visible = if unterminated {
+            block.clone()
+        } else {
+            let mut joined = kept.join("\n");
+            if next.is_some() {
+                joined.push('\n');
+            }
+            joined
+        };
+        let Some(result) = visible.split('\n').find_map(result_token) else {
             parse.headings_seen += 1;
             continue;
         };
@@ -370,8 +407,8 @@ pub(super) fn parse_uat_items_with_stats(text: &str) -> UatParse {
             continue;
         }
         let expected = non_empty(extract_scalar_field(&block, "expected"));
-        let reason = non_empty(extract_scalar_field(&block, "reason"));
-        let blocked_by = non_empty(extract_scalar_field(&block, "blocked_by"));
+        let reason = non_empty(extract_scalar_field(&visible, "reason"));
+        let blocked_by = non_empty(extract_scalar_field(&visible, "blocked_by"));
         parse.items.push(AuditItem {
             origin: Origin::Row,
             test: Some(number),
@@ -561,5 +598,52 @@ mod tests {
     fn a_non_ascii_name_is_kept() {
         let item = &parse_uat_items_with_stats("### 1. Überprüfung ✓\nresult: pending\n").items[0];
         assert_eq!(item.name, "Überprüfung ✓");
+    }
+
+    #[test]
+    fn a_row_heading_inside_a_fenced_example_is_not_a_row() {
+        let text = "### 1. Real\nresult: pending\n\n```\n### 2. Fake\nresult: pending\n```\n\n### 3. After\nresult: pending\n";
+        let parse = parse_uat_items_with_stats(text);
+        let tests: Vec<_> = parse
+            .items
+            .iter()
+            .map(|i| i.test.as_deref().unwrap())
+            .collect();
+        assert_eq!(tests, ["1", "3"]);
+        let tilde = parse_uat_items_with_stats(
+            "~~~\n### 1. Fake\nresult: pending\n~~~\n### 2. Real\nresult: pending\n",
+        );
+        assert_eq!(tilde.items.len(), 1);
+        assert_eq!(tilde.items[0].test.as_deref(), Some("2"));
+    }
+
+    #[test]
+    fn an_indented_row_heading_is_not_a_row() {
+        let parse = parse_uat_items_with_stats(
+            "    ### 1. Indented\nresult: pending\n### 2. Real\nresult: pending\n",
+        );
+        assert_eq!(parse.items.len(), 1);
+        assert_eq!(parse.items[0].test.as_deref(), Some("2"));
+    }
+
+    #[test]
+    fn an_indented_fence_in_a_value_does_not_hide_a_later_column_0_row() {
+        let text = "### 1. One\nresult: pending\nexpected: |\n  ```\n  sample\n\n### 2. Two\nresult: pending\n";
+        let parse = parse_uat_items_with_stats(text);
+        let tests: Vec<_> = parse
+            .items
+            .iter()
+            .map(|i| i.test.as_deref().unwrap())
+            .collect();
+        assert_eq!(tests, ["1", "2"]);
+    }
+
+    #[test]
+    fn a_result_line_inside_a_fence_is_not_the_rows_result() {
+        let text =
+            "### 1. One\n```\nresult: pending\n```\nresult: skipped\nreason: a physical device\n";
+        let item = &parse_uat_items_with_stats(text).items[0];
+        assert_eq!(item.result, "skipped");
+        assert_eq!(item.category, Category::DeviceNeeded);
     }
 }
