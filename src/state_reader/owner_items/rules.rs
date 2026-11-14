@@ -687,17 +687,19 @@ fn debug_groups(digest: &mut OwnerDigest, sessions: &[DebugSession], ctx: &Conte
 }
 
 /// The first ASCII-letter word of `text` when it is RESOLVED, ANSWERED or CLOSED
-/// (any case) as a whole word.
+/// (any case) as a whole word: followed by the end of the text, whitespace, or one of
+/// `:.,;—–)]*~` and a backtick. A hyphen is not a boundary, so `Closed-loop` and
+/// `Resolved-by-default` stay open.
 fn starts_with_answered_word(text: &str) -> bool {
     let end = text
         .bytes()
         .position(|b| !b.is_ascii_alphabetic())
         .unwrap_or(text.len());
     let word = &text[..end];
-    let whole = !text[end..]
+    let whole = text[end..]
         .chars()
         .next()
-        .is_some_and(|c| c.is_alphanumeric() || c == '_');
+        .is_none_or(|c| c.is_whitespace() || ":.,;—–)]*~`".contains(c));
     whole
         && ["resolved", "answered", "closed"]
             .iter()
@@ -740,8 +742,11 @@ fn strip_list_marker(text: &str) -> &str {
     text
 }
 
+/// A question-ID label: letters, a digit, more id characters, then a real separator
+/// (`—`, `–` or `:`, or a hyphen with whitespace on both sides). Whitespace alone does
+/// not end a label, so `v2 closed beta` keeps its first word `v2`.
 static QUESTION_LABEL: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-    regex::Regex::new(r"^[A-Za-z]{1,6}[-.]?[0-9][A-Za-z0-9.-]*[ \t]*[—–:\s-]+")
+    regex::Regex::new(r"^[A-Za-z]{1,6}[-.]?[0-9][A-Za-z0-9.-]*(?:[ \t]*[—–:][—–:\s-]*|[ \t]+-+\s+)")
         .expect("a valid static pattern")
 });
 
@@ -749,23 +754,34 @@ static QUESTION_LABEL: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::
 /// marker. After the list marker, emphasis openers, a checkbox and an optional
 /// question-ID label that holds a digit (`OQ-06-01 — `, `Q3: `), the first word is
 /// RESOLVED, ANSWERED or CLOSED; or the line holds a bracketed tag (`(` or `[`,
-/// optional spaces, backticks or `*`) whose first word is one of them. Prose that only
-/// mentions answering, an `[OPEN]` label and a word that merely starts like a marker
-/// are open.
+/// optional spaces, backticks or `*`) whose first word is one of them, and that tag
+/// either opens the question text or is followed by no `?` after its closing bracket
+/// (`Which scheme? (CLOSED)`). Prose that only mentions answering, an `[OPEN]` label,
+/// a word that merely starts like a marker (`Closed-loop`) and a bracket inside the
+/// question (`export tickets (closed vs resolved)?`) are open.
 pub(super) fn is_answered(line: &str) -> bool {
     let rest = strip_openers(strip_list_marker(line));
     let rest = QUESTION_LABEL
         .find(rest)
         .map_or(rest, |label| &rest[label.end()..]);
-    if starts_with_answered_word(strip_openers(rest)) {
+    let rest = strip_openers(rest);
+    if starts_with_answered_word(rest) {
         return true;
     }
+    // Every strip above removes a prefix, so `rest` is a suffix of `line`.
+    let leading = line.len() - rest.len();
     line.char_indices()
         .filter(|(_, c)| matches!(c, '(' | '['))
         .any(|(at, c)| {
-            let tag = line[at + c.len_utf8()..]
-                .trim_start_matches(|c: char| c.is_whitespace() || c == '`' || c == '*');
-            starts_with_answered_word(tag)
+            let inside = &line[at + c.len_utf8()..];
+            let tag =
+                inside.trim_start_matches(|c: char| c.is_whitespace() || c == '`' || c == '*');
+            if !starts_with_answered_word(tag) {
+                return false;
+            }
+            let close = if c == '(' { ')' } else { ']' };
+            let after = inside.find(close).map_or("", |end| &inside[end + 1..]);
+            at == leading || !after.contains('?')
         })
 }
 
@@ -2046,9 +2062,28 @@ mod tests {
             "- Unresolved: x",
             "- the CLOSED-loop test?",
             "- Is the archive view in scope?",
+            // WR-01: a hyphen does not end a marker word.
+            "- Closed-loop control or open-loop?",
+            "- Resolved-by-default behavior?",
+            "- **Answered-mail** folder: keep it?",
+            // WR-01: a bracket inside the question is not a tag.
+            "- How should we export tickets (closed vs resolved)?",
+            "- Should [answered] polls be archived?",
+            // WR-01: whitespace alone does not end a question-ID label.
+            "- v2 closed beta: who is invited?",
+            "- v2-closed beta?",
             "",
         ] {
             assert!(!is_answered(line), "{line}");
+        }
+        for line in [
+            "- **RESOLVED**: kept",
+            "- `CLOSED` — moved on",
+            "- Q3 - closed: done",
+            "- Which loop design? (closed: open-loop chosen)",
+            "- Which loop design? [ANSWERED].",
+        ] {
+            assert!(is_answered(line), "{line}");
         }
     }
 
