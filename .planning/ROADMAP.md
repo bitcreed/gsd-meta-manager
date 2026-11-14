@@ -169,11 +169,11 @@ Plans:
 **Requirements**: OWN-08, OWN-10 (extends OWN-13 and OWN-15 delivered in Phase 34)
 **Depends on:** Phase 34
 **Verification:** Automatic (one fixture per signal-table row)
-**Plans:** 4 plans
+**Plans:** 1/4 plans executed
 
 Plans:
 **Wave 1**
-- [ ] 35-01-PLAN.md — Tracer: debug sessions end to end (Layer A scanDebugSessions port, Decide/Fix lanes, `decide`/`fix_debug` in `inbox` and `status`), audit-open oracle harness
+- [x] 35-01-PLAN.md — Tracer: debug sessions end to end (Layer A scanDebugSessions port, Decide/Fix lanes, `decide`/`fix_debug` in `inbox` and `status`), audit-open oracle harness
 
 **Wave 2** *(blocked on Wave 1 completion)*
 - [ ] 35-02-PLAN.md — CONTEXT open questions: deriveOpenQuestions port with digest acknowledgment, RESOLVED/ANSWERED/CLOSED filter, `summary.archived.decide`

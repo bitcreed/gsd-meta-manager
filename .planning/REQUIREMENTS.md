@@ -59,7 +59,7 @@ checks the owner can run today (report section 1).
 - [x] **OWN-09**: `status: testing` (and any non-terminal UAT status with open items) counts as
   outstanding; `status_cli`'s `uat_outstanding` attention item fires for it. *Test: regression
   fixture; existing `tests/status_cli.rs` key paths unchanged.*
-- [ ] **OWN-10**: The Decide/Fix signals of report section 4 ("Other signals") are read with the stated
+- [x] **OWN-10**: The Decide/Fix signals of report section 4 ("Other signals") are read with the stated
   fields: paused handoff, human actions pending, phase checkpoint, debug sessions awaiting confirmation
   (Decide, D2) and open investigations (Fix), `gaps_found` verifications, CONTEXT open questions minus
   RESOLVED/ANSWERED/CLOSED bullets (D11), pending-todo count and oldest age. Debug status is normalized
@@ -174,7 +174,7 @@ Deferred (report section 6):
 | OWN-07 | Phase 34 | Complete |
 | OWN-08 | Phase 35 | Pending |
 | OWN-09 | Phase 34 | Complete |
-| OWN-10 | Phase 35 | Pending |
+| OWN-10 | Phase 35 | Complete |
 | OWN-11 | Phase 34 | Complete |
 | OWN-12 | Phase 34 | Complete |
 | OWN-13 | Phase 34 | Complete |

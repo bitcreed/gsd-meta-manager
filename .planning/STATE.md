@@ -5,16 +5,16 @@ milestone_name: Owner Inbox
 current_phase: 35
 current_phase_name: Decisions, code-needed and gates
 status: executing
-stopped_at: Phase 35 context gathered
-last_updated: "2026-11-14T20:58:27.758Z"
+stopped_at: Completed 35-01-PLAN.md
+last_updated: "2026-11-14T21:21:45.810Z"
 last_activity: 2026-11-14
 last_activity_desc: Phase 35 execution started
-state_head: 53c66fa25cc814802a6460f48a148592712cf8e7
+state_head: 948c4f55cba06d48a5c5d0c41669485208a564b3
 progress:
   total_phases: 4
   completed_phases: 0
   total_plans: 10
-  completed_plans: 6
+  completed_plans: 7
   percent: 0
 ---
 
@@ -30,8 +30,8 @@ See: .planning/PROJECT.md (updated 2026-11-14)
 ## Current Position
 
 Phase: 35 (Decisions, code-needed and gates) — EXECUTING
-Plan: 1 of 4
-Status: Executing Phase 35
+Plan: 2 of 4
+Status: Ready to execute
 Last activity: 2026-11-14 — Phase 35 execution started
 
 
@@ -179,6 +179,7 @@ None. Phase 19's deferred human verification was closed by supersession on 2026-
 | Phase 34 P03 | 45min | 3 tasks | 30 files |
 | Phase 34 P04 | 1 session | 3 tasks | 10 files |
 | Phase 34 P05 | ~2h | 3 tasks | 9 files |
+| Phase 35 P01 | 1 session | 2 tasks | 43 files |
 
 ## Accumulated Context
 
@@ -342,6 +343,7 @@ Recent decisions affecting current work:
 - [Phase 34]: 34-02: Gaps tables skip only resolved (oracle), not done/pass [inferred]
 - [Phase 34]: 34-03: out-of-set VERIFICATION status degrades one file to Unreadable::OutOfSetStatus; parse cache keyed (canonical path, kind) -> (mtime,len), bounded 8192, after containment/regular/size checks
 - [Phase 34]: 34-05: Filters::lists_group is the single listing predicate for JSON and text; dev profile optimizes the regex stack so the debug cold run meets the 1 s budget
+- [Phase 35]: 35-01: debug groups are root-scoped (phase empty, command /gsd-debug) and never count as fix_phases; Layer B recovers status from a YAML-rejected fence (F2)
 
 ### Roadmap Evolution
 
@@ -604,9 +606,9 @@ non-unique bullets in these narrative logs). Disclosed per file instead [inferre
 
 ## Session Continuity
 
-Last session: 2026-11-14T20:09:33.224Z
-Stopped at: Phase 35 context gathered
-Resume file: .planning/phases/35-decisions-code-needed-and-gates/35-CONTEXT.md
+Last session: 2026-11-14T21:21:45.649Z
+Stopped at: Completed 35-01-PLAN.md
+Resume file: None
 
 Next: push master + tag v2.4.0 (tag push publishes to crates.io); then `/gsd-new-milestone`.
 Earlier (2026-11-11): v2.3.1 released and published to crates.io — Multiplexer Backends (publish fix).
