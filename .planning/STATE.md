@@ -6,10 +6,10 @@ current_phase: 35
 current_phase_name: Decisions, code-needed and gates
 status: executing
 stopped_at: Phase 35 context gathered
-last_updated: "2026-11-14T20:57:15.296Z"
+last_updated: "2026-11-14T20:58:27.758Z"
 last_activity: 2026-11-14
-last_activity_desc: Phase 34 execution started
-state_head: f659033ad6b5543fbb51af25caa66bebacc32143
+last_activity_desc: Phase 35 execution started
+state_head: 53c66fa25cc814802a6460f48a148592712cf8e7
 progress:
   total_phases: 4
   completed_phases: 0
@@ -25,14 +25,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-11-14)
 
 **Core value:** See the state of every GSD project at a glance and act on any of them without leaving the TUI.
-**Current focus:** Phase 34 — Owner items reader + inbox CLI
+**Current focus:** Phase 35 — Decisions, code-needed and gates
 
 ## Current Position
 
-Phase: 35 (Decisions, code-needed and gates) — READY TO EXECUTE
-Plan: 6 of 6
-Status: Ready to execute
-Last activity: 2026-11-14 — Phase 34 execution started
+Phase: 35 (Decisions, code-needed and gates) — EXECUTING
+Plan: 1 of 4
+Status: Executing Phase 35
+Last activity: 2026-11-14 — Phase 35 execution started
 
 
 ## Deferred Verification
