@@ -23,7 +23,7 @@
 //! 4. **Escaping (D5).** Every project-authored string (milestone, phase name, raw
 //!    verification and UAT values, workstream names, session ids, the echoed
 //!    target) goes through `text::render_for_terminal` and is capped at
-//!    [`MAX_TEXT_CHARS`]. Filesystem paths (`path`, `sessions[].cwd`) are emitted
+//!    [`gsd_meta_manager::text::MAX_TEXT_CHARS`]. Filesystem paths (`path`, `sessions[].cwd`) are emitted
 //!    raw: they are identifiers a script will `cd` into, and JSON encoding still
 //!    escapes C0 controls. Artifact prose (phase goals, descriptions, CONTEXT.md,
 //!    HANDOFF `next_action`) never reaches the output.
@@ -31,19 +31,17 @@
 //!    [`crate::next_cli::hint_for`], the same function `next` calls, so the two
 //!    cannot drift.
 
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use gsd_meta_manager::config::{load_config, Config};
 use gsd_meta_manager::driver::router;
-use gsd_meta_manager::launch_target::resolve_launch_target;
-use gsd_meta_manager::registry::list_projects;
 use gsd_meta_manager::session_detector::{detect_sessions, ClaudeSession, SessionKind};
 use gsd_meta_manager::state_reader::disk_status::VerificationStatus;
 use gsd_meta_manager::state_reader::{parse_project_state, ProjectState};
-use gsd_meta_manager::text::{render_for_terminal, Rendered};
+use gsd_meta_manager::text::{cap_rendered as cap, terminal_capped as text};
 use serde_json::{json, Value};
 
+use crate::cli_targets::{self, fail, out_line, slots, Slot};
 use crate::next_cli;
 
 /// The `schema` field.
@@ -52,35 +50,6 @@ const SCHEMA: &str = "gsd-meta-manager/status";
 /// The `schema_version` field. Bumped on any rename, removal or type change; new
 /// keys may be added without a bump.
 const SCHEMA_VERSION: u64 = 1;
-
-/// The longest project-authored string, in characters, before it is cut.
-const MAX_TEXT_CHARS: usize = 200;
-
-/// Write one line to stdout, ignoring failure (a closed pipe must not panic).
-fn out_line(text: &str) {
-    let mut stdout = std::io::stdout().lock();
-    let _ = writeln!(stdout, "{text}");
-}
-
-/// Cut `value` to [`MAX_TEXT_CHARS`] characters, appending one `…` when it cut.
-fn cap_string(value: String) -> String {
-    if value.chars().count() <= MAX_TEXT_CHARS {
-        return value;
-    }
-    let mut cut: String = value.chars().take(MAX_TEXT_CHARS).collect();
-    cut.push('…');
-    cut
-}
-
-/// An escaped value, capped.
-fn cap(rendered: Rendered) -> String {
-    cap_string(String::from(rendered))
-}
-
-/// Project-authored text: escaped for a terminal, then capped.
-fn text(value: &str) -> String {
-    cap(render_for_terminal(value))
-}
 
 /// [`text`], or `None` for a blank value.
 fn opt_text(value: &str) -> Option<String> {
@@ -274,125 +243,24 @@ fn error_entry(
     })
 }
 
-/// What one requested project resolved to, before its state is read.
-enum Slot {
-    /// A root that exists and holds `.planning/`.
-    Project {
-        target: Option<String>,
-        alias: Option<String>,
-        root: PathBuf,
-    },
-    /// Resolution failed; the finished error entry.
-    Failed(Value),
-}
-
-fn canon_or_raw(path: &Path) -> PathBuf {
-    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
-}
-
-/// A registered (or resolved) root, checked before its state is parsed.
-fn checked_slot(target: Option<&str>, alias: Option<&str>, root: PathBuf) -> Slot {
-    if !root.is_dir() {
-        let message = format!(
-            "the folder {} does not exist",
-            text(&root.display().to_string())
-        );
-        return Slot::Failed(error_entry(
-            target,
-            alias,
-            Some(&root),
-            "folder_missing",
-            &message,
-        ));
-    }
-    if !root.join(".planning").is_dir() {
-        let message = format!(
-            "{} has no .planning/ directory",
-            text(&root.display().to_string())
-        );
-        return Slot::Failed(error_entry(
-            target,
-            alias,
-            Some(&root),
-            "no_planning",
-            &message,
-        ));
-    }
-    Slot::Project {
-        target: target.map(str::to_owned),
-        alias: alias.map(str::to_owned),
-        root,
-    }
-}
-
-/// The registry alias whose canonical root is `root`; ties go to the
-/// lexicographically smallest alias, because `projects` is a `HashMap`.
-fn alias_of_root(config: &Config, root: &Path) -> Option<String> {
-    config
-        .projects
-        .iter()
-        .filter(|(_, project)| canon_or_raw(&project.path) == root)
-        .map(|(alias, _)| alias.clone())
-        .min()
-}
-
-/// Resolve one argv target (D2, D3): a directory holding `.planning/`, else a
-/// registered alias or a path inside a registered root, else unresolved.
-fn resolve_target(config: &Config, cwd: &Path, target: &str) -> Slot {
-    let path = Path::new(target);
-    if path.join(".planning").is_dir() {
-        let root = canon_or_raw(path);
-        let alias = alias_of_root(config, &root);
-        return checked_slot(Some(target), alias.as_deref(), root);
-    }
-    if let Ok(alias) = resolve_launch_target(config, target, cwd) {
-        if let Some(project) = config.projects.get(&alias) {
-            return checked_slot(Some(target), Some(&alias), canon_or_raw(&project.path));
-        }
-    }
-    let message = format!(
-        "{} is neither a directory containing .planning/ nor a registered project",
-        text(target)
-    );
-    Slot::Failed(error_entry(
-        Some(target),
-        None,
-        None,
-        "unresolved",
-        &message,
-    ))
-}
-
-/// Write the one `status: ...` stderr line of a failed run.
-fn fail(message: &str) -> i32 {
-    let mut stderr = std::io::stderr().lock();
-    let _ = writeln!(stderr, "status: {}", render_for_terminal(message));
-    1
-}
-
 /// Run `status` and return the process exit code.
 pub fn run(targets: &[String], config: Option<PathBuf>) -> i32 {
     let config_path = config.unwrap_or_else(Config::default_path);
     let config = match load_config(&config_path) {
         Ok(config) => config,
-        Err(error) => return fail(&format!("{error:#}")),
+        Err(error) => return fail("status", &format!("{error:#}")),
     };
     let cwd = match std::env::current_dir() {
         Ok(cwd) => cwd,
-        Err(error) => return fail(&format!("cannot read the working directory: {error}")),
+        Err(error) => {
+            return fail(
+                "status",
+                &format!("cannot read the working directory: {error}"),
+            )
+        }
     };
 
-    let slots: Vec<Slot> = if targets.is_empty() {
-        list_projects(&config)
-            .into_iter()
-            .map(|(alias, project)| checked_slot(None, Some(alias), canon_or_raw(&project.path)))
-            .collect()
-    } else {
-        targets
-            .iter()
-            .map(|target| resolve_target(&config, &cwd, target))
-            .collect()
-    };
+    let slots: Vec<Slot> = slots(&config, &cwd, targets);
 
     // One detection per run, and only when some project can own a session. A
     // session goes to the deepest root among every registered and listed one.
@@ -407,17 +275,29 @@ pub fn run(targets: &[String], config: Option<PathBuf>) -> i32 {
     let mut roots: Vec<PathBuf> = config
         .projects
         .values()
-        .map(|project| canon_or_raw(&project.path))
+        .map(|project| cli_targets::canon_or_raw(&project.path))
         .collect();
     roots.extend(slots.iter().filter_map(|slot| match slot {
         Slot::Project { root, .. } => Some(root.clone()),
-        Slot::Failed(_) => None,
+        Slot::Failed { .. } => None,
     }));
 
     let projects: Vec<Value> = slots
         .into_iter()
         .map(|slot| match slot {
-            Slot::Failed(entry) => entry,
+            Slot::Failed {
+                target,
+                alias,
+                path,
+                kind,
+                message,
+            } => error_entry(
+                target.as_deref(),
+                alias.as_deref(),
+                path.as_deref(),
+                kind,
+                &message,
+            ),
             Slot::Project {
                 target,
                 alias,
@@ -526,17 +406,5 @@ mod tests {
         let value = session_json(&session(SessionKind::Claude, Some("a\u{202e}b\u{1b}[0m")));
         let id = value["session_id"].as_str().unwrap();
         assert!(!id.contains('\u{202e}') && !id.contains('\u{1b}'), "{id:?}");
-    }
-
-    #[test]
-    fn cap_cuts_a_long_value_and_leaves_a_short_one_alone() {
-        let long = cap_string("y".repeat(500));
-        assert_eq!(long.chars().count(), MAX_TEXT_CHARS + 1);
-        assert!(long.ends_with('\u{2026}'));
-        assert_eq!(cap_string("short".to_string()), "short");
-        assert_eq!(
-            cap_string("z".repeat(MAX_TEXT_CHARS)).chars().count(),
-            MAX_TEXT_CHARS
-        );
     }
 }

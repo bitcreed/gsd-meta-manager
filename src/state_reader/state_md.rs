@@ -539,7 +539,7 @@ fn yaml_fault_position(
 /// All of it is done over `char`s. The value is third-party text and a
 /// multi-byte character is exactly what arrives without warning — the defect
 /// class the retired Phase 21 `untrusted::bounded` helper documented.
-fn repair_frontmatter_block(yaml: &str) -> Option<(String, u32)> {
+pub(crate) fn repair_frontmatter_block(yaml: &str) -> Option<(String, u32)> {
     let mut repaired_lines = 0u32;
     let mut out = String::with_capacity(yaml.len() + 16);
     for (index, raw_line) in yaml.split('\n').enumerate() {

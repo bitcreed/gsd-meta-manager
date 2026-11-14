@@ -17,6 +17,8 @@ pub mod error;
 pub mod executor;
 /// The `GSDMM_EXPERIMENTAL_FEATURES` startup flag (quick task 260917-fko, D1).
 pub mod experimental;
+/// The `inbox` document: the owner's open items across projects as schema v1 JSON (Phase 34).
+pub mod inbox;
 /// The TUI's input reader thread and the shared terminal shell-out helper (quick 261103-tn4).
 pub mod input;
 pub mod journal;

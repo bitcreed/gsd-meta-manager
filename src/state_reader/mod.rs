@@ -6,6 +6,7 @@ pub mod disk_status;
 pub mod driver_frontmatter;
 pub mod git_ops;
 pub mod gsd_install;
+pub mod owner_items;
 pub mod phase_num;
 pub mod plan_waves;
 pub mod queue_md;

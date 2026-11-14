@@ -1,6 +1,8 @@
+mod cli_targets;
 mod driver_cli;
 mod driverctl_cli;
 mod event;
+mod inbox_cli;
 mod next_cli;
 mod status_cli;
 mod task_cli;
@@ -108,6 +110,20 @@ fn main() -> anyhow::Result<()> {
         Some(Commands::Status { projects, .. }) => {
             std::process::exit(status_cli::run(&projects, cli.config.clone()))
         }
+        // `inbox` is the read-only owner query (Phase 34, D-18): before `init_tracing`
+        // for the same reason as `status`, it writes no log file.
+        Some(Commands::Inbox {
+            projects,
+            json,
+            lane,
+            include,
+        }) => std::process::exit(inbox_cli::run(
+            &projects,
+            json,
+            &lane,
+            &include,
+            cli.config.clone(),
+        )),
         other => cli.command = other,
     }
 
@@ -403,6 +419,12 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
         Some(Commands::Status { .. }) => {
             return Err(anyhow::anyhow!(
                 "status is dispatched in `main` before tracing and the async runtime exist"
+            ));
+        }
+        // And `inbox`, dispatched at the same early point as `status`.
+        Some(Commands::Inbox { .. }) => {
+            return Err(anyhow::anyhow!(
+                "inbox is dispatched in `main` before tracing and the async runtime exist"
             ));
         }
         Some(Commands::Envelope { action }) => match action {

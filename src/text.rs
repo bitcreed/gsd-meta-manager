@@ -658,6 +658,30 @@ impl std::fmt::Debug for Untrusted {
     }
 }
 
+/// The longest project-authored string, in characters, before it is cut.
+pub const MAX_TEXT_CHARS: usize = 200;
+
+/// Cut `value` to [`MAX_TEXT_CHARS`] characters, appending one `…` when it cut.
+pub fn cap_chars(value: String) -> String {
+    if value.chars().count() <= MAX_TEXT_CHARS {
+        return value;
+    }
+    let mut cut: String = value.chars().take(MAX_TEXT_CHARS).collect();
+    cut.push('…');
+    cut
+}
+
+/// An escaped value, capped at [`MAX_TEXT_CHARS`].
+pub fn cap_rendered(rendered: Rendered) -> String {
+    cap_chars(String::from(rendered))
+}
+
+/// Project-authored text for a machine-readable or plain-text output: escaped for
+/// a terminal, then capped. Shared by `status` and `inbox`.
+pub fn terminal_capped(value: &str) -> String {
+    cap_rendered(render_for_terminal(value))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2725,5 +2749,17 @@ mod tests {
                  that printed the empty string."
             );
         }
+    }
+
+    #[test]
+    fn cap_cuts_a_long_value_and_leaves_a_short_one_alone() {
+        let long = cap_chars("y".repeat(500));
+        assert_eq!(long.chars().count(), MAX_TEXT_CHARS + 1);
+        assert!(long.ends_with('\u{2026}'));
+        assert_eq!(cap_chars("short".to_string()), "short");
+        assert_eq!(
+            cap_chars("z".repeat(MAX_TEXT_CHARS)).chars().count(),
+            MAX_TEXT_CHARS
+        );
     }
 }

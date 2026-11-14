@@ -535,6 +535,24 @@ impl Preferences {
     }
 }
 
+impl Preferences {
+    /// How many days an owner item may sit before the inbox marks it stale
+    /// (`preferences.owner.stale_days`, Phase 34 D-13).
+    ///
+    /// Read from the flattened [`Preferences::extra`] map like
+    /// [`Preferences::driver_open_pr`], so it round-trips through a load-and-save
+    /// untouched. An absent key or a non-integer reads the default of 30;
+    /// any integer is clamped to `1..=3650`.
+    pub fn owner_stale_days(&self) -> u32 {
+        const DEFAULT: u32 = 30;
+        self.extra
+            .get("owner")
+            .and_then(|owner| owner.get("stale_days"))
+            .and_then(Value::as_i64)
+            .map_or(DEFAULT, |days| days.clamp(1, 3650) as u32)
+    }
+}
+
 impl Default for Preferences {
     fn default() -> Self {
         Preferences {
@@ -1317,5 +1335,28 @@ mod tests {
         let after: Preferences = serde_json::from_str(&text).expect("parse");
         assert!(after.driver_open_pr());
         assert_eq!(after.extra["driver"]["other"], 7);
+    }
+
+    #[test]
+    fn owner_stale_days_defaults_to_thirty_and_clamps() {
+        assert_eq!(Preferences::default().owner_stale_days(), 30, "absent");
+        assert_eq!(
+            prefs(r#"{"owner": {"stale_days": 45}}"#).owner_stale_days(),
+            45
+        );
+        assert_eq!(
+            prefs(r#"{"owner": {"stale_days": 0}}"#).owner_stale_days(),
+            1
+        );
+        assert_eq!(
+            prefs(r#"{"owner": {"stale_days": 99999}}"#).owner_stale_days(),
+            3650
+        );
+        assert_eq!(
+            prefs(r#"{"owner": {"stale_days": "45"}}"#).owner_stale_days(),
+            30,
+            "a string is not a number"
+        );
+        assert_eq!(prefs(r#"{"owner": "x"}"#).owner_stale_days(), 30);
     }
 }
