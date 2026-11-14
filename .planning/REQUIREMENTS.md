@@ -42,7 +42,7 @@ checks the owner can run today (report section 1).
 - [ ] **OWN-04**: R3: `## Gaps` entries with `test: N` merge into issue row N; Fix groups report failed
   checks and gaps separately. *Test: mailbot-ph09 fixture yields 10 failed checks and 14 gaps in one
   Fix group.*
-- [ ] **OWN-05**: R4: acknowledged files (`audit_acknowledged`, matched as gsd-core's
+- [x] **OWN-05**: R4: acknowledged files (`audit_acknowledged`, matched as gsd-core's
   `isAuditItemAcknowledged`) are suppressed while the snapshot matches and resurface when it does not
   or the marker is malformed; they are counted, never listed by default. *Test: four fixtures (match,
   changed count, changed status, marker missing `at`), each also compared with the oracle's
@@ -169,7 +169,7 @@ Deferred (report section 6):
 | OWN-02 | Phase 34 | Complete |
 | OWN-03 | Phase 34 | Pending |
 | OWN-04 | Phase 34 | Pending |
-| OWN-05 | Phase 34 | Pending |
+| OWN-05 | Phase 34 | Complete |
 | OWN-06 | Phase 34 | Pending |
 | OWN-07 | Phase 34 | Pending |
 | OWN-08 | Phase 35 | Pending |
