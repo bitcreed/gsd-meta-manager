@@ -91,12 +91,12 @@
     {
       "number": "34",
       "name": "Owner items reader + inbox CLI",
-      "status": "pending"
+      "status": "in_progress"
     },
     {
       "number": "35",
       "name": "Decisions, code-needed and gates",
-      "status": "in_progress"
+      "status": "complete"
     },
     {
       "number": "36",
@@ -112,7 +112,7 @@
   "next": {
     "command": "/gsd-progress --next",
     "label": "Advance to the next step (verify)",
-    "reason": "Phase 2 of 4 · 0% · ready to verify"
+    "reason": "Phase 1 of 4 · 25% · ready to verify"
   },
-  "updated_at": "2026-11-14T22:28:29.869Z"
+  "updated_at": "2026-11-14T22:59:30.606Z"
 }

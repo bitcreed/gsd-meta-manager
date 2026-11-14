@@ -129,7 +129,7 @@ Requirements: `.planning/milestones/v2.3.0-REQUIREMENTS.md` (MUX-01..07, all Com
 Requirements: `.planning/REQUIREMENTS.md` (OWN-01..OWN-23). Source of truth: `.planning/research/OWNER-INBOX-UX.md` (section 6 phase split, section 7 decision defaults D1-D12).
 
 - [ ] **Phase 34: Owner items reader + inbox CLI** - Native per-item UAT/VERIFICATION reader matching `audit-uat` (conformance oracle), owner lanes and rules, `inbox [--json]`, `owner` counts in `status --json`
-- [ ] **Phase 35: Decisions, code-needed and gates** - Debug, handoff, context-question, gaps_found and todo signals plus the milestone gate (`closes_after`), surfaced in `inbox` and `status`
+- [x] **Phase 35: Decisions, code-needed and gates** - Debug, handoff, context-question, gaps_found and todo signals plus the milestone gate (`closes_after`), surfaced in `inbox` and `status` (completed 2026-11-14)
 - [ ] **Phase 36: Dashboard and detail** - `You` column, summary line, `has owner work` sort rank, `/y` filter and the Owner block on the detail Phases tab (UI, human UAT)
 - [ ] **Phase 37: Inbox screen and actions** - Cross-project inbox screen (`i`) with run command (`v`), acknowledge via gsd-core (`A`) and copy checklist (`y`) (UI, human UAT)
 
@@ -169,7 +169,7 @@ Plans:
 **Requirements**: OWN-08, OWN-10 (extends OWN-13 and OWN-15 delivered in Phase 34)
 **Depends on:** Phase 34
 **Verification:** Automatic (one fixture per signal-table row)
-**Plans:** 4/4 plans executed
+**Plans:** 4/4 plans complete
 
 Plans:
 **Wave 1**
