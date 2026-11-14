@@ -46,10 +46,9 @@ pub struct ProjectEntry {
     pub phases_done: u32,
     pub phases_total: u32,
     pub digest: OwnerDigest,
-    /// The pending todos to list (empty unless `--include todos`).
+    /// The pending todos to list (empty unless `--include todos`). The count lives in
+    /// `digest.hidden.todos`.
     pub todos: Vec<PendingTodo>,
-    /// The pending todo count, whether listed or not.
-    pub todos_count: usize,
 }
 
 /// Which groups are listed. `summary` and `hidden` always report the full counts.
@@ -138,7 +137,14 @@ fn project_json(entry: &ProjectEntry, filters: &Filters) -> Value {
             json!({"kind": error.kind, "message": error.message}),
             Value::Null,
             Vec::new(),
-            json!({"deferred": 0, "acknowledged_files": 0, "todos": 0, "noise": 0}),
+            json!({
+                "deferred": 0,
+                "acknowledged_files": 0,
+                "todos": 0,
+                "noise": 0,
+                "todos_oldest_days": Value::Null,
+                "todos_unreadable": false,
+            }),
             Vec::new(),
         ),
         None => (
@@ -154,8 +160,10 @@ fn project_json(entry: &ProjectEntry, filters: &Filters) -> Value {
             json!({
                 "deferred": entry.digest.hidden.deferred,
                 "acknowledged_files": entry.digest.hidden.acknowledged_files,
-                "todos": entry.todos_count,
+                "todos": entry.digest.hidden.todos,
                 "noise": entry.digest.hidden.noise,
+                "todos_oldest_days": entry.digest.hidden.todos_oldest_days,
+                "todos_unreadable": entry.digest.hidden.todos_unreadable,
             }),
             entry
                 .todos
@@ -274,6 +282,14 @@ fn detail(group: &OwnerGroup) -> String {
                 format!("open investigation ({})", terminal_capped(status))
             }
         };
+    }
+    if group.kind == Kind::Verification
+        && group.lane == Lane::Fix
+        && group.file_status == "gaps_found"
+        && group.items.is_empty()
+        && group.counts.unreadable > 0
+    {
+        return "verification gaps_found, no gaps listed".to_owned();
     }
     if group.kind == Kind::Handoff {
         if group.counts.unreadable > 0 && group.items.is_empty() {
@@ -563,8 +579,8 @@ pub fn render_text(entries: &[ProjectEntry], filters: &Filters) -> String {
             plural(deferred_items, "item", "items")
         ));
     }
-    let todo_total: usize = read.iter().map(|e| e.todos_count).sum();
-    let todo_projects = read.iter().filter(|e| e.todos_count > 0).count();
+    let todo_total: usize = read.iter().map(|e| e.digest.hidden.todos).sum();
+    let todo_projects = read.iter().filter(|e| e.digest.hidden.todos > 0).count();
     if !filters.todos && todo_total > 0 {
         folds.push(format!(
             "Triage: {todo_total} pending todos in {todo_projects} projects"

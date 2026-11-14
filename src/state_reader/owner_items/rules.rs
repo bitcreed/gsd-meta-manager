@@ -1010,15 +1010,25 @@ pub(super) fn build_digest_with(
             stale_days,
         };
         let (lanes, unreadable) = lane_entries(file, &mut digest);
+        // D-07: a `gaps_found` report that lists nothing is still a failed verification,
+        // so it is Fix work with the planning command (the file was read, its status
+        // names the action).
+        let empty_gaps = file.kind == AuditKind::Verification
+            && file.status == "gaps_found"
+            && file.unreadable.is_none()
+            && file.items.is_empty();
+        let unreadable = if empty_gaps { 1 } else { unreadable };
         let order = [Lane::Test, Lane::Fix, Lane::Blocked, Lane::Deferred];
         for (lane, entries) in order.into_iter().zip(lanes) {
             let group_unreadable = if lane == Lane::Fix { unreadable } else { 0 };
             if entries.is_empty() && group_unreadable == 0 {
                 continue;
             }
-            digest
-                .groups
-                .push(new_group(&group_ctx, lane, entries, group_unreadable));
+            let mut group = new_group(&group_ctx, lane, entries, group_unreadable);
+            if empty_gaps && lane == Lane::Fix {
+                group.command = command_for(Lane::Fix, file, &labels.1, 0);
+            }
+            digest.groups.push(group);
         }
     }
     apply_r7(&mut digest, &files, state, &ctx);
@@ -2250,5 +2260,83 @@ mod tests {
         assert_eq!(d.groups.iter().map(|g| g.items.len()).sum::<usize>(), 1);
         assert_eq!(d.groups[0].phase_name, "Alpha");
         assert_eq!((d.fix_phases, d.closeable_phases), (0, 0));
+    }
+
+    fn verification(status: &str, workstream: Option<&str>, items: Vec<AuditItem>) -> AuditFile {
+        let mut f = file(items);
+        f.kind = AuditKind::Verification;
+        f.rel_path = ".planning/phases/01-alpha/01-VERIFICATION.md".to_owned();
+        f.status = status.to_owned();
+        f.workstream = workstream.map(str::to_owned);
+        f
+    }
+
+    #[test]
+    fn an_empty_gaps_found_verification_is_fix_work_with_its_command() {
+        let d = digest(vec![verification("gaps_found", None, Vec::new())]);
+        assert_eq!(d.groups.len(), 1);
+        let g = &d.groups[0];
+        assert_eq!((g.lane, g.kind), (Lane::Fix, Kind::Verification));
+        assert_eq!((g.counts.unreadable, g.items.len()), (1, 0));
+        assert_eq!(g.command.as_deref(), Some("/gsd-plan-phase 01 --gaps"));
+        assert_eq!((d.fix_phases, d.closeable_phases), (1, 0));
+    }
+
+    #[test]
+    fn the_empty_gaps_command_names_the_workstream() {
+        let mut st = state();
+        st.workstreams
+            .push(crate::state_reader::workstreams::WorkstreamState {
+                name: "w".to_owned(),
+                active: false,
+                state: state(),
+                claim: None,
+            });
+        let d = build_digest(
+            vec![verification("gaps_found", Some("w"), Vec::new())],
+            OpenScan::default(),
+            &st,
+            now(),
+            30,
+        );
+        assert_eq!(
+            d.groups[0].command.as_deref(),
+            Some("/gsd-plan-phase 01 --gaps --ws w")
+        );
+    }
+
+    #[test]
+    fn an_acknowledged_empty_gaps_file_is_flagged_not_counted() {
+        let mut f = verification("gaps_found", None, Vec::new());
+        f.acknowledged = true;
+        let d = digest(vec![f]);
+        assert_eq!(d.groups.len(), 1);
+        assert!(d.groups[0].acknowledged);
+        assert_eq!(d.fix_phases, 0);
+    }
+
+    #[test]
+    fn human_needed_without_items_and_listed_gaps_are_unchanged() {
+        assert!(digest(vec![verification("human_needed", None, Vec::new())])
+            .groups
+            .is_empty());
+        let listed = verification(
+            "gaps_found",
+            None,
+            vec![AuditItem {
+                origin: Origin::VerificationGap,
+                test: None,
+                name: "gap".to_owned(),
+                expected: None,
+                result: "failed".to_owned(),
+                category: Category::Issue,
+                reason: None,
+                blocked_by: None,
+            }],
+        );
+        let d = digest(vec![listed]);
+        assert_eq!(d.groups.len(), 1);
+        assert_eq!(d.groups[0].counts.unreadable, 0);
+        assert_eq!(d.groups[0].items.len(), 1);
     }
 }

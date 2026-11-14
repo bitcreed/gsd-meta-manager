@@ -606,7 +606,7 @@ Schema version 1:
           ]
         }
       ],
-      "hidden": {"deferred": 0, "acknowledged_files": 0, "todos": 1, "noise": 0},
+      "hidden": {"deferred": 0, "acknowledged_files": 0, "todos": 1, "noise": 0, "todos_oldest_days": 0, "todos_unreadable": false},
       "todos": [{"file": "2026-01-01-first.md", "title": "First todo"}]
     },
     {
@@ -616,7 +616,7 @@ Schema version 1:
       "error": {"kind": "unresolved", "message": "gone-app is neither a directory containing .planning/ nor a registered project"},
       "milestone": null,
       "groups": [],
-      "hidden": {"deferred": 0, "acknowledged_files": 0, "todos": 0, "noise": 0},
+      "hidden": {"deferred": 0, "acknowledged_files": 0, "todos": 0, "noise": 0, "todos_oldest_days": null, "todos_unreadable": false},
       "todos": []
     }
   ]
@@ -691,8 +691,10 @@ Schema version 1:
 | `projects[].hidden` | object | what the lists leave out, always the full counts |
 | `projects[].hidden.deferred` | integer | deferred items |
 | `projects[].hidden.acknowledged_files` | integer | acknowledged UAT files |
-| `projects[].hidden.todos` | integer | pending todos, listed or not |
+| `projects[].hidden.todos` | integer | pending todos (at most 200), listed or not; 0 when the pending folder could not be read |
 | `projects[].hidden.noise` | integer | items with an unknown result in a finished file |
+| `projects[].hidden.todos_oldest_days` | integer or null | whole days since the oldest pending todo's `created:` value, else its file time; null without todos |
+| `projects[].hidden.todos_unreadable` | boolean | listing the pending todos failed, so `hidden.todos` of 0 is not a clean list |
 | `projects[].todos` | array | pending todos; empty unless `--include todos` |
 | `projects[].todos[].file` | string | the todo's file name |
 | `projects[].todos[].title` | string | its title |

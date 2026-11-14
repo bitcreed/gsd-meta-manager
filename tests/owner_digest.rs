@@ -58,7 +58,6 @@ fn entry_of(name: &str, alias: &str) -> (TempDir, ProjectEntry) {
         phases_total: progress.total,
         digest,
         todos: Vec::new(),
-        todos_count: 0,
     };
     (guard, entry)
 }
@@ -674,4 +673,67 @@ fn checkpoint_phase_lists_only_the_open_checkpoint() {
     assert_eq!(doc["summary"]["decide"], 1);
     let text = render_text(std::slice::from_ref(&entry), &Filters::default());
     assert!(text.contains("checkpoint: planning_incomplete"), "{text}");
+}
+
+#[test]
+fn verification_gaps_found_without_items_is_fix_work() {
+    let (_g, entry) = entry_of("verification-gaps-empty", "gaps");
+    let d = &entry.digest;
+    assert_eq!((d.fix_phases, d.closeable_phases), (1, 0));
+    assert_eq!(d.groups.len(), 1, "{:?}", d.groups);
+    let group = &d.groups[0];
+    assert_eq!(group.lane, Lane::Fix);
+    assert_eq!(group.counts.unreadable, 1);
+    assert!(group.items.is_empty());
+    assert_eq!(group.command.as_deref(), Some("/gsd-plan-phase 16 --gaps"));
+    let text = render_text(std::slice::from_ref(&entry), &Filters::default());
+    assert!(
+        text.contains("verification gaps_found, no gaps listed"),
+        "{text}"
+    );
+    assert!(text.contains("/gsd-plan-phase 16 --gaps"), "{text}");
+}
+
+#[test]
+fn todos_age_reports_count_and_oldest() {
+    let (guard, _root) = copy_fixture("todos-age");
+    // A committed fixture cannot pin an mtime: the undated todo is set here.
+    let delta = guard
+        .path()
+        .join(".planning/todos/pending/2026-09-01-delta.md");
+    let moment: DateTime<Utc> = "2026-06-01T00:00:00Z".parse().unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&delta)
+        .unwrap()
+        .set_modified(moment.into())
+        .unwrap();
+    let planning = guard.path().join(".planning");
+    let state = parse_project_state(&planning);
+    let digest = read_owner_digest(&planning, &state, now(), 30);
+    assert_eq!(digest.hidden.todos, 4);
+    assert_eq!(digest.hidden.todos_oldest_days, Some(166));
+    assert!(!digest.hidden.todos_unreadable);
+}
+
+#[test]
+fn an_unreadable_pending_dir_is_flagged() {
+    let (guard, _root) = copy_fixture("todos-age");
+    let pending = guard.path().join(".planning/todos/pending");
+    std::fs::remove_dir_all(&pending).unwrap();
+    std::fs::write(&pending, "a regular file where the folder should be").unwrap();
+    let planning = guard.path().join(".planning");
+    let state = parse_project_state(&planning);
+    let digest = read_owner_digest(&planning, &state, now(), 30);
+    assert_eq!(digest.hidden.todos, 0);
+    assert_eq!(digest.hidden.todos_oldest_days, None);
+    assert!(digest.hidden.todos_unreadable);
+    let entry = ProjectEntry {
+        alias: Some("t".to_owned()),
+        digest,
+        ..Default::default()
+    };
+    let doc = build_document(&[entry], &Filters::default());
+    assert_eq!(doc["projects"][0]["hidden"]["todos"], 0);
+    assert_eq!(doc["projects"][0]["hidden"]["todos_unreadable"], true);
 }

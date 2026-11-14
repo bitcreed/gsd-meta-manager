@@ -8,7 +8,7 @@
 //! `text::render_for_terminal`.
 
 use std::io::{self, Read};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
 use regex::Regex;
@@ -25,7 +25,7 @@ pub const MAX_TITLE: usize = 200;
 /// The most todos listed.
 pub const MAX_TODOS: usize = 200;
 /// How much of each todo file is read for its title.
-const READ_PREFIX: u64 = 8 * 1024;
+pub(crate) const READ_PREFIX: u64 = 8 * 1024;
 
 static TODO_NAME: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,150}\.md$").expect("static regex"));
@@ -99,10 +99,11 @@ pub fn title_from(text: &str, file_name: &str) -> String {
     sanitize_title(stem)
 }
 
-/// The pending todos of `project`, sorted by file name. An absent directory is an
-/// empty list. Only regular files (never a symlink) with a valid name are listed, at
-/// most [`MAX_TODOS`], each read for its first 8 KiB only.
-pub fn list_pending(project: &Path) -> io::Result<Vec<PendingTodo>> {
+/// The paths of the pending todos of `project`, sorted by file name: the one
+/// enumeration the listing and the owner inbox's count share. An absent directory is
+/// an empty list. Only regular files (never a symlink) with a valid name are kept, at
+/// most [`MAX_TODOS`].
+pub fn pending_paths(project: &Path) -> io::Result<Vec<PathBuf>> {
     let dir = project.join(PENDING_REL);
     let entries = match std::fs::read_dir(&dir) {
         Ok(entries) => entries,
@@ -115,18 +116,23 @@ pub fn list_pending(project: &Path) -> io::Result<Vec<PendingTodo>> {
         .filter(|name| valid_todo_file_name(name))
         .collect();
     names.sort();
+    Ok(names
+        .into_iter()
+        .map(|name| dir.join(name))
+        .filter(|path| std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_file()))
+        .take(MAX_TODOS)
+        .collect())
+}
+
+/// The pending todos of `project`, sorted by file name. An absent directory is an
+/// empty list. Only regular files (never a symlink) with a valid name are listed, at
+/// most [`MAX_TODOS`], each read for its first 8 KiB only.
+pub fn list_pending(project: &Path) -> io::Result<Vec<PendingTodo>> {
     let mut todos = Vec::new();
-    for name in names {
-        if todos.len() >= MAX_TODOS {
-            break;
-        }
-        let path = dir.join(&name);
-        let Ok(meta) = std::fs::symlink_metadata(&path) else {
+    for path in pending_paths(project)? {
+        let Some(name) = path.file_name().and_then(|n| n.to_str()).map(str::to_owned) else {
             continue;
         };
-        if !meta.file_type().is_file() {
-            continue;
-        }
         let mut prefix = Vec::new();
         if let Ok(file) = std::fs::File::open(&path) {
             let _ = file.take(READ_PREFIX).read_to_end(&mut prefix);

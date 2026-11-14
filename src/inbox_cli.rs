@@ -26,7 +26,7 @@
 
 use std::path::PathBuf;
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use gsd_meta_manager::cli::{InboxInclude, InboxLane};
 use gsd_meta_manager::config::{load_config, Config};
 use gsd_meta_manager::inbox::{build_document, render_text, EntryError, Filters, ProjectEntry};
@@ -61,16 +61,21 @@ fn read_entry(
     root: PathBuf,
     config: &Config,
     filters: &Filters,
+    now: DateTime<Utc>,
 ) -> ProjectEntry {
     let planning = root.join(".planning");
     let state = parse_project_state(&planning);
     let digest = read_owner_digest(
         &planning,
         &state,
-        Utc::now(),
+        now,
         config.preferences.owner_stale_days(),
     );
-    let pending = list_pending(&root).unwrap_or_default();
+    let pending = if filters.todos {
+        list_pending(&root).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
     let progress = state.phase_progress();
     ProjectEntry {
         target,
@@ -81,8 +86,7 @@ fn read_entry(
         phases_done: progress.done,
         phases_total: progress.total,
         digest,
-        todos_count: pending.len(),
-        todos: if filters.todos { pending } else { Vec::new() },
+        todos: pending,
     }
 }
 
@@ -109,6 +113,8 @@ pub fn run(
         }
     };
     let filters = filters_of(lanes, includes);
+    // One clock reading per run, so every age in the document shares one instant.
+    let now = Utc::now();
     let entries: Vec<ProjectEntry> = slots(&config, &cwd, targets)
         .into_iter()
         .map(|slot| match slot {
@@ -116,7 +122,7 @@ pub fn run(
                 target,
                 alias,
                 root,
-            } => read_entry(target, alias, root, &config, &filters),
+            } => read_entry(target, alias, root, &config, &filters, now),
             Slot::Failed {
                 target,
                 alias,

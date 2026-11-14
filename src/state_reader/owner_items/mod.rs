@@ -30,6 +30,7 @@ mod handoff;
 mod markdown;
 mod rules;
 mod scan;
+mod todos;
 mod uat;
 mod verification;
 
@@ -479,6 +480,12 @@ pub struct Hidden {
     pub deferred: usize,
     pub acknowledged_files: usize,
     pub noise: usize,
+    /// Pending todos (at most 200), 0 when the pending folder could not be read.
+    pub todos: usize,
+    /// Whole days since the oldest pending todo; `None` without todos.
+    pub todos_oldest_days: Option<i64>,
+    /// Listing the pending todos failed (`todos` is then 0, not "clean").
+    pub todos_unreadable: bool,
 }
 
 /// Item counts of archived groups.
@@ -522,14 +529,19 @@ pub fn read_owner_digest(
         handoffs: handoff::read_handoffs(planning_dir, state),
         checkpoints: handoff::read_checkpoints(planning_dir, state),
     };
-    rules::build_digest_with(
+    let mut digest = rules::build_digest_with(
         scan(planning_dir, state),
         scan_open(planning_dir, state),
         pause,
         state,
         now,
         stale_days,
-    )
+    );
+    let stats = todos::todo_stats(planning_dir.parent().unwrap_or(planning_dir), now);
+    digest.hidden.todos = stats.count;
+    digest.hidden.todos_oldest_days = stats.oldest_days;
+    digest.hidden.todos_unreadable = stats.unreadable;
+    digest
 }
 
 #[cfg(test)]

@@ -244,7 +244,14 @@ fn every_entry_group_and_item_carries_the_schema_v1_keys() {
         "hidden",
         "todos",
     ]);
-    let hidden_keys = set(&["deferred", "acknowledged_files", "todos", "noise"]);
+    let hidden_keys = set(&[
+        "deferred",
+        "acknowledged_files",
+        "todos",
+        "noise",
+        "todos_oldest_days",
+        "todos_unreadable",
+    ]);
     let projects = doc["projects"].as_array().unwrap();
     assert_eq!(projects.len(), 2);
     for project in projects {
@@ -302,7 +309,14 @@ fn every_entry_group_and_item_carries_the_schema_v1_keys() {
     assert_eq!(error["todos"], serde_json::json!([]));
     assert_eq!(
         error["hidden"],
-        serde_json::json!({"deferred": 0, "acknowledged_files": 0, "todos": 0, "noise": 0})
+        serde_json::json!({
+            "deferred": 0,
+            "acknowledged_files": 0,
+            "todos": 0,
+            "noise": 0,
+            "todos_oldest_days": null,
+            "todos_unreadable": false,
+        })
     );
 }
 
@@ -680,6 +694,8 @@ const INBOX_PATHS: &[&str] = &[
     "projects[].hidden.acknowledged_files",
     "projects[].hidden.todos",
     "projects[].hidden.noise",
+    "projects[].hidden.todos_oldest_days",
+    "projects[].hidden.todos_unreadable",
     "projects[].todos",
     "projects[].todos[].file",
     "projects[].todos[].title",

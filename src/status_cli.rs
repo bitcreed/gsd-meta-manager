@@ -228,10 +228,11 @@ fn project_entry(
     root: &Path,
     sessions: Vec<Value>,
     stale_days: u32,
+    now: chrono::DateTime<chrono::Utc>,
 ) -> Value {
     let planning = root.join(".planning");
     let state = parse_project_state(&planning);
-    let digest = read_owner_digest(&planning, &state, chrono::Utc::now(), stale_days);
+    let digest = read_owner_digest(&planning, &state, now, stale_days);
     json!({
         "target": target.map(text),
         "alias": alias.map(text),
@@ -291,6 +292,8 @@ pub fn run(targets: &[String], config: Option<PathBuf>) -> i32 {
     };
 
     let stale_days = config.preferences.owner_stale_days();
+    // One clock reading per run, so every age in the document shares one instant.
+    let now = chrono::Utc::now();
     let slots: Vec<Slot> = slots(&config, &cwd, targets);
 
     // One detection per run, and only when some project can own a session. A
@@ -340,7 +343,14 @@ pub fn run(targets: &[String], config: Option<PathBuf>) -> i32 {
                     .collect();
                 mine.sort_by_key(|s| s.pid);
                 let mine = mine.into_iter().map(session_json).collect();
-                project_entry(target.as_deref(), alias.as_deref(), &root, mine, stale_days)
+                project_entry(
+                    target.as_deref(),
+                    alias.as_deref(),
+                    &root,
+                    mine,
+                    stale_days,
+                    now,
+                )
             }
         })
         .collect();
