@@ -31,7 +31,7 @@ touched and no real terminal, multiplexer or clipboard tool was driven.
 
 ## Fixed Issues
 
-### WR-01: Action keys ignore key modifiers
+### WR-01: Action keys `v`, `o`, `A`, `y` and `g` ignore key modifiers; Ctrl-V, key repeat or an unbracketed paste launches sessions with no confirm
 
 **Files modified:** `src/ui/screens/inbox.rs`, `src/ui/screens/detail.rs`, `src/ui/screens/owner_actions.rs`
 **Commit:** df9fedf1
@@ -41,7 +41,7 @@ Tests: `a_control_or_alt_chord_is_not_an_action_key` (red before the fix) and a 
 `owner_block_o_opens_the_viewer`. Status: fixed, requires human verification (input-handling logic).
 Not applied from the suggestion: bracketed paste (see Skipped) and the per-group `v` cooldown.
 
-### WR-02: A failed spawn is reported as a timeout
+### WR-02: A failed spawn, an unwritable temp file or an unreadable stderr sink is reported as "Acknowledge timed out after 10 s"
 
 **Files modified:** `src/bounded_output.rs`, `src/launcher/process.rs`, `src/ui/screens/owner_actions.rs`
 **Commit:** 80925de5
@@ -52,7 +52,7 @@ only for a real overrun. A stderr file that cannot be read back no longer hides 
 Test: `run_ack_tells_a_spawn_failure_from_a_timeout` (the old test pinned the bug). Also covers IN-04:
 `ACK_BUDGET` is defined on every target and the message spells it from the budget actually used.
 
-### WR-03: Cursor re-anchor lands on the fold line
+### WR-03: Cursor re-anchor lands on the fold line instead of the previous row when the last row vanishes (and the test cannot see it)
 
 **Files modified:** `src/ui/screens/inbox.rs`, `src/app.rs`
 **Commit:** 29703f88 (formatting: 797b31fc)
@@ -61,7 +61,7 @@ row is left. The tests now read the cursor through `cursor_pos` over `stop_rows`
 is deleted. Reproduced first: the strengthened test failed with `<fold line>` instead of `elm-shop`.
 Status: fixed, requires human verification (cursor logic).
 
-### WR-04: `--ws` value skips the flag-shape guard
+### WR-04: `--ws` value skips the flag-shape guard that every other acknowledge argument gets
 
 **Files modified:** `src/state_reader/owner_items/rules.rs`, `src/ui/screens/owner_actions.rs`
 **Commit:** eace9662
@@ -69,7 +69,7 @@ Status: fixed, requires human verification (cursor logic).
 `--ws` value and the `--ws` inside the `v` slash command share the guard. Tests cover `-x`, `--raw`, `.`, `..`
 on both paths (rules unit test went red without the guard).
 
-### WR-05: Acknowledge launcher resolved project-local first
+### WR-05: The acknowledge launcher is resolved project-local first, so a registered project can supply the code that runs after Yes
 
 **Files modified:** `src/state_reader/queue_md.rs`, `src/ui/screens/owner_actions.rs`, `README.md`
 **Commits:** 5f4fa4c7 (code), 0892638b (README)
@@ -82,7 +82,7 @@ project-only install yields none, `CLAUDE_CONFIG_DIR` before `CODEX_HOME`, relat
 `env_clear` plus an allowlist for the child (a design change; the review marked it "consider"). Status: fixed,
 requires human verification (trust-boundary logic).
 
-### WR-06: File viewer drops lines past 65,535 and reads past its cap
+### WR-06: The file viewer silently drops everything past line 65,535 and reads past its size cap on a swapped file
 
 **Files modified:** `src/ui/screens/owner_actions.rs`, `src/ui/screens/owner_file_view.rs`
 **Commit:** 10908488
@@ -91,7 +91,7 @@ requires human verification (trust-boundary logic).
 `... N more lines not shown`. Tests: `read_capped_stops_one_byte_past_the_cap` (an endless reader is refused),
 `a_file_past_the_scroll_range_ends_with_a_notice`.
 
-### IN-01: Busy set keyed by basename
+### IN-01: `owner_ack_busy` is keyed by file basename, so same-named files in different workstreams or milestones block each other
 
 **Files modified:** `src/ui/screens/mod.rs`, `src/ui/screens/owner_actions.rs`, `src/action.rs`, `src/ui/screens/ack_confirm.rs`, `src/ui/screens/inbox.rs`
 **Commit:** 26e8b37d
@@ -99,18 +99,18 @@ requires human verification (trust-boundary logic).
 name the basename. Test: `a_same_named_file_elsewhere_is_not_busy`. Not applied: naming the workstream in the
 status line (a copy change).
 
-### IN-03: `focus_status` keys off a literal prefix
+### IN-03: `focus_status` keys off the literal prefix `"Switched to"` of another module's message
 
 **Files modified:** `src/multiplexer/mod.rs`, `src/ui/screens/owner_actions.rs`
 **Commit:** 462cd011
 **Applied fix:** `multiplexer::FOCUS_OK_PREFIX` is used by `focus_with_procs` and by `focus_status`. Existing
 focus tests cover both ends.
 
-### IN-04: "10 s" hard-coded in the timeout text
+### IN-04: The "10 s" in the acknowledge timeout text and a second `ACK_BUDGET` definition are not tied together
 
 Fixed inside the WR-02 commit (80925de5); see WR-02.
 
-### IN-05: Copy-size message rounding (partial)
+### IN-05: The OSC 52 and copy-size messages are slightly inaccurate or unbounded for terminals
 
 **Files modified:** `src/ui/screens/owner_actions.rs`
 **Commit:** 569dc86e
@@ -118,7 +118,7 @@ Fixed inside the WR-02 commit (80925de5); see WR-02.
 `too_large_to_copy`. The OSC 52 half (lower cap or a "may be dropped" note) is not applied: it changes the copy
 limit or the status copy, which is a product decision.
 
-### IN-06: No guard against overlapping copies
+### IN-06: `start_copy_with` has no guard against overlapping copies
 
 **Files modified:** `src/app.rs`, `src/ui/screens/mod.rs`, `src/ui/screens/detail.rs`, `src/ui/screens/driver_confirm.rs`, `src/ui/screens/delete_confirm.rs`, `src/ui/screens/normal.rs`, `src/ui/screens/owner_actions.rs`
 **Commit:** 8fbc3ea1
@@ -128,7 +128,7 @@ handler; a second `y` says `Already copying; wait for it to finish`. Test extend
 
 ## Skipped Issues
 
-### IN-02: `v` does not scrub `GSD_WORKSTREAM` and session-pointer variables
+### IN-02: `v` does not scrub `GSD_WORKSTREAM` and the session-pointer variables from the launched session
 
 **File:** `src/ui/screens/owner_actions.rs:118-131`
 **Reason:** the review offers "document it or scrub it". Scrubbing means changing the environment handed to
