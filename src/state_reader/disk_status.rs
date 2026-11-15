@@ -1874,11 +1874,11 @@ mod tests {
         assert!(read_text_file(&over).is_err(), "one byte over is refused");
         // A sparse file: the length is huge, no byte of it is read.
         let sparse = dir.path().join("sparse.md");
-        fs::File::create(&sparse)
-            .unwrap()
-            .set_len(1 << 32)
-            .unwrap();
-        assert!(read_text_file(&sparse).is_err(), "a sparse giant is refused");
+        fs::File::create(&sparse).unwrap().set_len(1 << 32).unwrap();
+        assert!(
+            read_text_file(&sparse).is_err(),
+            "a sparse giant is refused"
+        );
     }
 
     #[test]
