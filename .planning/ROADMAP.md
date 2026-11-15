@@ -227,7 +227,7 @@ Plans:
 **Depends on:** Phase 36
 **Verification:** Automatic snapshots plus human UAT
 **UI hint**: yes
-**Plans:** 2/7 plans executed
+**Plans:** 3/7 plans executed
 
 Plans:
 **Wave 1**
@@ -237,7 +237,7 @@ Plans:
 - [x] 37-02-PLAN.md — Tracer: typed `RunCommand` on every owner group (`command` derived from it, unchanged on every fixture) and the Owner block byte-identity pin (D-11 reader side)
 
 **Wave 3** *(blocked on Wave 2 completion)*
-- [ ] 37-03-PLAN.md — Tracer: `i`, `j`, `v` starts the group's command (SC1): `InboxScreen` rows and ordering, `owner_actions` focus-or-launch with launch-time re-validation, D-21 `v`, `i` help and README rows
+- [x] 37-03-PLAN.md — Tracer: `i`, `j`, `v` starts the group's command (SC1): `InboxScreen` rows and ordering, `owner_actions` focus-or-launch with launch-time re-validation, D-21 `v`, `i` help and README rows
 
 **Wave 4** *(blocked on Wave 3 completion)*
 - [ ] 37-04-PLAN.md — Legible and live: unreadable vs loading (no forever-loading), SC3 refresh, column narrowing, header/fold/footer ladders, lane filters, empty states, SC2 at 100x30

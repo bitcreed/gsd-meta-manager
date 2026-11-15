@@ -5,16 +5,16 @@ milestone_name: Owner Inbox
 current_phase: 37
 current_phase_name: Inbox screen and actions
 status: executing
-stopped_at: Completed 37-02-PLAN.md
-last_updated: "2026-11-15T04:28:27.431Z"
+stopped_at: Completed 37-03-PLAN.md
+last_updated: "2026-11-15T04:48:18.478Z"
 last_activity: 2026-11-15
 last_activity_desc: Phase 37 execution started
-state_head: aa6d58668313b5bf571a9f4426303fc4835caaa4
+state_head: ada374ec0a1c6c97b1644329163fd0bd9c7cf9d3
 progress:
   total_phases: 4
   completed_phases: 1
   total_plans: 21
-  completed_plans: 16
+  completed_plans: 17
   percent: 25
 ---
 
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-11-14)
 ## Current Position
 
 Phase: 37 (Inbox screen and actions) — EXECUTING
-Plan: 3 of 7
+Plan: 4 of 7
 Status: Ready to execute
 Last activity: 2026-11-14 — Phase 37 execution started
 
@@ -186,6 +186,7 @@ None. Phase 19's deferred human verification was closed by supersession on 2026-
 | Phase 35 P04 | one session | 3 tasks | 22 files |
 | Phase 37 P01 | 18 min | 2 tasks | 19 files |
 | Phase 37 P02 | 25 min | 2 tasks | 11 files |
+| Phase 37 P03 | 75 min | 2 tasks | 17 files |
 
 ## Accumulated Context
 
@@ -356,6 +357,7 @@ Recent decisions affecting current work:
 - [Phase 35]: 35-04: VERIFICATION entries are named by test text in Layer B only; Layer A names stay the oracle's
 - [Phase 37]: D-17 gate reads the CONTEXT scan directory listing (regular PLAN/SUMMARY files), not DiskStatus; acknowledged wins over planned, unreadable stays listed
 - [Phase 37]: D-11: OwnerGroup.run (RunCommand) is the source; command is its Display; Owner block pinned by three goldens
+- [Phase 37]: 37-03 D-11/D-12/D-13: v builds the command only from the typed RunCommand, re-validates tokens at launch, focuses (never injects into) a live session at the exact project path; argv is [env, claude, command-as-one-element]
 
 ### Roadmap Evolution
 
@@ -618,8 +620,8 @@ non-unique bullets in these narrative logs). Disclosed per file instead [inferre
 
 ## Session Continuity
 
-Last session: 2026-11-15T04:28:27.071Z
-Stopped at: Completed 37-02-PLAN.md
+Last session: 2026-11-15T04:48:18.111Z
+Stopped at: Completed 37-03-PLAN.md
 Resume file: None
 
 Next: push master + tag v2.4.0 (tag push publishes to crates.io); then `/gsd-new-milestone`.
