@@ -1512,7 +1512,7 @@ mod tests {
             "Owner \u{2500}\u{2500} sample \u{b7} v2.2 closes after: test 12 (ph 21 22 24) \u{b7} decide 1 (ph 26) \u{b7} unblock 5 (ph 20 23) \u{b7} fix 1 (ph 25) \u{b7} not built ph 27"
         );
         let counts = at(110);
-        assert!(counts.ends_with("not built ph 27"), "{counts}");
+        assert!(counts.ends_with("not built 1"), "{counts}");
         assert!(counts.contains("test 12 \u{b7} decide 1"), "{counts}");
         let dropped = at(75);
         assert!(!dropped.contains("not built"), "{dropped}");
@@ -1526,6 +1526,27 @@ mod tests {
             &block_model("sample", "v2.2", &digest, &OwnerBlockState::default(), 21).header
         )
         .ends_with('\u{2026}'));
+    }
+
+    #[test]
+    fn the_counts_rung_counts_the_not_built_phases_too() {
+        let mut digest = sample_owner_digest();
+        digest.closes_after.not_built = (27..41).map(|n| format!("{n}")).collect();
+        let gate = &digest.closes_after;
+        let width = |form| header_with("sample", "v2.2", gate, form, true).width();
+        let counts = width(ClauseForm::CountsOnly);
+        assert!(counts < width(ClauseForm::PhasesCapped(6)));
+        let at_counts = text(
+            &block_model(
+                "sample",
+                "v2.2",
+                &digest,
+                &OwnerBlockState::default(),
+                u16::try_from(counts).unwrap(),
+            )
+            .header,
+        );
+        assert!(at_counts.ends_with("not built 14"), "{at_counts}");
     }
 
     #[test]

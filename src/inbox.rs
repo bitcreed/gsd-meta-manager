@@ -541,8 +541,14 @@ pub(crate) fn closes_after_clauses(gate: &ClosesAfter, form: ClauseForm) -> Clos
     if out.is_empty() && !gate.phases_open.is_empty() {
         out.push(with_phases("no owner work".to_owned(), &gate.phases_open));
     }
-    let not_built =
-        (!gate.not_built.is_empty()).then(|| format!("not built ph {}", phases(&gate.not_built)));
+    // Under `CountsOnly` the not-built clause is counted like the lanes, so each rung
+    // of the Owner block header ladder is never wider than the one before it.
+    let not_built = (!gate.not_built.is_empty()).then(|| match form {
+        ClauseForm::CountsOnly => format!("not built {}", gate.not_built.len()),
+        ClauseForm::Full | ClauseForm::PhasesCapped(_) => {
+            format!("not built ph {}", phases(&gate.not_built))
+        }
+    });
     ClosesAfterClauses {
         lanes: out,
         not_built,
@@ -863,6 +869,20 @@ mod tests {
         assert_eq!(capped.lanes[2], "fix 1 (ph 25)");
         let counts = closes_after_clauses(&gate, ClauseForm::CountsOnly);
         assert_eq!(counts.lanes, ["test 12", "unblock 5", "fix 1"]);
+        assert_eq!(counts.not_built.as_deref(), Some("not built 1"));
+
+        // Counts only lists no phases, however many are not built: the header ladder
+        // stays monotonic (rung 3 is never wider than rung 2).
+        let many_unbuilt = ClosesAfter {
+            not_built: (26..40).map(|n| n.to_string()).collect(),
+            ..gate.clone()
+        };
+        let capped = closes_after_clauses(&many_unbuilt, ClauseForm::PhasesCapped(6));
+        let counts = closes_after_clauses(&many_unbuilt, ClauseForm::CountsOnly);
+        assert_eq!(counts.not_built.as_deref(), Some("not built 14"));
+        assert!(
+            counts.not_built.as_ref().map(String::len) < capped.not_built.as_ref().map(String::len)
+        );
 
         let idle = ClosesAfter {
             phases_open: ph(&["20", "21"]),
