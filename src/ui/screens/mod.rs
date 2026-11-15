@@ -1032,6 +1032,12 @@ pub struct ProjectViewCache {
     /// `Enter`/`Space` on a wave or merged row; per project, in memory only,
     /// the `roadmap_fold_toggles` pattern ([inferred I-4]).
     pub waves_toggles: std::collections::HashSet<(String, Option<u32>)>,
+    /// The Phases tab's Owner block view state (36-04, D-18): the expanded
+    /// groups, open folds, cursor stop and fold sub-cursor, all row IDENTITIES
+    /// (`GroupKey`, `Fold`, `Stop`), never indices, so they survive a digest
+    /// refresh the way `waves_cursor` survives a roadmap reload. Per project, in
+    /// memory only; a restart resets it.
+    pub owner_block: owner_block::OwnerBlockState,
     /// What the Roadmap tab's cursor rests on: a phase (by `phase_key`) or a
     /// band row. `None` means "resolve to the default" (the active phase,
     /// else the first phase not done). A reader-generated key, not

@@ -837,6 +837,17 @@ pub struct DetailScreen {
     /// `PageUp`/`PageDown` move the pane cursor by; `0` before the first frame,
     /// which the keys treat as a one-row page.
     waves_viewport_rows: Cell<u16>,
+    /// Rows the Owner block took in the last Phases-tab frame (`0` when none was
+    /// drawn): what the last frame drew, read by the keys and the footer so focus
+    /// never enters an invisible block (36-04, D-20).
+    owner_block_rows: Cell<u16>,
+    /// First visible body row of the Owner block, kept across frames so the
+    /// window follows the cursor by whole rows. Render-written, as `waves_offset`
+    /// is: the render cannot mutate the view cache.
+    owner_offset: Cell<usize>,
+    /// Body rows the Owner block showed in the last frame: the page `PgUp` and
+    /// `PgDn` move the cursor by; `0` before the first frame (a one-stop page).
+    owner_viewport_rows: Cell<u16>,
     /// Which level of the view has the keyboard: the tab bar or the tab's
     /// content (quick 260926-1t1). Content on every opening.
     focus: DetailFocus,
@@ -1179,6 +1190,13 @@ pub(crate) enum DetailFocus {
     /// is no second flag that must agree with this one. It means nothing off
     /// the Config tab; `handle_key` resets it to `Content` anywhere else.
     ScopeStrip,
+    /// The Phases tab's Owner block (36-04, D-20): `j`/`k` walk its rows,
+    /// `Enter`/`Space` expand a group or fold, `Esc` returns to the phase list.
+    ///
+    /// Modeled on `Pane`: one enum value and never a view-cache flag, so no
+    /// second flag has to agree with it. It means nothing off the Phases tab;
+    /// `handle_key` resets it to `Content` anywhere else.
+    Owner,
 }
 
 impl DetailScreen {
@@ -1204,6 +1222,9 @@ impl DetailScreen {
             roadmap_list_viewport: Cell::new(0),
             waves_offset: Cell::new(0),
             waves_viewport_rows: Cell::new(0),
+            owner_block_rows: Cell::new(0),
+            owner_offset: Cell::new(0),
+            owner_viewport_rows: Cell::new(0),
             focus: DetailFocus::Content,
             regions: std::cell::RefCell::default(),
             phase_list_offset: Cell::new(0),
@@ -2096,6 +2117,117 @@ impl DetailScreen {
             }
             _ => Some(ScreenAction::None),
         }
+    }
+
+    /// A key while the Phases tab's Owner block has the keyboard (36-04, D-20).
+    ///
+    /// Same contract as [`Self::handle_waves_pane_key`]: `Some(action)` consumes
+    /// the key, `None` lets it fall through to the main match. The block is
+    /// read-only: `Enter`/`Space` only toggle view state, and `e`, `o`, `v`, `A`
+    /// and `y` are swallowed so none of them reaches Content (`e` would enqueue)
+    /// nor launches, opens, acknowledges or copies anything (Phase 37 owns those).
+    fn handle_owner_block_key(
+        &mut self,
+        code: KeyCode,
+        ctx: &mut AppContext,
+    ) -> Option<ScreenAction> {
+        use owner_block::{Move, Moved};
+        // Digits, `D`, `[`, `]`, `?`, `Tab` and `q` need no digest.
+        match code {
+            KeyCode::Char('q') => {
+                ctx.needs_redraw = true;
+                return Some(ScreenAction::Pop);
+            }
+            KeyCode::Char('?') | KeyCode::Tab => return None,
+            KeyCode::Char(c) if c.is_ascii_digit() || matches!(c, 'D' | '[' | ']') => {
+                self.focus = DetailFocus::Content;
+                ctx.needs_redraw = true;
+                return None;
+            }
+            _ => {}
+        }
+        let Some(digest) = ctx.owner_digests.get(&self.alias) else {
+            self.focus = DetailFocus::Content;
+            ctx.needs_redraw = true;
+            return None;
+        };
+        let view = &mut ctx
+            .view_cache
+            .entry(self.alias.clone())
+            .or_default()
+            .owner_block;
+        owner_block::clamp(view, digest);
+        let sk = owner_block::skeleton(digest, view);
+        if self.owner_block_rows.get() == 0 || sk.stops.is_empty() {
+            self.focus = DetailFocus::Content;
+            ctx.needs_redraw = true;
+            return None;
+        }
+        let page = isize::try_from(self.owner_viewport_rows.get().max(1)).unwrap_or(1);
+        let on_fold_line = view.cursor == Some(owner_block::Stop::FoldLine);
+        let mut moved = Moved::Within;
+        match code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                moved = owner_block::move_cursor(view, &sk.stops, Move::Next)
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                moved = owner_block::move_cursor(view, &sk.stops, Move::Prev)
+            }
+            KeyCode::Char('g') => {
+                owner_block::move_cursor(view, &sk.stops, Move::First);
+            }
+            KeyCode::Char('G') => {
+                owner_block::move_cursor(view, &sk.stops, Move::Last);
+            }
+            KeyCode::PageDown => {
+                owner_block::move_cursor(view, &sk.stops, Move::By(page));
+            }
+            KeyCode::PageUp => {
+                owner_block::move_cursor(view, &sk.stops, Move::By(-page));
+            }
+            KeyCode::Enter | KeyCode::Char(' ') => {
+                owner_block::toggle(view, &sk.folds);
+            }
+            KeyCode::Left if on_fold_line => owner_block::fold_step(view, &sk.folds, false),
+            KeyCode::Right if on_fold_line => owner_block::fold_step(view, &sk.folds, true),
+            KeyCode::Esc => {
+                self.focus = DetailFocus::Content;
+            }
+            // `e o v A y`, `←`/`→` off the fold line and every other key.
+            _ => {}
+        }
+        match moved {
+            Moved::PastLast => self.focus = DetailFocus::Content,
+            Moved::PastFirst => self.focus = DetailFocus::TabBar,
+            Moved::Within => {}
+        }
+        ctx.needs_redraw = true;
+        Some(ScreenAction::None)
+    }
+
+    /// `↑`/`k` from the first phase row: enter the Owner block on its last stop
+    /// when the last frame drew one (D-20). `false` leaves everything as it was.
+    fn enter_owner_block(&mut self, ctx: &mut AppContext) -> bool {
+        if self.owner_block_rows.get() == 0 {
+            return false;
+        }
+        let Some(digest) = ctx.owner_digests.get(&self.alias) else {
+            return false;
+        };
+        let view = &mut ctx
+            .view_cache
+            .entry(self.alias.clone())
+            .or_default()
+            .owner_block;
+        owner_block::clamp(view, digest);
+        let sk = owner_block::skeleton(digest, view);
+        if sk.stops.is_empty() {
+            return false;
+        }
+        owner_block::enter_last(view, &sk.stops);
+        self.focus = DetailFocus::Owner;
+        ctx.needs_redraw = true;
+        true
     }
 
     /// A key while the Config tab's scope strip has the keyboard (quick
@@ -3949,6 +4081,16 @@ impl Screen for DetailScreen {
             }
         }
 
+        // The Owner-block level (36-04, D-20): the Phases tab only, right after
+        // the Pane block, so no phase-list arm is reachable while it has focus.
+        if self.focus == DetailFocus::Owner {
+            if current_view != DetailSubView::Pipeline {
+                self.focus = DetailFocus::Content;
+            } else if let Some(action) = self.handle_owner_block_key(code, ctx) {
+                return action;
+            }
+        }
+
         match code {
             // `q` leaves the detail view from every level, WITHOUT popping
             // inner levels first ([inferred I-4]): an open pane, an Archive
@@ -4262,6 +4404,11 @@ impl Screen for DetailScreen {
                 // bar (D-01), or on Config to its scope strip (quick
                 // 260929-g9u, D-01). Otherwise each tab's arm runs unchanged.
                 if self.content_at_first_row(&current_view, ctx) {
+                    // The vertical order is tab bar, Owner block, phase list:
+                    // from the first phase `↑` enters the block when one is drawn.
+                    if current_view == DetailSubView::Pipeline && self.enter_owner_block(ctx) {
+                        return ScreenAction::None;
+                    }
                     self.focus = if current_view == DetailSubView::Defaults {
                         DetailFocus::ScopeStrip
                     } else {
@@ -6311,6 +6458,11 @@ impl Screen for DetailScreen {
             Paragraph::new(Line::from(tab_bar_footer_spans(ctx.experimental)))
         } else if self.focus == DetailFocus::Pane && sub_view == DetailSubView::Pipeline {
             Paragraph::new(Line::from(waves_pane_footer_spans()))
+        } else if self.focus == DetailFocus::Owner
+            && sub_view == DetailSubView::Pipeline
+            && self.owner_block_rows.get() > 0
+        {
+            Paragraph::new(Line::from(owner_block_footer_spans()))
         } else if self.focus == DetailFocus::ScopeStrip && sub_view == DetailSubView::Defaults {
             Paragraph::new(Line::from(config_scope_footer_spans()))
         } else if backlog_focused {
@@ -6319,7 +6471,13 @@ impl Screen for DetailScreen {
             // The Driver tab's hints follow the selection (30-01): only keys that
             // act on it are named.
             let keys = super::driver_run::driver_keys(ctx, &self.alias);
-            build_footer(&sub_view, footer_area.width, ctx.experimental, &keys)
+            build_footer(
+                &sub_view,
+                footer_area.width,
+                ctx.experimental,
+                &keys,
+                self.owner_block_rows.get() > 0,
+            )
         };
         frame.render_widget(footer, footer_area);
     }
@@ -7463,11 +7621,18 @@ impl DetailScreen {
     /// `ctx.owner_digests` (memory), takes zero rows when it has nothing to show,
     /// the tab is short, or a focused Waves pane owns the whole tab.
     fn render_pipeline_tab(&self, frame: &mut Frame, area: Rect, ctx: &AppContext) {
+        self.owner_block_rows.set(0);
         if let (Some(state), Some(digest)) = (
             ctx.project_states.get(&self.alias),
             ctx.owner_digests.get(&self.alias),
         ) {
-            let model = owner_block::block_model(&self.alias, &state.milestone, digest, area.width);
+            let default_view = owner_block::OwnerBlockState::default();
+            let view = ctx
+                .view_cache
+                .get(&self.alias)
+                .map_or(&default_view, |cache| &cache.owner_block);
+            let model =
+                owner_block::block_model(&self.alias, &state.milestone, digest, view, area.width);
             let mut height = owner_block::block_height(&model, area.height);
             if self.focus == DetailFocus::Pane
                 && area.width < roadmap_view::ROADMAP_SIDE_BY_SIDE_MIN_COLS
@@ -7475,9 +7640,27 @@ impl DetailScreen {
                 height = 0;
             }
             if height > 0 {
+                self.owner_block_rows.set(height);
+                let cursor = (self.focus == DetailFocus::Owner)
+                    .then(|| owner_block::resolve_cursor(view, &model.stops))
+                    .flatten()
+                    .map(|stop| owner_block::Cursor {
+                        stop,
+                        fold: owner_block::resolved_fold(view, &model.folds),
+                    });
+                let window = owner_block::window_rows(&model, height);
+                let offset = owner_block::follow_offset(
+                    &model,
+                    cursor.map(|c| c.stop),
+                    self.owner_offset.get(),
+                    window,
+                );
+                self.owner_offset.set(offset);
+                self.owner_viewport_rows
+                    .set(u16::try_from(window).unwrap_or(u16::MAX));
                 let parts =
                     Layout::vertical([Constraint::Length(height), Constraint::Min(0)]).split(area);
-                owner_block::render_owner_block(frame, parts[0], &model, 0);
+                owner_block::render_owner_block(frame, parts[0], &model, cursor, offset);
                 self.render_phases_body(frame, parts[1], ctx);
                 return;
             }
@@ -11351,6 +11534,7 @@ fn footer_spans(
     width: u16,
     experimental: bool,
     driver_keys: &super::driver_run::DriverKeys,
+    owner_block_drawn: bool,
 ) -> Vec<Span<'static>> {
     if matches!(sub_view, DetailSubView::Driver) {
         return driver_footer_spans(width, driver_keys);
@@ -11366,6 +11550,9 @@ fn footer_spans(
     // 260929-g9u), so its lead names that level instead of the tab bar.
     let up = if matches!(sub_view, DetailSubView::Defaults) {
         "scope  "
+    } else if owner_block_drawn && matches!(sub_view, DetailSubView::Pipeline) {
+        // `↑` from the first phase enters the Owner block above it (36-04).
+        "owner  "
     } else {
         "tab bar  "
     };
@@ -11514,6 +11701,27 @@ fn waves_pane_footer_spans() -> Vec<Span<'static>> {
     ]
 }
 
+/// The Phases tab's footer while its Owner block has the keyboard (36-04, D-20):
+/// only the keys that level handles, as the Waves pane's footer does.
+fn owner_block_footer_spans() -> Vec<Span<'static>> {
+    let b = Style::default().add_modifier(Modifier::BOLD);
+    vec![
+        Span::raw("  "),
+        Span::styled("[j/k]", b),
+        Span::raw("move  "),
+        Span::styled("[Enter]", b),
+        Span::raw("expand  "),
+        Span::styled("[\u{2190}/\u{2192}]", b),
+        Span::raw("folds  "),
+        Span::styled("[Esc]", b),
+        Span::raw("phases  "),
+        Span::styled("[q]", b),
+        Span::raw("uit  "),
+        Span::styled("[?]", b),
+        Span::raw("help"),
+    ]
+}
+
 /// The Config tab's footer while its scope strip has the keyboard (quick
 /// 260929-g9u, I-8): only the keys that level handles, as the tab bar's and
 /// the Waves pane's footers do.
@@ -11559,12 +11767,14 @@ fn build_footer(
     width: u16,
     experimental: bool,
     driver_keys: &super::driver_run::DriverKeys,
+    owner_block_drawn: bool,
 ) -> Paragraph<'static> {
     Paragraph::new(Line::from(footer_spans(
         sub_view,
         width,
         experimental,
         driver_keys,
+        owner_block_drawn,
     )))
 }
 
@@ -18267,6 +18477,7 @@ mod tests {
             width,
             experimental,
             &super::super::driver_run::DriverKeys::default(),
+            false,
         )
         .iter()
         .map(|s| s.content.as_ref())
@@ -26950,11 +27161,16 @@ mod tests {
 
     #[test]
     fn roadmap_footer_does_not_advertise_v() {
-        let footer: String =
-            footer_spans(&DetailSubView::RoadmapViz, 200, false, &Default::default())
-                .iter()
-                .map(|s| s.content.to_string())
-                .collect();
+        let footer: String = footer_spans(
+            &DetailSubView::RoadmapViz,
+            200,
+            false,
+            &Default::default(),
+            false,
+        )
+        .iter()
+        .map(|s| s.content.to_string())
+        .collect();
         assert!(!footer.contains("[v]"), "{footer}");
         assert!(footer.contains("[e]"), "{footer}");
     }
@@ -26967,6 +27183,7 @@ mod tests {
                 200,
                 experimental,
                 &Default::default(),
+                false,
             )
             .iter()
             .map(|s| s.content.to_string())
@@ -35877,11 +36094,579 @@ mod tests {
                 joined.chars().all(|c| c == '\n' || !c.is_control()),
                 "no raw control on screen at {w}"
             );
-            let model = super::owner_block::block_model(TEST_ALIAS, "v2.2", &digest, w);
+            let model = super::owner_block::block_model(
+                TEST_ALIAS,
+                "v2.2",
+                &digest,
+                &Default::default(),
+                w,
+            );
             for line in model.body.iter().chain(model.fold_line.iter()) {
                 assert!(line.width() <= usize::from(w), "{w}");
             }
             assert!(rows[0].starts_with("Owner "));
+        }
+    }
+
+    // ── Owner block focus, expansion, folds, scroll (36-04) ─────────────────
+
+    use super::owner_block::{Fold, GroupKey, OwnerBlockState, Stop};
+
+    fn owner_draw(screen: &DetailScreen, ctx: &AppContext) -> String {
+        render_detail_to_text_at(screen, ctx, 120, 30)
+    }
+
+    fn owner_view_of(ctx: &AppContext) -> OwnerBlockState {
+        ctx.view_cache
+            .get(TEST_ALIAS)
+            .map(|c| c.owner_block.clone())
+            .unwrap_or_default()
+    }
+
+    /// The identity of the sample's phase 24 TEST group (six checks).
+    fn key_24() -> GroupKey {
+        GroupKey {
+            lane: "test",
+            kind: "uat",
+            scope_label: None,
+            workstream: None,
+            phase: "24".to_owned(),
+            file: "phases/24/24-UAT.md".to_owned(),
+        }
+    }
+
+    /// The screen after one frame (so the block's rows are known to the keys).
+    fn owner_screen(ctx: &AppContext) -> DetailScreen {
+        let screen = DetailScreen::new(TEST_ALIAS.to_string());
+        owner_draw(&screen, ctx);
+        screen
+    }
+
+    fn key(screen: &mut DetailScreen, ctx: &mut AppContext, code: KeyCode) -> ScreenAction {
+        let action = screen.handle_key(code, KeyModifiers::NONE, ctx);
+        owner_draw(screen, ctx);
+        action
+    }
+
+    #[test]
+    fn owner_block_focus_path() {
+        let mut ctx = owner_ctx(Some(sample()));
+        let mut screen = owner_screen(&ctx);
+        assert!(screen.owner_block_rows.get() > 0);
+        // `↑` from phase row 0 enters the block on its last stop, the fold line.
+        key(&mut screen, &mut ctx, KeyCode::Up);
+        assert_eq!(screen.focus, DetailFocus::Owner);
+        assert_eq!(owner_view_of(&ctx).cursor, Some(Stop::FoldLine));
+        // One up: the last group row (BLOCKED); one down: the fold line again.
+        key(&mut screen, &mut ctx, KeyCode::Char('k'));
+        assert!(matches!(owner_view_of(&ctx).cursor, Some(Stop::Row(k)) if k.lane == "blocked"));
+        key(&mut screen, &mut ctx, KeyCode::Char('j'));
+        assert_eq!(owner_view_of(&ctx).cursor, Some(Stop::FoldLine));
+        // Past the last stop: back to the phase list, selection unchanged.
+        key(&mut screen, &mut ctx, KeyCode::Down);
+        assert_eq!(screen.focus, DetailFocus::Content);
+        assert_eq!(ctx.view_cache[TEST_ALIAS].pipeline_selected, 0);
+        // Up from the first stop goes to the tab bar.
+        key(&mut screen, &mut ctx, KeyCode::Up);
+        key(&mut screen, &mut ctx, KeyCode::Char('g'));
+        assert!(matches!(owner_view_of(&ctx).cursor, Some(Stop::Row(k)) if k.phase == "21"));
+        key(&mut screen, &mut ctx, KeyCode::Up);
+        assert_eq!(screen.focus, DetailFocus::TabBar);
+        // Esc returns to the list, a second Esc goes to the tab bar.
+        screen.focus = DetailFocus::Content;
+        key(&mut screen, &mut ctx, KeyCode::Up);
+        assert_eq!(screen.focus, DetailFocus::Owner);
+        key(&mut screen, &mut ctx, KeyCode::Esc);
+        assert_eq!(screen.focus, DetailFocus::Content);
+        key(&mut screen, &mut ctx, KeyCode::Esc);
+        assert_eq!(screen.focus, DetailFocus::TabBar);
+        // `G` reaches the last stop; `q` leaves the detail view.
+        screen.focus = DetailFocus::Owner;
+        key(&mut screen, &mut ctx, KeyCode::Char('g'));
+        key(&mut screen, &mut ctx, KeyCode::Char('G'));
+        assert_eq!(owner_view_of(&ctx).cursor, Some(Stop::FoldLine));
+        let action = screen.handle_key(KeyCode::Char('q'), KeyModifiers::NONE, &mut ctx);
+        assert!(matches!(action, ScreenAction::Pop));
+    }
+
+    #[test]
+    fn without_a_block_up_still_reaches_the_tab_bar() {
+        for digest in [
+            None,
+            Some(crate::state_reader::owner_items::OwnerDigest::default()),
+        ] {
+            let mut ctx = owner_ctx(digest);
+            let mut screen = owner_screen(&ctx);
+            assert_eq!(screen.owner_block_rows.get(), 0);
+            key(&mut screen, &mut ctx, KeyCode::Up);
+            assert_eq!(screen.focus, DetailFocus::TabBar);
+        }
+        // A tab too short for the block draws none either.
+        let mut ctx = owner_ctx(Some(sample()));
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        render_detail_to_text_at(&screen, &ctx, 120, 14);
+        assert_eq!(screen.owner_block_rows.get(), 0);
+        key(&mut screen, &mut ctx, KeyCode::Up);
+        assert_eq!(screen.focus, DetailFocus::TabBar);
+    }
+
+    #[test]
+    fn owner_block_swallows_action_keys() {
+        let mut ctx = owner_ctx(Some(sample()));
+        let mut screen = owner_screen(&ctx);
+        key(&mut screen, &mut ctx, KeyCode::Up);
+        let before = owner_view_of(&ctx);
+        for c in ['e', 'o', 'v', 'A', 'y', 'x'] {
+            let action = key(&mut screen, &mut ctx, KeyCode::Char(c));
+            assert!(matches!(action, ScreenAction::None), "{c}");
+            assert_eq!(screen.focus, DetailFocus::Owner, "{c}");
+        }
+        for code in [KeyCode::Left, KeyCode::Right] {
+            // Off the fold line `←`/`→` are swallowed too.
+            key(&mut screen, &mut ctx, KeyCode::Char('k'));
+            let action = key(&mut screen, &mut ctx, code);
+            assert!(matches!(action, ScreenAction::None));
+            assert_eq!(screen.focus, DetailFocus::Owner);
+            key(&mut screen, &mut ctx, KeyCode::Char('j'));
+        }
+        let after = owner_view_of(&ctx);
+        assert_eq!(before.cursor, after.cursor);
+        assert!(after.expanded.is_empty() && after.open_folds.is_empty());
+        assert!(ctx.status_message.is_none() && ctx.error_message.is_none());
+    }
+
+    #[test]
+    fn owner_block_digits_reset_focus() {
+        for c in ['1', '3', 'D', '[', ']'] {
+            let mut ctx = owner_ctx(Some(sample()));
+            let mut screen = owner_screen(&ctx);
+            key(&mut screen, &mut ctx, KeyCode::Up);
+            assert_eq!(screen.focus, DetailFocus::Owner);
+            screen.handle_key(KeyCode::Char(c), KeyModifiers::NONE, &mut ctx);
+            assert_ne!(screen.focus, DetailFocus::Owner, "{c}");
+        }
+        let mut ctx = owner_ctx(Some(sample()));
+        let mut screen = owner_screen(&ctx);
+        key(&mut screen, &mut ctx, KeyCode::Up);
+        screen.handle_key(KeyCode::Char('3'), KeyModifiers::NONE, &mut ctx);
+        assert_ne!(stored_view(&ctx), DetailSubView::Pipeline);
+        // `?` and Tab fall through with the focus kept.
+        let mut ctx = owner_ctx(Some(sample()));
+        let mut screen = owner_screen(&ctx);
+        key(&mut screen, &mut ctx, KeyCode::Up);
+        screen.handle_key(KeyCode::Char('?'), KeyModifiers::NONE, &mut ctx);
+        assert_eq!(screen.focus, DetailFocus::Owner);
+    }
+
+    /// The sample with the phase 24 group's first check carrying detail parts.
+    fn detailed_sample() -> crate::state_reader::owner_items::OwnerDigest {
+        let mut digest = sample();
+        let group = digest
+            .groups
+            .iter_mut()
+            .find(|g| g.phase == "24" && g.items.len() == 6)
+            .expect("phase 24");
+        group.items[0].test = Some("3".to_owned());
+        group.items[0].expected = Some("the clock face wraps".to_owned());
+        group.items[0].reason = Some("needs a device".to_owned());
+        digest
+    }
+
+    #[test]
+    fn enter_expands_and_collapses_a_group() {
+        let mut ctx = owner_ctx(Some(detailed_sample()));
+        let mut screen = owner_screen(&ctx);
+        key(&mut screen, &mut ctx, KeyCode::Up);
+        key(&mut screen, &mut ctx, KeyCode::Char('g'));
+        key(&mut screen, &mut ctx, KeyCode::Char('j'));
+        assert!(matches!(owner_view_of(&ctx).cursor, Some(Stop::Row(k)) if k == key_24()));
+        let collapsed = owner_draw(&screen, &ctx);
+        assert!(!collapsed.contains("check 0"), "{collapsed}");
+        let action = key(&mut screen, &mut ctx, KeyCode::Enter);
+        assert!(matches!(action, ScreenAction::None));
+        assert!(owner_view_of(&ctx).expanded.contains(&key_24()));
+        let model = super::owner_block::block_model(
+            TEST_ALIAS,
+            "v2.2",
+            ctx.owner_digests.get(TEST_ALIAS).expect("digest"),
+            &owner_view_of(&ctx),
+            120,
+        );
+        let lines: Vec<String> = model
+            .body
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        let at = lines
+            .iter()
+            .position(|l| l.contains("clock-faces"))
+            .expect("row");
+        // Five items (the first carries its number), the detail line, the
+        // overflow line, then the file.
+        assert!(lines[at + 1].ends_with("3 check 0"), "{lines:#?}");
+        assert_eq!(
+            lines[at + 2].trim_start(),
+            "expected: the clock face wraps \u{b7} reason: needs a device"
+        );
+        for n in 1..5 {
+            assert!(
+                lines[at + 2 + n].ends_with(&format!("check {n}")),
+                "{lines:#?}"
+            );
+        }
+        assert_eq!(lines[at + 7].trim_start(), "\u{2026} 1 more");
+        assert_eq!(lines[at + 8].trim_start(), "file phases/24/24-UAT.md");
+        assert!(!lines.iter().any(|l| l.contains("check 5")));
+        // The other groups stay collapsed.
+        assert!(lines[at + 9].contains("TEST"), "{lines:#?}");
+        // The block, scrolled to the group, draws its items inside the cap.
+        let text = owner_draw(&screen, &ctx);
+        assert!(
+            text.contains("3 check 0") && text.contains("expected: the clock face"),
+            "{text}"
+        );
+        // Collapse, then Space expands again.
+        key(&mut screen, &mut ctx, KeyCode::Enter);
+        assert!(owner_view_of(&ctx).expanded.is_empty());
+        key(&mut screen, &mut ctx, KeyCode::Char(' '));
+        assert!(owner_view_of(&ctx).expanded.contains(&key_24()));
+        // Expansion survives leaving the block, and the gutter goes blank.
+        key(&mut screen, &mut ctx, KeyCode::Esc);
+        assert!(owner_view_of(&ctx).expanded.contains(&key_24()));
+        assert!(owner_draw(&screen, &ctx).contains("3 check 0"));
+    }
+
+    #[test]
+    fn sc4_an_expanded_group_shows_its_checks_beside_the_collapsed_rows() {
+        let mut ctx = owner_ctx(Some(detailed_sample()));
+        let mut screen = owner_screen(&ctx);
+        key(&mut screen, &mut ctx, KeyCode::Up);
+        key(&mut screen, &mut ctx, KeyCode::Char('g'));
+        key(&mut screen, &mut ctx, KeyCode::Char('j'));
+        key(&mut screen, &mut ctx, KeyCode::Enter);
+        // Walk past the expansion so its tail (overflow, file) is in the window.
+        key(&mut screen, &mut ctx, KeyCode::Char('j'));
+        let text = owner_draw(&screen, &ctx);
+        assert!(text.contains("check 4"), "{text}");
+        assert!(text.contains("\u{2026} 1 more"), "{text}");
+        assert!(text.contains("file phases/24/24-UAT.md"), "{text}");
+        assert!(
+            text.contains("all checks passed, run /gsd-verify-work 22"),
+            "{text}"
+        );
+        assert!(
+            text.contains("Old debt (6)") && text.contains("Todos 11"),
+            "{text}"
+        );
+        assert!(text.contains("Phases"), "{text}");
+        // Back at the group the detail line and the first items show.
+        key(&mut screen, &mut ctx, KeyCode::Char('k'));
+        let text = owner_draw(&screen, &ctx);
+        assert!(
+            text.contains("3 check 0") && text.contains("expected: the clock face"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn the_cursor_row_is_marked_only_while_focused() {
+        let mut ctx = owner_ctx(Some(sample()));
+        let mut screen = owner_screen(&ctx);
+        let rows = |screen: &DetailScreen, ctx: &AppContext| {
+            let text = owner_draw(screen, ctx);
+            text.lines()
+                .filter(|l| l.starts_with("> ") && !l.contains('\u{2502}'))
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        };
+        assert!(rows(&screen, &ctx).is_empty());
+        key(&mut screen, &mut ctx, KeyCode::Up);
+        key(&mut screen, &mut ctx, KeyCode::Char('g'));
+        let marked = rows(&screen, &ctx);
+        assert_eq!(marked.len(), 1, "{marked:?}");
+        assert!(
+            marked[0].contains("TEST") && marked[0].contains("ph 21"),
+            "{marked:?}"
+        );
+        // The cursor row is BOLD and Cyan.
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 30)).expect("backend");
+        terminal
+            .draw(|f| screen.render(f, f.area(), &ctx))
+            .expect("draw");
+        let buffer = terminal.backend().buffer().clone();
+        let y = (0..30u16)
+            .find(|y| buffer.cell((0, *y)).is_some_and(|c| c.symbol() == ">"))
+            .expect("cursor row");
+        let cell = buffer.cell((3, y)).expect("cell");
+        assert_eq!(cell.fg, Color::Cyan);
+        assert!(cell.modifier.contains(Modifier::BOLD));
+        // The fold line takes the marker too.
+        key(&mut screen, &mut ctx, KeyCode::Char('G'));
+        let marked = rows(&screen, &ctx);
+        assert_eq!(marked.len(), 1);
+        assert!(marked[0].contains("Old debt"), "{marked:?}");
+        // Leaving focus draws no cursor and keeps the cursor identity.
+        key(&mut screen, &mut ctx, KeyCode::Esc);
+        assert!(rows(&screen, &ctx).is_empty());
+        assert!(owner_view_of(&ctx).cursor.is_some());
+    }
+
+    #[test]
+    fn the_footer_names_the_owner_block() {
+        let mut ctx = owner_ctx(Some(sample()));
+        let mut screen = owner_screen(&ctx);
+        let footer = |screen: &DetailScreen, ctx: &AppContext| {
+            owner_draw(screen, ctx)
+                .lines()
+                .last()
+                .unwrap_or("")
+                .to_owned()
+        };
+        assert!(
+            footer(&screen, &ctx).contains("[\u{2191}]owner"),
+            "{}",
+            footer(&screen, &ctx)
+        );
+        key(&mut screen, &mut ctx, KeyCode::Up);
+        assert_eq!(
+            footer(&screen, &ctx).trim_end(),
+            "  [j/k]move  [Enter]expand  [\u{2190}/\u{2192}]folds  [Esc]phases  [q]uit  [?]help"
+        );
+        // Without a block the lead stays `tab bar`.
+        let ctx = owner_ctx(None);
+        let screen = owner_screen(&ctx);
+        assert!(footer(&screen, &ctx).contains("[\u{2191}]tab bar"));
+    }
+
+    #[test]
+    fn focus_pane_below_100_columns_still_takes_the_whole_tab() {
+        let mut ctx = tracer_ctx();
+        ctx.owner_digests.insert(TEST_ALIAS.to_string(), sample());
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        render_detail_to_text_at(&screen, &ctx, 80, 24);
+        assert!(screen.owner_block_rows.get() > 0);
+        press(&mut screen, &mut ctx, KeyCode::Right);
+        assert_eq!(screen.focus, DetailFocus::Pane);
+        let text = render_detail_to_text_at(&screen, &ctx, 80, 24);
+        assert!(!text.contains("Owner "), "{text}");
+        assert_eq!(screen.owner_block_rows.get(), 0);
+        // `Left` comes back, the block draws again, and `↑` enters it.
+        press(&mut screen, &mut ctx, KeyCode::Left);
+        render_detail_to_text_at(&screen, &ctx, 80, 24);
+        press(&mut screen, &mut ctx, KeyCode::Up);
+        assert_eq!(screen.focus, DetailFocus::Owner);
+    }
+
+    #[test]
+    fn the_fold_line_walks_and_opens_old_debt_and_acknowledged() {
+        let mut ctx = owner_ctx(Some(sample()));
+        let mut screen = owner_screen(&ctx);
+        key(&mut screen, &mut ctx, KeyCode::Up);
+        assert_eq!(owner_view_of(&ctx).cursor, Some(Stop::FoldLine));
+        // Todos is never selectable: `→` stops at Acknowledged.
+        key(&mut screen, &mut ctx, KeyCode::Right);
+        key(&mut screen, &mut ctx, KeyCode::Right);
+        key(&mut screen, &mut ctx, KeyCode::Right);
+        key(&mut screen, &mut ctx, KeyCode::Enter);
+        let view = owner_view_of(&ctx);
+        assert_eq!(view.fold_cursor, Some(Fold::Acknowledged));
+        assert!(view.open_folds.contains(&Fold::Acknowledged));
+        let text = owner_draw(&screen, &ctx);
+        assert!(text.contains("\u{25be} Acknowledged"), "{text}");
+        assert!(text.contains("\u{25b8} Old debt"), "{text}");
+        // The acknowledged groups are stops now, ahead of the fold line.
+        key(&mut screen, &mut ctx, KeyCode::Char('k'));
+        assert!(matches!(owner_view_of(&ctx).cursor, Some(Stop::Row(k)) if k.phase == "18"));
+        key(&mut screen, &mut ctx, KeyCode::Char('j'));
+        // `←` back to Old debt and open it: archived rows under milestone headers.
+        key(&mut screen, &mut ctx, KeyCode::Left);
+        key(&mut screen, &mut ctx, KeyCode::Enter);
+        assert!(owner_view_of(&ctx).open_folds.contains(&Fold::OldDebt));
+        let model = super::owner_block::block_model(
+            TEST_ALIAS,
+            "v2.2",
+            ctx.owner_digests.get(TEST_ALIAS).expect("digest"),
+            &owner_view_of(&ctx),
+            120,
+        );
+        let lines: Vec<String> = model
+            .body
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        let headers: Vec<&str> = lines
+            .iter()
+            .map(|l| l.trim())
+            .filter(|l| *l == "v1.1" || *l == "v1.2")
+            .collect();
+        assert_eq!(headers, ["v1.1", "v1.2"], "{lines:#?}");
+        for phase in ["ph 04", "ph 08", "ph 09"] {
+            assert!(
+                lines.iter().any(|l| l.contains(phase)),
+                "{phase}: {lines:#?}"
+            );
+        }
+        assert!(lines
+            .iter()
+            .any(|l| l.contains("old-work") && l.contains("/gsd-verify-work 04")));
+        // Sub-headers are not stops; the archived rows are.
+        assert_eq!(model.stops.len(), 8 + 3 + 2 + 1);
+        // A digest without acknowledged groups makes Acknowledged a non-stop.
+        let mut digest = sample();
+        digest.groups.retain(|g| !g.acknowledged);
+        ctx.owner_digests.insert(TEST_ALIAS.to_string(), digest);
+        key(&mut screen, &mut ctx, KeyCode::Right);
+        assert_eq!(owner_view_of(&ctx).fold_cursor, Some(Fold::OldDebt));
+        assert!(!owner_view_of(&ctx).open_folds.contains(&Fold::Acknowledged));
+    }
+
+    #[test]
+    fn owner_block_state_survives_a_digest_refresh() {
+        let mut ctx = owner_ctx(Some(detailed_sample()));
+        let mut screen = owner_screen(&ctx);
+        key(&mut screen, &mut ctx, KeyCode::Up);
+        key(&mut screen, &mut ctx, KeyCode::Char('g'));
+        key(&mut screen, &mut ctx, KeyCode::Char('j'));
+        key(&mut screen, &mut ctx, KeyCode::Enter);
+        // Another group expanded, then the cursor moved to the debug row.
+        key(&mut screen, &mut ctx, KeyCode::Char('j'));
+        key(&mut screen, &mut ctx, KeyCode::Char('j'));
+        key(&mut screen, &mut ctx, KeyCode::Char('j'));
+        let on = owner_view_of(&ctx).cursor.clone();
+        assert!(
+            matches!(on, Some(Stop::Row(ref k)) if k.kind == "debug"),
+            "{on:?}"
+        );
+        key(&mut screen, &mut ctx, KeyCode::Enter);
+        // The refresh drops the cursor's group and every group but two.
+        let mut digest = detailed_sample();
+        digest.groups.retain(|g| g.phase == "24" || g.phase == "21");
+        ctx.owner_digests.insert(TEST_ALIAS.to_string(), digest);
+        key(&mut screen, &mut ctx, KeyCode::Char('j'));
+        let view = owner_view_of(&ctx);
+        assert!(
+            view.expanded.contains(&key_24()),
+            "the surviving group stays open"
+        );
+        assert_eq!(view.expanded.len(), 1, "the vanished group is dropped");
+        let stops = {
+            let model = super::owner_block::block_model(
+                TEST_ALIAS,
+                "v2.2",
+                ctx.owner_digests.get(TEST_ALIAS).expect("digest"),
+                &view,
+                120,
+            );
+            model.stops
+        };
+        assert!(stops.contains(view.cursor.as_ref().expect("cursor")));
+        // A refresh down to nothing at all must not panic either.
+        ctx.owner_digests.insert(
+            TEST_ALIAS.to_string(),
+            crate::state_reader::owner_items::OwnerDigest::default(),
+        );
+        owner_draw(&screen, &ctx);
+        key(&mut screen, &mut ctx, KeyCode::Char('j'));
+        assert_eq!(screen.focus, DetailFocus::Content);
+        owner_draw(&screen, &ctx);
+    }
+
+    #[test]
+    fn owner_block_scrolls_with_the_cursor() {
+        let mut ctx = owner_ctx(Some(sample()));
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        let draw = |screen: &DetailScreen, ctx: &AppContext| {
+            render_detail_to_text_at(screen, ctx, 120, 16)
+        };
+        let step = |screen: &mut DetailScreen, ctx: &mut AppContext, code: KeyCode| {
+            screen.handle_key(code, KeyModifiers::NONE, ctx);
+            draw(screen, ctx)
+        };
+        let text = draw(&screen, &ctx);
+        // 8 rows, a window of fewer: the header carries the range.
+        let window = usize::from(screen.owner_viewport_rows.get());
+        assert!(window > 0 && window < 8, "{window}: {text}");
+        assert!(text.contains(" 1-"), "{text}");
+        assert!(!text.contains("2 device"), "{text}");
+        step(&mut screen, &mut ctx, KeyCode::Up);
+        let text = step(&mut screen, &mut ctx, KeyCode::Char('k'));
+        assert!(
+            text.contains("2 device"),
+            "the BLOCKED row scrolled into view: {text}"
+        );
+        assert!(
+            text.contains(&format!(" {}-8 of 8", 8 - window + 1)),
+            "{text}"
+        );
+        // The fold line stays the last row of the block.
+        let lines: Vec<&str> = text.lines().collect();
+        let blocked = lines
+            .iter()
+            .position(|l| l.contains("2 device"))
+            .expect("row");
+        assert!(lines[blocked + 1].contains("Old debt"), "{text}");
+        // `g` scrolls back; `PgDn` moves by the viewport rows.
+        let text = step(&mut screen, &mut ctx, KeyCode::Char('g'));
+        assert!(text.contains(" 1-"), "{text}");
+        step(&mut screen, &mut ctx, KeyCode::PageDown);
+        assert_eq!(owner_view_of(&ctx).cursor_index, window);
+        step(&mut screen, &mut ctx, KeyCode::PageUp);
+        assert_eq!(owner_view_of(&ctx).cursor_index, 0);
+    }
+
+    #[test]
+    fn an_expanded_long_text_block_stays_inside_the_block() {
+        let long = format!("{}\u{1b}[31m", "z".repeat(300));
+        let mut digest = sample();
+        for g in &mut digest.groups {
+            g.phase_name = long.clone();
+            g.command = Some(long.clone());
+            g.file = long.clone();
+            if let crate::state_reader::owner_items::Scope::Archived { label, .. } = &mut g.scope {
+                *label = long.clone();
+            }
+            for item in &mut g.items {
+                item.name = long.clone();
+                item.expected = Some(long.clone());
+                item.reason = Some(long.clone());
+                item.gaps = (0..3)
+                    .map(|_| crate::state_reader::owner_items::OwnerGap {
+                        name: long.clone(),
+                        result: long.clone(),
+                        reason: Some(long.clone()),
+                    })
+                    .collect();
+            }
+        }
+        let skeleton = super::owner_block::skeleton(&digest, &OwnerBlockState::default());
+        let mut view = OwnerBlockState::default();
+        view.open_folds.insert(Fold::OldDebt);
+        view.open_folds.insert(Fold::Acknowledged);
+        let all = super::owner_block::skeleton(&digest, &view);
+        for stop in all.stops.iter().chain(&skeleton.stops) {
+            if let Stop::Row(key) = stop {
+                view.expanded.insert(key.clone());
+            }
+        }
+        for w in [80u16, 120] {
+            let model = super::owner_block::block_model(TEST_ALIAS, "v2.2", &digest, &view, w);
+            assert!(model.body.len() > 40, "{}", model.body.len());
+            for line in model.body.iter().chain(model.fold_line.iter()) {
+                assert!(line.width() <= usize::from(w), "{w}: {}", line.width());
+            }
+            let mut ctx = owner_ctx(Some(digest.clone()));
+            ctx.view_cache
+                .entry(TEST_ALIAS.to_string())
+                .or_default()
+                .owner_block = view.clone();
+            let rows = render_phases_at(&DetailScreen::new(TEST_ALIAS.to_string()), &ctx, w, 30);
+            assert!(
+                rows.join("\n")
+                    .chars()
+                    .all(|c| c == '\n' || !c.is_control()),
+                "no raw control at {w}"
+            );
         }
     }
 }

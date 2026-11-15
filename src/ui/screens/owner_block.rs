@@ -4,14 +4,19 @@
 //! the `closes after` gate, one row per current group the owner must act on, and
 //! one pinned fold line (Old debt, Acknowledged, Todos). Pure and in-memory:
 //! [`block_model`] turns an [`OwnerDigest`] into lines for one width, so nothing
-//! on the render path reads a file. 36-04 adds focus, expansion and the cursor.
+//! on the render path reads a file. 36-04 adds focus, expansion, open folds and
+//! the cursor: their state lives per project in [`OwnerBlockState`] as
+//! identities ([`GroupKey`], [`Fold`], [`Stop`]), never indices, so it survives a
+//! digest refresh (D-18).
 //!
 //! Every digest string reaches a cell through [`shown`] (the reader does not
 //! escape), and every width is measured in cells with `Line::width()` and
 //! `fit_cells`, never `len()`.
 
 use crate::inbox::{self, ClauseForm};
-use crate::state_reader::owner_items::{ClosesAfter, Kind, Lane, OwnerDigest, OwnerGroup, Scope};
+use crate::state_reader::owner_items::{
+    ClosesAfter, Kind, Lane, OwnerDigest, OwnerGroup, OwnerItem, Scope,
+};
 use crate::ui::glyphs;
 use crate::ui::screens::owner::OWNER_SEP;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -19,6 +24,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
+use std::collections::HashSet;
 
 use super::detail::{fit_cells, fit_spans, shown};
 use super::driver::muted_style;
@@ -38,13 +44,108 @@ const AGE_MIN_W: usize = 80;
 /// Smallest the name column gets before the phrase and phase cell give way.
 const NAME_MIN_W: usize = 12;
 
+/// Most item lines an expanded group shows before `... N more` (D-18).
+const MAX_ITEMS: usize = 5;
+/// Most gap lines an item shows before `... N more gaps` (D-18).
+const MAX_GAPS: usize = 2;
+
+/// What identifies a group across digest refreshes (D-18): an owned identity,
+/// because `OwnerGroup` derives no `Hash` and an index would drift.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct GroupKey {
+    pub lane: &'static str,
+    pub kind: &'static str,
+    pub scope_label: Option<String>,
+    pub workstream: Option<String>,
+    pub phase: String,
+    pub file: String,
+}
+
+impl GroupKey {
+    fn of(group: &OwnerGroup) -> Self {
+        Self {
+            lane: group.lane.as_str(),
+            kind: group.kind.as_str(),
+            scope_label: scope_label(&group.scope),
+            workstream: group.workstream.clone(),
+            phase: group.phase.clone(),
+            file: group.file.clone(),
+        }
+    }
+
+    /// A BLOCKED aggregate row: one per (workstream, phase), over all its files.
+    fn aggregate(group: &OwnerGroup) -> Self {
+        Self {
+            lane: "blocked",
+            kind: "blocked",
+            file: String::new(),
+            ..Self::of(group)
+        }
+    }
+}
+
+fn scope_label(scope: &Scope) -> Option<String> {
+    match scope {
+        Scope::Current => None,
+        Scope::Archived { label, .. } => Some(label.clone()),
+    }
+}
+
+/// The folds on the pinned fold line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Fold {
+    OldDebt,
+    Acknowledged,
+    Todos,
+}
+
+/// One cursor stop: a group row, or the fold line as a whole.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Stop {
+    Row(GroupKey),
+    FoldLine,
+}
+
+/// The per-project Owner block view state (D-18): identities, never indices, kept
+/// in memory only in `ProjectViewCache.owner_block`.
+#[derive(Debug, Clone, Default)]
+pub struct OwnerBlockState {
+    /// Groups whose item lines are shown.
+    pub expanded: HashSet<GroupKey>,
+    /// Open folds (Todos never opens).
+    pub open_folds: HashSet<Fold>,
+    /// The stop the cursor rests on.
+    pub cursor: Option<Stop>,
+    /// The fold the fold line's sub-cursor rests on.
+    pub fold_cursor: Option<Fold>,
+    /// The cursor's last index, so a vanished stop clamps to its neighbor.
+    pub cursor_index: usize,
+}
+
+/// The cursor as the renderer needs it: the stop index and, on the fold line, the
+/// fold the sub-cursor rests on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Cursor {
+    pub stop: usize,
+    pub fold: Option<Fold>,
+}
+
 /// The block as lines for one width.
 pub(crate) struct BlockModel {
     pub header: Line<'static>,
+    /// Group rows, their expansion lines, and the rows of open folds.
     pub body: Vec<Line<'static>>,
     pub fold_line: Option<Line<'static>>,
     /// The D-15 predicate: a group row or a fold has something to show.
     pub has_content: bool,
+    /// Every cursor stop in order: the group rows, then the fold line.
+    pub stops: Vec<Stop>,
+    /// The `body` index of each stop's row (`None` for the pinned fold line).
+    pub stop_lines: Vec<Option<usize>>,
+    /// The selectable folds, in fold-line order.
+    pub folds: Vec<Fold>,
+    /// The index in `fold_line.spans` of each fold's text.
+    pub fold_marks: Vec<(Fold, usize)>,
 }
 
 fn dim() -> Style {
@@ -214,8 +315,8 @@ fn row_cells(digest: &OwnerDigest, group: &OwnerGroup, merged: Option<&OwnerGrou
         .as_deref()
         .map(|ws| format!("ws {} ", shown(ws)))
         .unwrap_or_default();
-    let name = match merged {
-        Some(all) => shown(&inbox::blocked_tally(all)),
+    let name = match merged.map(inbox::blocked_tally).filter(|t| !t.is_empty()) {
+        Some(tally) => shown(&tally),
         None => shown(&group.phase_name),
     };
     let counted = matches!(group.kind, Kind::Uat | Kind::Verification)
@@ -265,11 +366,40 @@ fn row_cells(digest: &OwnerDigest, group: &OwnerGroup, merged: Option<&OwnerGrou
     }
 }
 
-/// The body rows in D-17 order: TEST (closes-a-phase first), DECIDE, FIX, then one
-/// BLOCKED row per (workstream, phase), each lane in digest order, root groups
+/// One body row's source groups (D-18): the group the row speaks for, the BLOCKED
+/// aggregate over its siblings, and the distinct files behind it.
+struct RowSrc {
+    group: OwnerGroup,
+    merged: Option<OwnerGroup>,
+    files: Vec<String>,
+    key: GroupKey,
+}
+
+impl RowSrc {
+    fn single(group: &OwnerGroup) -> Self {
+        let blocked = group.lane == Lane::Blocked;
+        Self {
+            group: group.clone(),
+            merged: blocked.then(|| group.clone()),
+            files: vec![group.file.clone()],
+            key: GroupKey::of(group),
+        }
+    }
+
+    fn items(&self) -> &[OwnerItem] {
+        &self.merged.as_ref().unwrap_or(&self.group).items
+    }
+
+    fn cells(&self, digest: &OwnerDigest) -> RowCells {
+        row_cells(digest, &self.group, self.merged.as_ref())
+    }
+}
+
+/// The current rows in D-17 order: TEST (closes-a-phase first), DECIDE, FIX, then
+/// one BLOCKED row per (workstream, phase), each lane in digest order, root groups
 /// before workstream groups.
-fn body_rows(digest: &OwnerDigest) -> Vec<RowCells> {
-    let mut picked: Vec<(OwnerGroup, Option<OwnerGroup>)> = Vec::new();
+fn current_sources(digest: &OwnerDigest) -> Vec<RowSrc> {
+    let mut picked: Vec<RowSrc> = Vec::new();
     let mut blocked_seen: Vec<(Option<String>, String)> = Vec::new();
     for group in digest.groups.iter().filter(|g| is_owner_row(g)) {
         if group.lane == Lane::Blocked {
@@ -277,8 +407,7 @@ fn body_rows(digest: &OwnerDigest) -> Vec<RowCells> {
             if blocked_seen.contains(&key) {
                 continue;
             }
-            let mut merged = group.clone();
-            merged.items = digest
+            let parts: Vec<&OwnerGroup> = digest
                 .groups
                 .iter()
                 .filter(|g| {
@@ -287,15 +416,28 @@ fn body_rows(digest: &OwnerDigest) -> Vec<RowCells> {
                         && g.workstream == key.0
                         && g.phase == key.1
                 })
-                .flat_map(|g| g.items.iter().cloned())
                 .collect();
+            let mut merged = group.clone();
+            merged.items = parts.iter().flat_map(|g| g.items.iter().cloned()).collect();
+            let mut files: Vec<String> = Vec::new();
+            for part in &parts {
+                if !files.contains(&part.file) {
+                    files.push(part.file.clone());
+                }
+            }
             blocked_seen.push(key);
-            picked.push((group.clone(), Some(merged)));
+            picked.push(RowSrc {
+                group: group.clone(),
+                merged: Some(merged),
+                files,
+                key: GroupKey::aggregate(group),
+            });
         } else {
-            picked.push((group.clone(), None));
+            picked.push(RowSrc::single(group));
         }
     }
-    picked.sort_by_key(|(g, _)| {
+    picked.sort_by_key(|src| {
+        let g = &src.group;
         (
             g.lane.order(),
             u8::from(g.lane == Lane::Test && !g.closes_phase),
@@ -303,9 +445,96 @@ fn body_rows(digest: &OwnerDigest) -> Vec<RowCells> {
         )
     });
     picked
+}
+
+fn archived_rank(group: &OwnerGroup) -> usize {
+    match &group.scope {
+        Scope::Archived { rank, .. } => *rank,
+        Scope::Current => 0,
+    }
+}
+
+/// The rows an open Old debt shows: the archived groups the inbox lists with
+/// `--include archived`, by milestone rank, then lane.
+fn old_debt_sources(digest: &OwnerDigest) -> Vec<RowSrc> {
+    let filters = inbox::Filters {
+        archived: true,
+        ..Default::default()
+    };
+    let mut groups: Vec<&OwnerGroup> = digest
+        .groups
         .iter()
-        .map(|(group, merged)| row_cells(digest, group, merged.as_ref()))
-        .collect()
+        .filter(|g| matches!(g.scope, Scope::Archived { .. }) && filters.lists_group(g))
+        .collect();
+    groups.sort_by_key(|g| (archived_rank(g), g.lane.order()));
+    groups.into_iter().map(RowSrc::single).collect()
+}
+
+/// The rows an open Acknowledged shows: the groups flagged `acknowledged`.
+fn acknowledged_sources(digest: &OwnerDigest) -> Vec<RowSrc> {
+    let filters = inbox::Filters {
+        archived: true,
+        acknowledged: true,
+        ..Default::default()
+    };
+    let mut groups: Vec<&OwnerGroup> = digest
+        .groups
+        .iter()
+        .filter(|g| g.acknowledged && filters.lists_group(g))
+        .collect();
+    groups.sort_by_key(|g| (archived_rank(g), g.lane.order()));
+    groups.into_iter().map(RowSrc::single).collect()
+}
+
+/// Archived plus acknowledged totals behind the Old debt fold (matches the CLI).
+fn old_debt_total(digest: &OwnerDigest) -> usize {
+    digest.archived.test + digest.archived.blocked + digest.archived.fix + digest.archived.decide
+}
+
+/// The selectable folds (D-19): Old debt when it has content, Acknowledged when
+/// the digest carries acknowledged groups; Todos never.
+fn selectable_folds(digest: &OwnerDigest) -> Vec<Fold> {
+    let mut folds = Vec::new();
+    if old_debt_total(digest) > 0 {
+        folds.push(Fold::OldDebt);
+    }
+    if digest.groups.iter().any(|g| g.acknowledged) {
+        folds.push(Fold::Acknowledged);
+    }
+    folds
+}
+
+/// The cursor stops and what the view state may keep, from the digest alone (no
+/// width), so a key handler can use them without drawing.
+pub(crate) struct Skeleton {
+    pub stops: Vec<Stop>,
+    pub folds: Vec<Fold>,
+    /// Every group identity the digest carries, open fold or not.
+    pub keys: HashSet<GroupKey>,
+}
+
+pub(crate) fn skeleton(digest: &OwnerDigest, view: &OwnerBlockState) -> Skeleton {
+    let folds = selectable_folds(digest);
+    let current = current_sources(digest);
+    let old = old_debt_sources(digest);
+    let ack = acknowledged_sources(digest);
+    let mut keys: HashSet<GroupKey> = HashSet::new();
+    let mut stops: Vec<Stop> = Vec::new();
+    let mut shown_rows = |rows: &[RowSrc], open: bool| {
+        for src in rows {
+            keys.insert(src.key.clone());
+            if open {
+                stops.push(Stop::Row(src.key.clone()));
+            }
+        }
+    };
+    shown_rows(&current, true);
+    shown_rows(&old, view.open_folds.contains(&Fold::OldDebt));
+    shown_rows(&ack, view.open_folds.contains(&Fold::Acknowledged));
+    if !folds.is_empty() {
+        stops.push(Stop::FoldLine);
+    }
+    Skeleton { stops, folds, keys }
 }
 
 /// Column widths for one block width.
@@ -543,26 +772,34 @@ fn acknowledged_files(digest: &OwnerDigest) -> usize {
     files.len()
 }
 
-fn fold_spans(parts: &[(String, bool)]) -> Vec<Span<'static>> {
+/// The fold line's spans and, for each fold, the index of its text span.
+type FoldSpans = (Vec<Span<'static>>, Vec<(Fold, usize)>);
+
+fn fold_spans(parts: &[(Fold, String, bool)], view: &OwnerBlockState) -> FoldSpans {
     let mut spans = Vec::new();
-    for (index, (text, muted)) in parts.iter().enumerate() {
+    let mut marks = Vec::new();
+    for (index, (fold, text, muted)) in parts.iter().enumerate() {
         if index > 0 {
             spans.push(Span::raw("   "));
         }
         let style = if *muted { dim() } else { Style::default() };
-        spans.push(Span::styled(
-            format!("{} {text}", glyphs::TRIANGLE_RIGHT_SMALL),
-            style,
-        ));
+        let glyph = if view.open_folds.contains(fold) {
+            glyphs::TRIANGLE_DOWN_SMALL
+        } else {
+            glyphs::TRIANGLE_RIGHT_SMALL
+        };
+        marks.push((*fold, spans.len()));
+        spans.push(Span::styled(format!("{glyph} {text}"), style));
     }
-    spans
+    (spans, marks)
 }
 
-fn fold_line(digest: &OwnerDigest, width: usize) -> Option<Line<'static>> {
-    let old = digest.archived.test
-        + digest.archived.blocked
-        + digest.archived.fix
-        + digest.archived.decide;
+fn fold_line(
+    digest: &OwnerDigest,
+    view: &OwnerBlockState,
+    width: usize,
+) -> Option<(Line<'static>, Vec<(Fold, usize)>)> {
+    let old = old_debt_total(digest);
     let acknowledged = acknowledged_files(digest);
     let hidden = &digest.hidden;
     let todos_shown = hidden.todos > 0 || hidden.todos_unreadable;
@@ -581,17 +818,17 @@ fn fold_line(digest: &OwnerDigest, width: usize) -> Option<Line<'static>> {
         (full, format!("Todos {}", hidden.todos))
     };
     let build = |old_text: String, ack_text: String, todo_text: &str| {
-        let mut parts: Vec<(String, bool)> = Vec::new();
+        let mut parts: Vec<(Fold, String, bool)> = Vec::new();
         if old > 0 {
-            parts.push((old_text, false));
+            parts.push((Fold::OldDebt, old_text, false));
         }
         if acknowledged > 0 {
-            parts.push((ack_text, false));
+            parts.push((Fold::Acknowledged, ack_text, false));
         }
         if todos_shown {
-            parts.push((todo_text.to_owned(), true));
+            parts.push((Fold::Todos, todo_text.to_owned(), true));
         }
-        fold_spans(&parts)
+        fold_spans(&parts, view)
     };
     let with_summary = if summary.is_empty() {
         format!("Old debt ({old})")
@@ -611,37 +848,184 @@ fn fold_line(digest: &OwnerDigest, width: usize) -> Option<Line<'static>> {
             &todos_short,
         ),
     ];
-    for spans in &rungs {
+    for (spans, marks) in &rungs {
         let line = Line::from(spans.clone());
         if line.width() <= width {
-            return Some(line);
+            return Some((line, marks.clone()));
         }
     }
-    let last = rungs.into_iter().last().unwrap_or_default();
-    Some(fit_spans(last, width))
+    let (last, marks) = rungs.into_iter().last().unwrap_or_default();
+    Some((fit_spans(last, width), marks))
+}
+
+// ---------------------------------------------------------------------------
+// Expanded group lines (D-18)
+// ---------------------------------------------------------------------------
+
+/// One dimmed line indented `indent` cells, every string already escaped.
+fn dim_line(indent: usize, text: &str, width: usize) -> Line<'static> {
+    let text = format!("{}{text}", blanks(indent));
+    Line::from(Span::styled(fit_cells(&text, width), dim()))
+}
+
+/// `{test} {name}`, or the name alone.
+fn item_text(item: &OwnerItem) -> String {
+    match item.test.as_deref().filter(|t| !t.trim().is_empty()) {
+        Some(test) => format!("{} {}", shown(test), shown(&item.name)),
+        None => shown(&item.name),
+    }
+}
+
+/// `expected: .. . why: .. . reason: .. . blocked by: ..`, absent parts omitted.
+fn detail_text(item: &OwnerItem) -> Option<String> {
+    let mut parts: Vec<String> = Vec::new();
+    let mut part = |label: &str, value: &Option<String>| {
+        if let Some(value) = value.as_deref().filter(|v| !v.trim().is_empty()) {
+            parts.push(format!("{label}: {}", shown(value)));
+        }
+    };
+    part("expected", &item.expected);
+    part("why", &item.why_human);
+    part("reason", &item.reason);
+    part("blocked by", &item.blocked_by);
+    (!parts.is_empty()).then(|| parts.join(OWNER_SEP))
+}
+
+fn gap_text(gap: &crate::state_reader::owner_items::OwnerGap) -> String {
+    let reason = gap
+        .reason
+        .as_deref()
+        .filter(|r| !r.trim().is_empty())
+        .map(|r| format!(": {}", shown(r)))
+        .unwrap_or_default();
+    format!("gap: {} ({}{reason})", shown(&gap.name), shown(&gap.result))
+}
+
+/// The lines under an expanded group row: up to five items, each with its detail
+/// and gap lines, then `... N more`, then one `file` line per distinct file.
+fn expansion_lines(src: &RowSrc, width: usize) -> Vec<Line<'static>> {
+    let items = src.items();
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    for item in items.iter().take(MAX_ITEMS) {
+        lines.push(Line::from(Span::raw(fit_cells(
+            &format!("    {}", item_text(item)),
+            width,
+        ))));
+        if let Some(detail) = detail_text(item) {
+            lines.push(dim_line(7, &detail, width));
+        }
+        for gap in item.gaps.iter().take(MAX_GAPS) {
+            lines.push(dim_line(7, &gap_text(gap), width));
+        }
+        if item.gaps.len() > MAX_GAPS {
+            let more = item.gaps.len() - MAX_GAPS;
+            lines.push(dim_line(7, &format!("\u{2026} {more} more gaps"), width));
+        }
+    }
+    if items.len() > MAX_ITEMS {
+        let more = items.len() - MAX_ITEMS;
+        lines.push(dim_line(4, &format!("\u{2026} {more} more"), width));
+    }
+    for file in src.files.iter().filter(|f| !f.is_empty()) {
+        lines.push(dim_line(4, &format!("file {}", shown(file)), width));
+    }
+    lines
 }
 
 // ---------------------------------------------------------------------------
 // Model, height, render
 // ---------------------------------------------------------------------------
 
-/// The block for one project at `width` cells.
+/// Patch `style` onto every span of `line`.
+fn patch_line(line: &mut Line<'static>, style: Style) {
+    for span in &mut line.spans {
+        span.style = span.style.patch(style);
+    }
+}
+
+/// The block for one project at `width` cells, with the view state's expanded
+/// groups and open folds applied.
 pub(crate) fn block_model(
     alias: &str,
     milestone: &str,
     digest: &OwnerDigest,
+    view: &OwnerBlockState,
     width: u16,
 ) -> BlockModel {
     let width = usize::from(width);
-    let rows = body_rows(digest);
-    let grid = grid_for(&rows, width);
-    let body: Vec<Line<'static>> = rows.iter().map(|row| row_line(row, &grid, width)).collect();
-    let fold_line = fold_line(digest, width);
+    let sk = skeleton(digest, view);
+    let current = current_sources(digest);
+    let old = if view.open_folds.contains(&Fold::OldDebt) {
+        old_debt_sources(digest)
+    } else {
+        Vec::new()
+    };
+    let ack = if view.open_folds.contains(&Fold::Acknowledged) {
+        acknowledged_sources(digest)
+    } else {
+        Vec::new()
+    };
+    // One grid over every row drawn, so open-fold rows align with the rest.
+    let all: Vec<RowCells> = current
+        .iter()
+        .chain(&old)
+        .chain(&ack)
+        .map(|src| src.cells(digest))
+        .collect();
+    let grid = grid_for(&all, width);
+
+    let mut body: Vec<Line<'static>> = Vec::new();
+    let mut stop_lines: Vec<Option<usize>> = Vec::new();
+    let mut push_rows = |srcs: &[RowSrc], cells: &[RowCells], sub_headers: bool, dimmed: bool| {
+        let mut last_label: Option<Option<String>> = None;
+        for (src, row) in srcs.iter().zip(cells) {
+            if sub_headers {
+                let label = scope_label(&src.group.scope);
+                if last_label.as_ref() != Some(&label) {
+                    let text = label.as_deref().map(shown).unwrap_or_default();
+                    body.push(dim_line(2, &text, width));
+                    last_label = Some(label);
+                }
+            }
+            stop_lines.push(Some(body.len()));
+            let mut line = row_line(row, &grid, width);
+            if dimmed {
+                patch_line(&mut line, Style::default().add_modifier(Modifier::DIM));
+            }
+            body.push(line);
+            if view.expanded.contains(&src.key) {
+                for mut extra in expansion_lines(src, width) {
+                    if dimmed {
+                        patch_line(&mut extra, Style::default().add_modifier(Modifier::DIM));
+                    }
+                    body.push(extra);
+                }
+            }
+        }
+    };
+    let (cur_cells, rest) = all.split_at(current.len());
+    let (old_cells, ack_cells) = rest.split_at(old.len());
+    push_rows(&current, cur_cells, false, false);
+    push_rows(&old, old_cells, true, false);
+    push_rows(&ack, ack_cells, false, true);
+
+    let (fold_line, fold_marks) = match fold_line(digest, view, width) {
+        Some((line, marks)) => (Some(line), marks),
+        None => (None, Vec::new()),
+    };
+    // The skeleton listed the rows in the order `push_rows` drew them, and the
+    // fold line stop (always drawn when a fold is selectable) comes last.
+    let stops = sk.stops;
+    stop_lines.resize(stops.len(), None);
     BlockModel {
         header: header_line(alias, milestone, &digest.closes_after, width),
         has_content: !body.is_empty() || fold_line.is_some(),
         body,
         fold_line,
+        stops,
+        stop_lines,
+        folds: sk.folds,
+        fold_marks,
     }
 }
 
@@ -657,15 +1041,63 @@ pub(crate) fn block_height(model: &BlockModel, tab_height: u16) -> u16 {
     u16::try_from(wanted.min(cap)).unwrap_or(u16::MAX)
 }
 
+/// Body rows visible in a block `height` rows tall: all but the header and the
+/// pinned fold line.
+pub(crate) fn window_rows(model: &BlockModel, height: u16) -> usize {
+    let fold = usize::from(model.fold_line.is_some() && height > 1);
+    usize::from(height).saturating_sub(1 + fold)
+}
+
+/// The scroll offset that keeps the cursor's row in view by whole rows, starting
+/// from `offset`; the cursor row's expansion stays in view when it fits.
+pub(crate) fn follow_offset(
+    model: &BlockModel,
+    cursor_stop: Option<usize>,
+    offset: usize,
+    window: usize,
+) -> usize {
+    let total = model.body.len();
+    let max_offset = total.saturating_sub(window);
+    let mut offset = offset.min(max_offset);
+    let Some(line) = cursor_stop
+        .and_then(|stop| model.stop_lines.get(stop).copied().flatten())
+        .filter(|_| window > 0)
+    else {
+        return offset;
+    };
+    let next = model
+        .stop_lines
+        .iter()
+        .flatten()
+        .copied()
+        .find(|&l| l > line);
+    let end = next
+        .map_or(total.saturating_sub(1), |n| n - 1)
+        .min(line + window - 1);
+    if line < offset {
+        offset = line;
+    } else if end >= offset + window {
+        offset = end + 1 - window;
+    }
+    offset.min(max_offset)
+}
+
 /// Draw the block into `area` (its height is [`block_height`]): the header, the
 /// body rows from `offset`, and the fold line pinned as the last row. When body
-/// rows are clipped the header's right edge shows the DIM row range.
-pub(crate) fn render_owner_block(frame: &mut Frame, area: Rect, model: &BlockModel, offset: usize) {
+/// rows are clipped the header's right edge shows the DIM row range. The `cursor`
+/// row (focus is Owner) shows `> ` in its gutter, BOLD and Cyan (D-17).
+pub(crate) fn render_owner_block(
+    frame: &mut Frame,
+    area: Rect,
+    model: &BlockModel,
+    cursor: Option<Cursor>,
+    offset: usize,
+) {
     if area.height == 0 || area.width == 0 {
         return;
     }
     let fold = usize::from(model.fold_line.is_some() && area.height > 1);
-    let window = usize::from(area.height).saturating_sub(1 + fold);
+    let window = window_rows(model, area.height);
     let total = model.body.len();
     let offset = offset.min(total.saturating_sub(window));
     let hint = (total > window && window > 0).then(|| {
@@ -689,13 +1121,21 @@ pub(crate) fn render_owner_block(frame: &mut Frame, area: Rect, model: &BlockMod
         }
         _ => frame.render_widget(Paragraph::new(model.header.clone()), header_rect),
     }
+    let cursor_line = cursor.and_then(|c| model.stop_lines.get(c.stop).copied().flatten());
     if window > 0 {
         let rows: Vec<Line<'static>> = model
             .body
             .iter()
+            .enumerate()
             .skip(offset)
             .take(window)
-            .cloned()
+            .map(|(index, line)| {
+                let mut line = line.clone();
+                if cursor_line == Some(index) {
+                    mark_cursor_row(&mut line);
+                }
+                line
+            })
             .collect();
         let body_rect = Rect {
             y: area.y + 1,
@@ -710,7 +1150,195 @@ pub(crate) fn render_owner_block(frame: &mut Frame, area: Rect, model: &BlockMod
             height: 1,
             ..area
         };
-        frame.render_widget(Paragraph::new(line.clone()), rect);
+        let on_fold_line = cursor.is_some_and(|c| model.stops.get(c.stop) == Some(&Stop::FoldLine));
+        let line = if on_fold_line {
+            fold_line_with_cursor(
+                model,
+                line,
+                cursor.and_then(|c| c.fold),
+                usize::from(area.width),
+            )
+        } else {
+            line.clone()
+        };
+        frame.render_widget(Paragraph::new(line), rect);
+    }
+}
+
+fn cursor_style() -> Style {
+    Style::default()
+        .fg(Color::Cyan)
+        .add_modifier(Modifier::BOLD)
+        .remove_modifier(Modifier::DIM)
+}
+
+/// The cursor row: `> ` in the gutter and the whole row BOLD plus Cyan.
+fn mark_cursor_row(line: &mut Line<'static>) {
+    patch_line(line, cursor_style());
+    if let Some(first) = line.spans.first_mut() {
+        if first.content.as_ref() == "  " {
+            first.content = "> ".into();
+        }
+    }
+}
+
+/// The fold line behind a cursor: a `> ` gutter in front and the fold under the
+/// sub-cursor BOLD plus Cyan. The line keeps to `width` cells.
+fn fold_line_with_cursor(
+    model: &BlockModel,
+    line: &Line<'static>,
+    fold: Option<Fold>,
+    width: usize,
+) -> Line<'static> {
+    let mut spans = line.spans.clone();
+    let target = fold.and_then(|f| {
+        model
+            .fold_marks
+            .iter()
+            .find(|(candidate, _)| *candidate == f)
+            .map(|(_, index)| *index)
+    });
+    if let Some(span) = target.and_then(|index| spans.get_mut(index)) {
+        span.style = span.style.patch(cursor_style());
+    }
+    spans.insert(0, Span::styled("> ", cursor_style()));
+    fit_spans(spans, width)
+}
+
+// ---------------------------------------------------------------------------
+// Cursor and view-state operations (D-18, D-20)
+// ---------------------------------------------------------------------------
+
+/// A cursor movement over the stops.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Move {
+    Next,
+    Prev,
+    First,
+    Last,
+    /// By this many stops, clamped to the ends.
+    By(isize),
+}
+
+/// Where a [`Move`] ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Moved {
+    /// The cursor is on a stop (it may not have changed).
+    Within,
+    /// `Next` from the last stop: the cursor stays and focus leaves downward.
+    PastLast,
+    /// `Prev` from the first stop: the cursor stays and focus leaves upward.
+    PastFirst,
+}
+
+/// The index of the cursor in `stops`; a vanished stop resolves to its last
+/// index clamped to the list. `None` for an empty list.
+pub(crate) fn resolve_cursor(view: &OwnerBlockState, stops: &[Stop]) -> Option<usize> {
+    if stops.is_empty() {
+        return None;
+    }
+    let found = view
+        .cursor
+        .as_ref()
+        .and_then(|stop| stops.iter().position(|s| s == stop));
+    Some(found.unwrap_or_else(|| view.cursor_index.min(stops.len() - 1)))
+}
+
+fn set_cursor(view: &mut OwnerBlockState, stops: &[Stop], index: usize) {
+    view.cursor_index = index;
+    view.cursor = stops.get(index).cloned();
+}
+
+/// Move the cursor over `stops` (identities; the index is only remembered).
+pub(crate) fn move_cursor(view: &mut OwnerBlockState, stops: &[Stop], mv: Move) -> Moved {
+    let Some(at) = resolve_cursor(view, stops) else {
+        return Moved::Within;
+    };
+    let last = stops.len() - 1;
+    let to = match mv {
+        Move::Next if at == last => return Moved::PastLast,
+        Move::Prev if at == 0 => return Moved::PastFirst,
+        Move::Next => at + 1,
+        Move::Prev => at - 1,
+        Move::First => 0,
+        Move::Last => last,
+        Move::By(n) => at.saturating_add_signed(n).min(last),
+    };
+    set_cursor(view, stops, to);
+    Moved::Within
+}
+
+/// Enter the block on its last stop (D-20).
+pub(crate) fn enter_last(view: &mut OwnerBlockState, stops: &[Stop]) {
+    if !stops.is_empty() {
+        set_cursor(view, stops, stops.len() - 1);
+    }
+}
+
+/// The fold the fold line's sub-cursor rests on: the remembered one while it is
+/// selectable, else the first selectable fold.
+pub(crate) fn resolved_fold(view: &OwnerBlockState, folds: &[Fold]) -> Option<Fold> {
+    view.fold_cursor
+        .filter(|f| folds.contains(f))
+        .or_else(|| folds.first().copied())
+}
+
+/// Toggle the group under the cursor, or, on the fold line, the fold under the
+/// sub-cursor. Only view state changes. Returns whether anything toggled.
+pub(crate) fn toggle(view: &mut OwnerBlockState, folds: &[Fold]) -> bool {
+    match view.cursor.clone() {
+        Some(Stop::Row(key)) => {
+            if !view.expanded.remove(&key) {
+                view.expanded.insert(key);
+            }
+            true
+        }
+        Some(Stop::FoldLine) => match resolved_fold(view, folds) {
+            Some(fold) => {
+                if !view.open_folds.remove(&fold) {
+                    view.open_folds.insert(fold);
+                }
+                view.fold_cursor = Some(fold);
+                true
+            }
+            None => false,
+        },
+        None => false,
+    }
+}
+
+/// Move the fold sub-cursor to the next or previous selectable fold (Todos is
+/// not one); it stays at the ends.
+pub(crate) fn fold_step(view: &mut OwnerBlockState, folds: &[Fold], forward: bool) {
+    let Some(current) = resolved_fold(view, folds) else {
+        view.fold_cursor = None;
+        return;
+    };
+    let at = folds.iter().position(|f| *f == current).unwrap_or(0);
+    let to = if forward {
+        (at + 1).min(folds.len() - 1)
+    } else {
+        at.saturating_sub(1)
+    };
+    view.fold_cursor = Some(folds[to]);
+}
+
+/// Bring the view state in line with a (possibly refreshed) digest: groups that
+/// vanished stop being expanded, folds that lost their content close, a cursor
+/// whose stop vanished falls to the nearest remaining index (D-18).
+pub(crate) fn clamp(view: &mut OwnerBlockState, digest: &OwnerDigest) {
+    let sk = skeleton(digest, view);
+    view.expanded.retain(|key| sk.keys.contains(key));
+    view.open_folds.retain(|fold| sk.folds.contains(fold));
+    // Closing a fold changes the stops: take them again.
+    let sk = skeleton(digest, view);
+    view.fold_cursor = resolved_fold(view, &sk.folds).filter(|_| view.fold_cursor.is_some());
+    match resolve_cursor(view, &sk.stops) {
+        Some(index) => set_cursor(view, &sk.stops, index),
+        None => {
+            view.cursor = None;
+            view.cursor_index = 0;
+        }
     }
 }
 
@@ -876,7 +1504,9 @@ mod tests {
     #[test]
     fn the_header_walks_the_five_rungs() {
         let digest = sample_owner_digest();
-        let at = |w: u16| text(&block_model("sample", "v2.2", &digest, w).header);
+        let at = |w: u16| {
+            text(&block_model("sample", "v2.2", &digest, &OwnerBlockState::default(), w).header)
+        };
         assert_eq!(
             at(140),
             "Owner \u{2500}\u{2500} sample \u{b7} v2.2 closes after: test 12 (ph 21 22 24) \u{b7} decide 1 (ph 26) \u{b7} unblock 5 (ph 20 23) \u{b7} fix 1 (ph 25) \u{b7} not built ph 27"
@@ -888,10 +1518,14 @@ mod tests {
         assert!(!dropped.contains("not built"), "{dropped}");
         assert!(dropped.contains("fix 1"), "{dropped}");
         for w in [21u16, 40, 75, 100, 139, 140] {
-            let header = block_model("sample", "v2.2", &digest, w).header;
+            let header =
+                block_model("sample", "v2.2", &digest, &OwnerBlockState::default(), w).header;
             assert!(header.width() <= usize::from(w), "{w}: {}", text(&header));
         }
-        assert!(text(&block_model("sample", "v2.2", &digest, 21).header).ends_with('\u{2026}'));
+        assert!(text(
+            &block_model("sample", "v2.2", &digest, &OwnerBlockState::default(), 21).header
+        )
+        .ends_with('\u{2026}'));
     }
 
     #[test]
@@ -913,13 +1547,15 @@ mod tests {
     #[test]
     fn a_blank_milestone_drops_its_part_and_no_clause_drops_closes_after() {
         let mut digest = sample_owner_digest();
-        let header = text(&block_model("sample", "  ", &digest, 200).header);
+        let header =
+            text(&block_model("sample", "  ", &digest, &OwnerBlockState::default(), 200).header);
         assert!(
             header.starts_with("Owner \u{2500}\u{2500} sample closes after:"),
             "{header}"
         );
         digest.closes_after = ClosesAfter::default();
-        let header = text(&block_model("sample", "v2.2", &digest, 200).header);
+        let header =
+            text(&block_model("sample", "v2.2", &digest, &OwnerBlockState::default(), 200).header);
         assert_eq!(header, "Owner \u{2500}\u{2500} sample \u{b7} v2.2");
     }
 
@@ -928,7 +1564,7 @@ mod tests {
         let digest = sample_owner_digest();
         let long = "x".repeat(300);
         for w in [21u16, 80, 120] {
-            let model = block_model(&long, &long, &digest, w);
+            let model = block_model(&long, &long, &digest, &OwnerBlockState::default(), w);
             assert!(model.header.width() <= usize::from(w));
         }
     }
@@ -936,12 +1572,18 @@ mod tests {
     #[test]
     fn the_height_follows_content_and_tab() {
         let digest = sample_owner_digest();
-        let model = block_model("sample", "v2.2", &digest, 120);
+        let model = block_model("sample", "v2.2", &digest, &OwnerBlockState::default(), 120);
         assert_eq!(block_height(&model, 11), 0);
         assert_eq!(block_height(&model, 12), 4);
         assert!(block_height(&model, 30) >= 1);
         assert!(block_height(&model, 30) <= 12);
-        let empty = block_model("sample", "v2.2", &OwnerDigest::default(), 120);
+        let empty = block_model(
+            "sample",
+            "v2.2",
+            &OwnerDigest::default(),
+            &OwnerBlockState::default(),
+            120,
+        );
         assert!(!empty.has_content);
         assert_eq!(block_height(&empty, 30), 0);
     }
@@ -957,11 +1599,11 @@ mod tests {
         digest.hidden.todos = 0;
         digest.hidden.todos_oldest_days = None;
         // Acknowledged groups still earn the Acknowledged fold (D-15).
-        let model = block_model("sample", "v2.2", &digest, 120);
+        let model = block_model("sample", "v2.2", &digest, &OwnerBlockState::default(), 120);
         assert!(model.body.is_empty());
         assert!(model.fold_line.is_some());
         digest.groups.retain(|g| g.lane == Lane::Deferred);
-        let model = block_model("sample", "v2.2", &digest, 120);
+        let model = block_model("sample", "v2.2", &digest, &OwnerBlockState::default(), 120);
         assert!(!model.has_content);
         assert_eq!(block_height(&model, 30), 0);
     }
@@ -969,7 +1611,7 @@ mod tests {
     #[test]
     fn the_rows_follow_the_inbox_order_and_phrases() {
         let digest = sample_owner_digest();
-        let model = block_model("sample", "v2.2", &digest, 140);
+        let model = block_model("sample", "v2.2", &digest, &OwnerBlockState::default(), 140);
         let rows: Vec<String> = model.body.iter().map(text).collect();
         assert_eq!(rows.len(), 8, "{rows:#?}");
         let tags: Vec<&str> = rows
@@ -1016,7 +1658,7 @@ mod tests {
     #[test]
     fn the_fold_line_names_the_three_folds() {
         let digest = sample_owner_digest();
-        let model = block_model("sample", "v2.2", &digest, 120);
+        let model = block_model("sample", "v2.2", &digest, &OwnerBlockState::default(), 120);
         let fold = text(model.fold_line.as_ref().unwrap());
         assert_eq!(
             fold,
@@ -1033,7 +1675,7 @@ mod tests {
         digest.hidden.todos_unreadable = true;
         digest.hidden.todos = 0;
         let fold = text(
-            block_model("s", "m", &digest, 120)
+            block_model("s", "m", &digest, &OwnerBlockState::default(), 120)
                 .fold_line
                 .as_ref()
                 .unwrap(),
@@ -1043,7 +1685,7 @@ mod tests {
         digest.hidden.todos_unreadable = false;
         digest.hidden.todos_oldest_days = None;
         let fold = text(
-            block_model("s", "m", &digest, 120)
+            block_model("s", "m", &digest, &OwnerBlockState::default(), 120)
                 .fold_line
                 .as_ref()
                 .unwrap(),
@@ -1051,7 +1693,7 @@ mod tests {
         assert!(!fold.contains("Todos"), "{fold}");
         digest.hidden.acknowledged_files = 1;
         let fold = text(
-            block_model("s", "m", &digest, 120)
+            block_model("s", "m", &digest, &OwnerBlockState::default(), 120)
                 .fold_line
                 .as_ref()
                 .unwrap(),
@@ -1063,7 +1705,9 @@ mod tests {
     fn the_fold_line_ladder_has_four_rungs() {
         let digest = sample_owner_digest();
         let at = |w: u16| {
-            let line = block_model("s", "m", &digest, w).fold_line.unwrap();
+            let line = block_model("s", "m", &digest, &OwnerBlockState::default(), w)
+                .fold_line
+                .unwrap();
             assert!(line.width() <= usize::from(w));
             text(&line)
         };
@@ -1086,12 +1730,12 @@ mod tests {
     #[test]
     fn has_content_matches_rows_or_fold() {
         for digest in [sample_owner_digest(), OwnerDigest::default()] {
-            let m = block_model("s", "m", &digest, 120);
+            let m = block_model("s", "m", &digest, &OwnerBlockState::default(), 120);
             assert_eq!(m.has_content, !m.body.is_empty() || m.fold_line.is_some());
         }
         let mut fold_only = OwnerDigest::default();
         fold_only.hidden.todos = 3;
-        let m = block_model("s", "m", &fold_only, 120);
+        let m = block_model("s", "m", &fold_only, &OwnerBlockState::default(), 120);
         assert!(m.has_content && m.body.is_empty());
         assert_eq!(block_height(&m, 30), 2);
     }
@@ -1110,7 +1754,7 @@ mod tests {
         }
         digest.closes_after.lane_phases.test = vec![long.clone(); 3];
         for w in [21u16, 40, 79, 80, 99, 100, 120] {
-            let model = block_model(&long, &long, &digest, w);
+            let model = block_model(&long, &long, &digest, &OwnerBlockState::default(), w);
             for line in model
                 .body
                 .iter()
@@ -1120,5 +1764,250 @@ mod tests {
                 assert!(line.width() <= usize::from(w), "{w}: {}", text(line));
             }
         }
+    }
+
+    fn view_with(keys: &[GroupKey]) -> OwnerBlockState {
+        let mut view = OwnerBlockState::default();
+        view.expanded.extend(keys.iter().cloned());
+        view
+    }
+
+    fn lines_of(model: &BlockModel) -> Vec<String> {
+        model.body.iter().map(text).collect()
+    }
+
+    fn key_for(digest: &OwnerDigest, phase: &str, lane: Lane) -> GroupKey {
+        let group = digest
+            .groups
+            .iter()
+            .find(|g| g.phase == phase && g.lane == lane && g.scope == Scope::Current)
+            .expect("group");
+        GroupKey::of(group)
+    }
+
+    #[test]
+    fn expanded_lines_omit_absent_parts_and_cap_items_and_gaps() {
+        use crate::state_reader::owner_items::OwnerGap;
+        let mut digest = sample_owner_digest();
+        let group = digest
+            .groups
+            .iter_mut()
+            .find(|g| g.phase == "24" && g.lane == Lane::Test)
+            .expect("24");
+        group.items[0].test = Some("7".to_owned());
+        group.items[0].why_human = Some("a device".to_owned());
+        group.items[1].blocked_by = Some("a build".to_owned());
+        group.items[2].gaps = (0..3)
+            .map(|n| OwnerGap {
+                name: format!("gap {n}"),
+                result: "failed".to_owned(),
+                reason: (n == 0).then(|| "slow".to_owned()),
+            })
+            .collect();
+        let key = key_for(&digest, "24", Lane::Test);
+        let model = block_model("s", "m", &digest, &view_with(&[key]), 120);
+        let lines = lines_of(&model);
+        let at = lines
+            .iter()
+            .position(|l| l.contains("clock-faces"))
+            .unwrap();
+        let rest: Vec<&str> = lines[at + 1..].iter().map(|l| l.trim_end()).collect();
+        assert_eq!(rest[0], "    7 check 0");
+        assert_eq!(rest[1], "       why: a device");
+        assert_eq!(rest[2], "    check 1");
+        assert_eq!(rest[3], "       blocked by: a build");
+        assert_eq!(rest[4], "    check 2");
+        assert_eq!(rest[5], "       gap: gap 0 (failed: slow)");
+        assert_eq!(rest[6], "       gap: gap 1 (failed)");
+        assert_eq!(rest[7], "       \u{2026} 1 more gaps");
+        assert_eq!(rest[8], "    check 3");
+        assert_eq!(rest[9], "    check 4");
+        assert_eq!(rest[10], "    \u{2026} 1 more");
+        assert_eq!(rest[11], "    file phases/24/24-UAT.md");
+        assert!(rest[12].contains("TEST"), "{rest:?}");
+        // Every expansion line but the items is DIM.
+        let detail = &model.body[at + 2];
+        assert!(detail.spans[0].style.add_modifier.contains(Modifier::DIM));
+        // A group with no items shows just its file.
+        let model = block_model(
+            "s",
+            "m",
+            &digest,
+            &view_with(&[key_for(&digest, "22", Lane::Test)]),
+            120,
+        );
+        let lines = lines_of(&model);
+        let at = lines.iter().position(|l| l.contains("notif-copy")).unwrap();
+        assert_eq!(lines[at + 1].trim_end(), "    file phases/22/22-UAT.md");
+    }
+
+    #[test]
+    fn a_blocked_row_expands_to_all_its_groups_and_files() {
+        let digest = sample_owner_digest();
+        let blocked = digest
+            .groups
+            .iter()
+            .find(|g| g.lane == Lane::Blocked)
+            .unwrap();
+        let key = GroupKey::aggregate(blocked);
+        let model = block_model(
+            "s",
+            "m",
+            &digest,
+            &view_with(std::slice::from_ref(&key)),
+            120,
+        );
+        let lines = lines_of(&model);
+        let at = lines.iter().position(|l| l.contains("BLOCKED")).unwrap();
+        let rest: Vec<&str> = lines[at + 1..].iter().map(|l| l.trim_end()).collect();
+        assert_eq!(&rest[..4], ["    a", "    b", "    c", "    d"]);
+        assert_eq!(rest[4], "    file phases/23/23-UAT.md");
+        // The sample's two groups share one path (a synthetic fixture), so one
+        // distinct file; a second path adds a second line.
+        let mut digest = digest;
+        for g in digest
+            .groups
+            .iter_mut()
+            .filter(|g| g.lane == Lane::Blocked && g.kind == Kind::Verification)
+        {
+            g.file = "phases/23/23-VERIFICATION.md".to_owned();
+        }
+        let model = block_model("s", "m", &digest, &view_with(&[key]), 120);
+        let lines = lines_of(&model);
+        let at = lines.iter().position(|l| l.contains("BLOCKED")).unwrap();
+        assert_eq!(lines[at + 5].trim_end(), "    file phases/23/23-UAT.md");
+        assert_eq!(
+            lines[at + 6].trim_end(),
+            "    file phases/23/23-VERIFICATION.md"
+        );
+    }
+
+    #[test]
+    fn stops_are_the_rows_then_the_fold_line_and_open_folds_add_theirs() {
+        let digest = sample_owner_digest();
+        let model = block_model("s", "m", &digest, &OwnerBlockState::default(), 120);
+        assert_eq!(model.stops.len(), 9);
+        assert_eq!(model.stops.last(), Some(&Stop::FoldLine));
+        assert_eq!(model.folds, [Fold::OldDebt, Fold::Acknowledged]);
+        assert_eq!(model.stop_lines.last(), Some(&None));
+        let mut view = OwnerBlockState::default();
+        view.open_folds.insert(Fold::OldDebt);
+        let model = block_model("s", "m", &digest, &view, 120);
+        let lines = lines_of(&model);
+        // Old debt: two milestone sub-headers and three rows, the rows are stops.
+        assert_eq!(model.stops.len(), 9 + 3);
+        assert!(lines.iter().any(|l| l.trim() == "v1.1"));
+        assert!(model
+            .fold_line
+            .as_ref()
+            .map(text)
+            .unwrap()
+            .starts_with("\u{25be} Old debt"));
+        // Open-fold rows follow the current rows, ahead of the pinned fold line.
+        assert!(lines[8].trim() == "v1.1", "{lines:#?}");
+    }
+
+    #[test]
+    fn fold_step_skips_todos_and_stays_at_the_ends() {
+        let folds = [Fold::OldDebt, Fold::Acknowledged];
+        let mut view = OwnerBlockState::default();
+        assert_eq!(resolved_fold(&view, &folds), Some(Fold::OldDebt));
+        fold_step(&mut view, &folds, true);
+        assert_eq!(view.fold_cursor, Some(Fold::Acknowledged));
+        fold_step(&mut view, &folds, true);
+        assert_eq!(view.fold_cursor, Some(Fold::Acknowledged));
+        fold_step(&mut view, &folds, false);
+        fold_step(&mut view, &folds, false);
+        assert_eq!(view.fold_cursor, Some(Fold::OldDebt));
+        // A fold that stopped being selectable falls back to the first.
+        view.fold_cursor = Some(Fold::Todos);
+        assert_eq!(resolved_fold(&view, &folds), Some(Fold::OldDebt));
+        fold_step(&mut view, &[], true);
+        assert_eq!(view.fold_cursor, None);
+    }
+
+    #[test]
+    fn toggle_flips_a_group_or_the_fold_under_the_sub_cursor() {
+        let digest = sample_owner_digest();
+        let sk = skeleton(&digest, &OwnerBlockState::default());
+        let mut view = OwnerBlockState::default();
+        enter_last(&mut view, &sk.stops);
+        assert_eq!(view.cursor, Some(Stop::FoldLine));
+        assert!(toggle(&mut view, &sk.folds));
+        assert!(view.open_folds.contains(&Fold::OldDebt));
+        assert!(toggle(&mut view, &sk.folds));
+        assert!(view.open_folds.is_empty());
+        move_cursor(&mut view, &sk.stops, Move::First);
+        assert!(toggle(&mut view, &sk.folds));
+        assert_eq!(view.expanded.len(), 1);
+        assert!(toggle(&mut view, &sk.folds));
+        assert!(view.expanded.is_empty());
+        assert!(!toggle(&mut OwnerBlockState::default(), &sk.folds));
+    }
+
+    #[test]
+    fn move_cursor_reports_the_ends_and_pages() {
+        let digest = sample_owner_digest();
+        let sk = skeleton(&digest, &OwnerBlockState::default());
+        let mut view = OwnerBlockState::default();
+        assert_eq!(
+            move_cursor(&mut view, &sk.stops, Move::Prev),
+            Moved::PastFirst
+        );
+        assert_eq!(move_cursor(&mut view, &sk.stops, Move::Last), Moved::Within);
+        assert_eq!(
+            move_cursor(&mut view, &sk.stops, Move::Next),
+            Moved::PastLast
+        );
+        assert_eq!(view.cursor, Some(Stop::FoldLine));
+        move_cursor(&mut view, &sk.stops, Move::By(-3));
+        assert_eq!(view.cursor_index, 5);
+        move_cursor(&mut view, &sk.stops, Move::By(100));
+        assert_eq!(view.cursor_index, sk.stops.len() - 1);
+        move_cursor(&mut view, &sk.stops, Move::By(-100));
+        assert_eq!(view.cursor_index, 0);
+        assert_eq!(move_cursor(&mut view, &[], Move::Next), Moved::Within);
+    }
+
+    #[test]
+    fn clamp_drops_vanished_groups_and_folds_and_pulls_the_cursor_in() {
+        let mut digest = sample_owner_digest();
+        let sk = skeleton(&digest, &OwnerBlockState::default());
+        let mut view = OwnerBlockState::default();
+        view.expanded.insert(key_for(&digest, "24", Lane::Test));
+        view.expanded.insert(key_for(&digest, "25", Lane::Fix));
+        view.open_folds.insert(Fold::Acknowledged);
+        view.fold_cursor = Some(Fold::Acknowledged);
+        move_cursor(&mut view, &sk.stops, Move::By(6));
+        assert!(matches!(&view.cursor, Some(Stop::Row(k)) if k.lane == "fix"));
+        digest
+            .groups
+            .retain(|g| g.lane != Lane::Fix && !g.acknowledged);
+        clamp(&mut view, &digest);
+        assert_eq!(view.expanded.len(), 1);
+        assert!(view.open_folds.is_empty());
+        assert_eq!(view.fold_cursor, Some(Fold::OldDebt));
+        // The cursor's group vanished: it sits on the same index in the new list.
+        let sk = skeleton(&digest, &view);
+        assert_eq!(view.cursor_index, 6);
+        assert_eq!(view.cursor.as_ref(), sk.stops.get(6));
+        // Everything gone: no cursor at all.
+        clamp(&mut view, &OwnerDigest::default());
+        assert_eq!(view.cursor, None);
+        assert_eq!(resolve_cursor(&view, &[]), None);
+    }
+
+    #[test]
+    fn the_scroll_window_follows_the_cursor_by_whole_rows() {
+        let digest = sample_owner_digest();
+        let model = block_model("s", "m", &digest, &OwnerBlockState::default(), 120);
+        assert_eq!(window_rows(&model, 5), 3);
+        assert_eq!(follow_offset(&model, Some(0), 5, 3), 0);
+        assert_eq!(follow_offset(&model, Some(7), 0, 3), 5);
+        assert_eq!(follow_offset(&model, Some(4), 5, 3), 4);
+        // The fold line is pinned: it never moves the window.
+        assert_eq!(follow_offset(&model, Some(8), 2, 3), 2);
+        // An offset past the end clamps.
+        assert_eq!(follow_offset(&model, None, 99, 3), 5);
     }
 }
