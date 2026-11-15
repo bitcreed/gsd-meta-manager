@@ -958,6 +958,10 @@ pub(crate) struct DetailRegions {
     /// The two Config scope labels (`Project`, `Global`), on the Config tab
     /// only (quick 260927-t3s, I-8).
     pub config_scope_tabs: Vec<ConfigScopeRegion>,
+    /// The Phases tab's Owner block, when drawn (IN-04). The block is
+    /// keyboard-only, so the wheel over it scrolls nothing rather than the phase
+    /// list below it.
+    pub owner_block: Option<Rect>,
 }
 
 /// One drawn Roadmap fold glyph: the two cells of its `"{glyph} "` span and
@@ -1130,9 +1134,14 @@ impl DetailRegions {
     /// pane; inside a text scroll pane it is that pane (quick 260926-kes);
     /// otherwise inside content but outside the sub-tab strip it is the
     /// content; anywhere else — the tab bar, the strip, the footer — nothing,
-    /// so the wheel never switches tabs ([inferred I-10]).
+    /// so the wheel never switches tabs ([inferred I-10]). The keyboard-only
+    /// Owner block is nothing too, so a wheel step over it neither scrolls the
+    /// phase list nor takes its focus away (IN-04).
     pub(crate) fn wheel_target(&self, column: u16, row: u16) -> WheelTarget {
         let at = ratatui::layout::Position::new(column, row);
+        if self.owner_block.is_some_and(|b| b.contains(at)) {
+            return WheelTarget::Nothing;
+        }
         if self.waves_pane.is_some_and(|p| p.contains(at)) {
             return WheelTarget::WavesPane;
         }
@@ -1266,6 +1275,7 @@ impl DetailScreen {
             dropdown: None,
             scroll_panes: Vec::new(),
             config_scope_tabs: Vec::new(),
+            owner_block: None,
         };
     }
 
@@ -1435,6 +1445,11 @@ impl DetailScreen {
             return ScreenAction::None;
         }
         switch_to_sub_view(&self.alias, target, ctx)
+    }
+
+    /// Record this frame's Owner block rect (IN-04).
+    fn record_owner_block(&self, block: Rect) {
+        self.regions.borrow_mut().owner_block = Some(block);
     }
 
     /// Record this frame's sub-tab strip rect.
@@ -7669,6 +7684,7 @@ impl DetailScreen {
                 let parts =
                     Layout::vertical([Constraint::Length(height), Constraint::Min(0)]).split(area);
                 owner_block::render_owner_block(frame, parts[0], &model, cursor, offset);
+                self.record_owner_block(parts[0]);
                 self.render_phases_body(frame, parts[1], ctx);
                 return;
             }
@@ -31295,6 +31311,7 @@ mod tests {
             dropdown: None,
             scroll_panes: Vec::new(),
             config_scope_tabs: Vec::new(),
+            owner_block: None,
         };
         assert_eq!(
             regions.click_target(3, 6),
@@ -36264,6 +36281,30 @@ mod tests {
         key(&mut screen, &mut ctx, KeyCode::Up);
         screen.handle_key(KeyCode::Char('?'), KeyModifiers::NONE, &mut ctx);
         assert_eq!(screen.focus, DetailFocus::Owner);
+    }
+
+    /// IN-04: the Owner block is keyboard-only, so a wheel step over it neither
+    /// moves the phase-list cursor nor takes the block's focus; below it the wheel
+    /// still scrolls the phase list.
+    #[test]
+    fn the_wheel_over_the_owner_block_scrolls_nothing() {
+        let mut ctx = owner_ctx(Some(sample()));
+        let mut screen = owner_screen(&ctx);
+        key(&mut screen, &mut ctx, KeyCode::Up);
+        assert_eq!(screen.focus, DetailFocus::Owner);
+        let block = screen.regions().owner_block.expect("the block was drawn");
+        let selected = ctx.view_cache[TEST_ALIAS].pipeline_selected;
+        for down in [true, false] {
+            let action = mouse_wheel(&mut screen, &mut ctx, block.x + 2, block.y + 1, down);
+            assert!(matches!(action, ScreenAction::None));
+            assert_eq!(screen.focus, DetailFocus::Owner, "down: {down}");
+            assert_eq!(ctx.view_cache[TEST_ALIAS].pipeline_selected, selected);
+        }
+        assert_eq!(
+            screen.regions().wheel_target(block.x + 2, block.bottom()),
+            WheelTarget::Content,
+            "the phase list below the block still takes the wheel"
+        );
     }
 
     /// WR-05: when a refresh leaves the focused block with nothing to stop on (only

@@ -358,7 +358,8 @@ line, footers and titles are labels, not controls; the phase names in the
 Roadmap detail pane's Needs / Unblocks / Parallel lines are not links (`h` /
 `l` follow them); the wheel over the Backlog list while its content pane is
 open does nothing; dialogs, the help overlay and text entry ignore the mouse;
-the Owner block on the Phases tab is keyboard-only (a click there selects nothing);
+the Owner block on the Phases tab is keyboard-only (a click there selects nothing and
+the wheel over it scrolls nothing);
 drag, right / middle click, hover and horizontal scroll are ignored.
 
 To start with mouse capture off, set `"mouse": false` under `preferences` in
