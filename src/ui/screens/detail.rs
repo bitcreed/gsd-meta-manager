@@ -841,6 +841,9 @@ pub struct DetailScreen {
     /// drawn): what the last frame drew, read by the keys and the footer so focus
     /// never enters an invisible block (36-04, D-20).
     owner_block_rows: Cell<u16>,
+    /// Whether the block the last frame drew has a cursor stop: only then does `↑`
+    /// enter it, so only then does the footer name it.
+    owner_block_stops: Cell<bool>,
     /// First visible body row of the Owner block, kept across frames so the
     /// window follows the cursor by whole rows. Render-written, as `waves_offset`
     /// is: the render cannot mutate the view cache.
@@ -1232,6 +1235,7 @@ impl DetailScreen {
             waves_offset: Cell::new(0),
             waves_viewport_rows: Cell::new(0),
             owner_block_rows: Cell::new(0),
+            owner_block_stops: Cell::new(false),
             owner_offset: Cell::new(0),
             owner_viewport_rows: Cell::new(0),
             focus: DetailFocus::Content,
@@ -6499,7 +6503,7 @@ impl Screen for DetailScreen {
                 footer_area.width,
                 ctx.experimental,
                 &keys,
-                self.owner_block_rows.get() > 0,
+                self.owner_block_rows.get() > 0 && self.owner_block_stops.get(),
             )
         };
         frame.render_widget(footer, footer_area);
@@ -7645,6 +7649,7 @@ impl DetailScreen {
     /// the tab is short, or a focused Waves pane owns the whole tab.
     fn render_pipeline_tab(&self, frame: &mut Frame, area: Rect, ctx: &AppContext) {
         self.owner_block_rows.set(0);
+        self.owner_block_stops.set(false);
         if let (Some(state), Some(digest)) = (
             ctx.project_states.get(&self.alias),
             ctx.owner_digest(&self.alias),
@@ -7664,6 +7669,7 @@ impl DetailScreen {
             }
             if height > 0 {
                 self.owner_block_rows.set(height);
+                self.owner_block_stops.set(!model.stops.is_empty());
                 let cursor = (self.focus == DetailFocus::Owner)
                     .then(|| owner_block::resolve_cursor(view, &model.stops))
                     .flatten()
@@ -36171,6 +36177,38 @@ mod tests {
         let action = screen.handle_key(code, KeyModifiers::NONE, ctx);
         owner_draw(screen, ctx);
         action
+    }
+
+    /// A block that draws only the non-selectable Todos fold has no cursor stop, so
+    /// the footer must not offer `[↑]owner` (UI review, Experience Design).
+    #[test]
+    fn the_footer_names_the_owner_block_only_when_it_has_a_stop() {
+        use crate::state_reader::owner_items::{Hidden, OwnerDigest};
+        let todos_only = OwnerDigest {
+            hidden: Hidden {
+                todos: 3,
+                todos_oldest_days: Some(5),
+                ..Hidden::default()
+            },
+            ..OwnerDigest::default()
+        };
+        let ctx = owner_ctx(Some(todos_only));
+        let screen = owner_screen(&ctx);
+        assert!(screen.owner_block_rows.get() > 0, "the Todos fold draws");
+        let drawn = owner_draw(&screen, &ctx);
+        let footer = drawn.lines().last().unwrap_or_default().to_owned();
+        assert!(footer.contains("tab bar"), "{footer}");
+        assert!(!footer.contains("owner"), "{footer}");
+        let ctx = owner_ctx(Some(sample()));
+        let screen = owner_screen(&ctx);
+        let drawn = owner_draw(&screen, &ctx);
+        let footer = drawn
+            .lines()
+            .rev()
+            .find(|l| l.contains("[\u{2191}]"))
+            .unwrap_or_default()
+            .to_owned();
+        assert!(footer.contains("owner"), "{footer}");
     }
 
     #[test]
