@@ -5,6 +5,11 @@
 //! rank and the `/y` filter, so none of them can disagree about what "owner
 //! work" means.
 //!
+//! One deliberate difference with the detail view (UI-SPEC, IN-03): the cell's
+//! `(+N old)` counts archived test, fix and decide items (D-08), while the Owner
+//! block's `Old debt (N)` also counts archived blocked items, as the CLI does.
+//! The help overlay and README say so, so the two numbers are not read as one.
+//!
 //! The `You` cell is a quiet text cell (report section 3, D-07): every span sets
 //! `Color::Reset` explicitly, because the dashboard row carries
 //! `fg(row_color)` and a bare span would inherit Red, Yellow or Green from it.

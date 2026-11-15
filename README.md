@@ -381,7 +381,7 @@ and shows at most two lanes for the current milestone, always in the order `deci
 | `decide 1 · fix 2 ph` | 1 ruling waits on you; 2 phases need code |
 | `fix 2` | open debug investigations count as fixes but not as phases |
 | `·` | nothing waits on you (blocked work is not yours to act on) |
-| `(+3 old)` | 3 more items in archived milestones |
+| `(+3 old)` | 3 more test, decide or fix items in archived milestones (the detail Old debt fold also counts blocked ones, so it can be higher) |
 | (blank) | the owner data has not loaded yet |
 
 A summary line under the table adds the totals over the visible rows
