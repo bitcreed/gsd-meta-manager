@@ -557,6 +557,9 @@ struct Grid {
     command_w: usize,
 }
 
+/// The least the command column may shrink to where the width shows it.
+const COMMAND_FLOOR_W: usize = 12;
+
 fn grid_for(rows: &[RowCells], width: usize) -> Grid {
     let show_age = width >= AGE_MIN_W;
     let longest = |f: fn(&RowCells) -> usize| rows.iter().map(f).max().unwrap_or(0);
@@ -588,11 +591,19 @@ fn grid_for(rows: &[RowCells], width: usize) -> Grid {
     let fixed = |phase_w: usize, phrase_w: usize| {
         2 + TAG_W + 1 + phase_w + 2 + 2 + CHECKS_W + 2 + phrase_w + age_part
     };
+    // The command column keeps a floor wherever it is shown, so a long phrase
+    // cannot starve it to nothing.
+    let command_floor = if command_nat > 0 {
+        2 + command_nat.min(COMMAND_FLOOR_W)
+    } else {
+        0
+    };
+    let needed = NAME_MIN_W + command_floor;
     // The phrase gives way first (down to 12), then the phase cell (down to 5).
-    while fixed(phase_w, phrase_w) + NAME_MIN_W > width && phrase_w > 12 {
+    while fixed(phase_w, phrase_w) + needed > width && phrase_w > 12 {
         phrase_w -= 1;
     }
-    while fixed(phase_w, phrase_w) + NAME_MIN_W > width && phase_w > 5 {
+    while fixed(phase_w, phrase_w) + needed > width && phase_w > 5 {
         phase_w -= 1;
     }
     let avail = width.saturating_sub(fixed(phase_w, phrase_w));
@@ -1566,6 +1577,26 @@ mod tests {
         let row = rows.iter().find(|r| r.contains("FIX")).expect("fix row");
         assert_eq!(row.matches("7 checks").count(), 1, "{row}");
         assert!(row.contains("gaps found"), "{row}");
+    }
+
+    #[test]
+    fn the_command_column_is_not_starved_at_exactly_one_hundred_columns() {
+        let mut digest = sample_owner_digest();
+        // A long phrase on one row used to take every cell the command needed.
+        let fix = digest
+            .groups
+            .iter_mut()
+            .find(|g| g.lane == Lane::Fix && g.phase == "25")
+            .expect("fix group");
+        fix.counts.failed = 12;
+        fix.counts.gaps = 12;
+        fix.counts.unreadable = 3;
+        let model = block_model("sample", "v2.2", &digest, &OwnerBlockState::default(), 100);
+        let rows: Vec<String> = model.body.iter().map(text).collect();
+        let test_row = rows.iter().find(|r| r.contains("ph 21")).expect("test row");
+        assert!(test_row.contains("/gsd-"), "{test_row}");
+        let fix_row = rows.iter().find(|r| r.contains("FIX")).expect("fix row");
+        assert!(fix_row.contains("/gsd-pl"), "{fix_row}");
     }
 
     #[test]
