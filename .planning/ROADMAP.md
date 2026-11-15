@@ -197,7 +197,7 @@ Plans:
 **Depends on:** Phase 35
 **Verification:** Automatic buffer snapshots plus human UAT
 **UI hint**: yes
-**Plans:** 3/4 plans executed
+**Plans:** 4/4 plans executed
 
 Plans:
 **Wave 1**
@@ -210,7 +210,7 @@ Plans:
 - [x] 36-03-PLAN.md — Owner block drawn on the detail Phases tab: shared `closes after` wording, header, group rows, collapsed folds line, zero-row gate, escape coverage
 
 **Wave 4** *(blocked on Wave 3 completion)*
-- [ ] 36-04-PLAN.md — Owner block interaction and docs: `DetailFocus::Owner`, expandable groups, opening folds, refresh-safe cursor and scroll, footers, help and README (block part)
+- [x] 36-04-PLAN.md — Owner block interaction and docs: `DetailFocus::Owner`, expandable groups, opening folds, refresh-safe cursor and scroll, footers, help and README (block part)
 
 **Success Criteria** (what must be TRUE):
 1. At 120 columns the owner can read off the dashboard which three projects to test first; the `You` cell shows at most two lanes in fixed order for the current milestone, a dim `·` when clean, and is hidden below 100 columns.
