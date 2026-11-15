@@ -103,7 +103,7 @@ checks the owner can run today (report section 1).
 - [x] **OWN-21**: `v` runs the group's command through `multiplexer::launch` (focusing an existing
   live session instead when one exists); the argv is built only from the validated phase token and
   workstream name via `ExecArgv::new`.
-- [ ] **OWN-22**: `A` launches gsd-core's `gsd-tools audit-open acknowledge …` after a confirm popup (D7);
+- [x] **OWN-22**: `A` launches gsd-core's `gsd-tools audit-open acknowledge …` after a confirm popup (D7);
   the app itself writes nothing into the project. The row disappears on the next watcher refresh.
 - [ ] **OWN-23**: Help overlay and README ("Owner inbox" section plus the `inbox` schema) updated.
 
@@ -187,7 +187,7 @@ Deferred (report section 6):
 | OWN-19 | Phase 36 | Pending |
 | OWN-20 | Phase 37 | Pending |
 | OWN-21 | Phase 37 | Complete |
-| OWN-22 | Phase 37 | Pending |
+| OWN-22 | Phase 37 | Complete |
 | OWN-23 | Phase 37 | Pending |
 
 **Coverage:**

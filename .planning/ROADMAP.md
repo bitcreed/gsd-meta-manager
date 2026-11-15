@@ -227,7 +227,7 @@ Plans:
 **Depends on:** Phase 36
 **Verification:** Automatic snapshots plus human UAT
 **UI hint**: yes
-**Plans:** 5/7 plans executed
+**Plans:** 6/7 plans executed
 
 Plans:
 **Wave 1**
@@ -246,7 +246,7 @@ Plans:
 - [x] 37-05-PLAN.md — Drill-in: `o` read-only viewer, expand, folds, scroll, `g` to the project on the same group, D-21 `o`
 
 **Wave 6** *(blocked on Wave 5 completion)*
-- [ ] 37-06-PLAN.md — `A` via gsd-core `audit-open acknowledge` after a confirm popup: env-scrubbed bounded child, guard edits, oracle round trip, D-21 `A`
+- [x] 37-06-PLAN.md — `A` via gsd-core `audit-open acknowledge` after a confirm popup: env-scrubbed bounded child, guard edits, oracle round trip, D-21 `A`
 
 **Wave 7** *(blocked on Wave 6 completion)*
 - [ ] 37-07-PLAN.md — `y` copy checklist (native tool or OSC 52), D-21 `y`, full footer, help overlay and README Owner inbox section
