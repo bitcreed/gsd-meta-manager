@@ -638,17 +638,36 @@ fn grid_for_inbox(all: &[Cells], width: usize) -> Grid {
             grid.command_w = natural;
         }
     }
+    // Phase identity outranks the other cells: the phase text must stay whole, so
+    // the alias and the name give way before the phase cell does, and the phase
+    // cell gives up workstream-name cells (never the phase number) before it
+    // drops below the floor of 5.
+    let floor = |keep: usize| {
+        all.iter()
+            .map(|c| c.cells.phase_cell_floor(keep))
+            .max()
+            .unwrap_or(0)
+            .clamp(5, 18)
+    };
+    // (alias floor, name floor, workstream-name cells the phase cell keeps)
+    let steps: [(usize, usize, usize); 4] = [(10, 16, 12), (8, 12, 8), (8, 8, 4), (8, 8, 2)];
     while grid.total() > width && grid.phrase_w > 12 {
         grid.phrase_w -= 1;
     }
+    for (alias_min, name_min, keep) in steps {
+        while grid.total() > width && grid.alias_w > alias_min {
+            grid.alias_w -= 1;
+        }
+        while grid.total() > width && grid.name_w > name_min {
+            grid.name_w -= 1;
+        }
+        let min_phase = floor(keep).min(grid.phase_w);
+        while grid.total() > width && grid.phase_w > min_phase {
+            grid.phase_w -= 1;
+        }
+    }
     while grid.total() > width && grid.phase_w > 5 {
         grid.phase_w -= 1;
-    }
-    while grid.total() > width && grid.alias_w > 8 {
-        grid.alias_w -= 1;
-    }
-    while grid.total() > width && grid.name_w > 8 {
-        grid.name_w -= 1;
     }
     grid
 }
@@ -2152,6 +2171,78 @@ mod tests {
         ctx
     }
 
+    /// A real-shaped synthetic fleet: one long alias, many workstream rows with
+    /// long names, decimal phases and long titles. No real project text.
+    pub(crate) fn realistic_fleet_ctx() -> AppContext {
+        let aliases = [
+            "alpha-lab",
+            "beta-platform-research-lab",
+            "gamma-app",
+            "delta-svc",
+            "epsilon-ui",
+        ];
+        let mut ctx = ctx_with_aliases(&aliases);
+        for (i, alias) in aliases.iter().enumerate() {
+            let mut groups = Vec::new();
+            for n in 0..6 {
+                let mut g = test_group(
+                    "42",
+                    "long-descriptive-phase-title-number-one",
+                    3,
+                    true,
+                    4,
+                    false,
+                );
+                g.workstream = Some(format!("v0.{} P4{}", 10 + i, n));
+                if n % 3 == 2 {
+                    g.phase = "42.1".to_owned();
+                    g.file = "phases/42.1/42.1-UAT.md".to_owned();
+                }
+                g.file = format!("{}-{n}", g.file);
+                groups.push(g);
+            }
+            if i == 1 {
+                let mut fix = group(G {
+                    lane: Lane::Fix,
+                    kind: Kind::Verification,
+                    phase: "7",
+                    name: "another-rather-long-fix-title",
+                    checks: 2,
+                    closes: false,
+                    age: Some(9),
+                    stale: false,
+                });
+                fix.counts.failed = 2;
+                groups.push(fix);
+            }
+            owe(&mut ctx, alias, digest(groups));
+        }
+        ctx
+    }
+
+    /// Phase numbers of every workstream row stay readable at 100 and 80 columns.
+    #[test]
+    fn phase_identity_survives_on_a_realistic_fleet() {
+        let ctx = realistic_fleet_ctx();
+        for (w, h) in [(100u16, 30u16), (80, 24)] {
+            let text = render_inbox_text(&ctx, w, h);
+            let rule = text
+                .iter()
+                .position(|l| l.starts_with('\u{2500}'))
+                .expect("rule");
+            let rows = group_rows(&text);
+            assert!(rows.len() >= 6, "{w}: {}", text.join("\n"));
+            for y in rows {
+                let l = &text[y];
+                assert!(y < rule);
+                assert!(
+                    l.contains(" ph 42") || l.contains(" ph 7"),
+                    "{w}x{h} row lost its phase number: {l:?}"
+                );
+            }
+        }
+    }
+
     /// The identities of the rows as `alias phase` in order, for the ordering tests.
     fn order(rows: &[InboxRow]) -> Vec<String> {
         rows.iter()
@@ -2637,12 +2728,13 @@ mod tests {
         assert_eq!((g79.age_w, g79.name_w), (0, 18));
         assert_eq!(g79.phrase_w, 25);
         assert_eq!(g79.total(), 79);
-        // Narrower: phrase to 12, phase to 5, alias to 8, then the name; always
+        // Narrower: phrase to 12, alias and name, the phase cell only down to its
+        // phase text (fix 37-UI-REVIEW #1), then 5 as the last resort; always
         // within W, the name floored at 8.
         let g60 = grid(60);
         assert_eq!(g60.phrase_w, 12);
         assert!(g60.total() <= 60 && g60.name_w >= 8 && g60.name_w < 18);
-        assert_eq!((g60.alias_w, g60.phase_w), (8, 5));
+        assert_eq!((g60.alias_w, g60.phase_w), (8, 7));
         let g20 = grid(20);
         assert_eq!(
             (g20.phrase_w, g20.phase_w, g20.alias_w, g20.name_w),

@@ -288,6 +288,23 @@ impl RowCells {
     pub(crate) fn phase_cell_width(&self) -> usize {
         cells(&self.ws_prefix) + cells(&self.phase)
     }
+
+    /// The narrowest phase cell that still shows the whole phase text, keeping at
+    /// most `keep` cells of the workstream name (`phase_cell` cuts the name
+    /// first). Never wider than `phase_cell_width`.
+    pub(crate) fn phase_cell_floor(&self, keep: usize) -> usize {
+        let name = self
+            .ws_prefix
+            .strip_prefix("ws ")
+            .and_then(|p| p.strip_suffix(' '));
+        match name {
+            Some(name) => {
+                let kept = cells(name).min(keep.max(2));
+                (cells("ws ") + kept + 1 + cells(&self.phase)).min(self.phase_cell_width())
+            }
+            None => self.phase_cell_width(),
+        }
+    }
 }
 
 fn lane_tag(lane: Lane) -> &'static str {
