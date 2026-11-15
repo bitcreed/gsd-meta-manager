@@ -20,6 +20,7 @@
 //! whatever row now sits at the old index.
 
 use super::detail::{fit_cells, fit_spans, shown};
+use super::driver::DRY_RUN_LOADING;
 use super::owner::{owner_numbers, OWNER_SEP};
 use super::owner_actions;
 use super::owner_block::{self, blanks, cells, pad, GroupKey, RowCells, RowSrc};
@@ -222,6 +223,66 @@ pub(crate) fn resolve_cursor(view: &InboxViewState, rows: &[InboxRow]) -> Option
         _ => None,
     };
     Some(found.unwrap_or_else(|| view.cursor_index.min(rows.len() - 1)))
+}
+
+/// After a digest update (a watcher refresh, a first fill, a failure) move the
+/// cursor's identity onto what resolves now (D-10, SC3): the group itself when it
+/// survives, else the row that took its place (the next one), else the previous
+/// one, else nothing. Without a cursor there is nothing to anchor: the first row
+/// is implicit.
+pub(crate) fn reanchor(ctx: &mut AppContext) {
+    if ctx.inbox_view.cursor.is_none() {
+        return;
+    }
+    let rows = visible_rows(ctx);
+    match resolve_cursor(&ctx.inbox_view, &rows) {
+        Some(at) => {
+            ctx.inbox_view.cursor = Some(InboxStop::Row(rows[at].key()));
+            ctx.inbox_view.cursor_index = at;
+        }
+        None => {
+            ctx.inbox_view.cursor = None;
+            ctx.inbox_view.cursor_index = 0;
+        }
+    }
+}
+
+/// What the screen knows about one registered project's owner data (37-04,
+/// coordinator directive 2): absent data is either still expected or never
+/// coming, and is never counted as clean.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DigestState {
+    /// A digest is held.
+    Loaded,
+    /// No digest yet; the first fill or the reparse is still expected.
+    Loading,
+    /// No digest and none will come: the reader panicked, or the folder or
+    /// `.planning/` is gone.
+    Unreadable,
+}
+
+pub(crate) fn digest_state(ctx: &AppContext, alias: &str) -> DigestState {
+    if ctx.owner_digest(alias).is_some() {
+        DigestState::Loaded
+    } else if ctx.owner_state_unavailable(alias) || ctx.owner_digest_failed.contains(alias) {
+        DigestState::Unreadable
+    } else {
+        DigestState::Loading
+    }
+}
+
+/// How many registered projects are in each [`DigestState`]: `(loaded, loading,
+/// unreadable)`.
+fn state_counts(ctx: &AppContext) -> (usize, usize, usize) {
+    let (mut loaded, mut loading, mut unreadable) = (0, 0, 0);
+    for alias in ctx.config.projects.keys() {
+        match digest_state(ctx, alias) {
+            DigestState::Loaded => loaded += 1,
+            DigestState::Loading => loading += 1,
+            DigestState::Unreadable => unreadable += 1,
+        }
+    }
+    (loaded, loading, unreadable)
 }
 
 // ---------------------------------------------------------------------------
@@ -490,8 +551,25 @@ fn scroll_for(offset: usize, plan: &[BodyItem], cursor_row: usize, height: usize
     offset.min(plan.len().saturating_sub(height))
 }
 
-/// The header numbers over every registered project that has a digest (D-02).
-fn header_left(ctx: &AppContext, with_projects: bool) -> String {
+/// The header's left text (D-02) over every registered project that has a digest.
+/// The degenerate states have their own words: no project, or no digest at all.
+fn header_left(ctx: &AppContext, with_projects: bool, with_blocked: bool) -> String {
+    let count = ctx.config.projects.len();
+    let projects = format!(
+        "{count} {}",
+        if count == 1 { "project" } else { "projects" }
+    );
+    let (loaded, loading, _) = state_counts(ctx);
+    if count == 0 {
+        return format!(" Owner inbox \u{2500}\u{2500} {projects}");
+    }
+    if loaded == 0 {
+        return if loading > 0 {
+            " Owner inbox \u{2500}\u{2500} loading".to_owned()
+        } else {
+            format!(" Owner inbox \u{2500}\u{2500} {projects}")
+        };
+    }
     let (mut test, mut decide, mut fix, mut blocked) = (0usize, 0usize, 0usize, 0usize);
     let mut phases_only = true;
     for alias in ctx.config.projects.keys() {
@@ -505,11 +583,6 @@ fn header_left(ctx: &AppContext, with_projects: bool) -> String {
         phases_only &= numbers.fix_is_phases;
         blocked += digest.blocked;
     }
-    let count = ctx.config.projects.len();
-    let projects = format!(
-        "{count} {}",
-        if count == 1 { "project" } else { "projects" }
-    );
     let fix_text = if phases_only {
         format!("fix {fix} {}", if fix == 1 { "phase" } else { "phases" })
     } else {
@@ -520,14 +593,20 @@ fn header_left(ctx: &AppContext, with_projects: bool) -> String {
     } else {
         String::new()
     };
+    let blocked = if with_blocked {
+        format!("{OWNER_SEP}blocked {blocked}")
+    } else {
+        String::new()
+    };
     format!(
         " Owner inbox \u{2500}\u{2500} {projects}test {test}{OWNER_SEP}decide {decide}\
-         {OWNER_SEP}{fix_text}{OWNER_SEP}blocked {blocked}"
+         {OWNER_SEP}{fix_text}{blocked}"
     )
 }
 
-/// The lane keys on the right: `[n]` BOLD, the name plain.
-fn lane_keys(short: bool) -> Vec<Span<'static>> {
+/// The lane keys on the right: `[n]` BOLD, the name plain; the active token
+/// REVERSED (D-03).
+fn lane_keys(short: bool, active: Option<usize>) -> Vec<Span<'static>> {
     let bold = Style::default().add_modifier(Modifier::BOLD);
     let names: [(&str, &str, &str); 5] = [
         ("[1]", "Test", "T"),
@@ -541,26 +620,87 @@ fn lane_keys(short: bool) -> Vec<Span<'static>> {
         if index > 0 {
             spans.push(Span::raw(" "));
         }
-        spans.push(Span::styled((*key).to_owned(), bold));
-        spans.push(Span::raw((if short { *abbr } else { *long }).to_owned()));
+        let mark = if active == Some(index) {
+            Modifier::REVERSED
+        } else {
+            Modifier::empty()
+        };
+        spans.push(Span::styled((*key).to_owned(), bold.add_modifier(mark)));
+        spans.push(Span::styled(
+            (if short { *abbr } else { *long }).to_owned(),
+            Style::default().add_modifier(mark),
+        ));
     }
     spans
 }
 
-fn header_line(ctx: &AppContext, width: usize) -> Line<'static> {
-    // First cut of the ladder (37-04 completes it): the project count and the long
-    // lane keys give way before the numbers do.
-    for (with_projects, short) in [(true, false), (true, true), (false, true)] {
-        let left = header_left(ctx, with_projects);
-        let right = lane_keys(short);
-        let (left_w, right_w) = (cells(&left), right.iter().map(Span::width).sum::<usize>());
-        if left_w + 2 + right_w <= width {
-            let mut spans = vec![Span::raw(left), Span::raw(blanks(width - left_w - right_w))];
-            spans.extend(right);
+/// The header (UI-SPEC "Header ladder", six rungs): the first rung that fits
+/// wins. A rung first drops the DIM ` · {U} unreadable` clause, then
+/// ` · {M} loading`, before the next rung is tried.
+fn header_line(ctx: &AppContext, width: usize, active: Option<usize>) -> Line<'static> {
+    let (_, loading, unreadable) = state_counts(ctx);
+    let clause = |n: usize, word: &str| {
+        (n > 0).then(|| Span::styled(format!("{OWNER_SEP}{n} {word}"), dim()))
+    };
+    let loading_clause = clause(loading, "loading");
+    let unreadable_clause = clause(unreadable, "unreadable");
+    let levels: [Vec<Span<'static>>; 3] = [
+        loading_clause
+            .iter()
+            .chain(unreadable_clause.iter())
+            .cloned()
+            .collect(),
+        loading_clause.iter().cloned().collect(),
+        Vec::new(),
+    ];
+    // (project count, blocked clause, lane keys: Some(short) or none)
+    let rungs: [(bool, bool, Option<bool>); 5] = [
+        (true, true, Some(false)),
+        (false, true, Some(false)),
+        (false, true, Some(true)),
+        (false, false, Some(true)),
+        (false, false, None),
+    ];
+    for (with_projects, with_blocked, keys) in rungs {
+        let left = header_left(ctx, with_projects, with_blocked);
+        let right = keys.map(|short| lane_keys(short, active));
+        let right_w = right
+            .as_ref()
+            .map_or(0, |r| r.iter().map(Span::width).sum::<usize>());
+        for clauses in &levels {
+            let left_w = cells(&left) + clauses.iter().map(Span::width).sum::<usize>();
+            let fits = match &right {
+                Some(_) => left_w + 2 + right_w <= width,
+                None => left_w <= width,
+            };
+            if !fits {
+                continue;
+            }
+            let mut spans = vec![Span::raw(left)];
+            spans.extend(clauses.iter().cloned());
+            if let Some(right) = right {
+                spans.push(Span::raw(blanks(width - left_w - right_w)));
+                spans.extend(right);
+            }
             return Line::from(spans);
         }
     }
-    fit_spans(vec![Span::raw(header_left(ctx, false))], width)
+    fit_spans(vec![Span::raw(header_left(ctx, false, false))], width)
+}
+
+/// The body copy while no row is listed (UI-SPEC "Empty, loading and error
+/// states"), all DIM. Absent data is `loading` or `unreadable`, never clean.
+fn empty_copy(ctx: &AppContext) -> String {
+    let (loaded, loading, unreadable) = state_counts(ctx);
+    if ctx.config.projects.is_empty() {
+        " No projects registered. Press Esc, then a to add one.".to_owned()
+    } else if loaded == 0 && loading > 0 {
+        format!(" {DRY_RUN_LOADING}")
+    } else if loaded == 0 {
+        format!(" No project could be read ({unreadable} unreadable)")
+    } else {
+        " No owner work".to_owned()
+    }
 }
 
 fn footer_line(ctx: &AppContext, width: usize) -> Line<'static> {
@@ -600,6 +740,24 @@ pub struct InboxScreen {
 }
 
 impl InboxScreen {
+    /// The rule row and the footer under the body.
+    fn render_pinned(
+        &self,
+        frame: &mut Frame,
+        ctx: &AppContext,
+        rule: Rect,
+        footer: Rect,
+        width: usize,
+    ) {
+        if rule.height > 0 {
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled("\u{2500}".repeat(width), dim()))),
+                rule,
+            );
+        }
+        frame.render_widget(Paragraph::new(footer_line(ctx, width)), footer);
+    }
+
     pub fn new() -> Self {
         Self {
             viewport: Cell::new(0),
@@ -736,9 +894,21 @@ impl Screen for InboxScreen {
             Constraint::Length(1),
         ])
         .areas(area);
-        frame.render_widget(Paragraph::new(header_line(ctx, width)), header);
+        frame.render_widget(Paragraph::new(header_line(ctx, width, None)), header);
 
         let rows = visible_rows(ctx);
+        if rows.is_empty() {
+            self.viewport.set(usize::from(body.height));
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    fit_cells(&empty_copy(ctx), width),
+                    dim(),
+                ))),
+                body,
+            );
+            self.render_pinned(frame, ctx, rule, footer, width);
+            return;
+        }
         let every: Vec<Cells> = inbox_rows(ctx)
             .iter()
             .filter_map(|row| cells_of(ctx, row))
@@ -765,14 +935,7 @@ impl Screen for InboxScreen {
             });
         }
         frame.render_widget(Paragraph::new(lines), body);
-
-        if rule.height > 0 {
-            frame.render_widget(
-                Paragraph::new(Line::from(Span::styled("\u{2500}".repeat(width), dim()))),
-                rule,
-            );
-        }
-        frame.render_widget(Paragraph::new(footer_line(ctx, width)), footer);
+        self.render_pinned(frame, ctx, rule, footer, width);
     }
 
     fn name(&self) -> &str {
@@ -1255,7 +1418,7 @@ mod tests {
     #[test]
     fn the_header_sums_every_registered_project() {
         let ctx = inbox_fleet_ctx();
-        let left = header_left(&ctx, true);
+        let left = header_left(&ctx, true, true);
         assert!(left.contains("9 projects"), "{left}");
         assert!(left.contains("test 13"), "{left}");
         assert!(left.contains("decide 3"), "{left}");
@@ -1283,6 +1446,175 @@ mod tests {
                 );
             }
         }
+    }
+
+    // --- loading, unreadable and the live cursor (37-04) --------------------
+
+    /// The x of `needle` in terminal row `y` of a rendered buffer.
+    fn x_of(text: &[String], y: usize, needle: &str) -> usize {
+        let at = text[y]
+            .find(needle)
+            .unwrap_or_else(|| panic!("no {needle:?} in {:?}", text[y]));
+        text[y][..at].chars().count()
+    }
+
+    #[test]
+    fn a_failed_digest_reads_unreadable_not_loading() {
+        let mut ctx = inbox_fleet_ctx();
+        // One project is still loading, one will never load.
+        ctx.owner_digests.remove("holly-pics");
+        ctx.owner_digests.remove("iris-gate");
+        ctx.owner_digest_failed.insert("iris-gate".to_owned());
+        assert_eq!(digest_state(&ctx, "holly-pics"), DigestState::Loading);
+        assert_eq!(digest_state(&ctx, "iris-gate"), DigestState::Unreadable);
+        assert_eq!(digest_state(&ctx, "dune-app"), DigestState::Loaded);
+        let text = render_inbox_text(&ctx, 160, 30);
+        assert!(
+            text[0].contains("blocked 0 \u{b7} 1 loading \u{b7} 1 unreadable"),
+            "{:?}",
+            text[0]
+        );
+        let buffer = draw(&ctx, 160, 30);
+        let x = x_of(&text, 0, "1 loading");
+        let y = x_of(&text, 0, "1 unreadable");
+        for at in [x, x + 4, y, y + 8] {
+            let cell = buffer.cell((at as u16, 0)).expect("cell");
+            assert!(cell.modifier.contains(Modifier::DIM), "x={at}");
+        }
+        // The failed project is not counted as loading, and the numbers stay
+        // plain: a project with no digest is never counted as clean.
+        assert!(!text[0].contains("2 loading"));
+        // The unreadable clause is the first thing a narrow header drops.
+        let narrow = render_inbox_text(&ctx, 100, 30);
+        assert!(narrow[0].contains("1 loading"), "{:?}", narrow[0]);
+        assert!(!narrow[0].contains("unreadable"), "{:?}", narrow[0]);
+        let tight = render_inbox_text(&ctx, 90, 30);
+        assert!(!tight[0].contains("loading"), "{:?}", tight[0]);
+        // A project whose `.planning/` is gone is unreadable without a mark.
+        let mut gone = inbox_fleet_ctx();
+        gone.project_states.get_mut("dune-app").unwrap().presence =
+            crate::state_reader::ProjectPresence::NoPlanning;
+        assert_eq!(digest_state(&gone, "dune-app"), DigestState::Unreadable);
+        let text = render_inbox_text(&gone, 160, 30);
+        assert!(text[0].contains("1 unreadable"), "{:?}", text[0]);
+    }
+
+    #[test]
+    fn no_project_could_be_read() {
+        let mut ctx = ctx_with_aliases(&["alder-api", "birch-cli"]);
+        ctx.owner_digest_failed.insert("alder-api".to_owned());
+        ctx.owner_digest_failed.insert("birch-cli".to_owned());
+        let text = render_inbox_text(&ctx, 100, 30);
+        assert!(text[0].contains("2 projects"), "{:?}", text[0]);
+        assert!(text[0].contains("2 unreadable"), "{:?}", text[0]);
+        assert!(!text[0].contains("loading"), "{:?}", text[0]);
+        assert_eq!(text[2].trim(), "No project could be read (2 unreadable)");
+        let buffer = draw(&ctx, 100, 30);
+        assert!(buffer
+            .cell((3, 2))
+            .expect("cell")
+            .modifier
+            .contains(Modifier::DIM));
+    }
+
+    #[test]
+    fn every_digest_missing_reads_loading() {
+        let ctx = ctx_with_aliases(&["alder-api", "birch-cli"]);
+        let text = render_inbox_text(&ctx, 100, 30);
+        assert!(text[0].starts_with(" Owner inbox \u{2500}\u{2500} loading"));
+        assert!(
+            !text[0].contains("test "),
+            "no numbers while nothing loaded"
+        );
+        assert_eq!(text[2].trim(), "Loading...");
+        // One failed, one still loading: still `Loading...`, the failure is named.
+        let mut ctx = ctx;
+        ctx.owner_digest_failed.insert("birch-cli".to_owned());
+        let text = render_inbox_text(&ctx, 100, 30);
+        assert!(text[0].contains("1 unreadable"), "{:?}", text[0]);
+        assert_eq!(text[2].trim(), "Loading...");
+    }
+
+    /// Select the row of `alias` in `ctx`, as a key press would.
+    fn select(ctx: &mut AppContext, alias: &str) {
+        let rows = visible_rows(ctx);
+        let at = rows
+            .iter()
+            .position(|r| r.alias == alias)
+            .expect("a row for the alias");
+        ctx.inbox_view.cursor = Some(InboxStop::Row(rows[at].key()));
+        ctx.inbox_view.cursor_index = at;
+    }
+
+    fn cursor_alias(ctx: &AppContext) -> Option<String> {
+        let rows = visible_rows(ctx);
+        resolve_cursor(&ctx.inbox_view, &rows).map(|at| rows[at].alias.clone())
+    }
+
+    #[test]
+    fn selection_falls_to_the_next_row_then_previous_then_none() {
+        let empty = |ctx: &mut AppContext, alias: &str| {
+            ctx.owner_digests
+                .insert(alias.to_owned(), OwnerDigest::default());
+            reanchor(ctx);
+        };
+        // The middle row vanishes: the next one takes the cursor.
+        let mut ctx = inbox_fleet_ctx();
+        select(&mut ctx, "alder-api");
+        empty(&mut ctx, "alder-api");
+        assert_eq!(cursor_alias(&ctx).as_deref(), Some("birch-cli"));
+        // It is a real identity now: a later refresh that reorders keeps it.
+        assert_eq!(
+            ctx.inbox_view.cursor,
+            Some(InboxStop::Row(visible_rows(&ctx)[1].key()))
+        );
+        // The last row vanishes: the previous one.
+        let mut ctx = inbox_fleet_ctx();
+        let rows = visible_rows(&ctx);
+        let last = rows.last().expect("rows");
+        ctx.inbox_view.cursor = Some(InboxStop::Row(last.key()));
+        ctx.inbox_view.cursor_index = rows.len() - 1;
+        let alias = last.alias.clone();
+        empty(&mut ctx, &alias);
+        let rows = visible_rows(&ctx);
+        assert_eq!(
+            cursor_alias(&ctx).as_deref(),
+            Some(rows.last().expect("rows").alias.as_str())
+        );
+        // Every row vanishes: no cursor, no stop, no panic.
+        let mut ctx = inbox_fleet_ctx();
+        select(&mut ctx, "dune-app");
+        for alias in ctx.config.projects.keys().cloned().collect::<Vec<_>>() {
+            empty(&mut ctx, &alias);
+        }
+        assert_eq!(ctx.inbox_view.cursor, None);
+        assert_eq!(cursor_alias(&ctx), None);
+        let text = render_inbox_text(&ctx, 100, 30);
+        assert_eq!(text[2].trim(), "No owner work");
+    }
+
+    #[test]
+    fn a_refresh_for_one_project_keeps_the_cursor_on_its_group() {
+        let mut ctx = inbox_fleet_ctx();
+        select(&mut ctx, "birch-cli");
+        // Project B (alder-api) gets one more check and a new age: its rows
+        // change, A's group keeps the cursor, wherever it now sits.
+        let mut changed = ctx.owner_digests["alder-api"].clone();
+        changed.groups[0].counts.checks = 9;
+        changed.groups[0].age_days = Some(400);
+        ctx.owner_digests.insert("alder-api".to_owned(), changed);
+        reanchor(&mut ctx);
+        assert_eq!(cursor_alias(&ctx).as_deref(), Some("birch-cli"));
+        // Updates in any order, an empty stop list and a 0x0 area never panic.
+        for alias in ["dune-app", "alder-api", "birch-cli", "cedar-web"] {
+            ctx.owner_digests
+                .insert(alias.to_owned(), OwnerDigest::default());
+            reanchor(&mut ctx);
+            let _ = render_inbox_text(&ctx, 100, 30);
+            let _ = render_inbox_text(&ctx, 0, 0);
+        }
+        // fir-sync, lime-bug and elm-shop still hold rows; the cursor sits on one.
+        assert!(cursor_alias(&ctx).is_some());
     }
 
     // --- keys -------------------------------------------------------------

@@ -1371,6 +1371,14 @@ pub struct AppContext {
     ///   (WR-02), and pruned with the other alias-keyed maps in
     ///   `App::prune_driver_maps` as the backstop.
     pub owner_digests: HashMap<String, crate::state_reader::owner_items::OwnerDigest>,
+    /// Aliases whose owner digest cannot arrive until a new trigger (37-04,
+    /// coordinator directive 2): the reader panicked in the reparse task
+    /// (`ProjectStateLoaded { digest: None }`) or in the first fill
+    /// (`Action::OwnerDigestFailed`). The inbox shows them as `unreadable`
+    /// instead of `loading`, so absent data is never counted as clean and never
+    /// loads forever; there is no timer. A later digest for the alias clears the
+    /// entry and `App::prune_driver_maps` drops an unregistered alias.
+    pub owner_digest_failed: std::collections::HashSet<String>,
     /// The Owner inbox's view state (37-03, D-10): the cursor identity and the
     /// scroll offset. It lives on the context rather than on `InboxScreen` so a
     /// popup pushed above the inbox can repaint it as its background, and `i`
@@ -1917,8 +1925,9 @@ impl AppContext {
         let planning_dir = project_path.join(".planning");
         let stale_days = self.config.preferences.owner_stale_days();
         tokio::task::spawn_blocking(move || {
-            // A reader panic logs and sends nothing: the row keeps no digest,
-            // which reads as not loaded, never as clean (D-09, WR-04).
+            // A reader panic logs and reports the failure: the row keeps no
+            // digest, which reads as unreadable, never as clean and never as
+            // loading forever (D-09, WR-04, 37-04).
             let Some(digest) = Self::guarded_owner_digest(&alias, || {
                 crate::state_reader::owner_items::read_owner_digest(
                     &planning_dir,
@@ -1927,6 +1936,7 @@ impl AppContext {
                     stale_days,
                 )
             }) else {
+                let _ = tx.send(crate::action::Action::OwnerDigestFailed { alias });
                 return;
             };
             let _ = tx.send(crate::action::Action::OwnerDigestLoaded {
@@ -2603,6 +2613,7 @@ mod tests {
             event_tx: None,
             reparse_dispatches: 0,
             owner_digests: HashMap::new(),
+            owner_digest_failed: std::collections::HashSet::new(),
             inbox_view: inbox::InboxViewState::default(),
             agent_views: HashMap::new(),
             agents_scan_in_flight: false,

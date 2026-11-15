@@ -981,6 +981,7 @@ impl App {
             event_tx: None,
             reparse_dispatches: 0,
             owner_digests: HashMap::new(),
+            owner_digest_failed: std::collections::HashSet::new(),
             inbox_view: crate::ui::screens::inbox::InboxViewState::default(),
             agent_views: HashMap::new(),
             agents_scan_in_flight: false,
@@ -2991,16 +2992,26 @@ impl App {
                 // no digest at all, so it never reads as clean (WR-01, D-09).
                 // `None` is a reader panic (WR-04): the numbers are unknown, so
                 // the old digest goes too rather than show a past moment.
-                let digest_changed = match digest {
+                // A stored digest clears the alias's unreadable mark; a missing one
+                // on a storable alias sets it (37-04: it will not arrive).
+                let mut digest_changed = match digest {
                     Some(digest) if self.ctx.owner_digest_storable(&alias) => {
                         let differs = self.ctx.owner_digests.get(&alias) != Some(&*digest);
                         self.ctx.owner_digests.insert(alias.clone(), *digest);
-                        differs
+                        differs | self.ctx.owner_digest_failed.remove(&alias)
+                    }
+                    None if self.ctx.owner_digest_storable(&alias) => {
+                        let removed = self.ctx.owner_digests.remove(&alias).is_some();
+                        self.ctx.owner_digest_failed.insert(alias.clone()) | removed
                     }
                     _ => self.ctx.owner_digests.remove(&alias).is_some(),
                 };
+                if !self.ctx.owner_digest_storable(&alias) {
+                    digest_changed |= self.ctx.owner_digest_failed.remove(&alias);
+                }
                 if changed || digest_changed {
                     self.ctx.recompute_filtered_aliases();
+                    crate::ui::screens::inbox::reanchor(&mut self.ctx);
                     self.needs_redraw = true;
                 }
                 if changed {
@@ -3708,8 +3719,21 @@ impl App {
                 if self.ctx.owner_digest_storable(&alias)
                     && !self.ctx.owner_digests.contains_key(&alias)
                 {
+                    self.ctx.owner_digest_failed.remove(&alias);
                     self.ctx.owner_digests.insert(alias, *digest);
                     self.ctx.recompute_filtered_aliases();
+                    crate::ui::screens::inbox::reanchor(&mut self.ctx);
+                    self.needs_redraw = true;
+                }
+            }
+            // The first fill's reader panicked (37-04): the digest will not
+            // arrive, so the inbox says `unreadable` instead of `loading`. Only
+            // a storable alias without a digest enters the set (T-37-12).
+            Action::OwnerDigestFailed { alias } => {
+                if self.ctx.owner_digest_storable(&alias)
+                    && !self.ctx.owner_digests.contains_key(&alias)
+                    && self.ctx.owner_digest_failed.insert(alias)
+                {
                     self.needs_redraw = true;
                 }
             }
@@ -3781,6 +3805,11 @@ impl App {
         self.ctx
             .owner_digests
             .retain(|alias, _| registered.contains_key(alias));
+        // The unreadable marks follow their digests: an unregistered alias has
+        // nothing to be unreadable about (37-04).
+        self.ctx
+            .owner_digest_failed
+            .retain(|alias| registered.contains_key(alias));
         // `archive_cache` was keyed by MILESTONE when this line first retained
         // it by alias, so every archive went on every pass and the Archive
         // tab's drill-in flipped to `Loading...` five seconds after it loaded
@@ -5686,6 +5715,307 @@ mod tests {
         assert_ne!(first_cell, second_cell, "the You cell text changes");
     }
 
+    /// The project-wide state of `alias` as the inbox reads it.
+    fn inbox_state(app: &App, alias: &str) -> crate::ui::screens::inbox::DigestState {
+        crate::ui::screens::inbox::digest_state(&app.ctx, alias)
+    }
+
+    /// 37-04, directive 2: a first fill whose reader panicked reads `unreadable`
+    /// (not loading forever), and any later digest clears it.
+    #[tokio::test]
+    async fn a_failed_owner_digest_reads_unreadable_until_one_arrives() {
+        use crate::state_reader::owner_items::OwnerDigest;
+        use crate::ui::screens::inbox::DigestState;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, _rx) = obs_app(dir.path());
+        assert_eq!(inbox_state(&app, OBS_ALIAS), DigestState::Loading);
+
+        app.needs_redraw = false;
+        app.update(Action::OwnerDigestFailed {
+            alias: OBS_ALIAS.to_string(),
+        });
+        assert!(app.ctx.owner_digest_failed.contains(OBS_ALIAS));
+        assert_eq!(inbox_state(&app, OBS_ALIAS), DigestState::Unreadable);
+        assert!(
+            app.needs_redraw,
+            "the header changes, so the screen redraws"
+        );
+
+        // An alias the registry does not hold never enters the set (T-37-12).
+        app.update(Action::OwnerDigestFailed {
+            alias: "gone".to_string(),
+        });
+        assert!(!app.ctx.owner_digest_failed.contains("gone"));
+
+        // A digest from the first fill clears it.
+        app.update(Action::OwnerDigestLoaded {
+            alias: OBS_ALIAS.to_string(),
+            digest: Box::new(OwnerDigest::default()),
+        });
+        assert!(app.ctx.owner_digest_failed.is_empty());
+        assert_eq!(inbox_state(&app, OBS_ALIAS), DigestState::Loaded);
+
+        // A failure after a digest is held does not hide the digest.
+        app.update(Action::OwnerDigestFailed {
+            alias: OBS_ALIAS.to_string(),
+        });
+        assert_eq!(inbox_state(&app, OBS_ALIAS), DigestState::Loaded);
+    }
+
+    /// 37-04: a reparse whose reader panicked (`digest: None`) marks the project
+    /// unreadable; the next reparse that delivers a digest clears it. A project
+    /// whose folder is gone is unreadable through its presence, not the set.
+    #[tokio::test]
+    async fn a_panicked_reparse_marks_the_project_unreadable() {
+        use crate::state_reader::owner_items::OwnerDigest;
+        use crate::ui::screens::inbox::DigestState;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, _rx) = obs_app(dir.path());
+        let state = crate::state_reader::ProjectState::default();
+        app.ctx
+            .owner_digests
+            .insert(OBS_ALIAS.to_string(), OwnerDigest::default());
+        assert_eq!(inbox_state(&app, OBS_ALIAS), DigestState::Loaded);
+
+        app.update(Action::ProjectStateLoaded {
+            alias: OBS_ALIAS.to_string(),
+            state: Box::new(state.clone()),
+            digest: None,
+        });
+        assert!(!app.ctx.owner_digests.contains_key(OBS_ALIAS));
+        assert_eq!(inbox_state(&app, OBS_ALIAS), DigestState::Unreadable);
+
+        app.update(Action::ProjectStateLoaded {
+            alias: OBS_ALIAS.to_string(),
+            state: Box::new(state.clone()),
+            digest: Some(Box::new(OwnerDigest::default())),
+        });
+        assert!(app.ctx.owner_digest_failed.is_empty());
+        assert_eq!(inbox_state(&app, OBS_ALIAS), DigestState::Loaded);
+
+        let mut gone = state;
+        gone.presence = crate::state_reader::ProjectPresence::FolderMissing;
+        app.update(Action::ProjectStateLoaded {
+            alias: OBS_ALIAS.to_string(),
+            state: Box::new(gone),
+            digest: None,
+        });
+        assert_eq!(inbox_state(&app, OBS_ALIAS), DigestState::Unreadable);
+        assert!(
+            app.ctx.owner_digest_failed.is_empty(),
+            "the presence says it; the set holds only storable aliases"
+        );
+    }
+
+    /// 37-04: removing a project prunes its unreadable mark.
+    #[tokio::test]
+    async fn unregistering_prunes_the_failed_set() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, _rx) = obs_app(dir.path());
+        app.update(Action::OwnerDigestFailed {
+            alias: OBS_ALIAS.to_string(),
+        });
+        assert!(app.ctx.owner_digest_failed.contains(OBS_ALIAS));
+        app.ctx.config.projects.remove(OBS_ALIAS);
+        app.prune_driver_maps();
+        assert!(app.ctx.owner_digest_failed.is_empty());
+    }
+
+    /// A temp project with two pending UAT phases (`01-alpha`, `02-beta`).
+    fn two_phase_project(root: &std::path::Path) {
+        copy_owner_fixture("uat-pending", root);
+        let uat = std::fs::read_to_string(root.join(".planning/phases/01-alpha/01-UAT.md"))
+            .expect("read the UAT");
+        let beta = root.join(".planning/phases/02-beta");
+        std::fs::create_dir_all(&beta).expect("create phase dir");
+        std::fs::write(beta.join("02-UAT.md"), uat.replace("Phase 01", "Phase 02"))
+            .expect("write the second UAT");
+        // The reader walks the roadmap's phases: list the second one too.
+        let roadmap = root.join(".planning/ROADMAP.md");
+        let mut text = std::fs::read_to_string(&roadmap).expect("read the roadmap");
+        text = text.replace(
+            "### Phase 01: Alpha",
+            "- [ ] **Phase 02: Beta** - the second phase of this fixture\n\n### Phase 01: Alpha",
+        );
+        text.push_str("\n### Phase 02: Beta\n\n**Goal**: a second row\n**Depends on**: Phase 01\n");
+        std::fs::write(&roadmap, text).expect("write the roadmap");
+    }
+
+    /// Rewrite the UAT of `phase_dir` and let the watcher refresh land.
+    async fn refresh_after(
+        app: &mut App,
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<Action>,
+        root: &std::path::Path,
+        file: &str,
+        edit: impl FnOnce(&str) -> String,
+    ) {
+        let path = root.join(file);
+        let text = std::fs::read_to_string(&path).expect("read the file");
+        std::fs::write(&path, edit(&text)).expect("rewrite the file");
+        app.ctx.last_refresh.remove(OBS_ALIAS);
+        app.update(planning_change(root));
+        deliver_reparse(app, rx).await;
+    }
+
+    /// The phases of the visible inbox rows, in order.
+    fn inbox_phases(app: &App) -> Vec<String> {
+        crate::ui::screens::inbox::visible_rows(&app.ctx)
+            .iter()
+            .map(|row| row.src.group.phase.clone())
+            .collect()
+    }
+
+    /// Put the inbox cursor on the row of `phase`.
+    fn cursor_on(app: &mut App, phase: &str) {
+        use crate::ui::screens::inbox::{visible_rows, InboxStop};
+        let rows = visible_rows(&app.ctx);
+        let at = rows
+            .iter()
+            .position(|row| row.src.group.phase == phase)
+            .expect("a row for the phase");
+        app.ctx.inbox_view.cursor = Some(InboxStop::Row(rows[at].key()));
+        app.ctx.inbox_view.cursor_index = at;
+    }
+
+    /// The phase of the row the cursor resolves to now.
+    fn cursor_phase(app: &App) -> Option<String> {
+        use crate::ui::screens::inbox::{resolve_cursor, visible_rows};
+        let rows = visible_rows(&app.ctx);
+        resolve_cursor(&app.ctx.inbox_view, &rows).map(|at| rows[at].src.group.phase.clone())
+    }
+
+    /// SC3 / D-10: a UAT flipped to passed leaves the inbox on the next watcher
+    /// refresh, and a cursor resting on it moves to the next row (else the
+    /// previous).
+    #[tokio::test]
+    async fn sc3_a_passed_uat_leaves_the_inbox_and_the_cursor_moves_on() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path();
+        two_phase_project(root);
+        let (mut app, mut rx) = obs_app(root);
+        app.update(planning_change(root));
+        deliver_reparse(&mut app, &mut rx).await;
+        assert_eq!(inbox_phases(&app), ["01", "02"], "both phases wait");
+
+        let pass_all = |text: &str| {
+            text.replace("result: [pending]", "result: pass")
+                .replace("result: pending", "result: pass")
+        };
+        // The cursor rests on the first row; it passes: the cursor moves to the
+        // row that took its place, the next one.
+        cursor_on(&mut app, "01");
+        refresh_after(
+            &mut app,
+            &mut rx,
+            root,
+            ".planning/phases/01-alpha/01-UAT.md",
+            pass_all,
+        )
+        .await;
+        let after = inbox_phases(&app);
+        assert!(!after.contains(&"01".to_owned()), "{after:?}");
+        assert_eq!(cursor_phase(&app).as_deref(), Some("02"));
+
+        // The last row passes: the cursor moves to the previous row, which is
+        // none here, so the inbox is empty and there is no cursor at all.
+        refresh_after(
+            &mut app,
+            &mut rx,
+            root,
+            ".planning/phases/02-beta/02-UAT.md",
+            pass_all,
+        )
+        .await;
+        assert!(inbox_phases(&app).is_empty());
+        assert_eq!(cursor_phase(&app), None);
+        assert_eq!(app.ctx.inbox_view.cursor, None);
+    }
+
+    /// SC3: the last of two rows passes and the cursor falls back to the previous.
+    #[tokio::test]
+    async fn sc3_the_cursor_falls_back_to_the_previous_row_when_the_last_one_passes() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path();
+        two_phase_project(root);
+        let (mut app, mut rx) = obs_app(root);
+        app.update(planning_change(root));
+        deliver_reparse(&mut app, &mut rx).await;
+        cursor_on(&mut app, "02");
+        refresh_after(
+            &mut app,
+            &mut rx,
+            root,
+            ".planning/phases/02-beta/02-UAT.md",
+            |text| {
+                text.replace("result: [pending]", "result: pass")
+                    .replace("result: pending", "result: pass")
+            },
+        )
+        .await;
+        assert_eq!(inbox_phases(&app), ["01"]);
+        assert_eq!(cursor_phase(&app).as_deref(), Some("01"));
+    }
+
+    /// SC3: a file that gains a matching `audit_acknowledged` marker leaves the
+    /// inbox the same way; stripping the marker brings it back.
+    #[tokio::test]
+    async fn sc3_an_acknowledged_file_leaves_the_inbox() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path();
+        copy_owner_fixture("uat-ack-match", root);
+        let uat = root.join(".planning/phases/01-alpha/01-UAT.md");
+        let acknowledged = std::fs::read_to_string(&uat).expect("read the UAT");
+        // The same file without its marker: the owner has not acknowledged it.
+        let bare: String = {
+            let mut skip = false;
+            acknowledged
+                .lines()
+                .filter(|line| {
+                    if line.starts_with("audit_acknowledged:") {
+                        skip = true;
+                        return false;
+                    }
+                    if skip && line.starts_with("  ") {
+                        return false;
+                    }
+                    skip = false;
+                    true
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+                + "\n"
+        };
+        std::fs::write(&uat, &bare).expect("strip the marker");
+        let (mut app, mut rx) = obs_app(root);
+        app.update(planning_change(root));
+        deliver_reparse(&mut app, &mut rx).await;
+        assert_eq!(inbox_phases(&app), ["01"], "unacknowledged work is listed");
+        cursor_on(&mut app, "01");
+
+        // The marker arrives (a `/gsd-audit-uat` acknowledgement): the row goes.
+        refresh_after(
+            &mut app,
+            &mut rx,
+            root,
+            ".planning/phases/01-alpha/01-UAT.md",
+            |_| acknowledged.clone(),
+        )
+        .await;
+        assert!(inbox_phases(&app).is_empty(), "{:?}", inbox_phases(&app));
+        assert_eq!(cursor_phase(&app), None);
+
+        // Without the marker it is back, and the cursor can rest on it again.
+        refresh_after(
+            &mut app,
+            &mut rx,
+            root,
+            ".planning/phases/01-alpha/01-UAT.md",
+            |_| bare.clone(),
+        )
+        .await;
+        assert_eq!(inbox_phases(&app), ["01"]);
+    }
+
     /// WR-06: a write the 500 ms dedup drops is not lost. The alias is marked and
     /// the first tick after its window re-parses it, so the digest catches the
     /// last write of a burst (a UAT row flipped right after the previous parse).
@@ -6433,6 +6763,7 @@ mod tests {
                 alias.to_string(),
                 crate::state_reader::owner_items::OwnerDigest::default(),
             );
+            app.ctx.owner_digest_failed.insert(alias.to_string());
             // Keyed alias THEN milestone. This fixture used to insert the alias
             // as the map's only key, which is how it passed while the real map
             // was keyed by milestone and the prune emptied it every pass.
@@ -6458,6 +6789,7 @@ mod tests {
             last_refresh,
             archive_cache,
             owner_digests,
+            owner_digest_failed,
 
             // Alias-keyed but deliberately NOT pruned, with the reason on the
             // field: `project_states` is the registry's own mirror and is
@@ -6508,6 +6840,8 @@ mod tests {
         assert!(!last_refresh.contains_key(GONE), "last_refresh leaked");
         assert!(!archive_cache.has_alias(GONE), "archive_cache leaked");
         assert!(!owner_digests.contains_key(GONE), "owner_digests leaked");
+        assert!(!owner_digest_failed.contains(GONE), "failed set leaked");
+        assert!(owner_digest_failed.contains(OBS_ALIAS));
 
         // The control arm for all of them at once: the registered alias kept
         // everything, so none of the assertions above passed because the prune

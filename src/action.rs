@@ -194,6 +194,13 @@ pub enum Action {
         alias: String,
         digest: Box<OwnerDigest>,
     },
+    /// The owner reader for `alias` could not produce a digest and will not
+    /// without a new trigger (37-04, coordinator directive 2): the digest-only
+    /// first fill panicked. The inbox shows the project as unreadable instead of
+    /// loading forever. Plain data, so `Action` stays `Clone`.
+    OwnerDigestFailed {
+        alias: String,
+    },
     /// The user confirmed stopping launcher run `run_id` of `alias` from the Driver
     /// tab (28-07, D-11).
     ///
@@ -511,6 +518,11 @@ mod tests {
             digest: Box::new(OwnerDigest::default()),
         };
         assert!(matches!(filled.clone(), Action::OwnerDigestLoaded { .. }));
+
+        let failed = Action::OwnerDigestFailed {
+            alias: "proj".to_string(),
+        };
+        assert!(matches!(failed.clone(), Action::OwnerDigestFailed { .. }));
 
         let steered = Action::DriverSteered {
             alias: "proj".to_string(),
