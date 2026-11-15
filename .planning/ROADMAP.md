@@ -227,7 +227,7 @@ Plans:
 **Depends on:** Phase 36
 **Verification:** Automatic snapshots plus human UAT
 **UI hint**: yes
-**Plans:** 6/7 plans executed
+**Plans:** 7/7 plans executed
 
 Plans:
 **Wave 1**
@@ -249,7 +249,7 @@ Plans:
 - [x] 37-06-PLAN.md — `A` via gsd-core `audit-open acknowledge` after a confirm popup: env-scrubbed bounded child, guard edits, oracle round trip, D-21 `A`
 
 **Wave 7** *(blocked on Wave 6 completion)*
-- [ ] 37-07-PLAN.md — `y` copy checklist (native tool or OSC 52), D-21 `y`, full footer, help overlay and README Owner inbox section
+- [x] 37-07-PLAN.md — `y` copy checklist (native tool or OSC 52), D-21 `y`, full footer, help overlay and README Owner inbox section
 
 **Success Criteria** (what must be TRUE):
 1. From the dashboard, `i`, `j`, `v` starts `/gsd-verify-work N` in the right project in 3 keys or fewer, through `multiplexer::launch` (focusing an existing session when one is live), with the argv built only from the validated phase token and workstream name via `ExecArgv::new`.

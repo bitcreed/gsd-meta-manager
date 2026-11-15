@@ -97,7 +97,7 @@ checks the owner can run today (report section 1).
 - [ ] **OWN-19**: The detail Phases tab shows the Owner block of report section 3.2 (no new tab, D5)
   with expandable groups, the `closes after` header, and collapsed Old debt / Acknowledged / Todos
   folds.
-- [ ] **OWN-20**: Inbox screen (`i` on the dashboard) per report section 3.3: lane filters `1-4`/`a`,
+- [x] **OWN-20**: Inbox screen (`i` on the dashboard) per report section 3.3: lane filters `1-4`/`a`,
   the ordering rule (closes-a-phase, then milestone progress, then age), expand, `g` go to project,
   `o` open file, `y` copy checklist. Legible at 100x30.
 - [x] **OWN-21**: `v` runs the group's command through `multiplexer::launch` (focusing an existing
@@ -105,7 +105,7 @@ checks the owner can run today (report section 1).
   workstream name via `ExecArgv::new`.
 - [x] **OWN-22**: `A` launches gsd-core's `gsd-tools audit-open acknowledge …` after a confirm popup (D7);
   the app itself writes nothing into the project. The row disappears on the next watcher refresh.
-- [ ] **OWN-23**: Help overlay and README ("Owner inbox" section plus the `inbox` schema) updated.
+- [x] **OWN-23**: Help overlay and README ("Owner inbox" section plus the `inbox` schema) updated.
 
 ## Decisions adopted from the report (section 7)
 
@@ -185,10 +185,10 @@ Deferred (report section 6):
 | OWN-17 | Phase 36 | Pending |
 | OWN-18 | Phase 36 | Pending |
 | OWN-19 | Phase 36 | Pending |
-| OWN-20 | Phase 37 | Pending |
+| OWN-20 | Phase 37 | Complete |
 | OWN-21 | Phase 37 | Complete |
 | OWN-22 | Phase 37 | Complete |
-| OWN-23 | Phase 37 | Pending |
+| OWN-23 | Phase 37 | Complete |
 
 **Coverage:**
 - v2.5.0 requirements: 23 total
