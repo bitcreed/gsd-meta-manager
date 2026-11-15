@@ -434,7 +434,7 @@ plain. `A` asks first, then runs
 node <gsd-tools.cjs> audit-open acknowledge --category <uat_gaps|verification_gaps|context_questions|debug_sessions> --milestone <version> <--phase DIR --file NAME | --slug STEM> [--archived-milestone V] [--ws NAME]
 ```
 
-in the project directory (`node <gsd-tools.cjs>` is `gsd-tools` itself when that is on `PATH`). gsd-core writes `audit_acknowledged` into that one file's
+in the project directory. `<gsd-tools.cjs>` comes from your own install only (`${CLAUDE_CONFIG_DIR:-~/.claude}/gsd-core`, then `${CODEX_HOME:-~/.codex}/gsd-core`, then an absolute `PATH` entry named `gsd-tools`); a `gsd-tools.cjs` the project itself ships is never run by `A`. gsd-core writes `audit_acknowledged` into that one file's
 frontmatter and does not commit; the marker is file-level (it hides every item of the file
 in every lane) and lapses by itself when the file changes. This app never writes the file.
 `y` uses `wl-copy`, `xclip`/`xsel`, `pbcopy` or `clip.exe` when present, otherwise an OSC 52
