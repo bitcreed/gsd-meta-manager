@@ -38,7 +38,7 @@ Run in the existing checkout `/home/blk/projects/rust/gsd-meta-manager-owner-inb
 
 ## Fixed Issues
 
-### WR-01: A missing or `.planning`-less project shows `·` instead of an absent value
+### WR-01: A missing or `.planning`-less project shows `·` ("nothing waits on you") instead of an absent value
 
 **Status:** fixed: requires human verification
 **Files modified:** `src/app.rs`, `src/ui/screens/mod.rs`, `src/ui/screens/normal.rs`,
@@ -63,7 +63,7 @@ Run in the existing checkout `/home/blk/projects/rust/gsd-meta-manager-owner-inb
 - Tests: `a_project_without_planning_holds_no_owner_digest` (app) and
   `a_missing_project_shows_no_owner_value` (normal).
 
-### WR-02: Deleting and re-adding an alias keeps the old project's digest
+### WR-02: Deleting and re-adding an alias keeps the old project's digest indefinitely
 
 **Files modified:** `src/ui/screens/delete_confirm.rs`, `src/app.rs`, `src/ui/screens/mod.rs`
 **Commit:** eb5d773f
@@ -88,7 +88,7 @@ Run in the existing checkout `/home/blk/projects/rust/gsd-meta-manager-owner-inb
 - The existing `the_header_walks_the_five_rungs` encoded the old wording (`not built ph
   27` on the counts rung). It now expects `not built 1`.
 
-### WR-04: A panic in the owner reader also drops the project-state refresh
+### WR-04: A panic in the owner reader now also drops the project-state refresh
 
 **Status:** fixed: requires human verification
 **Files modified:** `src/app.rs`, `src/action.rs`, `src/ui/screens/mod.rs`
@@ -104,7 +104,7 @@ Run in the existing checkout `/home/blk/projects/rust/gsd-meta-manager-owner-inb
   `AppContext`, which was not added.
 - Test: `an_owner_reader_panic_still_delivers_the_project_state`.
 
-### WR-05: Owner focus hands keys to the phase list while the footer advertises Owner keys
+### WR-05: Owner focus hands keys to the phase list while the footer still advertises the Owner keys
 
 **Files modified:** `src/ui/screens/detail.rs`
 **Commit:** 04f8c18f
@@ -116,7 +116,7 @@ Run in the existing checkout `/home/blk/projects/rust/gsd-meta-manager-owner-inb
   a missing digest, with `Enter`, `e` and `Esc`. Before the fix, `Enter` moved focus to
   the Waves pane.
 
-### WR-06: The 500 ms reparse dedup can leave the digest stale indefinitely
+### WR-06: The 500 ms reparse dedup can leave the digest (and so the You cell, rank and filter) stale indefinitely
 
 **Status:** fixed: requires human verification
 **Files modified:** `src/app.rs`
@@ -153,7 +153,7 @@ Run in the existing checkout `/home/blk/projects/rust/gsd-meta-manager-owner-inb
 - The planning docs (CONTEXT D-03) were not edited. Please confirm or revise D-03.
 - Test: `the_owner_age_sweep_re_parses_aged_digests_once_an_hour`.
 
-### IN-01: The `LauncherMarkerScanned` comment sat above the `OwnerDigestLoaded` arm
+### IN-01: The `LauncherMarkerScanned` comment now sits above the `OwnerDigestLoaded` arm
 
 **Files modified:** `src/app.rs`
 **Commit:** 5c8a5b97
