@@ -333,6 +333,7 @@ Tab-specific keys:
 | Docs › Milestones | `Esc` | Back up one level |
 | Docs › Milestones | `e` | Archived files are read-only, so this only shows a status message; a workstream's active-milestone docs (`ws …` rows) open in `$EDITOR` |
 | Any other tab | `e` | Enqueue the suggested next GSD command |
+| Owner inbox | `1`-`4` `a` `j` `k` `Enter` `g` `o` `v` `A` `y` `Esc` | See Owner inbox |
 
 #### Mouse
 
@@ -359,7 +360,7 @@ Roadmap detail pane's Needs / Unblocks / Parallel lines are not links (`h` /
 `l` follow them); the wheel over the Backlog list while its content pane is
 open does nothing; dialogs, the help overlay and text entry ignore the mouse;
 the Owner block on the Phases tab is keyboard-only (a click there selects nothing and
-the wheel over it scrolls nothing);
+the wheel over it scrolls nothing), and so is the inbox screen (`i`);
 drag, right / middle click, hover and horizontal scroll are ignored.
 
 To start with mouse capture off, set `"mouse": false` under `preferences` in
@@ -369,8 +370,12 @@ To start with mouse capture off, set `"mouse": false` under `preferences` in
 
 The dashboard shows what is waiting on you, read from each project's `.planning/`
 files: checks only you can run, rulings you have to make, and code that needs an agent.
-Nothing here runs gsd-core or writes to a project. The same data is available to
-scripts and agents through [`gsd-meta-manager inbox`](#owner-work-inbox).
+Reading is free: the dashboard, the project detail and the inbox screen only read each
+project's `.planning/` files. Three actions go further, each on your key press: `v`
+launches the command in the project, `A` runs gsd-core's acknowledge writer after a
+confirmation, `y` copies a checklist. The app itself writes nothing into any project.
+The same data is available to scripts and agents through
+[`gsd-meta-manager inbox`](#owner-work-inbox).
 
 **Dashboard (100 columns and wider).** A `You` column sits between Status and Progress
 and shows at most two lanes for the current milestone, always in the order `decide`,
@@ -397,7 +402,43 @@ the milestone (`closes after: test 12 (ph 21 22 24) · unblock 5 (ph 20 23) · �
 lists one row per group: `TEST`, `DECIDE`, `FIX`, `BLOCKED`, each with its phase, checks,
 age and the command that handles it. `↑` from the first phase enters the block; `Enter`
 expands a group to its checks and source file; `Esc` returns to the phase list. Old debt,
-acknowledged files and pending todos are collapsed folds under the rows.
+acknowledged files and pending todos are collapsed folds under the rows. On a group row
+`v`, `o`, `A` and `y` work as in the inbox screen below.
+
+**Inbox screen (`i` on the dashboard).** One list of everything that waits on you, across
+every registered project, grouped into `TEST — closes a phase`, `TEST — phase stays open`,
+`DECIDE` and `FIX — code needed` (`BLOCKED` with `a` or `4`), with Old debt, Acknowledged and
+Triage folded below. Inside Test, phases that close first, then projects closest to a
+milestone close, then the oldest. Decide and Fix list the oldest first. The numbers in the
+header cover every project and match `gsd-meta-manager inbox --json`. The screen is
+keyboard-only.
+
+| Key | Action |
+|-----|--------|
+| `1` `2` `3` `4` / `a` | Show one lane / all lanes including Blocked; press again for the default |
+| `j` `k` `PgUp` `PgDn` `Home` `End` | Move |
+| `Enter` | Expand a group to its checks and source file; on the fold line, open a fold (`←` `→` move between folds) |
+| `g` | Open the project's detail view on the same group |
+| `o` | Open the group's source file in a read-only viewer |
+| `v` | Run the group's command in its project through your multiplexer (tmux, herdr, ...), or switch to the project's live session and show the command to type |
+| `A` | Acknowledge the group's file (see below) |
+| `y` | Copy the group as the plain checklist `gsd-meta-manager inbox` prints (on the Old debt fold: that fold's checklist) |
+| `Esc` / `q` | Back to the dashboard |
+
+`v` builds the command from the group's kind, phase and workstream
+(`/gsd-verify-work N`, `/gsd-plan-phase N --gaps`, `/gsd-debug`, `/gsd-resume-work`,
+`--ws NAME` for workstream groups) and refuses a phase token or workstream name that is not
+plain. `A` asks first, then runs
+
+```
+node <gsd-tools.cjs> audit-open acknowledge --category <uat_gaps|verification_gaps|context_questions|debug_sessions> --milestone <version> <--phase DIR --file NAME | --slug STEM> [--archived-milestone V] [--ws NAME]
+```
+
+in the project directory (`node <gsd-tools.cjs>` is `gsd-tools` itself when that is on `PATH`). gsd-core writes `audit_acknowledged` into that one file's
+frontmatter and does not commit; the marker is file-level (it hides every item of the file
+in every lane) and lapses by itself when the file changes. This app never writes the file.
+`y` uses `wl-copy`, `xclip`/`xsel`, `pbcopy` or `clip.exe` when present, otherwise an OSC 52
+escape sequence your terminal must allow (inside tmux: `set -g set-clipboard on`).
 
 ### Examples
 
