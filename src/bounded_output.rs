@@ -73,13 +73,37 @@ pub fn stdout_within_with_stderr(
     budget: Duration,
     stderr: Stdio,
 ) -> Option<BoundedOutput> {
+    try_stdout_within_with_stderr(command, budget, stderr).ok()
+}
+
+/// Why a bounded command produced no [`BoundedOutput`]. The `Option` shapes
+/// above fold all of these into `None`; a caller that has to tell the owner what
+/// happened (the acknowledge child, Phase 37 WR-02) uses the `try_` shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoundedFailure {
+    /// The command could not be started (a missing program, a bad working
+    /// directory, no permission, no process slots).
+    Spawn(std::io::ErrorKind),
+    /// The command, or the end of its stdout, did not arrive within the budget.
+    TimedOut,
+    /// Waiting for the command, or reading its stdout, failed.
+    Io(std::io::ErrorKind),
+    /// The caller's stderr sink (a temporary file) could not be created.
+    Sink(std::io::ErrorKind),
+}
+
+pub fn try_stdout_within_with_stderr(
+    command: &mut Command,
+    budget: Duration,
+    stderr: Stdio,
+) -> Result<BoundedOutput, BoundedFailure> {
     let deadline = Instant::now() + budget;
     let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(stderr)
         .spawn()
-        .ok()?;
+        .map_err(|err| BoundedFailure::Spawn(err.kind()))?;
 
     let (sender, receiver) = mpsc::channel();
     if let Some(mut pipe) = child.stdout.take() {
@@ -106,15 +130,15 @@ pub fn stdout_within_with_stderr(
                         budget_ms = u64::try_from(budget.as_millis()).unwrap_or(u64::MAX),
                         "an external read exceeded its budget and was stopped"
                     );
-                    return None;
+                    return Err(BoundedFailure::TimedOut);
                 }
                 std::thread::sleep(gap.min(deadline - now));
                 gap = (gap * 2).min(MAX_POLL);
             }
-            Err(_) => {
+            Err(err) => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return None;
+                return Err(BoundedFailure::Io(err.kind()));
             }
         }
     };
@@ -124,8 +148,11 @@ pub fn stdout_within_with_stderr(
     let remaining = deadline
         .saturating_duration_since(Instant::now())
         .max(DRAIN_GRACE);
-    let stdout = receiver.recv_timeout(remaining).ok()?.ok()?;
-    Some(BoundedOutput { status, stdout })
+    let stdout = receiver
+        .recv_timeout(remaining)
+        .map_err(|_| BoundedFailure::TimedOut)?
+        .map_err(|err| BoundedFailure::Io(err.kind()))?;
+    Ok(BoundedOutput { status, stdout })
 }
 
 // No in-source tests: a test here would have to build a command, and this file

@@ -204,8 +204,8 @@ pub(crate) fn open_target(
 /// stays unreachable from the product.
 pub const ACK_VERB: [&str; 2] = ["audit-open", "acknowledge"];
 
-/// How long the acknowledge child may run (D-15, T-37-21).
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+/// How long the acknowledge child may run (D-15, T-37-21). Defined on every
+/// target because the timeout status line spells it.
 const ACK_BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// The longest failure line the status shows, in characters (D-16).
@@ -784,44 +784,79 @@ pub(crate) fn ack_outcome(name: &str, success: bool, stdout: &[u8], stderr_line:
 /// non-empty stderr line.
 type AckExit = (bool, Vec<u8>, String);
 
-/// The bounded child's result; `None` when it could not start or did not finish
-/// within the budget (it was killed).
+/// The bounded child's result, or why there is none: it could not start, it did
+/// not finish within `budget` (it was killed), or waiting for it failed.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn spawn_ack(req: &AckRequest) -> Option<AckExit> {
+fn spawn_ack(
+    req: &AckRequest,
+    budget: std::time::Duration,
+) -> Result<AckExit, crate::bounded_output::BoundedFailure> {
     let args: Vec<std::ffi::OsString> = req.argv.iter().map(std::ffi::OsString::from).collect();
-    let (output, stderr_line) = crate::launcher::process::run_bounded_with_stderr_env(
+    let (output, stderr_line) = crate::launcher::process::try_run_bounded_with_stderr_env(
         &req.program,
         &args,
         Some(&req.cwd),
         ACK_ENV_REMOVE,
         &[],
-        ACK_BUDGET,
+        budget,
     )?;
-    Some((output.status.success(), output.stdout, stderr_line))
+    Ok((output.status.success(), output.stdout, stderr_line))
 }
 
 /// The bounded runner is Linux and macOS only, like the launcher module it lives
 /// in: elsewhere the acknowledge fails visibly and runs nothing.
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-fn spawn_ack(req: &AckRequest) -> Option<AckExit> {
+fn spawn_ack(
+    req: &AckRequest,
+    _budget: std::time::Duration,
+) -> Result<AckExit, crate::bounded_output::BoundedFailure> {
     tracing::warn!(cwd = %req.cwd.display(), "owner acknowledge is not supported here");
-    Some((
+    Ok((
         false,
         Vec::new(),
         "running gsd-core is not supported on this platform".to_owned(),
     ))
 }
 
+/// The status line for an acknowledge that produced no exit status (WR-02): a
+/// start failure says nothing ran, a budget overrun says nothing is confirmed.
+fn ack_failure_line(
+    req: &AckRequest,
+    failure: crate::bounded_output::BoundedFailure,
+    budget: std::time::Duration,
+) -> String {
+    use crate::bounded_output::BoundedFailure as F;
+    match failure {
+        F::TimedOut => format!(
+            "Acknowledge timed out after {} s: nothing is confirmed, check git status in {}",
+            budget.as_secs(),
+            req.alias
+        ),
+        F::Spawn(kind) | F::Sink(kind) => {
+            format!("Acknowledge failed: could not start gsd-tools ({kind}); nothing was run")
+        }
+        F::Io(kind) => format!(
+            "Acknowledge failed: lost gsd-tools while it ran ({kind}); nothing is confirmed, check git status in {}",
+            req.alias
+        ),
+    }
+}
+
 /// Run gsd-core's acknowledge writer for `req` as a bounded direct child and
 /// return the status line (D-15). **Blocks up to [`ACK_BUDGET`]**: it is called
 /// only on `spawn_blocking`. The full capped output goes to the tracing log.
 pub(crate) fn run_ack(req: &AckRequest) -> String {
-    let Some((success, stdout, stderr_line)) = spawn_ack(req) else {
-        tracing::warn!(alias = %req.alias, file = %req.target.rel_file, "owner acknowledge timed out");
-        return format!(
-            "Acknowledge timed out after 10 s: nothing is confirmed, check git status in {}",
-            req.alias
-        );
+    run_ack_within(req, ACK_BUDGET)
+}
+
+/// [`run_ack`] with the budget injected, so a test can stand a short one in.
+fn run_ack_within(req: &AckRequest, budget: std::time::Duration) -> String {
+    let (success, stdout, stderr_line) = match spawn_ack(req, budget) {
+        Ok(done) => done,
+        Err(failure) => {
+            tracing::warn!(alias = %req.alias, file = %req.target.rel_file, ?failure, "owner acknowledge did not finish");
+            return ack_failure_line(req, failure, budget);
+        }
     };
     if success {
         tracing::info!(alias = %req.alias, file = %req.target.rel_file, "owner acknowledge done");
@@ -1522,8 +1557,49 @@ mod tests {
             run_ack(&request),
             "Acknowledge failed: no phase directory found"
         );
+    }
+
+    /// WR-02: a child that never started is not "timed out", and the real
+    /// timeout names the budget it was given.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn run_ack_tells_a_spawn_failure_from_a_timeout() {
+        let (_dir, mut ctx) = project_with_uat("alder-api");
+        ctx.project_states.get_mut("alder-api").unwrap().milestone = "v2.0".to_owned();
+        let g = ack_group(Kind::Uat, "24", ".planning/phases/24-x/24-UAT.md");
+        ctx.owner_digests.insert(
+            "alder-api".to_owned(),
+            OwnerDigest {
+                groups: vec![g.clone()],
+                ..OwnerDigest::default()
+            },
+        );
+        force_launcher(Some(test_launcher()));
+        let mut request = ack_request(&ctx, "alder-api", &g).unwrap();
         request.program = "/nonexistent/program".to_owned();
-        assert!(run_ack(&request).starts_with("Acknowledge timed out after 10 s:"));
+        let line = run_ack(&request);
+        assert!(
+            line.starts_with("Acknowledge failed: could not start gsd-tools"),
+            "{line}"
+        );
+        assert!(line.ends_with("nothing was run"), "{line}");
+        assert!(!line.contains("timed out"), "{line}");
+        // A project folder that vanished fails the same way, as a spawn error.
+        request.program = "sh".to_owned();
+        request.argv = vec!["-c".to_owned(), "exit 0".to_owned()];
+        request.cwd = request.cwd.join("moved-away");
+        let line = run_ack(&request);
+        assert!(
+            line.starts_with("Acknowledge failed: could not start"),
+            "{line}"
+        );
+        // A child that outlives a short budget really is a timeout.
+        request.cwd = _dir.path().to_path_buf();
+        request.argv = vec!["-c".to_owned(), "exec sleep 30".to_owned()];
+        assert_eq!(
+            run_ack_within(&request, std::time::Duration::from_secs(1)),
+            "Acknowledge timed out after 1 s: nothing is confirmed, check git status in alder-api"
+        );
     }
 
     fn item(name: &str) -> crate::state_reader::owner_items::OwnerItem {
