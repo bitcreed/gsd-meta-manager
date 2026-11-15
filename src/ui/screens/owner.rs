@@ -167,6 +167,177 @@ pub(crate) fn you_cell_line(numbers: Option<&OwnerNumbers>, cells: u16) -> Line<
     ))
 }
 
+/// The fleet totals over the visible rows (D-11): the same numbers the `You`
+/// cell shows, summed, so the summary line can never disagree with the table.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct OwnerTotals {
+    pub test: usize,
+    /// Per-project distinct (workstream, phase) Test pairs, summed.
+    pub test_phases: usize,
+    pub closeable: usize,
+    pub decide: usize,
+    pub fix: usize,
+    /// Some visible project has a debug investigation counted in `fix`.
+    pub any_fix_debug: bool,
+    /// Visible rows with owner work (`K`).
+    pub with_work: usize,
+    /// Visible rows (`N`).
+    pub visible: usize,
+    /// Visible rows whose digest has not arrived yet.
+    pub pending: usize,
+}
+
+/// Sum the owner numbers of the visible rows; `None` is a row still loading.
+pub(crate) fn owner_totals<'a>(
+    visible: impl IntoIterator<Item = Option<&'a OwnerDigest>>,
+) -> OwnerTotals {
+    let mut totals = OwnerTotals::default();
+    for row in visible {
+        totals.visible += 1;
+        let Some(digest) = row else {
+            totals.pending += 1;
+            continue;
+        };
+        let n = owner_numbers(digest);
+        totals.test += n.test;
+        totals.test_phases += n.test_phases;
+        totals.closeable += n.closeable;
+        totals.decide += n.decide;
+        totals.fix += n.fix;
+        totals.any_fix_debug |= n.fix > 0 && !n.fix_is_phases;
+        totals.with_work += usize::from(has_owner_work(&n));
+    }
+    totals
+}
+
+/// The cells `[i] inbox` takes; the left part keeps two cells clear of it.
+pub(crate) const INBOX_HINT_CELLS: u16 = 9;
+
+/// The right part of the summary row: `[i]` bold, then ` inbox`.
+pub(crate) fn summary_right_spans() -> Vec<Span<'static>> {
+    vec![
+        Span::styled("[i]", quiet().add_modifier(Modifier::BOLD)),
+        Span::styled(" inbox", quiet()),
+    ]
+}
+
+fn noun(count: usize, singular: &str, plural: &str) -> String {
+    if count == 1 {
+        format!("{count} {singular}")
+    } else {
+        format!("{count} {plural}")
+    }
+}
+
+/// The D-10 clauses at one rung of the fit ladder.
+fn summary_clauses(
+    totals: &OwnerTotals,
+    with_projects: bool,
+    with_close: bool,
+    with_phases: bool,
+) -> Vec<String> {
+    let mut clauses = Vec::with_capacity(4);
+    if totals.test > 0 {
+        let mut test = format!("test {}", totals.test);
+        if with_phases && totals.test_phases > 0 {
+            test.push_str(&format!(
+                " in {}",
+                noun(totals.test_phases, "phase", "phases")
+            ));
+        }
+        if with_close && totals.closeable > 0 {
+            test.push_str(&format!(" ({} close)", totals.closeable));
+        }
+        clauses.push(test);
+    }
+    if totals.decide > 0 {
+        clauses.push(format!("decide {}", totals.decide));
+    }
+    if totals.fix > 0 {
+        if totals.any_fix_debug {
+            clauses.push(format!("fix {}", totals.fix));
+        } else {
+            clauses.push(format!("fix {}", noun(totals.fix, "phase", "phases")));
+        }
+    }
+    if with_projects && totals.with_work > 0 {
+        clauses.push(format!(
+            "{} of {}",
+            totals.with_work,
+            noun(totals.visible, "project", "projects")
+        ));
+    }
+    clauses
+}
+
+fn left_line(clauses: &[String], loading: Option<usize>) -> Line<'static> {
+    let mut spans = vec![
+        Span::styled("You:", quiet().add_modifier(Modifier::BOLD)),
+        Span::styled(" ", quiet()),
+    ];
+    if clauses.is_empty() {
+        spans.push(Span::styled(CLEAN, quiet_dim()));
+    }
+    for (index, clause) in clauses.iter().enumerate() {
+        if index > 0 {
+            spans.push(Span::styled(OWNER_SEP, quiet()));
+        }
+        spans.push(Span::styled(clause.clone(), quiet()));
+    }
+    if let Some(m) = loading {
+        spans.push(Span::styled(format!("{OWNER_SEP}{m} loading"), quiet_dim()));
+    }
+    Line::from(spans)
+}
+
+/// The left part of the summary row (D-10): `You:` and the fleet totals.
+///
+/// The first whole form that fits `cells` wins: full, without `K of N
+/// projects`, without `(C close)`, without ` in P phases`, then `fit_cells`
+/// with `…`. The loading clause stays through the four whole forms, because a
+/// fail-safe signal outranks detail. No color.
+pub(crate) fn summary_left_line(totals: &OwnerTotals, cells: u16) -> Line<'static> {
+    let cells = usize::from(cells);
+    if totals.visible > 0 && totals.pending == totals.visible {
+        return Line::from(vec![
+            Span::styled("You:", quiet().add_modifier(Modifier::BOLD)),
+            Span::styled(" ", quiet()),
+            Span::styled(super::driver::DRY_RUN_LOADING, quiet_dim()),
+        ]);
+    }
+    let loading = (totals.pending > 0).then_some(totals.pending);
+    let rungs = [
+        (true, true, true),
+        (false, true, true),
+        (false, false, true),
+        (false, false, false),
+    ];
+    let mut last = Vec::new();
+    for (projects, close, phases) in rungs {
+        let clauses = summary_clauses(totals, projects, close, phases);
+        let line = left_line(&clauses, loading);
+        if line.width() <= cells {
+            return line;
+        }
+        last = clauses;
+    }
+    let body: String = left_line(&last, loading)
+        .spans
+        .iter()
+        .skip(2)
+        .map(|s| s.content.as_ref())
+        .collect();
+    let mut spans = vec![
+        Span::styled("You:", quiet().add_modifier(Modifier::BOLD)),
+        Span::styled(" ", quiet()),
+    ];
+    spans.push(Span::styled(
+        super::detail::fit_cells(&body, cells.saturating_sub(5)),
+        quiet(),
+    ));
+    Line::from(spans)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -391,5 +562,162 @@ mod tests {
             ..OwnerDigest::default()
         };
         assert_eq!(cell(&owner_numbers(&digest)), "fix 1 ph");
+    }
+    fn counts(test: usize, closeable: usize, decide: usize, fix_phases: usize) -> OwnerDigest {
+        OwnerDigest {
+            test,
+            closeable_phases: closeable,
+            decide,
+            fix_phases,
+            ..OwnerDigest::default()
+        }
+    }
+
+    /// The counts of the 15-project fleet (synthetic), `None` for the pending one.
+    fn fleet() -> Vec<Option<OwnerDigest>> {
+        let debug = OwnerDigest {
+            fix_debug: 2,
+            ..OwnerDigest::default()
+        };
+        vec![
+            Some(counts(3, 1, 0, 0)),
+            Some(counts(10, 4, 0, 0)),
+            Some(counts(6, 0, 0, 4)),
+            Some(counts(12, 3, 0, 0)),
+            Some(counts(0, 0, 1, 2)),
+            Some(counts(0, 0, 1, 0)),
+            Some(OwnerDigest::default()),
+            Some(OwnerDigest::default()),
+            Some(OwnerDigest {
+                blocked: 4,
+                ..OwnerDigest::default()
+            }),
+            None,
+            Some(counts(5, 0, 2, 1)),
+            Some(debug),
+            Some(OwnerDigest {
+                fix_phases: 1,
+                fix_debug: 1,
+                ..OwnerDigest::default()
+            }),
+            Some(counts(0, 0, 1, 0)),
+            Some(counts(4, 0, 0, 0)),
+        ]
+    }
+
+    #[test]
+    fn owner_totals_sum_the_visible_rows() {
+        let digests = fleet();
+        let t = owner_totals(digests.iter().map(Option::as_ref));
+        assert_eq!(t.test, 40);
+        assert_eq!(t.closeable, 8);
+        assert_eq!(t.decide, 5);
+        assert_eq!(t.fix, 11);
+        assert!(t.any_fix_debug);
+        assert_eq!(t.with_work, 11);
+        assert_eq!(t.visible, 15);
+        assert_eq!(t.pending, 1);
+        assert_eq!(owner_totals(std::iter::empty()), OwnerTotals::default());
+    }
+
+    fn left(t: &OwnerTotals) -> String {
+        text(&summary_left_line(t, 200))
+    }
+
+    #[test]
+    fn summary_forms() {
+        let digests = fleet();
+        let mut t = owner_totals(digests.iter().map(Option::as_ref));
+        assert_eq!(
+            left(&t),
+            "You: test 40 (8 close) \u{b7} decide 5 \u{b7} fix 11 \u{b7} 11 of 15 projects \u{b7} 1 loading"
+        );
+        t.test_phases = 20;
+        t.closeable = 17;
+        assert!(left(&t).starts_with("You: test 40 in 20 phases (17 close)"));
+        t.test_phases = 1;
+        assert!(left(&t).starts_with("You: test 40 in 1 phase (17 close)"));
+        t.visible = 1;
+        t.with_work = 1;
+        t.pending = 0;
+        assert!(left(&t).ends_with("1 of 1 project"));
+        t.any_fix_debug = false;
+        t.fix = 1;
+        assert!(left(&t).contains("fix 1 phase \u{b7}"));
+        t.fix = 3;
+        assert!(left(&t).contains("fix 3 phases \u{b7}"));
+
+        let idle = OwnerTotals {
+            visible: 2,
+            ..OwnerTotals::default()
+        };
+        let line = summary_left_line(&idle, 80);
+        assert_eq!(text(&line), "You: \u{b7}");
+        assert!(line.spans[2].style.add_modifier.contains(Modifier::DIM));
+        assert_eq!(left(&OwnerTotals::default()), "You: \u{b7}");
+        assert!(line.spans[0].style.add_modifier.contains(Modifier::BOLD));
+
+        let loading = OwnerTotals {
+            visible: 3,
+            pending: 3,
+            ..OwnerTotals::default()
+        };
+        let line = summary_left_line(&loading, 80);
+        assert_eq!(text(&line), "You: Loading...");
+        assert!(line.spans[2].style.add_modifier.contains(Modifier::DIM));
+
+        let some_loading_no_work = OwnerTotals {
+            visible: 3,
+            pending: 1,
+            ..OwnerTotals::default()
+        };
+        assert_eq!(left(&some_loading_no_work), "You: \u{b7} \u{b7} 1 loading");
+    }
+
+    #[test]
+    fn summary_ladder() {
+        let t = OwnerTotals {
+            test: 40,
+            test_phases: 20,
+            closeable: 17,
+            decide: 5,
+            fix: 11,
+            any_fix_debug: true,
+            with_work: 11,
+            visible: 15,
+            pending: 1,
+        };
+        let at = |cells: u16| text(&summary_left_line(&t, cells));
+        let full = at(200);
+        assert_eq!(
+            full,
+            "You: test 40 in 20 phases (17 close) \u{b7} decide 5 \u{b7} fix 11 \u{b7} 11 of 15 projects \u{b7} 1 loading"
+        );
+        let w = |s: &str| Span::raw(s.to_string()).width() as u16;
+        let r2 =
+            "You: test 40 in 20 phases (17 close) \u{b7} decide 5 \u{b7} fix 11 \u{b7} 1 loading";
+        assert_eq!(at(w(r2)), r2);
+        let r3 = "You: test 40 in 20 phases \u{b7} decide 5 \u{b7} fix 11 \u{b7} 1 loading";
+        assert_eq!(at(w(r3)), r3);
+        let r4 = "You: test 40 \u{b7} decide 5 \u{b7} fix 11 \u{b7} 1 loading";
+        assert_eq!(at(w(r4)), r4);
+        let r5 = at(w(r4) - 1);
+        assert!(r5.ends_with('\u{2026}'), "{r5}");
+        assert!(Span::raw(r5.clone()).width() <= usize::from(w(r4) - 1));
+        assert!(r5.starts_with("You: test 40"));
+        // No rung from 2 to 4 ends inside a number or loses the loading clause.
+        for rung in [r2, r3, r4] {
+            assert!(rung.ends_with("1 loading"));
+        }
+    }
+
+    #[test]
+    fn the_hint_is_nine_cells() {
+        let hint: String = summary_right_spans()
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(hint, "[i] inbox");
+        assert_eq!(hint.len() as u16, INBOX_HINT_CELLS);
     }
 }

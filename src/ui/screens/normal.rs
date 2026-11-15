@@ -700,6 +700,32 @@ crate::ui::screens::adjudicate_screen!(
      a status message, and the dashboard with the filter footer active.",
 );
 
+/// The summary row appears from this width (D-10).
+const SUMMARY_MIN_WIDTH: u16 = 100;
+/// The summary row appears from this height (D-10).
+const SUMMARY_MIN_HEIGHT: u16 = 12;
+
+/// Draw the `You:` summary row: the fleet totals of the visible rows on the
+/// left, `[i] inbox` right-aligned (D-10, D-11). Reads only in-memory digests.
+fn render_owner_summary(frame: &mut Frame, area: Rect, ctx: &AppContext) {
+    use super::owner::{owner_totals, summary_left_line, summary_right_spans, INBOX_HINT_CELLS};
+    let parts =
+        Layout::horizontal([Constraint::Min(0), Constraint::Length(INBOX_HINT_CELLS)]).split(area);
+    let totals = owner_totals(
+        ctx.filtered_aliases
+            .iter()
+            .map(|alias| ctx.owner_digests.get(alias)),
+    );
+    frame.render_widget(
+        Paragraph::new(summary_left_line(&totals, parts[0].width.saturating_sub(2))),
+        parts[0],
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(summary_right_spans())).alignment(Alignment::Right),
+        parts[1],
+    );
+}
+
 impl Screen for NormalScreen {
     fn handle_key(
         &mut self,
@@ -747,7 +773,7 @@ impl Screen for NormalScreen {
             //
             // One key, one indicator, no new screen. `s` is free on this
             // screen: the match above claims `q`, `j`, `k`, `a`, `c`, `d`,
-            // `b`, `M`, `/`, `?`, `Tab`, `Enter`, `Up` and `Down`, and the
+            // `b`, `M`, `/`, `?`, `i`, `Tab`, `Enter`, `Up` and `Down`, and the
             // search sub-mode is entered by `/` and handled separately. (`b`
             // is bound below, beside `Enter`.) The dashboard's `r`, `x` and `o`
             // were the legacy driver start, stop and opt-in keys; Phase 31
@@ -774,6 +800,18 @@ impl Screen for NormalScreen {
                     SortMode::Alphabetical => "Sort: alphabetical",
                 };
                 ctx.status_message = Some((msg.to_string(), std::time::Instant::now()));
+                ctx.needs_redraw = true;
+                ScreenAction::None
+            }
+            // Interim `i` (36 D-12): the inbox screen lands in Phase 37, so
+            // until then the key only says how to open it. It pushes nothing,
+            // launches nothing and writes nothing. Phase 37 replaces this arm.
+            KeyCode::Char('i') => {
+                ctx.status_message = Some((
+                    "Inbox screen not built yet: run gsd-meta-manager inbox in a terminal"
+                        .to_string(),
+                    std::time::Instant::now(),
+                ));
                 ctx.needs_redraw = true;
                 ScreenAction::None
             }
@@ -879,13 +917,24 @@ impl Screen for NormalScreen {
             return;
         }
 
-        // Split into main area and footer
-        let chunks = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(area);
-        let main_area = chunks[0];
-        let footer_area = chunks[1];
-
-        self.render_main(frame, main_area, ctx);
-        self.render_footer(frame, footer_area, ctx);
+        // Split into main area and footer. From 100 columns and 12 rows a
+        // one-row `You:` summary sits between them (D-10); narrower or shorter
+        // frames keep the two-part split and render as before.
+        if area.width >= SUMMARY_MIN_WIDTH && area.height >= SUMMARY_MIN_HEIGHT {
+            let chunks = Layout::vertical([
+                Constraint::Min(0),
+                Constraint::Length(1),
+                Constraint::Length(1),
+            ])
+            .split(area);
+            self.render_main(frame, chunks[0], ctx);
+            render_owner_summary(frame, chunks[1], ctx);
+            self.render_footer(frame, chunks[2], ctx);
+        } else {
+            let chunks = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(area);
+            self.render_main(frame, chunks[0], ctx);
+            self.render_footer(frame, chunks[1], ctx);
+        }
     }
 
     fn name(&self) -> &str {
@@ -2794,6 +2843,145 @@ mod tests {
         // The boundary: the cell vector and the header agree at 99 and 100.
         assert_eq!(dashboard_columns(99).0.len(), 5);
         assert_eq!(dashboard_columns(100).0.len(), 6);
+    }
+
+    const FLEET_SUMMARY: &str =
+        "You: test 40 (8 close) \u{b7} decide 5 \u{b7} fix 11 \u{b7} 11 of 15 projects \u{b7} 1 loading";
+
+    /// The row directly above the footer, as text.
+    fn summary_row(rows: &[Vec<(String, Color)>]) -> String {
+        rendered_text(rows)[rows.len() - 2].clone()
+    }
+
+    #[test]
+    fn the_summary_row_sits_above_the_footer_at_100_120_and_140() {
+        let ctx = owner_fleet_ctx();
+        for width in [100u16, 120, 140] {
+            let rows = render_dashboard_cells(&ctx, width, 20);
+            let row = summary_row(&rows);
+            assert!(
+                row.starts_with(FLEET_SUMMARY),
+                "the D-11 fleet text at {width}: {row:?}"
+            );
+            assert!(
+                row.trim_end().ends_with("[i] inbox"),
+                "[i] inbox right-aligned at {width}: {row:?}"
+            );
+            assert_eq!(row.trim_end().chars().count(), usize::from(width));
+        }
+        for (width, height) in [(99u16, 20u16), (120, 11)] {
+            let text = rendered_text(&render_dashboard_cells(&ctx, width, height)).join("\n");
+            assert!(!text.contains("You:"), "no summary at {width}x{height}");
+        }
+    }
+
+    #[test]
+    fn summary_totals_equal_the_sum_of_the_visible_cells() {
+        use super::super::owner::{owner_numbers, owner_totals};
+        let mut ctx = owner_fleet_ctx();
+        for filter in ["", "e/n", "-/n"] {
+            ctx.filter_text = filter.to_string();
+            ctx.recompute_filtered_aliases();
+            let totals = owner_totals(
+                ctx.filtered_aliases
+                    .iter()
+                    .map(|alias| ctx.owner_digests.get(alias)),
+            );
+            let numbers: Vec<_> = ctx
+                .filtered_aliases
+                .iter()
+                .filter_map(|alias| ctx.owner_digests.get(alias))
+                .map(owner_numbers)
+                .collect();
+            assert_eq!(totals.visible, ctx.filtered_aliases.len(), "{filter:?}");
+            assert_eq!(totals.pending, totals.visible - numbers.len(), "{filter:?}");
+            assert_eq!(totals.test, numbers.iter().map(|n| n.test).sum::<usize>());
+            assert_eq!(
+                totals.decide,
+                numbers.iter().map(|n| n.decide).sum::<usize>()
+            );
+            assert_eq!(totals.fix, numbers.iter().map(|n| n.fix).sum::<usize>());
+            assert_eq!(
+                totals.closeable,
+                numbers.iter().map(|n| n.closeable).sum::<usize>()
+            );
+            assert_eq!(
+                totals.with_work,
+                numbers
+                    .iter()
+                    .filter(|n| super::super::owner::has_owner_work(n))
+                    .count()
+            );
+        }
+    }
+
+    #[test]
+    fn the_summary_reads_loading_until_a_digest_arrives() {
+        let mut ctx = owner_fleet_ctx();
+        ctx.owner_digests.clear();
+        let rows = render_dashboard_cells(&ctx, 120, 20);
+        assert!(summary_row(&rows).starts_with("You: Loading..."));
+    }
+
+    #[test]
+    fn a_fleet_without_owner_work_reads_a_dim_dot() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let mut ctx = ctx_with_aliases(&["alpha", "bravo"]);
+        owe(&mut ctx, "alpha", OwnerDigest::default());
+        owe(&mut ctx, "bravo", OwnerDigest::default());
+        let mut terminal = Terminal::new(TestBackend::new(120, 20)).unwrap();
+        let screen = NormalScreen::new();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                Screen::render(&screen, frame, area, &ctx);
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let row: String = (0..120)
+            .map(|x| buffer.cell((x, 18)).unwrap().symbol().to_string())
+            .collect();
+        assert!(row.starts_with("You: \u{b7}"), "{row:?}");
+        let dot = buffer.cell((5, 18)).unwrap();
+        assert_eq!(dot.symbol(), "\u{b7}");
+        assert!(dot.modifier.contains(Modifier::DIM));
+        assert!(!buffer
+            .cell((0, 18))
+            .unwrap()
+            .modifier
+            .contains(Modifier::DIM));
+        assert!(buffer
+            .cell((0, 18))
+            .unwrap()
+            .modifier
+            .contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn the_i_key_points_at_the_inbox_command() {
+        let mut ctx = owner_fleet_ctx();
+        let mut screen = NormalScreen::new();
+        let action = screen.handle_key(KeyCode::Char('i'), KeyModifiers::NONE, &mut ctx);
+        assert!(matches!(action, ScreenAction::None));
+        assert_eq!(
+            ctx.status_message.as_ref().map(|(m, _)| m.as_str()),
+            Some("Inbox screen not built yet: run gsd-meta-manager inbox in a terminal")
+        );
+        let action = screen.handle_key(KeyCode::Char('y'), KeyModifiers::NONE, &mut ctx);
+        assert!(
+            matches!(action, ScreenAction::None),
+            "a bare y stays unbound"
+        );
+    }
+
+    #[test]
+    fn the_summary_line_takes_no_color() {
+        let ctx = owner_fleet_ctx();
+        let rows = render_dashboard_cells(&ctx, 120, 20);
+        for (symbol, fg) in &rows[rows.len() - 2] {
+            assert_eq!(*fg, Color::Reset, "summary cell {symbol:?}");
+        }
     }
 
     #[test]
