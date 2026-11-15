@@ -99,16 +99,74 @@ fn items_phrase(count: usize) -> String {
     }
 }
 
-/// The popup body (UI-SPEC "A confirm popup"): BOLD labels, the exact argv DIM,
-/// every dynamic value through `shown`. The argv is the program and every element
-/// of the request, space-joined, each element escaped on its own.
-pub(crate) fn ack_body(req: &AckRequest) -> Vec<Line<'static>> {
+/// `text` cut into rows of at most `width` cells at `/` and spaces, so a path or a
+/// command never breaks inside a name. A piece longer than a whole row (no `/` or
+/// space to break at) is cut at the cell boundary as the last resort. A break at a
+/// space drops that space; a break at `/` keeps it on the row it ends.
+fn wrap_at_separators(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut rows: Vec<String> = Vec::new();
+    let mut row = String::new();
+    for piece in text.split_inclusive(['/', ' ']) {
+        let trimmed = piece.trim_end_matches(' ');
+        let mut rest = piece;
+        // A row that cannot hold the whole piece starts a new one first.
+        if !row.is_empty() && owner_block::cells(&row) + owner_block::cells(trimmed) > width {
+            rows.push(std::mem::take(&mut row).trim_end().to_owned());
+        }
+        // A piece wider than a row is cut at the cell boundary.
+        while owner_block::cells(rest.trim_end_matches(' ')) > width {
+            let mut cut = String::new();
+            let mut used = 0;
+            for ch in rest.chars() {
+                let w = owner_block::cells(&ch.to_string());
+                if used + w > width {
+                    break;
+                }
+                cut.push(ch);
+                used += w;
+            }
+            if cut.is_empty() {
+                break;
+            }
+            rest = &rest[cut.len()..];
+            if !row.is_empty() {
+                rows.push(std::mem::take(&mut row).trim_end().to_owned());
+            }
+            rows.push(cut);
+        }
+        row.push_str(rest);
+    }
+    if !row.is_empty() || rows.is_empty() {
+        rows.push(row.trim_end().to_owned());
+    }
+    rows
+}
+
+/// The popup body (UI-SPEC "A confirm popup"): BOLD labels, every dynamic value
+/// through `shown`. The argv is the program and every element of the request,
+/// space-joined, each element escaped on its own, in normal weight because it is
+/// what the owner consents to. `inner_w` is the popup's inner width: the label
+/// and value share a row when they fit, a longer value wraps at `/` and spaces
+/// under a hanging indent, and the argv continues two cells in.
+pub(crate) fn ack_body(req: &AckRequest, inner_w: u16) -> Vec<Line<'static>> {
+    const LABEL_W: usize = 11;
+    let inner_w = usize::from(inner_w);
     let bold = Style::default().add_modifier(Modifier::BOLD);
-    let field = |label: &str, value: String| {
-        Line::from(vec![
-            Span::styled(format!("{label:<11}"), bold),
-            Span::raw(value),
-        ])
+    let field = |label: &str, value: String| -> Vec<Line<'static>> {
+        let parts = wrap_at_separators(&value, inner_w.saturating_sub(LABEL_W));
+        parts
+            .into_iter()
+            .enumerate()
+            .map(|(i, part)| {
+                let head = if i == 0 {
+                    Span::styled(format!("{label:<LABEL_W$}"), bold)
+                } else {
+                    Span::raw(" ".repeat(LABEL_W))
+                };
+                Line::from(vec![head, Span::raw(part)])
+            })
+            .collect()
     };
     let mut category = req.target.category.to_owned();
     if let Some(label) = &req.target.archived_milestone {
@@ -120,27 +178,30 @@ pub(crate) fn ack_body(req: &AckRequest) -> Vec<Line<'static>> {
         .map(shown)
         .collect::<Vec<_>>()
         .join(" ");
-    vec![
-        field("Project", shown(&req.alias)),
-        field("File", shown(&req.target.rel_file)),
-        field("Category", category),
-        field("Milestone", shown(&req.target.milestone)),
-        Line::raw(""),
-        Line::raw(format!(
-            "Hides all {} of this file in every lane, blocked rows included. The marker lapses by itself when the file changes.",
-            items_phrase(req.target.items)
-        )),
-        Line::raw(""),
-        Line::raw(format!(
-            "gsd-core edits the file's frontmatter. Nothing is committed: {} gets one modified file in its working tree.",
-            shown(&req.alias)
-        )),
-        Line::raw(""),
-        Line::from(Span::styled(
-            argv,
-            Style::default().add_modifier(Modifier::DIM),
-        )),
-    ]
+    let mut body: Vec<Line<'static>> = Vec::new();
+    body.extend(field("Project", shown(&req.alias)));
+    body.extend(field("File", shown(&req.target.rel_file)));
+    body.extend(field("Category", category));
+    body.extend(field("Milestone", shown(&req.target.milestone)));
+    body.push(Line::raw(""));
+    body.push(Line::raw(format!(
+        "Hides all {} of this file in every lane, blocked rows included. The marker lapses by itself when the file changes.",
+        items_phrase(req.target.items)
+    )));
+    body.push(Line::raw(""));
+    body.push(Line::raw(format!(
+        "gsd-core edits the file's frontmatter. Nothing is committed: {} gets one modified file in its working tree.",
+        shown(&req.alias)
+    )));
+    body.push(Line::raw(""));
+    for (i, part) in wrap_at_separators(&argv, inner_w.saturating_sub(2))
+        .into_iter()
+        .enumerate()
+    {
+        let indent = if i == 0 { "" } else { "  " };
+        body.push(Line::raw(format!("{indent}{part}")));
+    }
+    body
 }
 
 crate::ui::screens::adjudicate_screen!(
@@ -183,7 +244,7 @@ impl Screen for AckConfirmScreen {
             frame,
             area,
             "Acknowledge via gsd-core",
-            ack_body(&self.request),
+            ack_body(&self.request, confirm_popup::body_room(area).0),
             Color::Yellow,
             self.popup.focus,
         ));
@@ -454,6 +515,65 @@ mod tests {
             command_line.iter().any(|e| e == "--phase") && command_line.iter().any(|e| e == "24"),
             "{command_line:?}"
         );
+    }
+
+    /// UI review 37 #3: a long file path and launcher path wrap at `/` and
+    /// spaces under a hanging indent, never inside a name, at 100 columns.
+    #[test]
+    fn long_paths_wrap_at_separators_with_a_hanging_indent_at_100x30() {
+        let (ctx, mut request) = setup();
+        request.target.rel_file =
+            ".planning/workstreams/v0.16-long-name/phases/42.1-some-long-title-here/42.1-VERIFICATION.md"
+                .to_owned();
+        request.program = "node".to_owned();
+        request.argv.insert(
+            0,
+            "/home/alder/.local/share/claude-profiles/some-profile/gsd-core/bin/gsd-tools.cjs"
+                .to_owned(),
+        );
+        let screen = AckConfirmScreen::new(AckHost::Inbox, request);
+        let text = rows(&screen, &ctx, 100, 30);
+        assert!(!screen.popup.clipped(), "{text}");
+        let inner: Vec<String> = text
+            .lines()
+            .filter_map(|l| {
+                let c: Vec<char> = l.chars().collect();
+                let from = c.iter().position(|ch| *ch == '\u{2502}')?;
+                let to = c.iter().rposition(|ch| *ch == '\u{2502}')?;
+                (to > from).then(|| c[from + 1..to].iter().collect::<String>())
+            })
+            .collect();
+        // The label and the first segment share a row.
+        let file_at = inner
+            .iter()
+            .position(|l| l.starts_with("File       .planning/"))
+            .unwrap_or_else(|| panic!("File label alone or missing:\n{text}"));
+        // Continuations hang under the value column and start at a name.
+        let next = &inner[file_at + 1];
+        assert!(next.starts_with(&format!("{:<11}", "")), "{next:?}");
+        assert!(
+            inner[file_at].trim_end().ends_with('/'),
+            "{:?}",
+            inner[file_at]
+        );
+        let joined: String = inner[file_at..]
+            .iter()
+            .take(2)
+            .map(|l| l.trim().trim_start_matches("File").trim().to_owned())
+            .collect();
+        assert!(
+            joined.ends_with("42.1-some-long-title-here/42.1-VERIFICATION.md"),
+            "{joined}"
+        );
+        // The argv: `node` is not alone on its row, and gsd-tools.cjs is whole.
+        assert!(
+            inner.iter().any(|l| l.contains("node /home/alder/")),
+            "{text}"
+        );
+        assert!(inner.iter().any(|l| l.contains("gsd-tools.cjs")), "{text}");
+        for l in &inner {
+            assert_ne!(l.trim(), "node", "{text}");
+        }
     }
 
     #[test]
