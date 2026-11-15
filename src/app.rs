@@ -3696,9 +3696,6 @@ impl App {
                 }
                 self.needs_redraw = true;
             }
-            // A one-project marker scan landed (30-03, D-13). Only a registered alias
-            // is accepted, so a scan answered after the project was removed leaves no
-            // cache entry behind.
             // The digest-only first fill (36 D-03). A registered alias without a
             // digest takes it; one that has a digest keeps it, because a digest
             // from the reparse task is never older than a first-fill one
@@ -3715,6 +3712,9 @@ impl App {
                     self.needs_redraw = true;
                 }
             }
+            // A one-project marker scan landed (30-03, D-13). Only a registered alias
+            // is accepted, so a scan answered after the project was removed leaves no
+            // cache entry behind.
             Action::LauncherMarkerScanned { alias, marker } => {
                 if self.ctx.experimental && self.ctx.config.projects.contains_key(&alias) {
                     let cache = self.ctx.view_cache.entry(alias).or_default();
