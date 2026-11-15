@@ -2885,14 +2885,19 @@ impl App {
                     }
                     None => true,
                 };
+                self.ctx.project_states.insert(alias.clone(), *state);
                 // A digest-only change (a UAT row flipped, a ruling made) must
                 // redraw and re-sort but never post `Updated:` (36 Pitfall 1).
-                let digest_changed = self.ctx.owner_digests.get(&alias) != Some(&*digest);
-                self.ctx.project_states.insert(alias.clone(), *state);
-                // A late result for an unregistered alias must not outlive the prune.
-                if self.ctx.config.projects.contains_key(&alias) {
+                // A late result for an unregistered alias must not outlive the
+                // prune, and a project whose folder or `.planning/` is gone holds
+                // no digest at all, so it never reads as clean (WR-01, D-09).
+                let digest_changed = if self.ctx.owner_digest_storable(&alias) {
+                    let differs = self.ctx.owner_digests.get(&alias) != Some(&*digest);
                     self.ctx.owner_digests.insert(alias.clone(), *digest);
-                }
+                    differs
+                } else {
+                    self.ctx.owner_digests.remove(&alias).is_some()
+                };
                 if changed || digest_changed {
                     self.ctx.recompute_filtered_aliases();
                     self.needs_redraw = true;
@@ -3599,7 +3604,7 @@ impl App {
             // from the reparse task is always newer than a first-fill one
             // (RESEARCH Pitfall 2). Never a status message.
             Action::OwnerDigestLoaded { alias, digest } => {
-                if self.ctx.config.projects.contains_key(&alias)
+                if self.ctx.owner_digest_storable(&alias)
                     && !self.ctx.owner_digests.contains_key(&alias)
                 {
                     self.ctx.owner_digests.insert(alias, *digest);
@@ -5724,6 +5729,71 @@ mod tests {
             digest: Box::new(d2),
         });
         assert_eq!(app.ctx.owner_digests[OBS_ALIAS], d1);
+    }
+
+    /// WR-01 (D-09): a project whose `.planning/` or folder is gone holds no digest,
+    /// so its `You` cell stays empty instead of the clean `·`, it has no owner rank
+    /// and the summary neither counts it nor waits for it.
+    #[tokio::test]
+    async fn a_project_without_planning_holds_no_owner_digest() {
+        use crate::state_reader::owner_items::OwnerDigest;
+        use crate::ui::screens::owner::{owner_numbers, owner_totals, you_cell_line};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, _rx) = obs_app(dir.path());
+        let present = ProjectState::default();
+        app.update(Action::ProjectStateLoaded {
+            alias: OBS_ALIAS.to_string(),
+            state: Box::new(present),
+            digest: Box::new(OwnerDigest {
+                test: 2,
+                ..OwnerDigest::default()
+            }),
+        });
+        assert_eq!(app.ctx.owner_digests[OBS_ALIAS].test, 2, "the control arm");
+
+        for presence in [ProjectPresence::NoPlanning, ProjectPresence::FolderMissing] {
+            app.needs_redraw = false;
+            app.update(Action::ProjectStateLoaded {
+                alias: OBS_ALIAS.to_string(),
+                state: Box::new(ProjectState {
+                    presence,
+                    ..ProjectState::default()
+                }),
+                digest: Box::new(OwnerDigest::default()),
+            });
+            assert!(
+                !app.ctx.owner_digests.contains_key(OBS_ALIAS),
+                "{presence:?}: the reader's empty digest must not be stored"
+            );
+            app.update(Action::OwnerDigestLoaded {
+                alias: OBS_ALIAS.to_string(),
+                digest: Box::new(OwnerDigest::default()),
+            });
+            assert!(
+                !app.ctx.owner_digests.contains_key(OBS_ALIAS),
+                "{presence:?}: nor a first fill"
+            );
+            let cell = you_cell_line(
+                app.ctx
+                    .owner_digests
+                    .get(OBS_ALIAS)
+                    .map(owner_numbers)
+                    .as_ref(),
+                21,
+            );
+            assert!(
+                !cell.spans.iter().any(|s| s.content.contains('\u{b7}')),
+                "{presence:?}: an absent value, never the clean dot"
+            );
+            app.ctx.recompute_filtered_aliases();
+            assert_eq!(app.ctx.filtered_aliases, [OBS_ALIAS]);
+            let totals = owner_totals(app.ctx.summary_owner_rows());
+            assert_eq!(
+                (totals.visible, totals.pending),
+                (0, 0),
+                "{presence:?}: neither a clean row nor one loading forever"
+            );
+        }
     }
 
     #[tokio::test]

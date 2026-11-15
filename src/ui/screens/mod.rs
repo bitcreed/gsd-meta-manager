@@ -1896,6 +1896,11 @@ impl AppContext {
         let Some(state) = self.project_states.get(alias).cloned() else {
             return;
         };
+        // A gone folder or a missing `.planning/` has no owner state to read; the
+        // handler would refuse the empty digest anyway (WR-01).
+        if state.presence != crate::state_reader::ProjectPresence::Present {
+            return;
+        }
         let tx = tx.clone();
         let alias = alias.to_string();
         let planning_dir = project_path.join(".planning");
@@ -1935,8 +1940,7 @@ impl AppContext {
                 .and_then(|cache| cache.launcher_marker)
                 .is_some_and(|marker| marker.class == Some(driver_run::MarkerClass::Driven));
         let has_owner_work = self
-            .owner_digests
-            .get(alias)
+            .owner_digest(alias)
             .map(owner::owner_numbers)
             .is_some_and(|n| owner::has_owner_work(&n));
         attention_rank(
@@ -1946,10 +1950,58 @@ impl AppContext {
         )
     }
 
+    /// Whether `alias`'s last parsed state says its folder or its `.planning/` is
+    /// gone. No state yet is not "unavailable": it is still loading.
+    pub(crate) fn owner_state_unavailable(&self, alias: &str) -> bool {
+        self.project_states
+            .get(alias)
+            .is_some_and(|state| state.presence != crate::state_reader::ProjectPresence::Present)
+    }
+
+    /// Whether a digest for `alias` may be stored (WR-01): the alias is registered
+    /// and its folder and `.planning/` are not known to be gone.
+    ///
+    /// For a missing folder or a project without `.planning/` the reader finds
+    /// nothing and returns an empty digest, which every owner surface would read as
+    /// "nothing waits on you". Absent data must not read as clean (D-09), so such a
+    /// project holds no digest: its `You` cell stays empty, it has no owner rank,
+    /// `/y` never matches it, and the summary leaves it out.
+    pub(crate) fn owner_digest_storable(&self, alias: &str) -> bool {
+        self.config.projects.contains_key(alias) && !self.owner_state_unavailable(alias)
+    }
+
+    /// `alias`'s owner digest as every owner surface reads it (cell, summary, rank,
+    /// `/y`, Owner block): `None` while it loads, and `None` for a project whose
+    /// folder or `.planning/` is gone even if an older digest is still in the map
+    /// (WR-01). The store refuses such digests too; this is the read-side half, so a
+    /// state written by another path cannot leave a clean-looking digest showing.
+    pub(crate) fn owner_digest(
+        &self,
+        alias: &str,
+    ) -> Option<&crate::state_reader::owner_items::OwnerDigest> {
+        if self.owner_state_unavailable(alias) {
+            return None;
+        }
+        self.owner_digests.get(alias)
+    }
+
+    /// The visible rows the `You:` summary sums (D-11), each with its digest or
+    /// `None` while one is loading. A row whose folder or `.planning/` is gone has
+    /// no owner state and is left out rather than counted as loading forever or as
+    /// a clean project (WR-01).
+    pub(crate) fn summary_owner_rows(
+        &self,
+    ) -> impl Iterator<Item = Option<&crate::state_reader::owner_items::OwnerDigest>> {
+        self.filtered_aliases
+            .iter()
+            .filter(|alias| !self.owner_state_unavailable(alias))
+            .map(|alias| self.owner_digests.get(alias))
+    }
+
     /// Whether `alias` passes the `/y [lane]` filter (D-14): no digest never
     /// matches; no lane means any owner work; a lane means its count is above 0.
     pub(crate) fn owner_work_matches(&self, alias: &str, lane: Option<owner::OwnerLane>) -> bool {
-        let Some(digest) = self.owner_digests.get(alias) else {
+        let Some(digest) = self.owner_digest(alias) else {
             return false;
         };
         let numbers = owner::owner_numbers(digest);

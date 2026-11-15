@@ -2146,7 +2146,8 @@ impl DetailScreen {
             }
             _ => {}
         }
-        let Some(digest) = ctx.owner_digests.get(&self.alias) else {
+        let unavailable = ctx.owner_state_unavailable(&self.alias);
+        let Some(digest) = ctx.owner_digests.get(&self.alias).filter(|_| !unavailable) else {
             self.focus = DetailFocus::Content;
             ctx.needs_redraw = true;
             return None;
@@ -2211,7 +2212,8 @@ impl DetailScreen {
         if self.owner_block_rows.get() == 0 {
             return false;
         }
-        let Some(digest) = ctx.owner_digests.get(&self.alias) else {
+        let unavailable = ctx.owner_state_unavailable(&self.alias);
+        let Some(digest) = ctx.owner_digests.get(&self.alias).filter(|_| !unavailable) else {
             return false;
         };
         let view = &mut ctx
@@ -7626,7 +7628,7 @@ impl DetailScreen {
         self.owner_block_rows.set(0);
         if let (Some(state), Some(digest)) = (
             ctx.project_states.get(&self.alias),
-            ctx.owner_digests.get(&self.alias),
+            ctx.owner_digest(&self.alias),
         ) {
             let default_view = owner_block::OwnerBlockState::default();
             let view = ctx

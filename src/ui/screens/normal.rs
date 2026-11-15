@@ -712,11 +712,7 @@ fn render_owner_summary(frame: &mut Frame, area: Rect, ctx: &AppContext) {
     use super::owner::{owner_totals, summary_left_line, summary_right_spans, INBOX_HINT_CELLS};
     let parts =
         Layout::horizontal([Constraint::Min(0), Constraint::Length(INBOX_HINT_CELLS)]).split(area);
-    let totals = owner_totals(
-        ctx.filtered_aliases
-            .iter()
-            .map(|alias| ctx.owner_digests.get(alias)),
-    );
+    let totals = owner_totals(ctx.summary_owner_rows());
     frame.render_widget(
         Paragraph::new(summary_left_line(&totals, parts[0].width.saturating_sub(2))),
         parts[0],
@@ -1267,8 +1263,7 @@ impl NormalScreen {
                     let cells: Vec<TableCell> = if terminal_width >= 100 {
                         // Built from the digest map only: no read, no parse here.
                         let you_cell = super::owner::you_cell_line(
-                            ctx.owner_digests
-                                .get(alias)
+                            ctx.owner_digest(alias)
                                 .map(super::owner::owner_numbers)
                                 .as_ref(),
                             YOU_COLUMN_CELLS,
@@ -2729,7 +2724,6 @@ mod tests {
         pause(&mut ctx, "fir-sync");
         ctx.project_states.get_mut("alder-api").unwrap().status = "executing".to_string();
         ctx.project_states.get_mut("birch-cli").unwrap().status = "verifying".to_string();
-        ctx.project_states.get_mut("cedar-web").unwrap().presence = ProjectPresence::FolderMissing;
         ctx.project_states.get_mut("dune-app").unwrap().status = "blocked".to_string();
 
         owe(&mut ctx, "alder-api", counts(3, 1, 0, 0));
@@ -3205,6 +3199,45 @@ mod tests {
         assert_eq!(you_cell_text(&rows, juno), "");
         let (start, end) = you_span(&rows);
         assert!(juno[start..end].iter().all(|(s, _)| s == " "));
+    }
+
+    /// WR-01 (D-09): a project whose folder or `.planning/` is gone shows no owner
+    /// value, even with an older digest still in the map. Its `You` cell is blank
+    /// (never the clean `·`), it has no owner rank, `/y` skips it, and the summary
+    /// neither counts it nor reports it loading.
+    #[test]
+    fn a_missing_project_shows_no_owner_value() {
+        for presence in [ProjectPresence::FolderMissing, ProjectPresence::NoPlanning] {
+            let mut ctx = owner_fleet_ctx();
+            ctx.project_states.get_mut("cedar-web").unwrap().presence = presence;
+            ctx.recompute_filtered_aliases();
+            let rows = render_dashboard_cells(&ctx, 120, 20);
+            let cedar = row_with(&rows, "cedar-web");
+            assert_eq!(you_cell_text(&rows, cedar), "", "{presence:?}");
+            assert!(
+                summary_row(&rows).starts_with(
+                    "You: test 34 (8 close) \u{b7} decide 5 \u{b7} fix 7 \u{b7} 10 of 14 projects \u{b7} 1 loading"
+                ),
+                "{presence:?}: {:?}",
+                summary_row(&rows)
+            );
+            assert!(!ctx.owner_work_matches("cedar-web", None), "{presence:?}");
+            ctx.filter_text = "/y".to_string();
+            ctx.recompute_filtered_aliases();
+            assert!(
+                !ctx.filtered_aliases.iter().any(|a| a == "cedar-web"),
+                "{presence:?}"
+            );
+
+            // Absent data never reads as the clean dot: a gone project with an
+            // empty digest stays blank too.
+            ctx.filter_text.clear();
+            ctx.owner_digests
+                .insert("cedar-web".to_string(), OwnerDigest::default());
+            ctx.recompute_filtered_aliases();
+            let rows = render_dashboard_cells(&ctx, 120, 20);
+            assert_eq!(you_cell_text(&rows, row_with(&rows, "cedar-web")), "");
+        }
     }
 
     #[test]
