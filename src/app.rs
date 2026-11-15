@@ -576,6 +576,15 @@ pub struct App {
     /// the check is clean, the user leaves the run unlaunched, the editor fails, the
     /// kept text is discarded, or the run is launched.
     pub new_run_flow: std::collections::HashSet<(String, String)>,
+    /// Aliases whose `.planning/` changed inside the 500 ms re-parse window (WR-06).
+    ///
+    /// The dedup in the `FileChanged` handler drops a write that lands within
+    /// 500 ms of the previous re-parse. Owner files change in bursts (a verify
+    /// step writes the UAT file, `STATE.md` and `ROADMAP.md` back to back), so the
+    /// dropped write is often the one the digest needed. A dropped alias is
+    /// marked here, and the tick re-parses it once its window has passed: the
+    /// dedup becomes trailing-edge without a timer of its own.
+    pub reparse_pending: std::collections::HashSet<String>,
     /// The host check and the launch call the launch form reaches (30-05).
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub launch_seams: LaunchSeams,
@@ -999,6 +1008,7 @@ impl App {
             oneoff_landings: Default::default(),
             edit_sessions: HashMap::new(),
             new_run_flow: std::collections::HashSet::new(),
+            reparse_pending: std::collections::HashSet::new(),
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             launch_seams: LaunchSeams::default(),
             #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -1055,6 +1065,39 @@ impl App {
         self.ctx
             .last_refresh
             .insert(alias.to_string(), std::time::Instant::now());
+    }
+
+    /// The window inside which a `.planning/` change does not re-parse `alias`
+    /// again: 500 ms from the last dispatch.
+    const REPARSE_WINDOW: std::time::Duration = std::time::Duration::from_millis(500);
+
+    /// Whether `alias` was re-parsed less than [`Self::REPARSE_WINDOW`] before `now`.
+    fn reparse_window_open(&self, alias: &str, now: std::time::Instant) -> bool {
+        self.ctx
+            .last_refresh
+            .get(alias)
+            .is_some_and(|last| now.saturating_duration_since(*last) < Self::REPARSE_WINDOW)
+    }
+
+    /// Re-parse every alias in [`App::reparse_pending`] whose window has passed
+    /// (WR-06), through [`Self::schedule_reparse`], the only dispatch site. An
+    /// alias no longer registered is dropped. Runs on the existing tick, no timer.
+    fn flush_pending_reparses(&mut self, now: std::time::Instant) {
+        if self.reparse_pending.is_empty() {
+            return;
+        }
+        let due: Vec<String> = self
+            .reparse_pending
+            .iter()
+            .filter(|alias| !self.reparse_window_open(alias, now))
+            .cloned()
+            .collect();
+        for alias in due {
+            self.reparse_pending.remove(&alias);
+            if let Some(path) = self.ctx.config.projects.get(&alias).map(|p| p.path.clone()) {
+                self.schedule_reparse(&alias, &path);
+            }
+        }
     }
 
     /// Gather the facts [`launcher_heartbeat_redraw_wanted`] decides on (30-02, D-08).
@@ -2644,6 +2687,10 @@ impl App {
                     self.needs_redraw = true;
                 }
 
+                // The trailing edge of the 500 ms re-parse dedup (WR-06): a write
+                // the dedup dropped is re-parsed on the first tick after its window.
+                self.flush_pending_reparses(std::time::Instant::now());
+
                 // Poll for Claude and Codex sessions every 20 ticks (~5s at 250ms interval)
                 self.session_poll_counter += 1;
                 if self.session_poll_counter >= 20 {
@@ -2847,15 +2894,15 @@ impl App {
                             // does.
                             self.ctx.schedule_archive_refresh(&alias, &project_path);
 
-                            // Dedup: skip if last refresh was less than 500ms ago
-                            let now = std::time::Instant::now();
-                            if let Some(last) = self.ctx.last_refresh.get(&alias) {
-                                if now.duration_since(*last) < std::time::Duration::from_millis(500)
-                                {
-                                    return;
-                                }
+                            // Dedup: skip if last refresh was less than 500ms ago,
+                            // but remember the skipped write: the tick re-parses
+                            // the alias once the window has passed (WR-06).
+                            if self.reparse_window_open(&alias, std::time::Instant::now()) {
+                                self.reparse_pending.insert(alias);
+                                return;
                             }
 
+                            self.reparse_pending.remove(&alias);
                             self.schedule_reparse(&alias, &project_path);
 
                             // Auto-start watcher if not yet watching
@@ -5589,6 +5636,64 @@ mod tests {
         assert_eq!(second.test, first.test - 1, "one pending check was passed");
         let second_cell = you_cell_line(Some(&owner_numbers(second)), 21);
         assert_ne!(first_cell, second_cell, "the You cell text changes");
+    }
+
+    /// WR-06: a write the 500 ms dedup drops is not lost. The alias is marked and
+    /// the first tick after its window re-parses it, so the digest catches the
+    /// last write of a burst (a UAT row flipped right after the previous parse).
+    #[tokio::test]
+    async fn a_write_inside_the_reparse_window_is_reparsed_on_a_later_tick() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path();
+        copy_owner_fixture("uat-pending", root);
+        let (mut app, mut rx) = obs_app(root);
+
+        app.update(planning_change(root));
+        deliver_reparse(&mut app, &mut rx).await;
+        let first = app.ctx.owner_digests[OBS_ALIAS].test;
+        let dispatched = app.ctx.reparse_dispatches;
+
+        let uat = root.join(".planning/phases/01-alpha/01-UAT.md");
+        let text = std::fs::read_to_string(&uat).expect("read the UAT file");
+        std::fs::write(&uat, text.replacen("result: pending", "result: pass", 1))
+            .expect("rewrite the UAT file");
+        // The previous re-parse just started: this write is inside its window.
+        app.ctx
+            .last_refresh
+            .insert(OBS_ALIAS.to_string(), std::time::Instant::now());
+        app.update(planning_change(root));
+        assert_eq!(app.ctx.reparse_dispatches, dispatched, "the dedup holds");
+        assert!(app.reparse_pending.contains(OBS_ALIAS), "but remembers");
+        app.update(Action::Tick);
+        assert_eq!(
+            app.ctx.reparse_dispatches, dispatched,
+            "not before the window has passed"
+        );
+
+        let past = std::time::Instant::now()
+            .checked_sub(std::time::Duration::from_millis(600))
+            .expect("an instant 600 ms ago");
+        app.ctx.last_refresh.insert(OBS_ALIAS.to_string(), past);
+        app.update(Action::Tick);
+        assert_eq!(
+            app.ctx.reparse_dispatches,
+            dispatched + 1,
+            "the trailing edge"
+        );
+        assert!(app.reparse_pending.is_empty());
+        deliver_reparse(&mut app, &mut rx).await;
+        assert_eq!(
+            app.ctx.owner_digests[OBS_ALIAS].test,
+            first - 1,
+            "the dropped write reached the digest"
+        );
+
+        app.update(Action::Tick);
+        assert_eq!(
+            app.ctx.reparse_dispatches,
+            dispatched + 1,
+            "one trailing re-parse, not one per tick"
+        );
     }
 
     /// D-02 / Pitfall 1: a digest-only change redraws and re-sorts but never
