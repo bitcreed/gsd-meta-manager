@@ -133,6 +133,10 @@ pub(crate) struct Cursor {
 /// The block as lines for one width.
 pub(crate) struct BlockModel {
     pub header: Line<'static>,
+    /// The header picked for the width left beside the widest row-range hint
+    /// (` 1-12 of 34`), drawn when body rows are clipped so the hint never cuts a
+    /// rung mid-clause.
+    pub header_hinted: Line<'static>,
     /// Group rows, their expansion lines, and the rows of open folds.
     pub body: Vec<Line<'static>>,
     pub fold_line: Option<Line<'static>>,
@@ -1060,8 +1064,15 @@ pub(crate) fn block_model(
     // fold line stop (always drawn when a fold is selectable) comes last.
     let stops = sk.stops;
     stop_lines.resize(stops.len(), None);
+    let widest_hint = format!(" {0}-{0} of {0}", body.len());
     BlockModel {
         header: header_line(alias, milestone, &digest.closes_after, width),
+        header_hinted: header_line(
+            alias,
+            milestone,
+            &digest.closes_after,
+            width.saturating_sub(cells(&widest_hint)),
+        ),
         has_content: !body.is_empty() || fold_line.is_some(),
         body,
         fold_line,
@@ -1160,7 +1171,10 @@ pub(crate) fn render_owner_block(
                 Constraint::Length(u16::try_from(cells(&hint)).unwrap_or(u16::MAX)),
             ])
             .split(header_rect);
-            let header = fit_spans(model.header.spans.clone(), usize::from(parts[0].width));
+            let header = fit_spans(
+                model.header_hinted.spans.clone(),
+                usize::from(parts[0].width),
+            );
             frame.render_widget(Paragraph::new(header), parts[0]);
             frame.render_widget(Paragraph::new(Span::styled(hint, dim())), parts[1]);
         }
@@ -1638,6 +1652,53 @@ mod tests {
             .find(|r| r.contains("ws v0-14"))
             .expect("workstream row");
         assert!(row.contains("\u{2026} ph 26"), "{row}");
+    }
+
+    #[test]
+    fn a_clipped_block_header_is_a_whole_rung_beside_the_hint() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let mut digest = sample_owner_digest();
+        // Many rows, so the body is clipped in a short block.
+        let template = digest
+            .groups
+            .iter()
+            .find(|g| g.lane == Lane::Test && g.phase == "25")
+            .expect("test group")
+            .clone();
+        for n in 0..30 {
+            let mut g = template.clone();
+            g.phase = format!("{}", 40 + n);
+            g.file = format!("phases/{}/UAT.md", g.phase);
+            digest.groups.push(g);
+        }
+        for width in 60u16..=140 {
+            let model = block_model(
+                "sample",
+                "v2.2",
+                &digest,
+                &OwnerBlockState::default(),
+                width,
+            );
+            let mut terminal = Terminal::new(TestBackend::new(width, 6)).expect("backend");
+            terminal
+                .draw(|f| render_owner_block(f, f.area(), &model, None, 0))
+                .expect("draw");
+            let buffer = terminal.backend().buffer().clone();
+            let first: String = (0..width)
+                .map(|x| buffer.cell((x, 0)).map_or(" ", |c| c.symbol()).to_string())
+                .collect();
+            let first = first.trim_end().to_owned();
+            let (head, hint) = first.rsplit_once(" 1-").expect("hint");
+            assert!(hint.contains("of"), "{first}");
+            // A whole rung ends in a number, `not built N`, or the counts form: never
+            // in the middle of a clause such as `(ph 11`.
+            let cut_mid_clause = head.contains('(') && !head.trim_end().ends_with(')');
+            assert!(
+                !cut_mid_clause && !head.trim_end().ends_with('\u{2026}') || width < 100,
+                "{width}: {first}"
+            );
+        }
     }
 
     #[test]
