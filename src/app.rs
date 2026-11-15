@@ -5915,9 +5915,11 @@ mod tests {
 
     /// The phase of the row the cursor resolves to now.
     fn cursor_phase(app: &App) -> Option<String> {
-        use crate::ui::screens::inbox::{resolve_cursor, visible_rows};
-        let rows = visible_rows(&app.ctx);
-        resolve_cursor(&app.ctx.inbox_view, &rows).map(|at| rows[at].src.group.phase.clone())
+        use crate::ui::screens::inbox::{cursor_pos, stop_rows};
+        let rows = stop_rows(&app.ctx);
+        cursor_pos(&app.ctx, &rows)
+            .and_then(|at| rows.get(at))
+            .map(|row| row.src.group.phase.clone())
     }
 
     /// SC3 / D-10: a UAT flipped to passed leaves the inbox on the next watcher

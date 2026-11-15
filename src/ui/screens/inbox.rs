@@ -295,20 +295,6 @@ pub(crate) fn visible_rows(ctx: &AppContext) -> Vec<InboxRow> {
     rows
 }
 
-/// The index of the cursor in `rows`; a vanished identity resolves to its last
-/// index clamped to the list. `None` for an empty list.
-#[cfg(test)]
-pub(crate) fn resolve_cursor(view: &InboxViewState, rows: &[InboxRow]) -> Option<usize> {
-    if rows.is_empty() {
-        return None;
-    }
-    let found = match &view.cursor {
-        Some(InboxStop::Row(key)) => rows.iter().position(|row| row.key() == *key),
-        _ => None,
-    };
-    Some(found.unwrap_or_else(|| view.cursor_index.min(rows.len() - 1)))
-}
-
 /// The folds the fold line offers, in line order (D-02, D-19): Old debt and
 /// Acknowledged when they have content, Triage when todos were counted or could
 /// not be read (it is a stop so a refusal can reach it, but it never opens).
@@ -393,10 +379,19 @@ pub(crate) fn cursor_pos(ctx: &AppContext, rows: &[InboxRow]) -> Option<usize> {
     let view = &ctx.inbox_view;
     Some(match &view.cursor {
         Some(InboxStop::FoldLine) => count - 1,
-        Some(InboxStop::Row(key)) => rows
-            .iter()
-            .position(|row| row.key() == *key)
-            .unwrap_or_else(|| view.cursor_index.min(count - 1)),
+        // A vanished row falls to the row that took its index, else the one
+        // before it; the fold line only when no row is left (D-10).
+        Some(InboxStop::Row(key)) => {
+            rows.iter()
+                .position(|row| row.key() == *key)
+                .unwrap_or_else(|| {
+                    if rows.is_empty() {
+                        count - 1
+                    } else {
+                        view.cursor_index.min(rows.len() - 1)
+                    }
+                })
+        }
         None => 0,
     })
 }
@@ -2497,9 +2492,14 @@ mod tests {
         ctx.inbox_view.cursor_index = at;
     }
 
+    /// The alias under the cursor, read through the production `cursor_pos`
+    /// (the fold line is `"<fold line>"`, no stop at all is `None`).
     fn cursor_alias(ctx: &AppContext) -> Option<String> {
-        let rows = visible_rows(ctx);
-        resolve_cursor(&ctx.inbox_view, &rows).map(|at| rows[at].alias.clone())
+        let rows = stop_rows(ctx);
+        cursor_pos(ctx, &rows).map(|at| {
+            rows.get(at)
+                .map_or_else(|| "<fold line>".to_owned(), |row| row.alias.clone())
+        })
     }
 
     #[test]
@@ -3587,14 +3587,14 @@ mod tests {
         ctx.owner_digests
             .insert("dune-app".to_owned(), OwnerDigest::default());
         let rows = visible_rows(&ctx);
-        let at = resolve_cursor(&ctx.inbox_view, &rows).expect("a cursor");
+        let at = cursor_pos(&ctx, &rows).expect("a cursor");
         assert_eq!(rows[at].alias, "alder-api");
         // The row under the cursor vanishes: the selection clamps to a neighbor.
         ctx.owner_digests
             .insert("alder-api".to_owned(), OwnerDigest::default());
         let rows = visible_rows(&ctx);
-        let at = resolve_cursor(&ctx.inbox_view, &rows).expect("a cursor");
-        assert!(at < rows.len());
+        let at = cursor_pos(&ctx, &rows).expect("a cursor");
+        assert!(at < rows.len(), "a row, not the fold line");
         screen.handle_key(KeyCode::Char('j'), KeyModifiers::NONE, &mut ctx);
     }
 
