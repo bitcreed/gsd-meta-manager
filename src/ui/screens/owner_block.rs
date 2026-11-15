@@ -2238,4 +2238,95 @@ mod tests {
         // An offset past the end clamps.
         assert_eq!(follow_offset(&model, None, 99, 3), 5);
     }
+
+    /// The block drawn at a terminal size, one `String` per row (trailing blanks
+    /// kept, so a changed fill shows up too).
+    fn drawn(
+        width: u16,
+        term_height: u16,
+        view: &OwnerBlockState,
+        cursor: Option<Cursor>,
+    ) -> String {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let digest = sample_owner_digest();
+        let model = block_model("sample", "v2.2", &digest, view, width);
+        let height = block_height(&model, term_height);
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("backend");
+        terminal
+            .draw(|f| render_owner_block(f, f.area(), &model, cursor, 0))
+            .expect("draw");
+        let buffer = terminal.backend().buffer().clone();
+        let mut out = String::new();
+        for y in 0..height {
+            for x in 0..width {
+                out.push_str(buffer.cell((x, y)).map_or(" ", |c| c.symbol()));
+            }
+            out.push('\n');
+        }
+        out
+    }
+
+    fn golden(name: &str) -> String {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/owner_golden")
+            .join(name);
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+    }
+
+    fn pin_views() -> [(&'static str, u16, u16, OwnerBlockState, Option<Cursor>); 3] {
+        let digest = sample_owner_digest();
+        let first_test = digest
+            .groups
+            .iter()
+            .find(|g| g.lane == Lane::Test && g.scope == Scope::Current)
+            .expect("test group");
+        let mut open = OwnerBlockState::default();
+        open.expanded.insert(GroupKey::of(first_test));
+        open.open_folds.insert(Fold::OldDebt);
+        [
+            (
+                "owner_block_120x30.txt",
+                120,
+                30,
+                OwnerBlockState::default(),
+                None,
+            ),
+            (
+                "owner_block_120x30_open.txt",
+                120,
+                30,
+                open,
+                Some(Cursor {
+                    stop: 0,
+                    fold: None,
+                }),
+            ),
+            (
+                "owner_block_80x24.txt",
+                80,
+                24,
+                OwnerBlockState::default(),
+                None,
+            ),
+        ]
+    }
+
+    /// The 36 layout is frozen (coordinator directive 4): the block renders the
+    /// same bytes as when the goldens were written, before D-11's `run` field.
+    #[test]
+    fn owner_block_output_is_pinned() {
+        for (name, w, h, view, cursor) in pin_views() {
+            let got = drawn(w, h, &view, cursor);
+            let want = golden(name);
+            for (n, (g, e)) in got.lines().zip(want.lines()).enumerate() {
+                assert_eq!(g, e, "{name} line {}", n + 1);
+            }
+            assert_eq!(
+                got.lines().count(),
+                want.lines().count(),
+                "{name} line count"
+            );
+        }
+    }
 }
