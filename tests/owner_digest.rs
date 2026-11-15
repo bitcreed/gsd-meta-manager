@@ -524,7 +524,9 @@ fn debug_sessions_fill_decide_and_fix() {
 fn context_questions_fill_decide() {
     let (_g, e) = entry_of("context-questions", "ctx");
     let d = &e.digest;
-    assert_eq!(d.decide, 6);
+    // D-18: 02-alpha counts 5 top-level entries (the bold line folds into the one
+    // before it), 2 of them open.
+    assert_eq!(d.decide, 5);
     assert_eq!(d.archived.decide, 1);
     assert_eq!(d.hidden.acknowledged_files, 1);
 
@@ -541,7 +543,7 @@ fn context_questions_fill_decide() {
         })
         .collect();
     let find = |suffix: &str| listed.iter().find(|(file, _, _)| file.ends_with(suffix));
-    assert_eq!(find("phases/02-alpha/02-CONTEXT.md").map(|g| g.1), Some(3));
+    assert_eq!(find("phases/02-alpha/02-CONTEXT.md").map(|g| g.1), Some(2));
     assert_eq!(find("phases/03-bravo/03-CONTEXT.md"), None);
     assert_eq!(
         find("phases/04-charlie/04-CONTEXT.md").map(|g| g.1),
@@ -573,7 +575,7 @@ fn context_questions_fill_decide() {
         .find(|g| g["workstream"] == "ws1" && g["kind"] == "context_questions")
         .unwrap();
     assert_eq!(ws["lane"], "decide");
-    assert_eq!(doc["summary"]["decide"], 6);
+    assert_eq!(doc["summary"]["decide"], 5);
     assert_eq!(doc["summary"]["archived"]["decide"], 1);
 
     let alpha = groups(&doc)
@@ -590,13 +592,10 @@ fn context_questions_fill_decide() {
         .iter()
         .map(|i| i["id"].as_str().unwrap())
         .collect();
-    assert_eq!(
-        ids,
-        ["02-CONTEXT.md#q4", "02-CONTEXT.md#q5", "02-CONTEXT.md#q6"]
-    );
+    assert_eq!(ids, ["02-CONTEXT.md#q4", "02-CONTEXT.md#q5"]);
 
     let text = render_text(std::slice::from_ref(&e), &Filters::default());
-    assert!(text.contains("3 open questions in 02-CONTEXT.md"), "{text}");
+    assert!(text.contains("2 open questions in 02-CONTEXT.md"), "{text}");
 }
 
 #[test]
@@ -635,6 +634,32 @@ fn a_summary_only_phase_counts_as_planned() {
         .iter()
         .all(|g| g["kind"] != "context_questions"));
     assert_eq!(doc["summary"]["planned_questions"], 2);
+}
+
+#[test]
+fn open_questions_count_top_level_entries() {
+    let (_g, e) = entry_of("context-entries", "ent");
+    assert_eq!(e.digest.decide, 3);
+    let doc = build_document(std::slice::from_ref(&e), &include_all());
+    let group = groups(&doc)
+        .iter()
+        .find(|g| g["kind"] == "context_questions")
+        .unwrap();
+    let items = group["items"].as_array().unwrap();
+    let ids: Vec<&str> = items.iter().map(|i| i["id"].as_str().unwrap()).collect();
+    assert_eq!(
+        ids,
+        ["02-CONTEXT.md#q1", "02-CONTEXT.md#q2", "02-CONTEXT.md#q3"]
+    );
+    let names: Vec<&str> = items.iter().map(|i| i["name"].as_str().unwrap()).collect();
+    assert_eq!(
+        names,
+        [
+            "- **OQ-01** — Should the export be paged for large lists?",
+            "- **OQ-02** — Is the cache keyed per user or per team?",
+            "- **OQ-03** — Does the report need a footer?",
+        ]
+    );
 }
 
 fn handoff_groups_of(doc: &Value) -> Vec<&Value> {

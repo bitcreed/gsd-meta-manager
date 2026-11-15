@@ -742,11 +742,12 @@ fn strip_list_marker(text: &str) -> &str {
     text
 }
 
-/// A question-ID label: letters, a digit, more id characters, then a real separator
+/// A question-ID label: letters, a digit, more id characters, an optional emphasis
+/// closer (`**OQ-02** — `), then a real separator
 /// (`—`, `–` or `:`, or a hyphen with whitespace on both sides). Whitespace alone does
 /// not end a label, so `v2 closed beta` keeps its first word `v2`.
 static QUESTION_LABEL: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-    regex::Regex::new(r"^[A-Za-z]{1,6}[-.]?[0-9][A-Za-z0-9.-]*(?:[ \t]*[—–:][—–:\s-]*|[ \t]+-+\s+)")
+    regex::Regex::new(r"^[A-Za-z]{1,6}[-.]?[0-9][A-Za-z0-9.-]*(?:\*\*|__|\*|_|`)?(?:[ \t]*[—–:][—–:\s-]*|[ \t]+-+\s+)")
         .expect("a valid static pattern")
 });
 
@@ -804,14 +805,14 @@ fn context_groups(
         let unreadable = file.unreadable.is_some();
         let base = basename(&file.rel_path);
         let items: Vec<OwnerItem> = file
-            .questions
+            .entries
             .iter()
             .enumerate()
-            .filter(|(_, question)| !is_answered(question))
-            .map(|(at, question)| {
+            .filter(|(_, entry)| !is_answered(&entry.folded))
+            .map(|(at, entry)| {
                 signal_item(
                     format!("{base}#q{}", at + 1),
-                    question.clone(),
+                    entry.first_line.clone(),
                     "open".to_owned(),
                     None,
                 )
@@ -1142,7 +1143,7 @@ impl OwnerDigest {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state_reader::owner_items::{EntryFields, Origin, Unreadable};
+    use crate::state_reader::owner_items::{ContextEntry, EntryFields, Origin, Unreadable};
     use crate::state_reader::roadmap_md::RoadmapPhase;
 
     fn state() -> ProjectState {
@@ -2051,6 +2052,8 @@ mod tests {
         for line in [
             "- **OQ-06-01 — ANSWERED: yes, for free.** text",
             "- **OQ-02 — RESOLVED by H-02 (2026-08-27).** text",
+            "- **OQ-02** — RESOLVED by H-02",
+            "1. **Q3** – CLOSED",
             "1. Which scheme? (CLOSED)",
             "- [x] RESOLVED: done",
             "- Resolved: kept",
@@ -2065,6 +2068,7 @@ mod tests {
         for line in [
             "**Six of the original nine were answered by the human.**",
             "- **OQ-04-01 — `[OPEN]`, HUMAN, non-blocking.** text",
+            "- **OQ-04** — [OPEN] keep?",
             "- Resolvedly done?",
             "- Note: resolved later?",
             "- Unresolved: x",
@@ -2110,6 +2114,13 @@ mod tests {
             acknowledged: false,
             unreadable: None,
             phase_planned: false,
+            entries: questions
+                .iter()
+                .map(|q| ContextEntry {
+                    first_line: (*q).to_owned(),
+                    folded: (*q).to_owned(),
+                })
+                .collect(),
         }
     }
 

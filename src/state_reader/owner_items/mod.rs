@@ -328,6 +328,17 @@ pub struct DebugSession {
     pub recovered_status: Option<String>,
 }
 
+/// One top-level open question of a CONTEXT document (D-18): a list entry with its
+/// wrapped, nested and lazy continuation lines folded in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContextEntry {
+    /// The sanitized first line, list marker included (the item name).
+    pub first_line: String,
+    /// Every sanitized line of the entry joined with one space (what the answered
+    /// filter reads).
+    pub folded: String,
+}
+
 /// One CONTEXT document with open questions as Layer A reads it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ContextFile {
@@ -354,6 +365,9 @@ pub struct ContextFile {
     /// The phase directory holds a PLAN or SUMMARY file (Layer B input from the scan's
     /// directory listing, never compared with the oracle; D-17).
     pub phase_planned: bool,
+    /// The top-level question entries (Layer B input, never compared with the oracle;
+    /// D-18). `questions` stays the oracle's line list.
+    pub entries: Vec<ContextEntry>,
 }
 
 /// Layer A for the open signals: what `audit-open` reports besides UAT files.

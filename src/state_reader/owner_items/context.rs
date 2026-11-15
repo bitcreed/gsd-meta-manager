@@ -39,13 +39,15 @@ use super::scan::{
     subdirectories, Target,
 };
 use super::uat::js_trim;
-use super::{frontmatter, markdown, ContextFile, ParseCache, Scope, CONTEXT_CACHE};
+use super::{frontmatter, markdown, ContextEntry, ContextFile, ParseCache, Scope, CONTEXT_CACHE};
 use crate::state_reader::ProjectState;
 
 /// What the text of one CONTEXT document alone determines.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ParsedContext {
     pub questions: Vec<String>,
+    /// Top-level question entries (Layer B, D-18).
+    pub entries: Vec<ContextEntry>,
     pub status: String,
     pub updated: Option<chrono::DateTime<chrono::Utc>>,
     pub acknowledged: bool,
@@ -183,6 +185,150 @@ pub(super) fn derive_open_questions(text: &str, fm: &Mapping) -> Vec<String> {
         .collect()
 }
 
+/// Whether a line is a markdown horizontal rule (`---`, `***`, `___`, spaces allowed).
+fn is_rule(line: &str) -> bool {
+    let mut marks = line.chars().filter(|c| !c.is_whitespace());
+    let Some(first) = marks.next() else {
+        return false;
+    };
+    matches!(first, '-' | '*' | '_') && marks.clone().all(|c| c == first) && marks.count() >= 2
+}
+
+/// Whether a line is an ATX heading (`#` to `######` then a space or the end).
+fn is_atx_heading(line: &str) -> bool {
+    let hashes = line.bytes().take_while(|b| *b == b'#').count();
+    (1..=6).contains(&hashes)
+        && line[hashes..]
+            .chars()
+            .next()
+            .is_none_or(char::is_whitespace)
+}
+
+/// The indent (in characters) of a list line, `None` for any other line: a bullet
+/// (`-`, `*`, `+`) or a number with `.` or `)`, then whitespace.
+fn list_indent(line: &str) -> Option<usize> {
+    let rest = line.trim_start_matches(char::is_whitespace);
+    let indent = line.chars().count() - rest.chars().count();
+    let after = if let Some(after) = rest.strip_prefix(['-', '*', '+']) {
+        after
+    } else {
+        let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+        if digits == 0 {
+            return None;
+        }
+        rest[digits..].strip_prefix(['.', ')'])?
+    };
+    after.starts_with(char::is_whitespace).then_some(indent)
+}
+
+fn entry_of(lines: &[String]) -> ContextEntry {
+    let first_line = lines.first().cloned().unwrap_or_default();
+    let folded = lines
+        .iter()
+        .filter(|line| !line.is_empty())
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(" ");
+    ContextEntry { first_line, folded }
+}
+
+/// The top-level question entries of a document (D-18, Layer B). A non-empty
+/// frontmatter `open_questions` list wins, one entry per element. Otherwise, in the
+/// section [`derive_open_questions`] reads: a list line at the section's smallest list
+/// indent opens an entry; deeper list lines, indented continuations and lazy
+/// continuations directly after an entry line fold into it; a horizontal rule, a
+/// heading or a non-list line at or below that indent after a blank line closes it and
+/// is dropped. A section without any list line yields one entry per `?` line.
+pub(super) fn top_level_entries(text: &str, fm: &Mapping) -> Vec<ContextEntry> {
+    if let Some(Value::Sequence(items)) = fm.get("open_questions") {
+        let entries: Vec<ContextEntry> = items
+            .iter()
+            .map(|item| {
+                let line =
+                    sanitize_for_display(&frontmatter::failsafe_str(item).unwrap_or_default());
+                ContextEntry {
+                    first_line: line.clone(),
+                    folded: line,
+                }
+            })
+            .collect();
+        if !entries.is_empty() {
+            return entries;
+        }
+    }
+    let lines: Vec<&str> = text.split('\n').collect();
+    let Some(section) = markdown::collect_section(
+        &lines,
+        |heading| {
+            heading.level == 2
+                && heading
+                    .text
+                    .trim()
+                    .to_lowercase()
+                    .starts_with("open questions")
+        },
+        true,
+    ) else {
+        return Vec::new();
+    };
+    let body = js_trim(&section.body);
+    if body.is_empty() || body.eq_ignore_ascii_case("none") {
+        return Vec::new();
+    }
+    let rows: Vec<&str> = section.body.split('\n').collect();
+    let base = rows
+        .iter()
+        .filter(|row| !is_rule(js_trim(row)))
+        .filter_map(|row| list_indent(row))
+        .min();
+    let clean = |row: &str| sanitize_for_display(js_trim(row));
+    let Some(base) = base else {
+        return rows
+            .iter()
+            .map(|row| js_trim(row))
+            .filter(|row| row.contains('?') && !is_rule(row) && !is_atx_heading(row))
+            .map(|row| entry_of(&[sanitize_for_display(row)]))
+            .collect();
+    };
+    let mut entries = Vec::new();
+    let mut open: Option<Vec<String>> = None;
+    let mut after_blank = false;
+    for row in rows {
+        let trimmed = js_trim(row);
+        if trimmed.is_empty() {
+            after_blank = true;
+            continue;
+        }
+        let blank_before = std::mem::take(&mut after_blank);
+        if is_rule(trimmed) || is_atx_heading(trimmed) {
+            entries.extend(open.take().map(|lines| entry_of(&lines)));
+            continue;
+        }
+        let indent = row.chars().take_while(|c| c.is_whitespace()).count();
+        match list_indent(row) {
+            Some(at) if at <= base => {
+                entries.extend(open.take().map(|lines| entry_of(&lines)));
+                open = Some(vec![clean(row)]);
+            }
+            Some(_) => {
+                if let Some(lines) = open.as_mut() {
+                    lines.push(clean(row));
+                }
+            }
+            None if blank_before && indent <= base => {
+                entries.extend(open.take().map(|lines| entry_of(&lines)));
+            }
+            None => {
+                if let Some(lines) = open.as_mut() {
+                    lines.push(clean(row));
+                }
+            }
+        }
+    }
+    entries.extend(open.map(|lines| entry_of(&lines)));
+    entries
+}
+
 /// `deriveOpenQuestionsDigest`: sha256 hex of `<utf-16 length>:<question>` for every
 /// question, concatenated.
 pub(super) fn questions_digest(questions: &[String]) -> String {
@@ -201,6 +347,7 @@ pub(super) fn questions_digest(questions: &[String]) -> String {
 pub(crate) fn parse_context(text: &str) -> ParsedContext {
     let fm = frontmatter::extract(text);
     let questions = derive_open_questions(text, &fm);
+    let entries = top_level_entries(text, &fm);
     let status = frontmatter::fm_str(&fm, "status")
         .filter(|status| !status.is_empty())
         .map_or_else(|| "unknown".to_owned(), |status| status.to_lowercase());
@@ -211,6 +358,7 @@ pub(crate) fn parse_context(text: &str) -> ParsedContext {
         frontmatter::is_acknowledged(&fm, "questions_digest", &questions_digest(&questions));
     ParsedContext {
         questions,
+        entries,
         status,
         updated,
         acknowledged,
@@ -326,6 +474,7 @@ fn scan_with(
                 acknowledged: false,
                 unreadable: None,
                 phase_planned,
+                entries: Vec::new(),
             };
             match open_checked(&real) {
                 Ok(opened) => {
@@ -349,6 +498,7 @@ fn scan_with(
                         continue;
                     }
                     file.questions = parsed.questions.clone();
+                    file.entries = parsed.entries.clone();
                     file.status = parsed.status.clone();
                     file.updated = parsed.updated;
                     file.acknowledged = parsed.acknowledged;
@@ -595,6 +745,87 @@ mod tests {
         let stream = files.iter().find(|f| f.phase == "01").unwrap();
         assert_eq!(stream.workstream.as_deref(), Some("ws1"));
         assert!(stream.in_current_milestone);
+    }
+
+    fn entries_of(text: &str) -> Vec<String> {
+        parse_context(text)
+            .entries
+            .into_iter()
+            .map(|entry| entry.folded)
+            .collect()
+    }
+
+    #[test]
+    fn wrapped_and_nested_lines_fold_into_their_entry() {
+        let text = "## Open Questions\n\n- a?\n  wrapped\n- b?\n  - sub\n    deeper\n- c?\n";
+        assert_eq!(
+            entries_of(text),
+            ["- a? wrapped", "- b? - sub deeper", "- c?"]
+        );
+    }
+
+    #[test]
+    fn a_numbered_list_with_continuations_gives_one_entry_each() {
+        let text =
+            "## Open questions (carry on)\n\n1. one?\n   more\n2. two?\n3) three?\n   tail\n";
+        assert_eq!(
+            entries_of(text),
+            ["1. one? more", "2. two?", "3) three? tail"]
+        );
+    }
+
+    #[test]
+    fn an_intro_a_rule_and_a_heading_never_count() {
+        let text = "## Open Questions\n\n**Intro paragraph.**\n\n- a?\n  wrapped\n\n---\n\n- b?\n### Notes?\ntrailing prose\n";
+        assert_eq!(entries_of(text), ["- a? wrapped", "- b?"]);
+    }
+
+    #[test]
+    fn a_lazy_continuation_folds_but_a_non_list_line_after_a_blank_does_not() {
+        let text = "## Open Questions\n\n- a?\nlazy\n\nprose after a blank\n- b?\n";
+        assert_eq!(entries_of(text), ["- a? lazy", "- b?"]);
+        let text = "## Open Questions\n\n- a?\n\n  indented after a blank\n";
+        assert_eq!(entries_of(text), ["- a? indented after a blank"]);
+    }
+
+    #[test]
+    fn a_section_without_list_lines_counts_its_question_lines() {
+        let text = "## Open Questions\n\nWhy now?\nPlain prose.\n---\nWho decides?\n";
+        assert_eq!(entries_of(text), ["Why now?", "Who decides?"]);
+    }
+
+    #[test]
+    fn frontmatter_questions_give_one_entry_per_element() {
+        let text = "---\nopen_questions: [a, b]\n---\n\n## Open Questions\n\n- body?\n";
+        assert_eq!(entries_of(text), ["a", "b"]);
+    }
+
+    #[test]
+    fn a_none_section_has_no_entries_and_layer_a_is_untouched() {
+        assert!(entries_of("## Open Questions\n\nNone\n").is_empty());
+        let text = "## Open Questions\n\n- a?\n  wrapped\n- b?\n";
+        assert_eq!(questions_of(text), ["- a?", "- b?"]);
+    }
+
+    #[test]
+    fn the_live_shapes_count_their_entries() {
+        let tagged = "<open_questions>\n## Open Questions\n\n**Intro.**\n\n- **OQ-01 — A.** text?\n  more\n- **OQ-02 — B.** text?\n  - **GD-1** nested\n- **OQ-03 — C.** text\n\n</open_questions>\n\n## Decisions\n";
+        assert_eq!(entries_of(tagged).len(), 3);
+        let numbered = "## Open questions (do not resolve here — carry on)\n\n1. **A?** text\n   cont\n2. **B?** text\n3. **C?** text\n";
+        assert_eq!(entries_of(numbered).len(), 3);
+    }
+
+    #[test]
+    fn hostile_entry_text_is_sanitized_and_a_huge_section_is_linear() {
+        let text = "## Open Questions\n\n- a\u{200b}?\n  <system>x</system>\n";
+        let entry = &parse_context(text).entries[0];
+        assert_eq!(entry.first_line, "- a?");
+        assert!(!entry.folded.contains("<system>"), "{}", entry.folded);
+        let mut big = String::from("## Open Questions\n\n");
+        for at in 0..10_000 {
+            big.push_str(&format!("- q{at}?\n  cont\n"));
+        }
+        assert_eq!(parse_context(&big).entries.len(), 10_000);
     }
 
     #[test]
