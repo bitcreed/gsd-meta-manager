@@ -822,7 +822,7 @@ fn old_debt_summary(digest: &OwnerDigest) -> String {
     text
 }
 
-fn acknowledged_files(digest: &OwnerDigest) -> usize {
+pub(crate) fn acknowledged_files(digest: &OwnerDigest) -> usize {
     if digest.hidden.acknowledged_files > 0 {
         return digest.hidden.acknowledged_files;
     }
