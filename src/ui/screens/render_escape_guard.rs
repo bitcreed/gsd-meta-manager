@@ -1008,6 +1008,102 @@ fn hostile_project_state(identity: &str) -> crate::state_reader::ProjectState {
     }
 }
 
+/// A digest whose every free-text field carries `identity`, the hostile string
+/// the guard probes with (OWN-11). Counts are non-zero in every lane, so the
+/// `You` column and the summary row draw numbers next to the hostile alias. The
+/// detail screens (36-03, 36-04) reuse it.
+fn hostile_owner_digest(identity: &str) -> crate::state_reader::owner_items::OwnerDigest {
+    use crate::state_reader::owner_items::{
+        ArchivedCounts, Category, ClosesAfter, GroupCounts, Kind, Lane, LanePhases, OwnerDigest,
+        OwnerGap, OwnerGroup, OwnerItem, Scope,
+    };
+    let item = || OwnerItem {
+        id: identity.to_string(),
+        test: Some(identity.to_string()),
+        name: identity.to_string(),
+        expected: Some(identity.to_string()),
+        result: identity.to_string(),
+        category: Category::Pending,
+        reason: Some(identity.to_string()),
+        blocked_by: Some(identity.to_string()),
+        gaps: vec![OwnerGap {
+            name: identity.to_string(),
+            result: identity.to_string(),
+            reason: Some(identity.to_string()),
+        }],
+        why_human: Some(identity.to_string()),
+    };
+    let group = |lane: Lane, scope: Scope, workstream: Option<String>| OwnerGroup {
+        lane,
+        kind: Kind::Uat,
+        scope,
+        workstream,
+        phase: identity.to_string(),
+        phase_name: identity.to_string(),
+        file: identity.to_string(),
+        file_status: identity.to_string(),
+        closes_phase: true,
+        bookkeeping_only: false,
+        acknowledged: false,
+        age_days: Some(3),
+        stale: false,
+        command: Some(identity.to_string()),
+        supersedes: vec![identity.to_string()],
+        counts: GroupCounts {
+            checks: 1,
+            failed: 1,
+            gaps: 1,
+            unreadable: 1,
+        },
+        items: vec![item()],
+    };
+    let hostile = || vec![identity.to_string()];
+    OwnerDigest {
+        groups: vec![
+            group(Lane::Test, Scope::Current, None),
+            group(Lane::Decide, Scope::Current, None),
+            group(Lane::Fix, Scope::Current, None),
+            group(Lane::Blocked, Scope::Current, None),
+            group(Lane::Test, Scope::Current, Some(identity.to_string())),
+            group(
+                Lane::Test,
+                Scope::Archived {
+                    label: identity.to_string(),
+                    rank: 0,
+                },
+                None,
+            ),
+        ],
+        test: 7,
+        decide: 3,
+        fix_phases: 2,
+        fix_debug: 1,
+        blocked: 4,
+        closeable_phases: 2,
+        archived: ArchivedCounts {
+            test: 3,
+            blocked: 1,
+            fix: 1,
+            decide: 1,
+        },
+        closes_after: ClosesAfter {
+            test: 2,
+            decide: 1,
+            fix: 1,
+            blocked: 1,
+            phases_open: hostile(),
+            not_built: hostile(),
+            lane_phases: LanePhases {
+                test: hostile(),
+                decide: hostile(),
+                fix: hostile(),
+                blocked: hostile(),
+            },
+        },
+        ..OwnerDigest::default()
+    }
+}
+
 /// An `AppContext` with `identity` registered as a key AND as every
 /// `.planning`-read value the dashboard and detail views draw.
 ///
@@ -2050,6 +2146,12 @@ fn fixture_for(type_name: &str) -> Option<Fixture> {
             let mut filtering = probe_ctx(identity);
             filtering.filter_text = identity.to_string();
             filtering.recompute_filtered_aliases();
+            // OWN-11: a hostile digest behind the hostile alias. At 200x60 the
+            // `You` column and the summary row both draw.
+            let mut with_owner = probe_ctx(identity);
+            with_owner
+                .owner_digests
+                .insert(identity.to_string(), hostile_owner_digest(identity));
             let mut with_status = probe_ctx(identity);
             with_status.status_message = Some((
                 status_message_like_app_builds_it(identity),
@@ -2069,6 +2171,11 @@ fn fixture_for(type_name: &str) -> Option<Fixture> {
                 // on. That the branch is actually reached is asserted by
                 // `the_status_footer_state_reaches_the_status_branch` rather
                 // than assumed here.
+                one_state(
+                    "dashboard with owner work",
+                    with_owner,
+                    Box::new(super::normal::NormalScreen::new()),
+                ),
                 one_state(
                     "dashboard with a status message",
                     with_status,

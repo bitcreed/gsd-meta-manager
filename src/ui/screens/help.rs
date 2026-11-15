@@ -186,6 +186,9 @@ fn work_state_legend() -> Vec<(String, String)> {
     ]
 }
 
+/// The `s` row: the sort toggle and what attention first ranks (36 D-13).
+const SORT_ROW: &str = "Toggle sort: alphabetical / attention first (waiting on a human, then owner work, then driven)";
+
 fn heading(text: &str) -> Line<'static> {
     Line::from(Span::styled(
         text.to_string(),
@@ -225,7 +228,11 @@ pub(super) fn help_lines(experimental: bool) -> Vec<Line<'static>> {
         // tell two identical rows apart, which the `o` rows' comment records.
         row("b", "Open project detail on the backlog tab"),
         row("/", "Filter projects"),
-        row("s", "Toggle sort: alphabetical / attention first"),
+        row("s", SORT_ROW),
+        row(
+            "i",
+            "Owner inbox (for now: shows how to run gsd-meta-manager inbox)",
+        ),
         row("a", "Add project"),
         row("c", "Create new project"),
         row("d", "Delete project"),
@@ -454,6 +461,39 @@ pub(super) fn help_lines(experimental: bool) -> Vec<Line<'static>> {
         row("/term/s", "Search status only"),
         row("/term/h", "Search all columns, needs-a-human rows only"),
         row("//h", "Every project waiting on a human"),
+        row("/term/y", "Search all columns, owner-work rows only"),
+        row("//y", "Every project with owner work (decide, test or fix)"),
+        row(
+            "//y test",
+            "Owner work in one lane: test, decide or fix (short: //yt //yd //yf)",
+        ),
+        Line::from(""),
+        // ── What the You column and the summary line say (36 D-21). Only
+        // surfaces this build has; the inbox screen is Phase 37.
+        heading("Owner Work"),
+        Line::from(""),
+        row(
+            "You",
+            "Dashboard column, 100+ columns wide: what waits on you in the current milestone",
+        ),
+        row(
+            "decide N",
+            "N rulings wait on you (confirmations, handoffs, open questions)",
+        ),
+        row(
+            "test N",
+            "N checks only you can run; \u{2192} closes M = M phases that close by testing alone",
+        ),
+        row(
+            "fix N ph",
+            "N phases need code (failed checks, gaps, unreadable checks); without ph, a debug investigation counts too",
+        ),
+        row(
+            "\u{b7}",
+            "Nothing waits on you here (blocked work is not yours to act on)",
+        ),
+        row("(+N old)", "N more items sit in archived milestones"),
+        row("(blank)", "No owner data loaded yet"),
         Line::from(""),
         // ── The badge legend. Glyph plus text label on every row, so nothing
         // is carried by colour alone.
@@ -775,6 +815,74 @@ mod tests {
         assert!(
             text.contains("/term/h") && text.contains("//h"),
             "both needs-a-human filter forms must be documented:\n{text}"
+        );
+    }
+
+    #[test]
+    fn help_documents_the_owner_work_column_sort_and_filter() {
+        let text = body();
+        let rows: [(&str, &str); 12] = [
+            (
+                "s",
+                SORT_ROW,
+            ),
+            (
+                "i",
+                "Owner inbox (for now: shows how to run gsd-meta-manager inbox)",
+            ),
+            ("/term/y", "Search all columns, owner-work rows only"),
+            ("//y", "Every project with owner work (decide, test or fix)"),
+            (
+                "//y test",
+                "Owner work in one lane: test, decide or fix (short: //yt //yd //yf)",
+            ),
+            (
+                "You",
+                "Dashboard column, 100+ columns wide: what waits on you in the current milestone",
+            ),
+            (
+                "decide N",
+                "N rulings wait on you (confirmations, handoffs, open questions)",
+            ),
+            (
+                "test N",
+                "N checks only you can run; \u{2192} closes M = M phases that close by testing alone",
+            ),
+            (
+                "fix N ph",
+                "N phases need code (failed checks, gaps, unreadable checks); without ph, a debug investigation counts too",
+            ),
+            (
+                "\u{b7}",
+                "Nothing waits on you here (blocked work is not yours to act on)",
+            ),
+            ("(+N old)", "N more items sit in archived milestones"),
+            ("(blank)", "No owner data loaded yet"),
+        ];
+        let lines: Vec<&str> = text.lines().collect();
+        for (key, description) in rows {
+            let expected = row(key, description).spans[0].content.to_string();
+            assert!(
+                lines.iter().any(|line| *line == expected),
+                "missing the whole row {expected:?}:\n{text}"
+            );
+            assert_eq!(
+                lines.iter().filter(|l| l.contains(description)).count(),
+                1,
+                "{description:?} must be unique in the body"
+            );
+        }
+        let at = |heading: &str| {
+            lines
+                .iter()
+                .position(|l| *l == heading)
+                .unwrap_or_else(|| panic!("no {heading} heading:\n{text}"))
+        };
+        assert!(at("Owner Work") > at("Filter Syntax"));
+        assert!(at("Owner Work") < at("Dashboard Badges"));
+        assert!(
+            !text.contains("opens the inbox screen"),
+            "the inbox screen is not built yet"
         );
     }
 

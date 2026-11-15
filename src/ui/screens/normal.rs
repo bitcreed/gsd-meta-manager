@@ -697,7 +697,8 @@ crate::ui::screens::adjudicate_screen!(
      `src/ui/screens/normal.rs`'s status branch. `row_badge`'s lookup keys \
      off the RAW alias while the cell beside it is escaped — the worked \
      example of the split. Fixture states: the dashboard, the dashboard with \
-     a status message, and the dashboard with the filter footer active.",
+     a status message, the dashboard with the filter footer active, and the \
+     dashboard with owner work (a hostile digest behind the hostile alias).",
 );
 
 /// The summary row appears from this width (D-10).

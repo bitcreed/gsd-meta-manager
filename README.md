@@ -254,8 +254,9 @@ Options:
 | `k` / `↑`        | Move the selection up   |
 | `Enter`          | Open project detail     |
 | `b`              | Open project detail on the Backlog tab |
-| `/`              | Filter projects. Type to filter; `Enter` keeps the filter, `Esc` clears it. The help overlay (`?`) lists the filter syntax |
-| `s`              | Toggle sort: alphabetical / attention first |
+| `/`              | Filter projects. Type to filter; `Enter` keeps the filter, `Esc` clears it. The help overlay (`?`) lists the filter syntax; `//y [lane]` lists projects with owner work |
+| `s`              | Toggle sort: alphabetical / attention first (waiting on a human, then owner work, then driven) |
+| `i`              | Owner inbox (currently shows how to run `gsd-meta-manager inbox`) |
 | `a`              | Add an existing project: type an alias, `Enter`, then its path, `Enter`; `Esc` cancels |
 | `c`              | Create a new project: enter a name, then a path (`Tab` completes it), then confirm with `y` / `Enter` |
 | `d`              | Remove the selected project from the registry after a `y` / `n` confirm; project files are not deleted |
@@ -359,6 +360,33 @@ drag, right / middle click, hover and horizontal scroll are ignored.
 
 To start with mouse capture off, set `"mouse": false` under `preferences` in
 `config.json` (see [Configuration](docs/CONFIGURATION.md)).
+
+### Owner inbox
+
+The dashboard shows what is waiting on you, read from each project's `.planning/`
+files: checks only you can run, rulings you have to make, and code that needs an agent.
+Nothing here runs gsd-core or writes to a project. The same data is available to
+scripts and agents through [`gsd-meta-manager inbox`](#owner-work-inbox).
+
+**Dashboard (100 columns and wider).** A `You` column sits between Status and Progress
+and shows at most two lanes for the current milestone, always in the order `decide`,
+`test`, `fix`:
+
+| Cell | Meaning |
+|------|---------|
+| `test 10 → closes 4` | 10 checks to run; testing alone closes 4 phases (only shown when `test` is the only lane) |
+| `decide 1 · fix 2 ph` | 1 ruling waits on you; 2 phases need code |
+| `fix 2` | open debug investigations count as fixes but not as phases |
+| `·` | nothing waits on you (blocked work is not yours to act on) |
+| `(+3 old)` | 3 more items in archived milestones |
+| (blank) | the owner data has not loaded yet |
+
+A summary line under the table adds the totals over the visible rows
+(`You: test 43 in 20 phases (17 close) · decide 9 · fix 9 phases · 11 of 20 projects`)
+and `[i] inbox`. Below 100 columns the table is unchanged. `s` (attention first) ranks
+projects with owner work right after those waiting on a human, and `/y` filters by it:
+`//y` lists every project with owner work, `//y test`, `//y decide` and `//y fix` (or
+`//yt`, `//yd`, `//yf`) narrow it to one lane. The `❢` badge and `/h` are unchanged.
 
 ### Examples
 
