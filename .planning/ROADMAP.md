@@ -227,7 +227,29 @@ Plans:
 **Depends on:** Phase 36
 **Verification:** Automatic snapshots plus human UAT
 **UI hint**: yes
-**Plans:** TBD
+**Plans:** 7 plans
+
+Plans:
+**Wave 1**
+- [ ] 37-01-PLAN.md — Tracer: Decide-lane noise rule: planned-phase CONTEXT questions leave the lanes into `hidden.planned_questions`, top-level question units, fixtures, schema pins and README rows (D-17..D-19)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+- [ ] 37-02-PLAN.md — Tracer: typed `RunCommand` on every owner group (`command` derived from it, unchanged on every fixture) and the Owner block byte-identity pin (D-11 reader side)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+- [ ] 37-03-PLAN.md — Tracer: `i`, `j`, `v` starts the group's command (SC1): `InboxScreen` rows and ordering, `owner_actions` focus-or-launch with launch-time re-validation, D-21 `v`, `i` help and README rows
+
+**Wave 4** *(blocked on Wave 3 completion)*
+- [ ] 37-04-PLAN.md — Legible and live: unreadable vs loading (no forever-loading), SC3 refresh, column narrowing, header/fold/footer ladders, lane filters, empty states, SC2 at 100x30
+
+**Wave 5** *(blocked on Wave 4 completion)*
+- [ ] 37-05-PLAN.md — Drill-in: `o` read-only viewer, expand, folds, scroll, `g` to the project on the same group, D-21 `o`
+
+**Wave 6** *(blocked on Wave 5 completion)*
+- [ ] 37-06-PLAN.md — `A` via gsd-core `audit-open acknowledge` after a confirm popup: env-scrubbed bounded child, guard edits, oracle round trip, D-21 `A`
+
+**Wave 7** *(blocked on Wave 6 completion)*
+- [ ] 37-07-PLAN.md — `y` copy checklist (native tool or OSC 52), D-21 `y`, full footer, help overlay and README Owner inbox section
 
 **Success Criteria** (what must be TRUE):
 1. From the dashboard, `i`, `j`, `v` starts `/gsd-verify-work N` in the right project in 3 keys or fewer, through `multiplexer::launch` (focusing an existing session when one is live), with the argv built only from the validated phase token and workstream name via `ExecArgv::new`.

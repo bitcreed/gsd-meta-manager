@@ -2,18 +2,18 @@
 gsd_state_version: "1.0"
 milestone: v2.5.0
 milestone_name: Owner Inbox
-current_phase: 36
-current_phase_name: Dashboard and detail
-status: verifying
+current_phase: 37
+current_phase_name: Inbox screen and actions
+status: executing
 stopped_at: Phase 37 UI-SPEC approved
-last_updated: "2026-11-15T02:40:33.407Z"
+last_updated: "2026-11-15T03:57:34.808Z"
 last_activity: 2026-11-15
 last_activity_desc: Phase 36 executed, reviewed and verified (human_needed)
-state_head: e0613aea3892b143b9c745a3f1fee882f8af304b
+state_head: 1c410424699ead7e49e1182a435a9c915e882906
 progress:
   total_phases: 4
   completed_phases: 1
-  total_plans: 14
+  total_plans: 21
   completed_plans: 14
   percent: 25
 ---
@@ -29,9 +29,9 @@ See: .planning/PROJECT.md (updated 2026-11-14)
 
 ## Current Position
 
-Phase: 36 (Dashboard and detail) — EXECUTING
+Phase: 37 (Inbox screen and actions) — READY TO EXECUTE
 Plan: 4 of 4
-Status: verifying
+Status: Ready to execute
 Last activity: 2026-11-15 — Phase 36 executed, reviewed and verified (human_needed)
 
 

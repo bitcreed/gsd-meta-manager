@@ -101,18 +101,18 @@
     {
       "number": "36",
       "name": "Dashboard and detail",
-      "status": "in_progress"
+      "status": "pending"
     },
     {
       "number": "37",
       "name": "Inbox screen and actions",
-      "status": "pending"
+      "status": "in_progress"
     }
   ],
   "next": {
     "command": "/gsd-progress --next",
     "label": "Advance to the next step",
-    "reason": "Phase 3 of 4 · 25% · executing"
+    "reason": "Phase 4 of 4 · 25% · executing"
   },
-  "updated_at": "2026-11-15T00:16:31.001Z"
+  "updated_at": "2026-11-15T03:57:34.835Z"
 }
