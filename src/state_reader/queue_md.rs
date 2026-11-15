@@ -178,7 +178,10 @@ fn resolve_gsd_tools_from(project_root: &Path, roots: &InstallRoots) -> Option<G
 /// `${CLAUDE_CONFIG_DIR:-~/.claude}`, then `${CODEX_HOME:-~/.codex}`, then an
 /// executable `gsd-tools` found through an absolute `PATH` entry.
 pub(crate) fn resolve_user_gsd_tools() -> Option<GsdToolsCmd> {
-    resolve_user_gsd_tools_from(&InstallRoots::from_env(), std::env::var_os("PATH").as_deref())
+    resolve_user_gsd_tools_from(
+        &InstallRoots::from_env(),
+        std::env::var_os("PATH").as_deref(),
+    )
 }
 
 /// [`resolve_user_gsd_tools`] with the install roots and `PATH` injected.

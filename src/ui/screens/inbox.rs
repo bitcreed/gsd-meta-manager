@@ -381,17 +381,16 @@ pub(crate) fn cursor_pos(ctx: &AppContext, rows: &[InboxRow]) -> Option<usize> {
         Some(InboxStop::FoldLine) => count - 1,
         // A vanished row falls to the row that took its index, else the one
         // before it; the fold line only when no row is left (D-10).
-        Some(InboxStop::Row(key)) => {
-            rows.iter()
-                .position(|row| row.key() == *key)
-                .unwrap_or_else(|| {
-                    if rows.is_empty() {
-                        count - 1
-                    } else {
-                        view.cursor_index.min(rows.len() - 1)
-                    }
-                })
-        }
+        Some(InboxStop::Row(key)) => rows
+            .iter()
+            .position(|row| row.key() == *key)
+            .unwrap_or_else(|| {
+                if rows.is_empty() {
+                    count - 1
+                } else {
+                    view.cursor_index.min(rows.len() - 1)
+                }
+            }),
         None => 0,
     })
 }
