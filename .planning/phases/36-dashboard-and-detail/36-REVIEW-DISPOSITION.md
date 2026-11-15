@@ -5,11 +5,11 @@ titles: json
 findings:
   - id: WR-01
     severity: warning
-    disposition: open
+    disposition: fixed
     title: "A missing or `.planning`-less project shows `·` (\"nothing waits on you\") instead of an absent value"
   - id: WR-02
     severity: warning
-    disposition: open
+    disposition: fixed
     title: "Deleting and re-adding an alias keeps the old project's digest indefinitely"
   - id: WR-03
     severity: warning
@@ -17,15 +17,15 @@ findings:
     title: "`ClauseForm::CountsOnly` still lists every not-built phase"
   - id: WR-04
     severity: warning
-    disposition: open
+    disposition: fixed
     title: "A panic in the owner reader now also drops the project-state refresh"
   - id: WR-05
     severity: warning
-    disposition: open
+    disposition: fixed
     title: "Owner focus hands keys to the phase list while the footer still advertises the Owner keys"
   - id: WR-06
     severity: warning
-    disposition: open
+    disposition: fixed
     title: "The 500 ms reparse dedup can leave the digest (and so the You cell, rank and filter) stale indefinitely"
   - id: WR-07
     severity: warning
@@ -33,7 +33,7 @@ findings:
     title: "Ages and the `stale` flag are frozen at read time"
   - id: IN-01
     severity: info
-    disposition: open
+    disposition: fixed
     title: "The `LauncherMarkerScanned` comment now sits above the `OwnerDigestLoaded` arm"
   - id: IN-02
     severity: info
@@ -51,23 +51,23 @@ findings:
     severity: info
     disposition: fixed
     title: "`block_height` can overflow `u16`"
-open: 6
+open: 0
 total: 12
-recorded: 2026-11-15T02:02:32.611Z
+recorded: 2026-11-15T02:02:42.488Z
 ---
 
 # Phase 36: Code Review Disposition
 
 | Finding | Severity | Disposition | Source |
 |---------|----------|-------------|--------|
-| WR-01 | warning | open | - |
-| WR-02 | warning | open | - |
+| WR-01 | warning | fixed | 36-REVIEW-FIX.md |
+| WR-02 | warning | fixed | 36-REVIEW-FIX.md |
 | WR-03 | warning | fixed | 36-REVIEW-FIX.md |
-| WR-04 | warning | open | - |
-| WR-05 | warning | open | - |
-| WR-06 | warning | open | - |
+| WR-04 | warning | fixed | 36-REVIEW-FIX.md |
+| WR-05 | warning | fixed | 36-REVIEW-FIX.md |
+| WR-06 | warning | fixed | 36-REVIEW-FIX.md |
 | WR-07 | warning | fixed | 36-REVIEW-FIX.md |
-| IN-01 | info | open | - |
+| IN-01 | info | fixed | 36-REVIEW-FIX.md |
 | IN-02 | info | fixed | 36-REVIEW-FIX.md |
 | IN-03 | info | fixed | 36-REVIEW-FIX.md |
 | IN-04 | info | fixed | 36-REVIEW-FIX.md |
