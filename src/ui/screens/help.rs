@@ -132,6 +132,22 @@ impl HelpScreen {
         }
     }
 
+    /// Help opened scrolled to the section headed `heading` (the screen's own
+    /// section); the top when there is no such section.
+    pub fn at_section(heading: &str, experimental: bool) -> Self {
+        let mut screen = Self::new();
+        if let Some(at) = help_lines(experimental).iter().position(|l| {
+            l.spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect::<String>()
+                == heading
+        }) {
+            screen.scroll_offset = at as u16;
+        }
+        screen
+    }
+
     /// The offset a test can read without rendering a frame.
     #[cfg(test)]
     pub(super) fn scroll_offset(&self) -> u16 {
@@ -558,7 +574,72 @@ pub(super) fn help_lines(experimental: bool) -> Vec<Line<'static>> {
         Style::default().add_modifier(Modifier::DIM),
     )));
 
-    lines
+    wrap_owner_sections(lines)
+}
+
+/// The widest help row the Owner sections may have: the popup is 80% of a
+/// 100-column terminal, 78 cells inside its border, minus a little slack.
+pub(super) const HELP_ROW_MAX: usize = 76;
+
+/// The cells a description may use after the two-space indent and the key column.
+const HELP_DESC_MAX: usize = HELP_ROW_MAX - 2 - 13 - 1;
+
+/// `description` hand-wrapped at spaces to [`HELP_DESC_MAX`] cells: the first row
+/// carries `key`, every continuation hangs under the description with an empty key
+/// (the same convention as the Driver rows above). One `String` per row.
+pub(super) fn wrapped_row(key: &str, description: &str) -> Vec<String> {
+    let mut parts: Vec<String> = Vec::new();
+    let mut current = String::new();
+    for word in description.split(' ') {
+        let fits = current.is_empty()
+            || super::owner_block::cells(&current) + 1 + super::owner_block::cells(word)
+                <= HELP_DESC_MAX;
+        if !fits {
+            parts.push(std::mem::take(&mut current));
+        }
+        if !current.is_empty() {
+            current.push(' ');
+        }
+        current.push_str(word);
+    }
+    parts.push(current);
+    parts
+        .iter()
+        .enumerate()
+        .map(|(i, part)| {
+            let key = if i == 0 { key } else { "" };
+            format!("  {key:<13} {part}")
+        })
+        .collect()
+}
+
+/// Wrap every owner-related row wider than [`HELP_ROW_MAX`] (the "Owner Work" and
+/// "Owner Inbox" sections, and any row that documents the Owner block or the
+/// owner inbox), so no row of the owner screens is cut at 100 columns. Other
+/// rows keep their authored text.
+fn wrap_owner_sections(lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
+    let text = |l: &Line<'static>| {
+        l.spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect::<String>()
+    };
+    let start = lines.iter().position(|l| text(l) == "Owner Work");
+    let end = lines.iter().position(|l| text(l) == "Dashboard Badges");
+    let mut out = Vec::with_capacity(lines.len() + 24);
+    for (i, line) in lines.into_iter().enumerate() {
+        let t = text(&line);
+        let in_section = matches!((start, end), (Some(s), Some(e)) if i > s && i < e);
+        let owner_row = in_section || t.contains("Owner block") || t.contains("Owner inbox");
+        if owner_row && t.starts_with("  ") && super::owner_block::cells(&t) > HELP_ROW_MAX {
+            let key = t.get(2..15).unwrap_or("").trim_end().to_owned();
+            let desc = t.get(16..).unwrap_or("").to_owned();
+            out.extend(wrapped_row(&key, &desc).into_iter().map(Line::from));
+        } else {
+            out.push(line);
+        }
+    }
+    out
 }
 
 crate::ui::screens::adjudicate_screen!(
@@ -868,13 +949,14 @@ mod tests {
                 "Owner block: run, open, acknowledge or copy the selected group, as in the inbox (detail view)",
             ),
         ] {
-            let expected = row(key, description).spans[0].content.to_string();
             let lines: Vec<&str> = text.lines().collect();
-            assert_eq!(
-                lines.iter().filter(|line| **line == expected).count(),
-                1,
-                "the row {expected:?} must appear exactly once:\n{text}"
-            );
+            for expected in wrapped_row(key, description) {
+                assert_eq!(
+                    lines.iter().filter(|line| **line == expected).count(),
+                    1,
+                    "the row {expected:?} must appear exactly once:\n{text}"
+                );
+            }
             assert!(key.chars().count() <= 13, "{key:?} fits the key column");
         }
         // The dashboard sort toggle and the two needs-a-human filter forms.
@@ -946,13 +1028,15 @@ mod tests {
         ];
         let lines: Vec<&str> = text.lines().collect();
         for (key, description) in rows {
-            let expected = row(key, description).spans[0].content.to_string();
-            assert!(
-                lines.iter().any(|line| *line == expected),
-                "missing the whole row {expected:?}:\n{text}"
-            );
+            let wrapped = wrapped_row(key, description);
+            for expected in &wrapped {
+                assert!(
+                    lines.iter().any(|line| line == expected),
+                    "missing the whole row {expected:?}:\n{text}"
+                );
+            }
             assert_eq!(
-                lines.iter().filter(|l| l.contains(description)).count(),
+                lines.iter().filter(|l| **l == wrapped[0]).count(),
                 1,
                 "{description:?} must be unique in the body"
             );
@@ -970,6 +1054,79 @@ mod tests {
         for forbidden in ["mouse", "click", "inject", "pass", "fail", "native"] {
             assert!(!block.contains(forbidden), "{forbidden}: {block}");
         }
+    }
+
+    #[test]
+    fn owner_sections_are_hand_wrapped_and_nothing_is_cut_at_100_columns() {
+        let lines = help_lines(false);
+        let text: Vec<String> = lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        let start = text.iter().position(|l| l == "Owner Work").unwrap();
+        let end = text.iter().position(|l| l == "Dashboard Badges").unwrap();
+        for l in &text[start..end] {
+            assert!(
+                crate::ui::screens::owner_block::cells(l) <= 78,
+                "cut at 100 columns: {l:?}"
+            );
+        }
+        // A continuation hangs under the description.
+        let v = text
+            .iter()
+            .position(|l| l.starts_with(&format!("  {:<13} Run the group", "v")))
+            .expect("v row");
+        assert!(
+            text[v + 1].starts_with(&format!("  {:<13} ", "")),
+            "{:?}",
+            text[v + 1]
+        );
+        // Nothing is lost: the wrapped words equal the authored description.
+        let joined: String = text[v..]
+            .iter()
+            .enumerate()
+            .take_while(|(i, l)| *i == 0 || l.starts_with("                "))
+            .map(|(_, l)| l)
+            .map(|l| l.get(16..).unwrap_or("").to_owned())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(joined.ends_with("you type the command there"), "{joined}");
+        // The overlay opened from the inbox starts at the Owner Inbox heading.
+        let screen = HelpScreen::at_section("Owner Inbox", false);
+        assert_eq!(
+            usize::from(screen.scroll_offset()),
+            text.iter().position(|l| l == "Owner Inbox").unwrap()
+        );
+        assert_eq!(
+            HelpScreen::at_section("No such heading", false).scroll_offset(),
+            0
+        );
+    }
+
+    #[test]
+    fn help_opened_from_the_inbox_shows_the_inbox_section_at_100x30() {
+        use ratatui::{backend::TestBackend, Terminal};
+        let (ctx, _rx) = ctx_with_project(std::path::Path::new("/tmp/x"));
+        let screen = HelpScreen::at_section("Owner Inbox", ctx.experimental);
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).expect("backend");
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                Screen::render(&screen, frame, area, &ctx);
+            })
+            .expect("draw");
+        let buffer = terminal.backend().buffer().clone();
+        let text: String = (0..30)
+            .map(|y| {
+                (0..100)
+                    .map(|x| buffer.cell((x, y)).expect("cell").symbol().to_owned())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("Owner Inbox"), "{text}");
+        assert!(text.contains("Show one lane"), "{text}");
+        assert!(!text.contains("Open project detail"), "{text}");
     }
 
     #[test]
@@ -1015,13 +1172,21 @@ mod tests {
         ];
         let lines: Vec<&str> = text.lines().collect();
         for (key, description) in rows {
-            let expected = row(key, description).spans[0].content.to_string();
-            assert!(
-                lines.iter().any(|line| *line == expected),
-                "missing the whole row {expected:?}:\n{text}"
-            );
+            // Rows that are not owner rows keep their authored single line.
+            let authored = row(key, description).spans[0].content.to_string();
+            let wrapped = if lines.contains(&authored.as_str()) {
+                vec![authored]
+            } else {
+                wrapped_row(key, description)
+            };
+            for expected in &wrapped {
+                assert!(
+                    lines.iter().any(|line| line == expected),
+                    "missing the whole row {expected:?}:\n{text}"
+                );
+            }
             assert_eq!(
-                lines.iter().filter(|l| l.contains(description)).count(),
+                lines.iter().filter(|l| **l == wrapped[0]).count(),
                 1,
                 "{description:?} must be unique in the body"
             );

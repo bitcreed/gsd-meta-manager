@@ -1723,7 +1723,10 @@ impl Screen for InboxScreen {
             }
             KeyCode::Char('?') => {
                 ctx.needs_redraw = true;
-                ScreenAction::Push(Box::new(super::help::HelpScreen::new()))
+                ScreenAction::Push(Box::new(super::help::HelpScreen::at_section(
+                    "Owner Inbox",
+                    ctx.experimental,
+                )))
             }
             KeyCode::Char('v') if plain => self.run_key(ctx, &mut owner_actions::launch_real),
             KeyCode::Char('o') if plain => self.open_key(ctx),
