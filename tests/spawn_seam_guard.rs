@@ -46,6 +46,8 @@ const SPAWN_ALLOWLIST: &[&str] = &[
     // reason to allow, and its output is discarded rather than reproduced. No
     // agent.
     "src/envelope/scan.rs",
+    // wl-copy / xclip / xsel / pbcopy / clip.exe with the checklist on stdin. No agent.
+    "src/clipboard.rs",
     // The TUI's blocking `$EDITOR` shell-out. No agent.
     "src/main.rs",
     // `git init` and the project-creation hook shell-out. No agent.

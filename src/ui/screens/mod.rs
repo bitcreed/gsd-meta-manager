@@ -366,6 +366,13 @@ pub enum ScreenAction {
     /// `App` owns the desired state and shows the status message; the binary's
     /// main loop applies it to the terminal. Never written to `config.json`.
     ToggleMouseCapture,
+    /// Ask the terminal to set its clipboard (37-07, D-09): the string is a
+    /// complete OSC 52 sequence.
+    ///
+    /// Like [`ScreenAction::ToggleMouseCapture`], `App` only holds it
+    /// (`App::pending_osc52`); the binary's main loop writes it to the terminal
+    /// after the frame, never from `render` or a key handler.
+    WriteOsc52(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -1942,6 +1949,56 @@ impl AppContext {
                 file,
                 outcome,
             });
+        });
+    }
+
+    /// Copy `text` (`lines` lines) with the native clipboard `tool` on a blocking
+    /// task (37-07, D-09) and answer with [`crate::action::Action::ClipboardCopied`].
+    // The unit tests go through the `owner_actions` seam instead of this wrapper.
+    #[cfg_attr(test, allow(dead_code))]
+    pub(crate) fn start_copy(&mut self, tool: crate::clipboard::Tool, text: String, lines: usize) {
+        self.start_copy_with(tool, text, lines, |tool, text| {
+            crate::clipboard::copy_with_tool(tool, text, std::time::Duration::from_secs(2))
+        });
+    }
+
+    /// [`Self::start_copy`] with the runner injected, so no test starts a real
+    /// clipboard tool.
+    ///
+    /// Refuses visibly without an event channel (the result could not be
+    /// reported). It claims nothing before the tool answered: the status line
+    /// says `Copied ...` only from the answer. The task always answers, even when
+    /// the runner panics.
+    pub(crate) fn start_copy_with<F>(
+        &mut self,
+        tool: crate::clipboard::Tool,
+        text: String,
+        lines: usize,
+        run: F,
+    ) where
+        F: FnOnce(crate::clipboard::Tool, &str) -> Result<(), String> + Send + 'static,
+    {
+        let Some(tx) = self.event_tx.clone() else {
+            self.status_message = Some((
+                "Copy failed: this session has no event channel".to_owned(),
+                std::time::Instant::now(),
+            ));
+            self.needs_redraw = true;
+            return;
+        };
+        tokio::task::spawn_blocking(move || {
+            let result =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(tool, &text)))
+                    .unwrap_or_else(|_| Err("stopped unexpectedly".to_owned()));
+            let outcome = match result {
+                Ok(()) => format!(
+                    "Copied {} via {}",
+                    owner_actions::line_count(lines),
+                    tool.name()
+                ),
+                Err(why) => format!("Copy failed: {} {why}", tool.name()),
+            };
+            let _ = tx.send(crate::action::Action::ClipboardCopied { outcome });
         });
     }
 

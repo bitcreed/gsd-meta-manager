@@ -231,6 +231,13 @@ pub enum Action {
         file: String,
         outcome: String,
     },
+    /// The clipboard tool finished (37-07, D-09). Sent by the blocking task that
+    /// ran it; `outcome` is the whole status line (`Copied 7 lines via wl-copy` or
+    /// `Copy failed: ...`), escaped by the handler. Plain data, so `Action` stays
+    /// `Clone`.
+    ClipboardCopied {
+        outcome: String,
+    },
     /// A Driver-tab steering key asked for one edit to a launcher run's
     /// `DIRECTION.md` body (30-04, D-14, D-15).
     ///
@@ -533,6 +540,11 @@ mod tests {
             acknowledged.clone(),
             Action::OwnerAcknowledged { .. }
         ));
+
+        let copied = Action::ClipboardCopied {
+            outcome: "Copied 1 line via wl-copy".to_string(),
+        };
+        assert!(matches!(copied.clone(), Action::ClipboardCopied { .. }));
 
         let filled = Action::OwnerDigestLoaded {
             alias: "proj".to_string(),

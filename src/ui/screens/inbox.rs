@@ -1055,7 +1055,7 @@ struct FooterKey {
 
 /// The hints in the UI-SPEC footer order, **only for keys that work**: later
 /// plans insert their key at its UI-SPEC position (`A`, `y`) when it works.
-const FOOTER_KEYS: [FooterKey; 8] = [
+const FOOTER_KEYS: [FooterKey; 9] = [
     FooterKey {
         key: "[j/k]",
         labels: ["move", "move", "move"],
@@ -1093,6 +1093,12 @@ const FOOTER_KEYS: [FooterKey; 8] = [
         rung4: true,
     },
     FooterKey {
+        key: "[y]",
+        labels: ["copy checklist", "copy", "copy"],
+        rung3: true,
+        rung4: true,
+    },
+    FooterKey {
         key: "[Esc]",
         labels: ["back", "back", "back"],
         rung3: false,
@@ -1106,13 +1112,14 @@ const FOOTER_KEYS: [FooterKey; 8] = [
     },
 ];
 
-/// The hints while the cursor rests on the fold line: `[y]copy` joins in 37-07.
+/// The hints while the cursor rests on the fold line.
 fn fold_footer(rung: usize) -> Vec<Span<'static>> {
     let bold = Style::default().add_modifier(Modifier::BOLD);
     let hints: &[(&str, &str)] = if rung == 0 {
         &[
             ("[\u{2190}/\u{2192}]", "fold"),
             ("[Enter]", "expand"),
+            ("[y]", "copy"),
             ("[j/k]", "move"),
             ("[Esc]", "back"),
             ("[?]", "help"),
@@ -1121,6 +1128,7 @@ fn fold_footer(rung: usize) -> Vec<Span<'static>> {
         &[
             ("[\u{2190}/\u{2192}]", "fold"),
             ("[Enter]", "expand"),
+            ("[y]", "copy"),
             ("[j/k]", "move"),
             ("[?]", "help"),
         ]
@@ -1583,6 +1591,37 @@ impl InboxScreen {
         }
     }
 
+    /// `y` (D-09): copy the selected group's checklist, exactly the lines
+    /// `gsd-meta-manager inbox` prints for it. On the fold line Old debt copies its
+    /// checklist and the other folds say why not; an empty inbox ignores the key.
+    fn copy_key(&self, ctx: &mut AppContext) -> ScreenAction {
+        let outcome = match Self::selected(ctx) {
+            Err(()) => return ScreenAction::None,
+            Ok(None) => owner_actions::fold_copy(ctx, sub_cursor(ctx)),
+            Ok(Some(row)) => {
+                // The groups are looked up by identity as the key is pressed; a
+                // BLOCKED aggregate covers every group of its (workstream, phase).
+                let mut groups = ctx
+                    .owner_digest(&row.alias)
+                    .map(|digest| owner_block::groups_for_copy(digest, &row.src.key))
+                    .unwrap_or_default();
+                if groups.is_empty() {
+                    groups.push(row.src.group.clone());
+                }
+                owner_actions::copy_text(&row.alias, &groups)
+                    .map(|(text, lines)| owner_actions::copy(ctx, text, lines))
+            }
+        };
+        ctx.needs_redraw = true;
+        match outcome {
+            Ok(action) => action,
+            Err(message) => {
+                Self::say(ctx, message);
+                ScreenAction::None
+            }
+        }
+    }
+
     /// `g` (D-07): the project's detail view on the Phases tab with the Owner
     /// block on the same group. The inbox pushes the screen itself: the App's
     /// project-open helper refuses once more than the dashboard is on the stack.
@@ -1673,6 +1712,7 @@ impl Screen for InboxScreen {
             KeyCode::Char('v') => self.run_key(ctx, &mut owner_actions::launch_real),
             KeyCode::Char('o') => self.open_key(ctx),
             KeyCode::Char('A') => self.ack_key(ctx),
+            KeyCode::Char('y') => self.copy_key(ctx),
             KeyCode::Char('g') => self.goto_key(ctx),
             KeyCode::Enter | KeyCode::Char(' ') => {
                 self.toggle_key(ctx);
@@ -2707,22 +2747,14 @@ mod tests {
                 assert!(digits || age.trim().is_empty(), "W {w} row {y}: {age:?}");
             }
         }
-        // The footer ladder: the first rung that fits.
+        // The footer ladder: the first rung that fits (the whole strings are
+        // asserted by `footer_ladder_matches_the_ui_spec`).
         let ctx = inbox_fleet_ctx();
         let footer = |w: usize| line_text(&footer_line(&ctx, w, true, false));
-        assert_eq!(
-            footer(107),
-            "  [j/k]move  [Enter]expand  [g]o to project  [v]run command  [o]pen file  [A]cknowledge  [Esc]back  [?]help"
-        );
-        assert_eq!(
-            footer(106),
-            "  [j/k]move  [Enter]expand  [g]oto  [v]run  [o]pen  [A]cknowledge  [Esc]back  [?]help"
-        );
-        assert_eq!(
-            footer(84),
-            "  [j/k]move  [Enter]expand  [g]oto  [v]run  [o]pen  [A]ck  [?]help"
-        );
-        assert_eq!(footer(65), "  [v]run  [A]ck  [?]help");
+        assert!(footer(126).ends_with("[y]copy checklist  [Esc]back  [?]help"));
+        assert!(footer(125).ends_with("[y]copy  [Esc]back  [?]help"));
+        assert!(footer(93).ends_with("[A]ck  [y]copy  [?]help"));
+        assert_eq!(footer(65), "  [v]run  [A]ck  [y]copy  [?]help");
         assert_eq!(
             footer(10),
             "  [v]run \u{2026}",
@@ -2732,17 +2764,154 @@ mod tests {
         let fold = |w: usize| line_text(&footer_line(&ctx, w, true, true));
         assert_eq!(
             fold(80),
-            "  [\u{2190}/\u{2192}]fold  [Enter]expand  [j/k]move  [Esc]back  [?]help"
+            "  [\u{2190}/\u{2192}]fold  [Enter]expand  [y]copy  [j/k]move  [Esc]back  [?]help"
         );
         assert_eq!(
-            fold(50),
-            "  [\u{2190}/\u{2192}]fold  [Enter]expand  [j/k]move  [?]help"
+            fold(60),
+            "  [\u{2190}/\u{2192}]fold  [Enter]expand  [y]copy  [j/k]move  [?]help"
         );
         assert_eq!(
             line_text(&footer_line(&ctx, 80, false, false)),
             "  [Esc]back  [?]help",
             "no stops, no movement or run key"
         );
+    }
+
+    /// UI-SPEC "Footer ladder": the whole rung strings, at 140, 100 and 80 columns.
+    #[test]
+    fn footer_ladder_matches_the_ui_spec() {
+        let ctx = inbox_fleet_ctx();
+        let footer =
+            |w: usize, stops: bool, fold: bool| line_text(&footer_line(&ctx, w, stops, fold));
+        let rung1 = "  [j/k]move  [Enter]expand  [g]o to project  [v]run command  [o]pen file  [A]cknowledge  [y]copy checklist  [Esc]back  [?]help";
+        let rung2 = "  [j/k]move  [Enter]expand  [g]oto  [v]run  [o]pen  [A]cknowledge  [y]copy  [Esc]back  [?]help";
+        let rung3 = "  [j/k]move  [Enter]expand  [g]oto  [v]run  [o]pen  [A]ck  [y]copy  [?]help";
+        assert_eq!(rung1.chars().count(), 126);
+        assert_eq!(rung2.chars().count(), 94);
+        assert_eq!(rung3.chars().count(), 75);
+        assert_eq!(footer(140, true, false), rung1);
+        assert_eq!(footer(100, true, false), rung2);
+        assert_eq!(footer(80, true, false), rung3);
+        assert_eq!(footer(126, true, false), rung1);
+        assert_eq!(footer(125, true, false), rung2);
+        assert_eq!(footer(94, true, false), rung2);
+        assert_eq!(footer(93, true, false), rung3);
+        assert_eq!(footer(75, true, false), rung3);
+        assert_eq!(footer(74, true, false), "  [v]run  [A]ck  [y]copy  [?]help");
+        assert_eq!(
+            footer(140, true, true),
+            "  [\u{2190}/\u{2192}]fold  [Enter]expand  [y]copy  [j/k]move  [Esc]back  [?]help"
+        );
+        assert_eq!(footer(140, false, false), "  [Esc]back  [?]help");
+    }
+
+    fn wayland_probes() -> crate::clipboard::ClipboardProbes {
+        crate::clipboard::ClipboardProbes {
+            os: "linux",
+            wayland_display: true,
+            display: true,
+            on_path: vec!["wl-copy"],
+        }
+    }
+
+    fn press_y(ctx: &mut AppContext) -> ScreenAction {
+        InboxScreen::new().handle_key(KeyCode::Char('y'), KeyModifiers::NONE, ctx)
+    }
+
+    fn status(ctx: &AppContext) -> String {
+        ctx.status_message
+            .as_ref()
+            .map(|(m, _)| m.clone())
+            .unwrap_or_default()
+    }
+
+    /// The first row is dune-app's TEST group of six checks: seven lines.
+    fn dune_checklist() -> (String, usize) {
+        let ctx = inbox_fleet_ctx();
+        let digest = ctx.owner_digest("dune-app").expect("digest");
+        owner_actions::copy_text("dune-app", &digest.groups).expect("text")
+    }
+
+    #[test]
+    fn y_copies_or_falls_back_to_osc52() {
+        // With a native tool: nothing is claimed yet, the runner gets (tool, text) once.
+        let mut ctx = inbox_fleet_ctx();
+        let (text, lines) = dune_checklist();
+        assert_eq!(lines, 7);
+        owner_actions::force_clipboard(Some(wayland_probes()));
+        let action = press_y(&mut ctx);
+        assert!(matches!(action, ScreenAction::None));
+        assert_eq!(
+            owner_actions::seam_ran(),
+            [(crate::clipboard::Tool::WlCopy, text.clone(), 7)]
+        );
+        assert_eq!(status(&ctx), "", "no copy claim before the tool answered");
+
+        // Without one: OSC 52, and the status says only what is true.
+        owner_actions::force_clipboard(None);
+        let mut ctx = inbox_fleet_ctx();
+        let ScreenAction::WriteOsc52(sequence) = press_y(&mut ctx) else {
+            panic!("no tool means OSC 52");
+        };
+        assert_eq!(sequence, crate::clipboard::osc52(&text));
+        assert_eq!(
+            status(&ctx),
+            "Sent 7 lines to the terminal clipboard (OSC 52; the terminal must allow it)"
+        );
+        assert!(owner_actions::seam_ran().is_empty());
+        owner_actions::force_clipboard(None);
+    }
+
+    #[test]
+    fn y_is_ignored_on_an_empty_inbox() {
+        let mut ctx = ctx_with_aliases(&["a"]);
+        owner_actions::force_clipboard(Some(wayland_probes()));
+        assert!(matches!(press_y(&mut ctx), ScreenAction::None));
+        assert!(owner_actions::seam_ran().is_empty());
+        assert_eq!(status(&ctx), "");
+        owner_actions::force_clipboard(None);
+    }
+
+    #[test]
+    fn y_on_the_folds() {
+        let mut ctx = inbox_fleet_ctx();
+        let mut old = test_group("03", "old-checks", 2, false, 400, false);
+        old.scope = Scope::Archived {
+            label: "v0.9".to_owned(),
+            rank: 0,
+        };
+        let mut holly = digest(vec![old.clone()]);
+        holly.archived.test = 2;
+        owe(&mut ctx, "holly-pics", holly);
+        owner_actions::force_clipboard(Some(wayland_probes()));
+        let mut screen = InboxScreen::new();
+        let key = |screen: &mut InboxScreen, ctx: &mut AppContext, code| {
+            screen.handle_key(code, KeyModifiers::NONE, ctx)
+        };
+        key(&mut screen, &mut ctx, KeyCode::End);
+        // Old debt first: the OLD DEBT lines the CLI prints.
+        key(&mut screen, &mut ctx, KeyCode::Char('y'));
+        let mut want = String::from("OLD DEBT\n");
+        for line in crate::inbox::group_checklist("holly-pics", &old) {
+            want.push_str(&line);
+            want.push('\n');
+        }
+        let ran = owner_actions::seam_ran();
+        assert_eq!(ran.len(), 1);
+        assert_eq!(ran[0].1, want);
+        assert_eq!(ran[0].2, 4, "heading, group line, two checks");
+        // Acknowledged, then Triage: refusals, nothing more copied.
+        key(&mut screen, &mut ctx, KeyCode::Right);
+        key(&mut screen, &mut ctx, KeyCode::Char('y'));
+        assert_eq!(
+            status(&ctx),
+            "Nothing to copy: acknowledged items are already handled"
+        );
+        key(&mut screen, &mut ctx, KeyCode::Right);
+        key(&mut screen, &mut ctx, KeyCode::Char('y'));
+        assert_eq!(status(&ctx), "Nothing to copy: todos are only counted here");
+        assert_eq!(owner_actions::seam_ran().len(), 1);
+        owner_actions::force_clipboard(None);
     }
 
     #[test]

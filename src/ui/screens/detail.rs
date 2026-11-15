@@ -2186,9 +2186,9 @@ impl DetailScreen {
     /// the key, `None` lets it fall through to the main match. `Enter`/`Space` only
     /// toggle view state; `v` runs and `o` opens the selected group's file
     /// through the same `owner_actions` functions the inbox uses (37-03, 37-05,
-    /// D-21), `A` opens the acknowledge popup (37-06), and `e` and `y` are
-    /// swallowed so neither reaches Content (`e` would enqueue) nor copies
-    /// anything (37-07 owns `y`).
+    /// D-21), `A` opens the acknowledge popup (37-06), `y` copies the group's
+    /// checklist (37-07), and `e` is swallowed so it never reaches Content (where
+    /// it would enqueue).
     fn handle_owner_block_key(
         &mut self,
         code: KeyCode,
@@ -2237,7 +2237,9 @@ impl DetailScreen {
         let mut run = false;
         let mut open = false;
         let mut acknowledge = false;
+        let mut copy = false;
         match code {
+            KeyCode::Char('y') => copy = true,
             KeyCode::Char('v') => run = true,
             KeyCode::Char('o') => open = true,
             KeyCode::Char('A') => acknowledge = true,
@@ -2267,7 +2269,7 @@ impl DetailScreen {
             KeyCode::Esc => {
                 self.focus = DetailFocus::Content;
             }
-            // `e y`, `←`/`→` off the fold line and every other key.
+            // `e`, `←`/`→` off the fold line and every other key.
             _ => {}
         }
         match moved {
@@ -2284,8 +2286,53 @@ impl DetailScreen {
         if acknowledge {
             return Some(self.owner_ack(ctx));
         }
+        if copy {
+            return Some(self.owner_copy(ctx));
+        }
         ctx.needs_redraw = true;
         Some(ScreenAction::None)
+    }
+
+    /// `y` on the Owner block (37-07, D-09, D-21): copy the group under the cursor
+    /// as the CLI prints it, through [`owner_actions::copy_text`] and
+    /// [`owner_actions::copy`], the functions the inbox's `y` calls. The fold line
+    /// says what to select.
+    fn owner_copy(&mut self, ctx: &mut AppContext) -> ScreenAction {
+        let outcome = {
+            let Some(digest) = ctx.owner_digest(&self.alias) else {
+                return ScreenAction::None;
+            };
+            let view = ctx
+                .view_cache
+                .get(&self.alias)
+                .map(|cache| cache.owner_block.clone())
+                .unwrap_or_default();
+            let sk = owner_block::skeleton(digest, &view);
+            let Some(at) = owner_block::resolve_cursor(&view, &sk.stops) else {
+                return ScreenAction::None;
+            };
+            match &sk.stops[at] {
+                owner_block::Stop::FoldLine => {
+                    Err("Select a group row to copy its checklist".to_owned())
+                }
+                owner_block::Stop::Row(key) => {
+                    let groups = owner_block::groups_for_copy(digest, key);
+                    if groups.is_empty() {
+                        Err("Group is no longer listed; nothing copied".to_owned())
+                    } else {
+                        owner_actions::copy_text(&self.alias, &groups)
+                    }
+                }
+            }
+        };
+        ctx.needs_redraw = true;
+        match outcome.map(|(text, lines)| owner_actions::copy(ctx, text, lines)) {
+            Ok(action) => action,
+            Err(message) => {
+                ctx.status_message = Some((message, std::time::Instant::now()));
+                ScreenAction::None
+            }
+        }
     }
 
     /// `A` on the Owner block (37-06, D-21): the confirm popup for the file of the
@@ -36553,7 +36600,7 @@ mod tests {
         let mut screen = owner_screen(&ctx);
         key(&mut screen, &mut ctx, KeyCode::Up);
         let before = owner_view_of(&ctx);
-        for c in ['e', 'y', 'x'] {
+        for c in ['e', 'x'] {
             let action = key(&mut screen, &mut ctx, KeyCode::Char(c));
             assert!(matches!(action, ScreenAction::None), "{c}");
             assert_eq!(screen.focus, DetailFocus::Owner, "{c}");
@@ -36630,6 +36677,98 @@ mod tests {
                 "/gsd-verify-work 24".to_owned()
             )]
         );
+    }
+
+    /// D-21 (37-07): `y` on a group row copies that group the way the inbox does
+    /// (the CLI's checklist lines); a BLOCKED aggregate copies every group of the
+    /// phase; the fold line says what to select. `e` and `x` stay swallowed.
+    #[test]
+    fn owner_block_y_copies_the_selected_group() {
+        use crate::ui::screens::owner_actions::{force_clipboard, seam_ran};
+        let mut ctx = owner_ctx(Some(sample()));
+        let mut screen = owner_screen(&ctx);
+        key(&mut screen, &mut ctx, KeyCode::Up);
+        assert_eq!(screen.focus, DetailFocus::Owner);
+        let at = |ctx: &mut AppContext, stop: Stop| {
+            ctx.view_cache
+                .entry(TEST_ALIAS.to_string())
+                .or_default()
+                .owner_block
+                .cursor = Some(stop);
+        };
+        let digest = sample();
+        let group_24 = digest
+            .groups
+            .iter()
+            .find(|g| GroupKey::of(g) == key_24())
+            .expect("the 24 group")
+            .clone();
+        let (want, lines) =
+            owner_actions::copy_text(TEST_ALIAS, std::slice::from_ref(&group_24)).expect("text");
+        // A native tool: the runner gets exactly that group's checklist.
+        force_clipboard(Some(crate::clipboard::ClipboardProbes {
+            os: "linux",
+            wayland_display: true,
+            display: true,
+            on_path: vec!["wl-copy"],
+        }));
+        at(&mut ctx, Stop::Row(key_24()));
+        let action = key(&mut screen, &mut ctx, KeyCode::Char('y'));
+        assert!(matches!(action, ScreenAction::None));
+        assert_eq!(
+            seam_ran(),
+            [(crate::clipboard::Tool::WlCopy, want.clone(), lines)]
+        );
+        assert_eq!(screen.focus, DetailFocus::Owner);
+        // No native tool: OSC 52 with an honest status.
+        force_clipboard(None);
+        let ScreenAction::WriteOsc52(sequence) = key(&mut screen, &mut ctx, KeyCode::Char('y'))
+        else {
+            panic!("OSC 52 without a tool");
+        };
+        assert_eq!(sequence, crate::clipboard::osc52(&want));
+        assert_eq!(
+            ctx.status_message.as_ref().map(|(m, _)| m.as_str()),
+            Some(
+                format!(
+                    "Sent {lines} lines to the terminal clipboard (OSC 52; the terminal must allow it)"
+                )
+                .as_str()
+            )
+        );
+        // The fold line is not a group.
+        at(&mut ctx, Stop::FoldLine);
+        ctx.status_message = None;
+        let action = key(&mut screen, &mut ctx, KeyCode::Char('y'));
+        assert!(matches!(action, ScreenAction::None));
+        assert_eq!(
+            ctx.status_message.as_ref().map(|(m, _)| m.as_str()),
+            Some("Select a group row to copy its checklist")
+        );
+        // A BLOCKED aggregate copies the items of all its groups, one heading each.
+        let blocked = digest
+            .groups
+            .iter()
+            .find(|g| g.lane == crate::state_reader::owner_items::Lane::Blocked)
+            .expect("a BLOCKED group");
+        let parts: Vec<_> = digest
+            .groups
+            .iter()
+            .filter(|g| {
+                g.lane == crate::state_reader::owner_items::Lane::Blocked
+                    && g.workstream == blocked.workstream
+                    && g.phase == blocked.phase
+            })
+            .cloned()
+            .collect();
+        assert!(parts.len() > 1, "the sample has a two-file BLOCKED phase");
+        let (all, _) = owner_actions::copy_text(TEST_ALIAS, &parts).expect("text");
+        at(&mut ctx, Stop::Row(GroupKey::aggregate(blocked)));
+        let ScreenAction::WriteOsc52(sequence) = key(&mut screen, &mut ctx, KeyCode::Char('y'))
+        else {
+            panic!("OSC 52 without a tool");
+        };
+        assert_eq!(sequence, crate::clipboard::osc52(&all));
     }
 
     /// D-21 (37-06): `A` on a group row of the Owner block opens the same confirm

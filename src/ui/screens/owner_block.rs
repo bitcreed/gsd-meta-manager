@@ -98,6 +98,26 @@ pub(crate) fn group_for(digest: &OwnerDigest, key: &GroupKey) -> Option<OwnerGro
         .cloned()
 }
 
+/// The groups a copy of the row with identity `key` covers (37-07, D-09): the one
+/// group of a plain row, every BLOCKED group of the (workstream, phase) for an
+/// aggregate row, empty for a vanished identity.
+pub(crate) fn groups_for_copy(digest: &OwnerDigest, key: &GroupKey) -> Vec<OwnerGroup> {
+    if key.lane == "blocked" {
+        return digest
+            .groups
+            .iter()
+            .filter(|g| {
+                is_owner_row(g)
+                    && g.lane == Lane::Blocked
+                    && g.workstream == key.workstream
+                    && g.phase == key.phase
+            })
+            .cloned()
+            .collect();
+    }
+    group_for(digest, key).into_iter().collect()
+}
+
 pub(crate) fn scope_label(scope: &Scope) -> Option<String> {
     match scope {
         Scope::Current => None,

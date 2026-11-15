@@ -462,14 +462,47 @@ fn push_section(out: &mut Vec<String>, heading: &str, rows: &[&Row]) {
     out.push(String::new());
     out.push(heading.to_string());
     for row in rows {
-        out.push(format!("  {}", group_line(&row.alias, row.group)));
-        for item in &row.group.items {
-            out.push(format!("    - [ ] {}", terminal_capped(&item.name)));
-            for gap in &item.gaps {
-                out.push(format!("        - {}", terminal_capped(&gap.name)));
-            }
+        out.extend(group_checklist(&row.alias, row.group));
+    }
+}
+
+/// The lines the CLI prints for one group: the group line, then each item and its
+/// gaps. Shared by `inbox` (`push_section`) and the TUI's `y`, so the copied text
+/// and the printed text cannot disagree (37-07, D-09).
+pub(crate) fn group_checklist(alias: &str, group: &OwnerGroup) -> Vec<String> {
+    let mut out = vec![format!("  {}", group_line(alias, group))];
+    for item in &group.items {
+        out.push(format!("    - [ ] {}", terminal_capped(&item.name)));
+        for gap in &item.gaps {
+            out.push(format!("        - {}", terminal_capped(&gap.name)));
         }
     }
+    out
+}
+
+/// The `OLD DEBT` section as `inbox --include archived` prints it, over `groups`
+/// (alias, group) pairs: the heading, then each admitted archived group in the
+/// CLI's alias, phase, file order. Empty when no group qualifies.
+pub(crate) fn old_debt_checklist(groups: &[(String, &OwnerGroup)]) -> Vec<String> {
+    let filters = Filters {
+        archived: true,
+        ..Filters::default()
+    };
+    let mut rows: Vec<&(String, &OwnerGroup)> = groups
+        .iter()
+        .filter(|(_, g)| matches!(g.scope, Scope::Archived { .. }) && filters.lists_group(g))
+        .collect();
+    rows.sort_by(|a, b| {
+        (&a.0, phase_key(&a.1.phase), &a.1.file).cmp(&(&b.0, phase_key(&b.1.phase), &b.1.file))
+    });
+    if rows.is_empty() {
+        return Vec::new();
+    }
+    let mut out = vec!["OLD DEBT".to_string()];
+    for (alias, group) in rows {
+        out.extend(group_checklist(alias, group));
+    }
+    out
 }
 
 /// Alias, phase, file: the order of every section but TEST.

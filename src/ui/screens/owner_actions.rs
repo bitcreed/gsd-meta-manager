@@ -461,6 +461,165 @@ fn on_path(path: Option<&std::ffi::OsStr>, name: &str) -> bool {
         .any(|dir| dir.join(name).is_file() || dir.join(format!("{name}.exe")).is_file())
 }
 
+// ---------------------------------------------------------------------------
+// `y`: copy the checklist (37-07, D-09)
+// ---------------------------------------------------------------------------
+
+/// `1 line` / `{n} lines`.
+pub(crate) fn line_count(lines: usize) -> String {
+    if lines == 1 {
+        "1 line".to_owned()
+    } else {
+        format!("{lines} lines")
+    }
+}
+
+/// The text `y` copies for `groups` of `alias`: exactly the lines
+/// `gsd-meta-manager inbox` prints for them (`inbox::group_checklist`, one line
+/// per entry, a final newline) and their count, or the refusal over 64 KiB.
+pub(crate) fn copy_text(alias: &str, groups: &[OwnerGroup]) -> Result<(String, usize), String> {
+    let lines: Vec<String> = groups
+        .iter()
+        .flat_map(|group| crate::inbox::group_checklist(alias, group))
+        .collect();
+    finish_copy_text(lines)
+}
+
+/// The Old debt checklist: the `OLD DEBT` heading and every archived group of
+/// every registered project that has a digest, in the CLI's order.
+pub(crate) fn old_debt_text(ctx: &AppContext) -> Result<(String, usize), String> {
+    let mut aliases: Vec<&String> = ctx.config.projects.keys().collect();
+    aliases.sort();
+    let mut groups: Vec<(String, &OwnerGroup)> = Vec::new();
+    for alias in aliases {
+        if let Some(digest) = ctx.owner_digest(alias) {
+            groups.extend(digest.groups.iter().map(|g| (alias.clone(), g)));
+        }
+    }
+    let lines = crate::inbox::old_debt_checklist(&groups);
+    if lines.is_empty() {
+        return Err("Nothing to copy: no old debt is listed".to_owned());
+    }
+    finish_copy_text(lines)
+}
+
+fn finish_copy_text(lines: Vec<String>) -> Result<(String, usize), String> {
+    if lines.is_empty() {
+        return Err("Nothing to copy: the group is no longer listed".to_owned());
+    }
+    let mut text = lines.join("\n");
+    text.push('\n');
+    if text.len() > crate::clipboard::MAX_COPY_BYTES {
+        return Err(format!(
+            "Too large to copy ({} KiB): narrow the lane with 1-4",
+            text.len() / 1024
+        ));
+    }
+    Ok((text, lines.len()))
+}
+
+/// What `y` does on the fold line (UI-SPEC "Folds"): Old debt copies, the other
+/// two say why not.
+pub(crate) fn fold_copy(
+    ctx: &mut AppContext,
+    fold: Option<crate::ui::screens::owner_block::Fold>,
+) -> Result<ScreenAction, String> {
+    use crate::ui::screens::owner_block::Fold;
+    match fold {
+        Some(Fold::OldDebt) => {
+            let (text, lines) = old_debt_text(ctx)?;
+            Ok(copy(ctx, text, lines))
+        }
+        Some(Fold::Acknowledged) => {
+            Err("Nothing to copy: acknowledged items are already handled".to_owned())
+        }
+        Some(Fold::Todos) => Err("Nothing to copy: todos are only counted here".to_owned()),
+        None => Err("Select a group row to copy its checklist".to_owned()),
+    }
+}
+
+/// Put `text` (`lines` lines) on the clipboard: a native tool on a blocking task
+/// when one is present (the status line is set by its answer, never before), else
+/// an OSC 52 sequence handed to the main loop. The OSC 52 status says what is
+/// true: the sequence was sent and the terminal must allow it.
+pub(crate) fn copy(ctx: &mut AppContext, text: String, lines: usize) -> ScreenAction {
+    ctx.needs_redraw = true;
+    if let Some(tool) = crate::clipboard::pick_tool(&clipboard_probes()) {
+        start_native_copy(ctx, tool, text, lines);
+        return ScreenAction::None;
+    }
+    ctx.status_message = Some((
+        format!(
+            "Sent {} to the terminal clipboard (OSC 52; the terminal must allow it)",
+            line_count(lines)
+        ),
+        std::time::Instant::now(),
+    ));
+    ScreenAction::WriteOsc52(crate::clipboard::osc52(&text))
+}
+
+#[cfg(not(test))]
+fn clipboard_probes() -> crate::clipboard::ClipboardProbes {
+    crate::clipboard::probe()
+}
+
+#[cfg(not(test))]
+fn start_native_copy(
+    ctx: &mut AppContext,
+    tool: crate::clipboard::Tool,
+    text: String,
+    lines: usize,
+) {
+    ctx.start_copy(tool, text, lines);
+}
+
+// Test seam: no unit test reads this machine's environment or starts a real
+// clipboard tool. The probes default to "no tool" (OSC 52); a test sets them and
+// reads what would have been run.
+#[cfg(test)]
+thread_local! {
+    static SEAM_PROBES: std::cell::RefCell<Option<crate::clipboard::ClipboardProbes>> =
+        const { std::cell::RefCell::new(None) };
+    static SEAM_RAN: std::cell::RefCell<Vec<(crate::clipboard::Tool, String, usize)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[cfg(test)]
+pub(crate) fn force_clipboard(probes: Option<crate::clipboard::ClipboardProbes>) {
+    SEAM_PROBES.with(|p| *p.borrow_mut() = probes);
+    SEAM_RAN.with(|r| r.borrow_mut().clear());
+}
+
+/// The `(tool, text, lines)` the seam received, oldest first.
+#[cfg(test)]
+pub(crate) fn seam_ran() -> Vec<(crate::clipboard::Tool, String, usize)> {
+    SEAM_RAN.with(|r| r.borrow().clone())
+}
+
+#[cfg(test)]
+fn clipboard_probes() -> crate::clipboard::ClipboardProbes {
+    SEAM_PROBES.with(|p| {
+        p.borrow()
+            .clone()
+            .unwrap_or(crate::clipboard::ClipboardProbes {
+                os: "linux",
+                wayland_display: false,
+                display: false,
+                on_path: Vec::new(),
+            })
+    })
+}
+
+#[cfg(test)]
+fn start_native_copy(
+    _ctx: &mut AppContext,
+    tool: crate::clipboard::Tool,
+    text: String,
+    lines: usize,
+) {
+    SEAM_RAN.with(|r| r.borrow_mut().push((tool, text, lines)));
+}
+
 #[cfg(test)]
 thread_local! {
     /// What the next `ack_request` on this thread resolves as the launcher, when a
@@ -1341,5 +1500,126 @@ mod tests {
         );
         request.program = "/nonexistent/program".to_owned();
         assert!(run_ack(&request).starts_with("Acknowledge timed out after 10 s:"));
+    }
+
+    fn item(name: &str) -> crate::state_reader::owner_items::OwnerItem {
+        crate::state_reader::owner_items::OwnerItem {
+            id: name.to_owned(),
+            test: None,
+            name: name.to_owned(),
+            expected: None,
+            result: "pending".to_owned(),
+            category: crate::state_reader::owner_items::Category::HumanUat,
+            reason: None,
+            blocked_by: None,
+            gaps: Vec::new(),
+            why_human: None,
+        }
+    }
+
+    /// `y` copies exactly the lines `gsd-meta-manager inbox` prints for the group:
+    /// they are a contiguous run inside `render_text` of the same project.
+    #[test]
+    fn copy_text_equals_the_cli_checklist() {
+        let mut g = group(Lane::Test, Some(verify(Some("24"), None)));
+        g.items = vec![item("first check"), item("second \u{1b}[2Jcheck")];
+        let (text, lines) = copy_text("dune-app", std::slice::from_ref(&g)).expect("text");
+        assert_eq!(lines, 3);
+        assert!(text.ends_with('\n'));
+        assert!(!text.contains('\u{1b}'), "the CLI's terminal_capped text");
+        let entry = crate::inbox::ProjectEntry {
+            target: None,
+            alias: Some("dune-app".to_owned()),
+            path: None,
+            error: None,
+            milestone_version: None,
+            phases_done: 0,
+            phases_total: 0,
+            digest: crate::state_reader::owner_items::OwnerDigest {
+                groups: vec![g],
+                ..Default::default()
+            },
+            todos: Vec::new(),
+        };
+        let printed = crate::inbox::render_text(&[entry], &crate::inbox::Filters::default());
+        let printed: Vec<&str> = printed.lines().collect();
+        let copied: Vec<&str> = text.lines().collect();
+        assert!(
+            printed
+                .windows(copied.len())
+                .any(|w| w == copied.as_slice()),
+            "{printed:?} does not hold {copied:?}"
+        );
+    }
+
+    #[test]
+    fn too_large_to_copy() {
+        let mut g = group(Lane::Test, None);
+        g.items = (0..2000)
+            .map(|i| item(&format!("check number {i:04} {}", "x".repeat(60))))
+            .collect();
+        let message = copy_text("p", &[g]).expect_err("over 64 KiB");
+        assert!(
+            message.starts_with("Too large to copy (")
+                && message.ends_with(" KiB): narrow the lane with 1-4"),
+            "{message}"
+        );
+        force_clipboard(None);
+        assert!(seam_ran().is_empty(), "nothing was sent");
+        assert_eq!(
+            copy_text("p", &[]),
+            Err("Nothing to copy: the group is no longer listed".to_owned())
+        );
+    }
+
+    #[test]
+    fn line_count_pluralizes() {
+        assert_eq!(line_count(1), "1 line");
+        assert_eq!(line_count(7), "7 lines");
+    }
+
+    /// The native path claims nothing until the tool answers, then reports through
+    /// the event channel; a failure says which tool and why, with no OSC 52 retry.
+    #[tokio::test]
+    async fn start_copy_reports_the_tools_answer() {
+        use crate::clipboard::Tool;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut ctx = ctx_with_aliases(&["p"]);
+        ctx.event_tx = Some(tx);
+        ctx.start_copy_with(Tool::WlCopy, "a\nb\n".to_owned(), 2, |tool, text| {
+            assert_eq!((tool, text), (Tool::WlCopy, "a\nb\n"));
+            Ok(())
+        });
+        assert!(ctx.status_message.is_none(), "no claim before the answer");
+        let Some(crate::action::Action::ClipboardCopied { outcome }) = rx.recv().await else {
+            panic!("the task answers");
+        };
+        assert_eq!(outcome, "Copied 2 lines via wl-copy");
+        ctx.start_copy_with(Tool::Xclip, "a\n".to_owned(), 1, |_, _| {
+            Err("exited 3".to_owned())
+        });
+        let Some(crate::action::Action::ClipboardCopied { outcome }) = rx.recv().await else {
+            panic!("the task answers");
+        };
+        assert_eq!(outcome, "Copy failed: xclip exited 3");
+        ctx.start_copy_with(Tool::Xsel, "a\n".to_owned(), 1, |_, _| {
+            Err("did not finish".to_owned())
+        });
+        let Some(crate::action::Action::ClipboardCopied { outcome }) = rx.recv().await else {
+            panic!("the task answers");
+        };
+        assert_eq!(outcome, "Copy failed: xsel did not finish");
+        ctx.start_copy_with(Tool::Pbcopy, "a\n".to_owned(), 1, |_, _| panic!("boom"));
+        let Some(crate::action::Action::ClipboardCopied { outcome }) = rx.recv().await else {
+            panic!("the task answers even when the runner panics");
+        };
+        assert!(outcome.starts_with("Copy failed: pbcopy"), "{outcome}");
+        // No event channel: refused visibly, nothing started.
+        ctx.event_tx = None;
+        ctx.start_copy_with(Tool::WlCopy, "a\n".to_owned(), 1, |_, _| panic!("not run"));
+        assert_eq!(
+            ctx.status_message.as_ref().map(|(m, _)| m.as_str()),
+            Some("Copy failed: this session has no event channel")
+        );
     }
 }

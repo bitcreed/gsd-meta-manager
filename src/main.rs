@@ -668,6 +668,19 @@ async fn run_tui_loop(
             app.needs_redraw = false;
         }
 
+        // 37-07 D-09: an OSC 52 clipboard request is written after the frame, never
+        // from `render` or a key handler, so it cannot land inside ratatui's output.
+        if let Some(sequence) = app.pending_osc52.take() {
+            use std::io::Write;
+            let mut out = std::io::stdout();
+            if let Err(e) = out
+                .write_all(sequence.as_bytes())
+                .and_then(|()| out.flush())
+            {
+                tracing::warn!("OSC 52 write failed: {e}");
+            }
+        }
+
         if pump(app, rx).await == PumpOutcome::Idle {
             // Every arm disabled: the action channel is closed, so no further
             // message can ever arrive and continuing would spin. Unreachable

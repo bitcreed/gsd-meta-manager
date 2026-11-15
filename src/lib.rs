@@ -7,6 +7,7 @@ pub mod bounded_output;
 pub mod browser;
 pub mod change_tracker;
 pub mod cli;
+pub mod clipboard;
 pub mod config;
 pub mod driver;
 /// Run templates for `driver new` and the DIRECTION lint of `driver check` (Phase 29).

@@ -559,6 +559,10 @@ pub struct App {
     /// When set, the main loop should suspend the TUI and open this file in
     /// $EDITOR, at the 1-based line when one is carried (see [`editor_args`]).
     pub pending_editor: Option<(PathBuf, Option<usize>)>,
+    /// A complete OSC 52 sequence the main loop writes to the terminal after the
+    /// next frame, then clears (37-07, D-09). Never written from `render` or a
+    /// key handler.
+    pub pending_osc52: Option<String>,
     /// The stop flag of every landing this App started, by `<alias>/<run-id>` (quick
     /// 261103-klf, C-13): a stop of such a landing sets it, and the landing removes its
     /// entry when it ends.
@@ -1011,6 +1015,7 @@ impl App {
             active_sessions: Vec::new(),
             session_poll_counter: 0,
             pending_editor: None,
+            pending_osc52: None,
             oneoff_landings: Default::default(),
             edit_sessions: HashMap::new(),
             new_run_flow: std::collections::HashSet::new(),
@@ -3317,6 +3322,16 @@ impl App {
                 ));
                 self.needs_redraw = true;
             }
+            // 37-07 D-09: the clipboard tool answered. The outcome names the tool
+            // and its exit, never project text, but it is escaped like every
+            // status line composed off the render thread.
+            Action::ClipboardCopied { outcome } => {
+                self.ctx.status_message = Some((
+                    crate::text::render_for_terminal(&outcome).to_string(),
+                    std::time::Instant::now(),
+                ));
+                self.needs_redraw = true;
+            }
             // 30-04, D-14, D-15: a steering key asked for one edit to the selected
             // launcher run's DIRECTION.md body. The key handler touched no file; the
             // write runs on `spawn_blocking` and answers `DriverSteered`.
@@ -3940,6 +3955,11 @@ impl App {
                 if let Some(tx) = &self.ctx.event_tx {
                     let _ = tx.send(*action);
                 }
+            }
+            // 37-07 D-09: held for the main loop, which writes it after the frame.
+            ScreenAction::WriteOsc52(sequence) => {
+                self.pending_osc52 = Some(sequence);
+                self.needs_redraw = true;
             }
             // Runtime only: nothing is written to `config.json` (D-06, I-2).
             ScreenAction::ToggleMouseCapture => {
@@ -6687,6 +6707,40 @@ mod tests {
             [&("p".to_string(), "04-UAT.md".to_string())],
             "only the answered file leaves the busy set"
         );
+    }
+
+    /// 37-07 D-09: `WriteOsc52` is held for the main loop (never written here) and
+    /// asks for a redraw so the frame precedes the sequence.
+    #[test]
+    fn a_write_osc52_action_is_held_for_the_main_loop() {
+        let mut app = App::new_for_test();
+        app.needs_redraw = false;
+        assert!(app.pending_osc52.is_none());
+        let sequence = crate::clipboard::osc52("a\nb\n");
+        app.process_screen_action(ScreenAction::WriteOsc52(sequence.clone()));
+        assert_eq!(app.pending_osc52.as_deref(), Some(sequence.as_str()));
+        assert!(app.needs_redraw);
+        assert_eq!(app.pending_osc52.take(), Some(sequence));
+        assert!(app.pending_osc52.is_none());
+    }
+
+    /// 37-07 D-09: the clipboard tool's answer sets the (escaped) status line.
+    #[test]
+    fn clipboard_copied_sets_the_status() {
+        let mut app = App::new_for_test();
+        app.needs_redraw = false;
+        app.update(Action::ClipboardCopied {
+            outcome: "Copied 7 lines via wl-copy".to_string(),
+        });
+        let (text, _) = app.ctx.status_message.clone().expect("status line");
+        assert_eq!(text, "Copied 7 lines via wl-copy");
+        assert!(app.needs_redraw);
+        app.update(Action::ClipboardCopied {
+            outcome: "Copy failed: x\u{1b}[2J".to_string(),
+        });
+        let (text, _) = app.ctx.status_message.clone().expect("status line");
+        assert!(text.starts_with("Copy failed: x"), "{text:?}");
+        assert!(!text.chars().any(char::is_control), "{text:?}");
     }
 
     #[test]
