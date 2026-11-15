@@ -4233,7 +4233,7 @@ mod tests {
         assert!(ctx.owner_ack_busy.is_empty(), "nothing runs before Yes");
         // A busy file is never offered again.
         ctx.owner_ack_busy
-            .insert(("dune-app".to_owned(), "24-UAT.md".to_owned()));
+            .insert(("dune-app".to_owned(), "phases/24/24-UAT.md".to_owned()));
         let action = keys_on(&mut *screen, &mut ctx, &[KeyCode::Char('A')], size).remove(0);
         assert!(matches!(action, ScreenAction::None));
         assert_eq!(

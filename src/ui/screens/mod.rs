@@ -1905,7 +1905,7 @@ impl AppContext {
     /// starts a real child.
     ///
     /// Refuses visibly without an event channel (the result could not be reported),
-    /// refuses a second run for the same `(alias, file)`, then marks the file busy,
+    /// refuses a second run for the same `(alias, project-relative file)`, then marks the file busy,
     /// sets `Acknowledging {file} via gsd-core...` and runs `run` on
     /// `spawn_blocking`. The task always answers, even when the runner panics, so
     /// the busy entry cannot stick.
@@ -1914,6 +1914,9 @@ impl AppContext {
         F: FnOnce(&owner_actions::AckRequest) -> String + Send + 'static,
     {
         let file = req.target.name().to_owned();
+        // Busy is keyed by the project-relative path: two workstreams or a
+        // current and an archived milestone share a basename (IN-01).
+        let busy_key = req.target.rel_file.clone();
         let Some(tx) = self.event_tx.clone() else {
             self.status_message = Some((
                 format!("Cannot acknowledge {file}: this session has no event channel"),
@@ -1924,7 +1927,7 @@ impl AppContext {
         };
         if !self
             .owner_ack_busy
-            .insert((req.alias.clone(), file.clone()))
+            .insert((req.alias.clone(), busy_key.clone()))
         {
             self.status_message = Some((
                 format!("Already acknowledging {file}"),
@@ -1946,7 +1949,7 @@ impl AppContext {
                 });
             let _ = tx.send(crate::action::Action::OwnerAcknowledged {
                 alias,
-                file,
+                file: busy_key,
                 outcome,
             });
         });

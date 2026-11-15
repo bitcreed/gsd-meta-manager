@@ -224,7 +224,7 @@ pub enum Action {
     ///
     /// `outcome` is the already-composed status line (done, failed with gsd-core's
     /// own refusal line, or timed out); the handler escapes it, sets the status and
-    /// clears the busy entry for `(alias, file)`. Plain data, so `Action` stays
+    /// clears the busy entry for `(alias, file)`, where `file` is the project-relative path the busy set is keyed by. Plain data, so `Action` stays
     /// `Clone`.
     OwnerAcknowledged {
         alias: String,

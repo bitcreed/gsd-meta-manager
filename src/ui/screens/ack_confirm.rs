@@ -336,7 +336,7 @@ mod tests {
         );
         assert!(ctx
             .owner_ack_busy
-            .contains(&(ALIAS.to_owned(), "24-UAT.md".to_owned())));
+            .contains(&(ALIAS.to_owned(), FILE.to_owned())));
         let Some(crate::action::Action::OwnerAcknowledged {
             alias,
             file,
@@ -347,7 +347,7 @@ mod tests {
         };
         assert_eq!(
             (alias.as_str(), file.as_str(), outcome.as_str()),
-            (ALIAS, "24-UAT.md", "ran")
+            (ALIAS, FILE, "ran")
         );
         assert_eq!(YES_RUNS.load(Ordering::SeqCst), 1, "exactly one child");
     }
@@ -371,13 +371,30 @@ mod tests {
         assert_eq!(GONE_RUNS.load(Ordering::SeqCst), 0);
     }
 
+    /// IN-01: busy is per file path, not per basename, so the same-named file of
+    /// another workstream or milestone is not blocked.
+    #[tokio::test]
+    async fn a_same_named_file_elsewhere_is_not_busy() {
+        let (mut ctx, _request) = setup();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        ctx.event_tx = Some(tx);
+        ctx.owner_ack_busy.insert((
+            ALIAS.to_owned(),
+            ".planning/workstreams/beta/phases/24-x/24-UAT.md".to_owned(),
+        ));
+        assert!(
+            owner_actions::ack_open(&ctx, ALIAS, &group(), AckHost::Inbox).is_ok(),
+            "another file with the same basename is not busy"
+        );
+    }
+
     #[tokio::test]
     async fn a_busy_file_is_not_acknowledged_twice() {
         let (mut ctx, request) = setup();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         ctx.event_tx = Some(tx);
         ctx.owner_ack_busy
-            .insert((ALIAS.to_owned(), "24-UAT.md".to_owned()));
+            .insert((ALIAS.to_owned(), FILE.to_owned()));
         // `A` on a busy file never opens the popup.
         let g = group();
         assert_eq!(

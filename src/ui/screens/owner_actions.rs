@@ -739,7 +739,7 @@ pub(crate) fn ack_open(
     let name = request.target.name().to_owned();
     if ctx
         .owner_ack_busy
-        .contains(&(alias.to_owned(), name.clone()))
+        .contains(&(alias.to_owned(), request.target.rel_file.clone()))
     {
         return Err(format!("Already acknowledging {name}"));
     }
