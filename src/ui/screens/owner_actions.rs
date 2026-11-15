@@ -1735,6 +1735,8 @@ mod tests {
             panic!("the task answers");
         };
         assert_eq!(outcome, "Copied 2 lines via wl-copy");
+        // The handler clears the flag when it processes the answer.
+        ctx.owner_copy_busy = false;
         ctx.start_copy_with(Tool::Xclip, "a\n".to_owned(), 1, |_, _| {
             Err("exited 3".to_owned())
         });
@@ -1742,6 +1744,7 @@ mod tests {
             panic!("the task answers");
         };
         assert_eq!(outcome, "Copy failed: xclip exited 3");
+        ctx.owner_copy_busy = false;
         ctx.start_copy_with(Tool::Xsel, "a\n".to_owned(), 1, |_, _| {
             Err("did not finish".to_owned())
         });
@@ -1749,11 +1752,25 @@ mod tests {
             panic!("the task answers");
         };
         assert_eq!(outcome, "Copy failed: xsel did not finish");
+        ctx.owner_copy_busy = false;
         ctx.start_copy_with(Tool::Pbcopy, "a\n".to_owned(), 1, |_, _| panic!("boom"));
         let Some(crate::action::Action::ClipboardCopied { outcome }) = rx.recv().await else {
             panic!("the task answers even when the runner panics");
         };
         assert!(outcome.starts_with("Copy failed: pbcopy"), "{outcome}");
+        // IN-06: a second copy while one is running is refused and starts nothing.
+        ctx.owner_copy_busy = false;
+        ctx.start_copy_with(Tool::WlCopy, "a\n".to_owned(), 1, |_, _| Ok(()));
+        ctx.start_copy_with(Tool::WlCopy, "a\n".to_owned(), 1, |_, _| panic!("not run"));
+        assert_eq!(
+            ctx.status_message.as_ref().map(|(m, _)| m.as_str()),
+            Some("Already copying; wait for it to finish")
+        );
+        let Some(crate::action::Action::ClipboardCopied { outcome }) = rx.recv().await else {
+            panic!("the first copy answers");
+        };
+        assert_eq!(outcome, "Copied 1 line via wl-copy");
+        ctx.owner_copy_busy = false;
         // No event channel: refused visibly, nothing started.
         ctx.event_tx = None;
         ctx.start_copy_with(Tool::WlCopy, "a\n".to_owned(), 1, |_, _| panic!("not run"));

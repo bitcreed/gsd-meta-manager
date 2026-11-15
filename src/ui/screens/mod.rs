@@ -1388,12 +1388,16 @@ pub struct AppContext {
     /// loads forever; there is no timer. A later digest for the alias clears the
     /// entry and `App::prune_driver_maps` drops an unregistered alias.
     pub owner_digest_failed: std::collections::HashSet<String>,
-    /// The `(alias, file basename)` pairs whose acknowledge child is running
+    /// The `(alias, project-relative file)` pairs whose acknowledge child is running
     /// (37 D-16): a second `A` for the same file says so instead of starting
     /// another writer. Inserted when Yes starts the child, removed by the
     /// `OwnerAcknowledged` handler; a child that never answers is bounded by its
     /// 10 s budget, and the runner always sends a result.
     pub owner_ack_busy: std::collections::HashSet<(String, String)>,
+    /// A clipboard tool is running (37-07, IN-06): a second `y` says so instead of
+    /// stacking another `wl-copy` or `xclip`. Set when the copy starts, cleared by
+    /// the `ClipboardCopied` handler; the runner always answers.
+    pub owner_copy_busy: bool,
     /// The Owner inbox's view state (37-03, D-10): the cursor identity and the
     /// scroll offset. It lives on the context rather than on `InboxScreen` so a
     /// popup pushed above the inbox can repaint it as its background, and `i`
@@ -1989,6 +1993,14 @@ impl AppContext {
             self.needs_redraw = true;
             return;
         };
+        if std::mem::replace(&mut self.owner_copy_busy, true) {
+            self.status_message = Some((
+                "Already copying; wait for it to finish".to_owned(),
+                std::time::Instant::now(),
+            ));
+            self.needs_redraw = true;
+            return;
+        }
         tokio::task::spawn_blocking(move || {
             let result =
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(tool, &text)))
@@ -2740,6 +2752,7 @@ mod tests {
             owner_digests: HashMap::new(),
             owner_digest_failed: std::collections::HashSet::new(),
             owner_ack_busy: std::collections::HashSet::new(),
+            owner_copy_busy: false,
             inbox_view: inbox::InboxViewState::default(),
             agent_views: HashMap::new(),
             agents_scan_in_flight: false,

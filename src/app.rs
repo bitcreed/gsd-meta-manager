@@ -987,6 +987,7 @@ impl App {
             owner_digests: HashMap::new(),
             owner_digest_failed: std::collections::HashSet::new(),
             owner_ack_busy: std::collections::HashSet::new(),
+            owner_copy_busy: false,
             inbox_view: crate::ui::screens::inbox::InboxViewState::default(),
             agent_views: HashMap::new(),
             agents_scan_in_flight: false,
@@ -3326,6 +3327,7 @@ impl App {
             // and its exit, never project text, but it is escaped like every
             // status line composed off the render thread.
             Action::ClipboardCopied { outcome } => {
+                self.ctx.owner_copy_busy = false;
                 self.ctx.status_message = Some((
                     crate::text::render_for_terminal(&outcome).to_string(),
                     std::time::Instant::now(),
@@ -6939,6 +6941,8 @@ mod tests {
             // panic) and the handler removes the entry, so a removed project's
             // entry cannot outlive the child's 10 s budget (37 D-16).
             owner_ack_busy: _,
+            // One flag, not a map: the copy's answer clears it.
+            owner_copy_busy: _,
         } = &app.ctx;
 
         assert!(!view_cache.contains_key(GONE), "view_cache leaked");

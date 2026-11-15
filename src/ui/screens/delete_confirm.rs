@@ -265,6 +265,7 @@ mod tests {
             owner_digests: HashMap::new(),
             owner_digest_failed: Default::default(),
             owner_ack_busy: Default::default(),
+            owner_copy_busy: false,
             inbox_view: Default::default(),
             agent_views: HashMap::new(),
             agents_scan_in_flight: false,
