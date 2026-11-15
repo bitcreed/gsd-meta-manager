@@ -15,11 +15,11 @@ pub struct QueuedAction {
 /// Mirrors GSD's own launcher resolution: the `.cjs` shim is run through
 /// `node`, while a `gsd-tools` binary found on `PATH` is invoked directly.
 #[derive(Debug, Clone, PartialEq)]
-struct GsdToolsCmd {
+pub(crate) struct GsdToolsCmd {
     /// Program to spawn (`node` for `.cjs` shims, else `gsd-tools`).
-    program: String,
+    pub(crate) program: String,
     /// Leading args (the `.cjs` path when running through `node`, else empty).
-    prefix_args: Vec<String>,
+    pub(crate) prefix_args: Vec<String>,
 }
 
 impl GsdToolsCmd {
@@ -113,7 +113,7 @@ fn gsd_tools_candidates(project_root: &Path, roots: &InstallRoots) -> Vec<PathBu
 /// [`InstallRoots::from_env`] (home, `CLAUDE_CONFIG_DIR`, `CODEX_HOME`). This is
 /// the ONLY place the resolver reads process state for those, so tests never
 /// have to mutate the environment.
-fn resolve_gsd_tools(project_root: &Path) -> Option<GsdToolsCmd> {
+pub(crate) fn resolve_gsd_tools(project_root: &Path) -> Option<GsdToolsCmd> {
     resolve_gsd_tools_from(project_root, &InstallRoots::from_env())
 }
 

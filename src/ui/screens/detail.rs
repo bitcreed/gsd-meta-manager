@@ -2186,9 +2186,9 @@ impl DetailScreen {
     /// the key, `None` lets it fall through to the main match. `Enter`/`Space` only
     /// toggle view state; `v` runs and `o` opens the selected group's file
     /// through the same `owner_actions` functions the inbox uses (37-03, 37-05,
-    /// D-21), and `e`, `A` and `y` are swallowed so none of them reaches Content
-    /// (`e` would enqueue) nor acknowledges or copies anything (the later Phase 37
-    /// plans own those).
+    /// D-21), `A` opens the acknowledge popup (37-06), and `e` and `y` are
+    /// swallowed so neither reaches Content (`e` would enqueue) nor copies
+    /// anything (37-07 owns `y`).
     fn handle_owner_block_key(
         &mut self,
         code: KeyCode,
@@ -2236,9 +2236,11 @@ impl DetailScreen {
         let mut moved = Moved::Within;
         let mut run = false;
         let mut open = false;
+        let mut acknowledge = false;
         match code {
             KeyCode::Char('v') => run = true,
             KeyCode::Char('o') => open = true,
+            KeyCode::Char('A') => acknowledge = true,
             KeyCode::Char('j') | KeyCode::Down => {
                 moved = owner_block::move_cursor(view, &sk.stops, Move::Next)
             }
@@ -2265,7 +2267,7 @@ impl DetailScreen {
             KeyCode::Esc => {
                 self.focus = DetailFocus::Content;
             }
-            // `e A y`, `←`/`→` off the fold line and every other key.
+            // `e y`, `←`/`→` off the fold line and every other key.
             _ => {}
         }
         match moved {
@@ -2279,8 +2281,58 @@ impl DetailScreen {
         if open {
             return Some(self.owner_open(ctx));
         }
+        if acknowledge {
+            return Some(self.owner_ack(ctx));
+        }
         ctx.needs_redraw = true;
         Some(ScreenAction::None)
+    }
+
+    /// `A` on the Owner block (37-06, D-21): the confirm popup for the file of the
+    /// group under the cursor, through [`owner_actions::ack_open`], the function
+    /// the inbox's `A` calls, drawn over this detail view. Same refusals, same
+    /// popup, same copy; the fold line says what to select.
+    fn owner_ack(&mut self, ctx: &mut AppContext) -> ScreenAction {
+        let outcome = {
+            let Some(digest) = ctx.owner_digest(&self.alias) else {
+                return ScreenAction::None;
+            };
+            let view = ctx
+                .view_cache
+                .get(&self.alias)
+                .map(|cache| cache.owner_block.clone())
+                .unwrap_or_default();
+            let sk = owner_block::skeleton(digest, &view);
+            let Some(at) = owner_block::resolve_cursor(&view, &sk.stops) else {
+                return ScreenAction::None;
+            };
+            match &sk.stops[at] {
+                owner_block::Stop::FoldLine => {
+                    Err("Select a group row to acknowledge it".to_owned())
+                }
+                owner_block::Stop::Row(key) => match owner_block::group_for(digest, key) {
+                    Some(group) => owner_actions::ack_open(
+                        ctx,
+                        &self.alias,
+                        &group,
+                        super::ack_confirm::AckHost::Detail(self.alias.clone()),
+                    ),
+                    None if key.lane == "blocked" => Err(
+                        "Cannot acknowledge a BLOCKED row: gsd-core has no category for it"
+                            .to_owned(),
+                    ),
+                    None => Err("Group is no longer listed; nothing acknowledged".to_owned()),
+                },
+            }
+        };
+        ctx.needs_redraw = true;
+        match outcome {
+            Ok(action) => action,
+            Err(message) => {
+                ctx.status_message = Some((message, std::time::Instant::now()));
+                ScreenAction::None
+            }
+        }
     }
 
     /// `o` on the Owner block (37-05, D-21): the group under the cursor's source
@@ -20486,6 +20538,7 @@ mod tests {
             reparse_dispatches: 0,
             owner_digests: HashMap::new(),
             owner_digest_failed: Default::default(),
+            owner_ack_busy: Default::default(),
             inbox_view: Default::default(),
             agent_views: HashMap::new(),
             agents_scan_in_flight: false,
@@ -36500,7 +36553,7 @@ mod tests {
         let mut screen = owner_screen(&ctx);
         key(&mut screen, &mut ctx, KeyCode::Up);
         let before = owner_view_of(&ctx);
-        for c in ['e', 'A', 'y', 'x'] {
+        for c in ['e', 'y', 'x'] {
             let action = key(&mut screen, &mut ctx, KeyCode::Char(c));
             assert!(matches!(action, ScreenAction::None), "{c}");
             assert_eq!(screen.focus, DetailFocus::Owner, "{c}");
@@ -36576,6 +36629,69 @@ mod tests {
                 std::path::PathBuf::from("/nonexistent/proj"),
                 "/gsd-verify-work 24".to_owned()
             )]
+        );
+    }
+
+    /// D-21 (37-06): `A` on a group row of the Owner block opens the same confirm
+    /// popup the inbox does, drawn over this detail view; the fold line and a BLOCKED
+    /// row say why not; nothing runs and the block's own state does not change.
+    #[test]
+    fn owner_block_a_opens_the_acknowledge_popup() {
+        use crate::config::RegisteredProject;
+        let mut ctx = owner_ctx(Some(sample()));
+        ctx.config.projects.insert(
+            TEST_ALIAS.to_string(),
+            RegisteredProject {
+                path: std::path::PathBuf::from("/nonexistent/proj"),
+                added: "2026-07-29".to_string(),
+                driver_opt_in: None,
+                extra: Default::default(),
+            },
+        );
+        owner_actions::force_launcher(Some(owner_actions::test_launcher()));
+        let mut screen = owner_screen(&ctx);
+        key_press_up(&mut screen, &mut ctx);
+        let at = |ctx: &mut AppContext, stop: Stop| {
+            ctx.view_cache
+                .entry(TEST_ALIAS.to_string())
+                .or_default()
+                .owner_block
+                .cursor = Some(stop);
+        };
+        at(&mut ctx, Stop::Row(key_24()));
+        let before = owner_view_of(&ctx);
+        let action = key(&mut screen, &mut ctx, KeyCode::Char('A'));
+        let ScreenAction::Push(popup) = action else {
+            panic!("`A` pushes the confirm popup");
+        };
+        assert_eq!(popup.name(), "ack_confirm");
+        assert!(ctx.status_message.is_none(), "{:?}", ctx.status_message);
+        assert!(ctx.owner_ack_busy.is_empty(), "nothing runs before Yes");
+        assert_eq!(screen.focus, DetailFocus::Owner);
+        let after = owner_view_of(&ctx);
+        assert_eq!(before.cursor, after.cursor);
+        assert_eq!(before.expanded, after.expanded);
+        // The fold line is not a group.
+        at(&mut ctx, Stop::FoldLine);
+        let action = key(&mut screen, &mut ctx, KeyCode::Char('A'));
+        assert!(matches!(action, ScreenAction::None));
+        assert_eq!(
+            ctx.status_message.as_ref().map(|(m, _)| m.as_str()),
+            Some("Select a group row to acknowledge it")
+        );
+        // A BLOCKED aggregate has no category.
+        let digest = sample();
+        let blocked = digest
+            .groups
+            .iter()
+            .find(|g| g.lane == crate::state_reader::owner_items::Lane::Blocked)
+            .expect("a BLOCKED group");
+        at(&mut ctx, Stop::Row(GroupKey::aggregate(blocked)));
+        let action = key(&mut screen, &mut ctx, KeyCode::Char('A'));
+        assert!(matches!(action, ScreenAction::None));
+        assert_eq!(
+            ctx.status_message.as_ref().map(|(m, _)| m.as_str()),
+            Some("Cannot acknowledge a BLOCKED row: gsd-core has no category for it")
         );
     }
 

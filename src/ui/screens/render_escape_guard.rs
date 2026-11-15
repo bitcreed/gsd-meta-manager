@@ -361,6 +361,7 @@ use std::path::{Path, PathBuf};
 type FixtureRow = (&'static str, &'static str);
 
 const SCREEN_IDENTITY_DISPOSITIONS: &[FixtureRow] = &[
+    ("AckConfirmScreen", "src/ui/screens/ack_confirm.rs"),
     ("AddProjectScreen", "src/ui/screens/add_project.rs"),
     ("AnswerScreen", "src/ui/screens/driver_steer.rs"),
     ("ControlChooserScreen", "src/ui/screens/driver_steer.rs"),
@@ -2267,6 +2268,76 @@ fn fixture_for(type_name: &str) -> Option<Fixture> {
             )]
         }),
 
+        // The acknowledge popup (37-06): the hostile identity is the registered
+        // alias, the project-relative file, the milestone, the archived label, the
+        // phase token, the workstream and the whole argv (the gsd-tools path
+        // included). Drawn over the inbox and over the detail view.
+        "AckConfirmScreen" => Some(|identity| {
+            use super::ack_confirm::{AckConfirmScreen, AckHost};
+            use super::owner_actions::{AckRequest, AckTarget};
+            let request = || AckRequest {
+                alias: identity.to_string(),
+                cwd: std::path::PathBuf::from("/nonexistent").join(identity),
+                program: "node".to_string(),
+                argv: vec![
+                    identity.to_string(),
+                    "--category".to_string(),
+                    "uat_gaps".to_string(),
+                    "--milestone".to_string(),
+                    identity.to_string(),
+                    "--phase".to_string(),
+                    identity.to_string(),
+                    "--file".to_string(),
+                    identity.to_string(),
+                    "--archived-milestone".to_string(),
+                    identity.to_string(),
+                    "--ws".to_string(),
+                    identity.to_string(),
+                ],
+                target: AckTarget {
+                    category: "uat_gaps",
+                    milestone: identity.to_string(),
+                    phase: Some(identity.to_string()),
+                    file: Some(identity.to_string()),
+                    slug: None,
+                    archived_milestone: Some(identity.to_string()),
+                    workstream: Some(identity.to_string()),
+                    rel_file: identity.to_string(),
+                    items: 3,
+                },
+                key: super::inbox::InboxKey {
+                    alias: identity.to_string(),
+                    key: super::owner_block::GroupKey {
+                        lane: "test",
+                        kind: "uat",
+                        scope_label: None,
+                        workstream: None,
+                        phase: identity.to_string(),
+                        file: identity.to_string(),
+                    },
+                },
+            };
+            let mut over_inbox = probe_ctx(identity);
+            over_inbox
+                .owner_digests
+                .insert(identity.to_string(), hostile_owner_digest(identity));
+            vec![
+                one_state(
+                    "popup over the inbox",
+                    over_inbox,
+                    Box::new(AckConfirmScreen::new(AckHost::Inbox, request())),
+                ),
+                one_state(
+                    "popup over the detail view",
+                    probe_ctx(identity),
+                    Box::new(AckConfirmScreen::new(
+                        AckHost::Detail(identity.to_string()),
+                        request(),
+                    )),
+                ),
+            ]
+        }),
+
         // The Owner inbox (37-03): the hostile identity is the registered alias AND
         // every digest string behind it (phase, phase name, file, file status,
         // workstream, command). The group rows draw the alias, the phase cell
@@ -2308,7 +2379,22 @@ fn fixture_for(type_name: &str) -> Option<Fixture> {
                 format!("Cannot open {identity}: not readable"),
                 std::time::Instant::now(),
             ));
+            // 37-06: the status line after a failed acknowledge, which carries
+            // gsd-core's own output line and the file name.
+            let mut acknowledge_failed = probe_ctx(identity);
+            acknowledge_failed
+                .owner_digests
+                .insert(identity.to_string(), hostile_owner_digest(identity));
+            acknowledge_failed.status_message = Some((
+                format!("Acknowledge failed: {identity}"),
+                std::time::Instant::now(),
+            ));
             vec![
+                one_state(
+                    "inbox after a failed acknowledge",
+                    acknowledge_failed,
+                    Box::new(super::inbox::InboxScreen::new()),
+                ),
                 one_state(
                     "inbox over hostile owner digests",
                     with_owner,

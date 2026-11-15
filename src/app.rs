@@ -982,6 +982,7 @@ impl App {
             reparse_dispatches: 0,
             owner_digests: HashMap::new(),
             owner_digest_failed: std::collections::HashSet::new(),
+            owner_ack_busy: std::collections::HashSet::new(),
             inbox_view: crate::ui::screens::inbox::InboxViewState::default(),
             agent_views: HashMap::new(),
             agents_scan_in_flight: false,
@@ -3299,6 +3300,21 @@ impl App {
                 if let Some(path) = self.ctx.config.projects.get(&alias).map(|p| p.path.clone()) {
                     self.ctx.schedule_launcher_refresh(&alias, &path);
                 }
+                self.needs_redraw = true;
+            }
+            // 37 D-15, D-16: the acknowledge child answered. The outcome carries
+            // gsd-core's own refusal line and a project file name, so it is
+            // escaped here; the row itself disappears on the next watcher refresh.
+            Action::OwnerAcknowledged {
+                alias,
+                file,
+                outcome,
+            } => {
+                self.ctx.owner_ack_busy.remove(&(alias, file));
+                self.ctx.status_message = Some((
+                    crate::text::render_for_terminal(&outcome).to_string(),
+                    std::time::Instant::now(),
+                ));
                 self.needs_redraw = true;
             }
             // 30-04, D-14, D-15: a steering key asked for one edit to the selected
@@ -6645,6 +6661,34 @@ mod tests {
         assert_eq!(launcher_runs[0].0, LAUNCHER_RUN);
     }
 
+    /// 37 D-16: the acknowledge child's answer sets the (escaped) status line and
+    /// clears the busy entry of exactly its `(alias, file)`.
+    #[test]
+    fn owner_acknowledged_sets_the_status_and_clears_busy() {
+        let mut app = App::new_for_test();
+        app.ctx
+            .owner_ack_busy
+            .insert(("p".to_string(), "03-UAT.md".to_string()));
+        app.ctx
+            .owner_ack_busy
+            .insert(("p".to_string(), "04-UAT.md".to_string()));
+        app.needs_redraw = false;
+        app.update(Action::OwnerAcknowledged {
+            alias: "p".to_string(),
+            file: "03-UAT.md".to_string(),
+            outcome: "Acknowledge failed: bad\u{1b}[2J line".to_string(),
+        });
+        let (text, _) = app.ctx.status_message.clone().expect("status line");
+        assert!(text.starts_with("Acknowledge failed: bad"), "{text:?}");
+        assert!(!text.chars().any(char::is_control), "{text:?}");
+        assert!(app.needs_redraw);
+        assert_eq!(
+            app.ctx.owner_ack_busy.iter().collect::<Vec<_>>(),
+            [&("p".to_string(), "04-UAT.md".to_string())],
+            "only the answered file leaves the busy set"
+        );
+    }
+
     #[test]
     fn launcher_stop_stopped_strips_terminal_controls_from_the_report() {
         let mut app = App::new_for_test();
@@ -6834,6 +6878,11 @@ mod tests {
             // vanished project's row simply stops resolving and the cursor clamps
             // to its neighbor on the next frame, so there is nothing to prune.
             inbox_view: _,
+            // Keyed by (alias, file) but drained by its own answer: every
+            // acknowledge child sends `OwnerAcknowledged` (even after a runner
+            // panic) and the handler removes the entry, so a removed project's
+            // entry cannot outlive the child's 10 s budget (37 D-16).
+            owner_ack_busy: _,
         } = &app.ctx;
 
         assert!(!view_cache.contains_key(GONE), "view_cache leaked");

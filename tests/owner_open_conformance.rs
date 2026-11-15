@@ -489,24 +489,41 @@ fn source_files() -> Vec<(String, Vec<String>)> {
     out
 }
 
-#[test]
-fn no_source_file_names_the_open_audit_verb() {
-    let files = source_files();
+/// The one file under `src/` that may spell the oracle verb (37 D-14, RESEARCH
+/// Pitfall 1): `ACK_VERB`, the owner inbox's acknowledge argv, lives there.
+const ACK_SITE: &str = "src/ui/screens/owner_actions.rs";
+
+/// What every allowed line must also contain: only the writer's own subcommand is
+/// allowed, so the read verb (`audit-open`, `audit-open run`) stays unreachable
+/// from the product.
+const ACK_SUBCOMMAND: &str = "acknowledge";
+
+/// Every non-comment line that names the oracle verb and is not the acknowledge
+/// writer's own spelling in [`ACK_SITE`].
+fn forbidden_verb_hits(files: &[(String, Vec<String>)]) -> Vec<String> {
     let mut hits = Vec::new();
-    for (path, lines) in &files {
+    for (path, lines) in files {
         for (number, line) in lines.iter().enumerate() {
-            if line.trim_start().starts_with("//") {
+            if line.trim_start().starts_with("//") || !line.contains(ORACLE_VERB) {
                 continue;
             }
-            if line.contains(ORACLE_VERB) {
+            let allowed = Path::new(path).ends_with(ACK_SITE) && line.contains(ACK_SUBCOMMAND);
+            if !allowed {
                 hits.push(format!("{path}:{}: {}", number + 1, line.trim()));
             }
         }
     }
+    hits
+}
+
+#[test]
+fn no_source_file_names_the_open_audit_verb() {
+    let files = source_files();
+    let hits = forbidden_verb_hits(&files);
     assert!(
         hits.is_empty(),
-        "the audit oracle is a TEST-time tool and must never be reachable from the product: \
-         {hits:?}"
+        "the audit oracle's read verb is a TEST-time tool and must never be reachable from the \
+         product; only the acknowledge writer's spelling in {ACK_SITE} is allowed: {hits:?}"
     );
     let executable: usize = files
         .iter()
@@ -516,5 +533,40 @@ fn no_source_file_names_the_open_audit_verb() {
     assert!(
         executable > 1000,
         "the scan examined only {executable} executable lines, too few for its silence to mean anything"
+    );
+    // The allowance is not vacuous: the writer's spelling really is there.
+    let spelled = files
+        .iter()
+        .filter(|(path, _)| Path::new(path).ends_with(ACK_SITE))
+        .flat_map(|(_, lines)| lines.iter())
+        .filter(|line| !line.trim_start().starts_with("//") && line.contains(ORACLE_VERB))
+        .count();
+    assert_eq!(spelled, 1, "{ACK_SITE} must spell the verb exactly once");
+}
+
+/// The narrowed guard still fails on a planted read verb, in the allowed file and
+/// anywhere else, and on the writer's spelling outside the allowed file.
+#[test]
+fn the_narrowed_verb_guard_still_catches_the_read_verb() {
+    let planted = |path: &str, line: &str| vec![(path.to_owned(), vec![line.to_owned()])];
+    let read = format!("let verb = \"{ORACLE_VERB}\";");
+    let write = format!("[\"{ORACLE_VERB}\", \"{ACK_SUBCOMMAND}\"]");
+    assert_eq!(
+        forbidden_verb_hits(&planted(ACK_SITE, &read)).len(),
+        1,
+        "the read verb in the allowed file"
+    );
+    assert_eq!(
+        forbidden_verb_hits(&planted("src/ui/screens/inbox.rs", &write)).len(),
+        1,
+        "the writer's spelling in any other file"
+    );
+    assert!(
+        forbidden_verb_hits(&planted(ACK_SITE, &write)).is_empty(),
+        "the writer's spelling in the allowed file"
+    );
+    assert!(
+        forbidden_verb_hits(&planted("src/x.rs", &format!("// {read}"))).is_empty(),
+        "a comment is not a use"
     );
 }

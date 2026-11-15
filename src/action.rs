@@ -220,6 +220,17 @@ pub enum Action {
         run_id: String,
         report: String,
     },
+    /// The owner inbox's acknowledge child finished (37 D-15, D-16).
+    ///
+    /// `outcome` is the already-composed status line (done, failed with gsd-core's
+    /// own refusal line, or timed out); the handler escapes it, sets the status and
+    /// clears the busy entry for `(alias, file)`. Plain data, so `Action` stays
+    /// `Clone`.
+    OwnerAcknowledged {
+        alias: String,
+        file: String,
+        outcome: String,
+    },
     /// A Driver-tab steering key asked for one edit to a launcher run's
     /// `DIRECTION.md` body (30-04, D-14, D-15).
     ///
@@ -511,6 +522,16 @@ mod tests {
         assert!(matches!(
             scanned.clone(),
             Action::LauncherMarkerScanned { .. }
+        ));
+
+        let acknowledged = Action::OwnerAcknowledged {
+            alias: "proj".to_string(),
+            file: "03-UAT.md".to_string(),
+            outcome: "Acknowledged 03-UAT.md via gsd-core (uncommitted)".to_string(),
+        };
+        assert!(matches!(
+            acknowledged.clone(),
+            Action::OwnerAcknowledged { .. }
         ));
 
         let filled = Action::OwnerDigestLoaded {

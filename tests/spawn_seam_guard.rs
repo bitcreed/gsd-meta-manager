@@ -73,7 +73,10 @@ const SPAWN_ALLOWLIST: &[&str] = &[
     // agent), `systemctl`, `git` for the push mirror, `claude setup-token` and
     // `gh`. Every launcher spawn lives in this one file, so this is the one
     // entry. The agent is reached only through `bwrap`, or through the explicit
-    // degraded spawn of 28-04; nothing else in `src/launcher/` may spawn.
+    // degraded spawn of 28-04; nothing else in `src/launcher/` may spawn. It
+    // also runs gsd-core's own acknowledge writer for the owner inbox (37
+    // D-15: `run_bounded_with_stderr_env`, a bounded direct child after an
+    // explicit Yes). No agent.
     "src/launcher/process.rs",
 ];
 

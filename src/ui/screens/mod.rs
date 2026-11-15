@@ -1,3 +1,4 @@
+pub mod ack_confirm;
 pub mod add_project;
 pub mod confirm_popup;
 pub mod create_project;
@@ -1380,6 +1381,12 @@ pub struct AppContext {
     /// loads forever; there is no timer. A later digest for the alias clears the
     /// entry and `App::prune_driver_maps` drops an unregistered alias.
     pub owner_digest_failed: std::collections::HashSet<String>,
+    /// The `(alias, file basename)` pairs whose acknowledge child is running
+    /// (37 D-16): a second `A` for the same file says so instead of starting
+    /// another writer. Inserted when Yes starts the child, removed by the
+    /// `OwnerAcknowledged` handler; a child that never answers is bounded by its
+    /// 10 s budget, and the runner always sends a result.
+    pub owner_ack_busy: std::collections::HashSet<(String, String)>,
     /// The Owner inbox's view state (37-03, D-10): the cursor identity and the
     /// scroll offset. It lives on the context rather than on `InboxScreen` so a
     /// popup pushed above the inbox can repaint it as its background, and `i`
@@ -1878,6 +1885,63 @@ impl AppContext {
             );
             let marker = driver_run::launcher_marker(&entries, std::time::SystemTime::now());
             let _ = tx.send(crate::action::Action::LauncherMarkerScanned { alias, marker });
+        });
+    }
+
+    /// Run gsd-core's acknowledge writer for `req` on a blocking task (37 D-15,
+    /// D-16) and answer with [`crate::action::Action::OwnerAcknowledged`].
+    pub(crate) fn start_owner_acknowledge(&mut self, req: owner_actions::AckRequest) {
+        self.start_owner_acknowledge_with(req, owner_actions::run_ack);
+    }
+
+    /// [`Self::start_owner_acknowledge`] with the runner injected, so a test never
+    /// starts a real child.
+    ///
+    /// Refuses visibly without an event channel (the result could not be reported),
+    /// refuses a second run for the same `(alias, file)`, then marks the file busy,
+    /// sets `Acknowledging {file} via gsd-core...` and runs `run` on
+    /// `spawn_blocking`. The task always answers, even when the runner panics, so
+    /// the busy entry cannot stick.
+    pub(crate) fn start_owner_acknowledge_with<F>(&mut self, req: owner_actions::AckRequest, run: F)
+    where
+        F: FnOnce(&owner_actions::AckRequest) -> String + Send + 'static,
+    {
+        let file = req.target.name().to_owned();
+        let Some(tx) = self.event_tx.clone() else {
+            self.status_message = Some((
+                format!("Cannot acknowledge {file}: this session has no event channel"),
+                std::time::Instant::now(),
+            ));
+            self.needs_redraw = true;
+            return;
+        };
+        if !self
+            .owner_ack_busy
+            .insert((req.alias.clone(), file.clone()))
+        {
+            self.status_message = Some((
+                format!("Already acknowledging {file}"),
+                std::time::Instant::now(),
+            ));
+            self.needs_redraw = true;
+            return;
+        }
+        self.status_message = Some((
+            format!("Acknowledging {file} via gsd-core..."),
+            std::time::Instant::now(),
+        ));
+        self.needs_redraw = true;
+        let alias = req.alias.clone();
+        tokio::task::spawn_blocking(move || {
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(&req)))
+                .unwrap_or_else(|_| {
+                    "Acknowledge failed: the runner stopped unexpectedly".to_owned()
+                });
+            let _ = tx.send(crate::action::Action::OwnerAcknowledged {
+                alias,
+                file,
+                outcome,
+            });
         });
     }
 
@@ -2615,6 +2679,7 @@ mod tests {
             reparse_dispatches: 0,
             owner_digests: HashMap::new(),
             owner_digest_failed: std::collections::HashSet::new(),
+            owner_ack_busy: std::collections::HashSet::new(),
             inbox_view: inbox::InboxViewState::default(),
             agent_views: HashMap::new(),
             agents_scan_in_flight: false,

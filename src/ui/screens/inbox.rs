@@ -19,6 +19,7 @@
 //! so a digest refresh moves the selection to a neighbor instead of leaving it on
 //! whatever row now sits at the old index.
 
+use super::ack_confirm::AckHost;
 use super::detail::{fit_cells, fit_spans, shown};
 use super::driver::DRY_RUN_LOADING;
 use super::owner::{owner_numbers, OWNER_SEP};
@@ -1054,7 +1055,7 @@ struct FooterKey {
 
 /// The hints in the UI-SPEC footer order, **only for keys that work**: later
 /// plans insert their key at its UI-SPEC position (`A`, `y`) when it works.
-const FOOTER_KEYS: [FooterKey; 7] = [
+const FOOTER_KEYS: [FooterKey; 8] = [
     FooterKey {
         key: "[j/k]",
         labels: ["move", "move", "move"],
@@ -1084,6 +1085,12 @@ const FOOTER_KEYS: [FooterKey; 7] = [
         labels: ["pen file", "pen", "pen"],
         rung3: true,
         rung4: false,
+    },
+    FooterKey {
+        key: "[A]",
+        labels: ["cknowledge", "cknowledge", "ck"],
+        rung3: true,
+        rung4: true,
     },
     FooterKey {
         key: "[Esc]",
@@ -1547,6 +1554,35 @@ impl InboxScreen {
         }
     }
 
+    /// `A` (D-14, D-16): the confirm popup for the group's file, or the status
+    /// line that says why not. Nothing is written until Yes.
+    fn ack_key(&self, ctx: &mut AppContext) -> ScreenAction {
+        let row = match Self::selected(ctx) {
+            Err(()) => return ScreenAction::None,
+            Ok(None) => {
+                Self::say(ctx, "Select a group row to acknowledge it".to_owned());
+                return ScreenAction::None;
+            }
+            Ok(Some(row)) => row,
+        };
+        // A BLOCKED aggregate has no single group: its row's own group stands in
+        // and the request path refuses it by lane.
+        let group = ctx
+            .owner_digest(&row.alias)
+            .and_then(|digest| owner_block::group_for(digest, &row.src.key))
+            .unwrap_or_else(|| row.src.group.clone());
+        match owner_actions::ack_open(ctx, &row.alias, &group, AckHost::Inbox) {
+            Ok(action) => {
+                ctx.needs_redraw = true;
+                action
+            }
+            Err(message) => {
+                Self::say(ctx, message);
+                ScreenAction::None
+            }
+        }
+    }
+
     /// `g` (D-07): the project's detail view on the Phases tab with the Owner
     /// block on the same group. The inbox pushes the screen itself: the App's
     /// project-open helper refuses once more than the dashboard is on the stack.
@@ -1636,6 +1672,7 @@ impl Screen for InboxScreen {
             }
             KeyCode::Char('v') => self.run_key(ctx, &mut owner_actions::launch_real),
             KeyCode::Char('o') => self.open_key(ctx),
+            KeyCode::Char('A') => self.ack_key(ctx),
             KeyCode::Char('g') => self.goto_key(ctx),
             KeyCode::Enter | KeyCode::Char(' ') => {
                 self.toggle_key(ctx);
@@ -2270,11 +2307,13 @@ mod tests {
         assert!(text[closes + 2].starts_with(" \u{25b8} alder-api"));
         // The footer lists only the keys that work.
         assert!(text[29].contains("[j/k]move"), "{:?}", text[29]);
-        assert!(text[29].contains("[v]run command"));
+        // At 100 columns the long rung (107 cells) does not fit, so the short one
+        // shows; `[y]copy` joins in 37-07.
+        assert!(text[29].contains("[v]run"));
         assert!(text[29].contains("[Enter]expand"));
-        assert!(text[29].contains("[g]o to project"));
-        assert!(text[29].contains("[o]pen file"));
-        assert!(!text[29].contains("[A]"), "not yet: 37-06");
+        assert!(text[29].contains("[g]oto"));
+        assert!(text[29].contains("[o]pen"));
+        assert!(text[29].contains("[A]cknowledge"));
         // The first row is Cyan + BOLD, every cell of it.
         let buffer = draw(&ctx, 100, 30);
         let y = (closes + 1) as u16;
@@ -2672,18 +2711,18 @@ mod tests {
         let ctx = inbox_fleet_ctx();
         let footer = |w: usize| line_text(&footer_line(&ctx, w, true, false));
         assert_eq!(
-            footer(92),
-            "  [j/k]move  [Enter]expand  [g]o to project  [v]run command  [o]pen file  [Esc]back  [?]help"
+            footer(107),
+            "  [j/k]move  [Enter]expand  [g]o to project  [v]run command  [o]pen file  [A]cknowledge  [Esc]back  [?]help"
         );
         assert_eq!(
-            footer(91),
-            "  [j/k]move  [Enter]expand  [g]oto  [v]run  [o]pen  [Esc]back  [?]help"
+            footer(106),
+            "  [j/k]move  [Enter]expand  [g]oto  [v]run  [o]pen  [A]cknowledge  [Esc]back  [?]help"
         );
         assert_eq!(
-            footer(69),
-            "  [j/k]move  [Enter]expand  [g]oto  [v]run  [o]pen  [?]help"
+            footer(84),
+            "  [j/k]move  [Enter]expand  [g]oto  [v]run  [o]pen  [A]ck  [?]help"
         );
-        assert_eq!(footer(58), "  [v]run  [?]help");
+        assert_eq!(footer(65), "  [v]run  [A]ck  [?]help");
         assert_eq!(
             footer(10),
             "  [v]run \u{2026}",
@@ -3962,6 +4001,56 @@ mod tests {
         let mut empty = ctx_with_aliases(&["alder-api"]);
         let mut screen = open_inbox_and(&mut empty, &[]);
         let action = keys_on(&mut *screen, &mut empty, &[KeyCode::Char('o')], size).remove(0);
+        assert!(matches!(action, ScreenAction::None));
+        assert!(empty.status_message.is_none());
+    }
+
+    /// `A` (37-06): a refusal is a status line, a good row opens the confirm popup
+    /// (nothing runs), and the fold line says what to select.
+    #[test]
+    fn a_opens_the_acknowledge_popup_and_refuses_in_the_status_line() {
+        let mut ctx = inbox_fleet_ctx();
+        owner_actions::force_launcher(Some(owner_actions::test_launcher()));
+        let mut screen = open_inbox_and(&mut ctx, &[]);
+        let size = (100, 30);
+        // No milestone version: refused, no popup.
+        let action = keys_on(&mut *screen, &mut ctx, &[KeyCode::Char('A')], size).remove(0);
+        assert!(matches!(action, ScreenAction::None));
+        assert_eq!(
+            ctx.status_message.as_ref().map(|(m, _)| m.as_str()),
+            Some("Cannot acknowledge: dune-app has no known milestone version")
+        );
+        // With one: the popup, and no status message.
+        ctx.project_states.get_mut("dune-app").unwrap().milestone = "v2.0".to_owned();
+        ctx.status_message = None;
+        let action = keys_on(&mut *screen, &mut ctx, &[KeyCode::Char('A')], size).remove(0);
+        let ScreenAction::Push(popup) = action else {
+            panic!("`A` opens the confirm popup");
+        };
+        assert_eq!(popup.name(), "ack_confirm");
+        assert!(ctx.status_message.is_none(), "opening the popup is silent");
+        assert!(ctx.owner_ack_busy.is_empty(), "nothing runs before Yes");
+        // A busy file is never offered again.
+        ctx.owner_ack_busy
+            .insert(("dune-app".to_owned(), "24-UAT.md".to_owned()));
+        let action = keys_on(&mut *screen, &mut ctx, &[KeyCode::Char('A')], size).remove(0);
+        assert!(matches!(action, ScreenAction::None));
+        assert_eq!(
+            ctx.status_message.as_ref().map(|(m, _)| m.as_str()),
+            Some("Already acknowledging 24-UAT.md")
+        );
+        // The fold line is not a group.
+        keys_on(&mut *screen, &mut ctx, &[KeyCode::End], size);
+        let action = keys_on(&mut *screen, &mut ctx, &[KeyCode::Char('A')], size).remove(0);
+        assert!(matches!(action, ScreenAction::None));
+        assert_eq!(
+            ctx.status_message.as_ref().map(|(m, _)| m.as_str()),
+            Some("Select a group row to acknowledge it")
+        );
+        // An empty inbox ignores the key and says nothing.
+        let mut empty = ctx_with_aliases(&["alder-api"]);
+        let mut screen = open_inbox_and(&mut empty, &[]);
+        let action = keys_on(&mut *screen, &mut empty, &[KeyCode::Char('A')], size).remove(0);
         assert!(matches!(action, ScreenAction::None));
         assert!(empty.status_message.is_none());
     }

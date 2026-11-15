@@ -448,6 +448,25 @@ pub fn run_bounded_with_stderr(
     extra_env: &[(&str, &str)],
     budget: Duration,
 ) -> Option<(BoundedOutput, String)> {
+    run_bounded_with_stderr_env(program, args, cwd, &[], extra_env, budget)
+}
+
+/// [`run_bounded_with_stderr`] with `remove_env`: every named variable is removed
+/// from the child's inherited environment **before** `extra_env` is applied, so an
+/// entry of `extra_env` still wins over a removal of the same name.
+///
+/// The owner inbox's acknowledge child uses it (37 D-15, T-37-18): gsd-core picks
+/// the workstream a write lands in from `GSD_WORKSTREAM` and from session-keyed
+/// pointers, and an inherited value could send the write to a file other than the
+/// one the owner confirmed.
+pub fn run_bounded_with_stderr_env(
+    program: &str,
+    args: &[OsString],
+    cwd: Option<&Path>,
+    remove_env: &[&str],
+    extra_env: &[(&str, &str)],
+    budget: Duration,
+) -> Option<(BoundedOutput, String)> {
     use std::io::{Read, Seek, SeekFrom};
 
     let mut sink = tempfile::tempfile().ok()?;
@@ -460,6 +479,9 @@ pub fn run_bounded_with_stderr(
         for key in GIT_REPO_ENV {
             cmd.env_remove(key);
         }
+    }
+    for key in remove_env {
+        cmd.env_remove(key);
     }
     for (key, value) in extra_env {
         cmd.env(key, value);
@@ -754,6 +776,37 @@ mod tests {
                 "a token fragment {run:?} leaked: {line}"
             );
         }
+    }
+
+    /// 37 D-15: a name in `remove_env` is gone from the child, and an `extra_env`
+    /// entry of the same name is applied after the removal and wins.
+    #[test]
+    fn run_bounded_with_stderr_env_removes_names_before_extra_env() {
+        let args = [
+            OsString::from("-c"),
+            OsString::from("printf '%s' \"${HOME-absent}\""),
+        ];
+        let run = |remove: &[&str], extra: &[(&str, &str)]| {
+            let (output, _) = run_bounded_with_stderr_env(
+                "sh",
+                &args,
+                None,
+                remove,
+                extra,
+                Duration::from_secs(20),
+            )
+            .expect("sh runs");
+            String::from_utf8_lossy(&output.stdout).into_owned()
+        };
+        assert_eq!(run(&["HOME"], &[]), "absent");
+        assert_eq!(run(&["HOME"], &[("HOME", "kept")]), "kept");
+        // The plain wrapper removes nothing.
+        let (output, _) = run_bounded_with_stderr("sh", &args, None, &[], Duration::from_secs(20))
+            .expect("sh runs");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            std::env::var("HOME").unwrap_or_else(|_| "absent".to_owned())
+        );
     }
 
     // ---- SAFE-04: the capture pump between the master's stdio and launch-N.jsonl ----
