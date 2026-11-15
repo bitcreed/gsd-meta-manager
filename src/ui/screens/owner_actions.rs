@@ -105,7 +105,7 @@ pub(crate) fn run_plan(
 /// command to type when the focus worked (`Switched to ...`). Any other text (a
 /// failure, a missing multiplexer) passes through unchanged.
 pub(crate) fn focus_status(focus_message: String, command: &RunCommand) -> String {
-    if focus_message.starts_with("Switched to") {
+    if focus_message.starts_with(crate::multiplexer::FOCUS_OK_PREFIX) {
         format!("{focus_message} \u{b7} type {command}")
     } else {
         focus_message

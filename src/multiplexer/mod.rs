@@ -1032,6 +1032,12 @@ pub fn launch(
     )
 }
 
+/// The text a successful focus message starts with. `focus_with` builds the
+/// message from it and callers that react to a success (the inbox's `v`, which
+/// then adds the command to type) test for it, so a rewording cannot silently
+/// drop the hint (Phase 37 IN-03).
+pub const FOCUS_OK_PREFIX: &str = "Switched to";
+
 /// Focus the pane or tab running `session` and report what happened (D-09).
 /// **Pure over `backends`**: tests pass fakes. Reads `/proc` only for the reveal
 /// step (`reveal_client`).
@@ -1091,8 +1097,8 @@ pub(crate) fn focus_with_procs(
                 tracing::debug!(backend = name, matched_by = ?outcome.by, "focused session");
                 let outcome = reveal_client(detected, backends, env, procfs, outcome);
                 return match outcome.partial {
-                    Some(note) => format!("Switched to {label} ({note})"),
-                    None => format!("Switched to {label}"),
+                    Some(note) => format!("{FOCUS_OK_PREFIX} {label} ({note})"),
+                    None => format!("{FOCUS_OK_PREFIX} {label}"),
                 };
             }
             Err(e) => failures.push((name, e.to_string())),
@@ -2365,7 +2371,7 @@ mod tests {
             "a session that runs under herdr was reported missing from tmux: {message:?}"
         );
         assert!(
-            message.starts_with("Switched to sentriq"),
+            message.starts_with(&format!("{FOCUS_OK_PREFIX} sentriq")),
             "focusing a herdr-hosted session must succeed through herdr; got {message:?}"
         );
         assert_eq!(
