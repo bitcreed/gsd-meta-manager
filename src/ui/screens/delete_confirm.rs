@@ -171,6 +171,14 @@ fn do_remove_project(ctx: &mut AppContext, alias: &str) {
             ctx.project_states.remove(alias);
             ctx.detail_sub_view_per_project.remove(alias);
             ctx.last_refresh.remove(alias);
+            // The owner digest and the Owner block's view state go with the state
+            // (WR-02): an alias re-registered before the next prune would otherwise
+            // keep the removed project's numbers, and the handler refuses a first
+            // fill for an alias that already holds a digest.
+            ctx.owner_digests.remove(alias);
+            if let Some(cache) = ctx.view_cache.get_mut(alias) {
+                cache.owner_block = Default::default();
+            }
 
             // `registry::remove_project` cleans none of the maps above — it takes
             // a `&mut Config` and has no access to `AppContext` at all — so this
@@ -300,6 +308,45 @@ mod tests {
             "an ordinary removal reports no error, got: {:?}",
             ctx.error_message
         );
+    }
+
+    /// WR-02: the owner digest and the Owner block's view state leave with the
+    /// project, so an alias registered again before the next prune does not show
+    /// (or refuse to replace) the removed project's numbers.
+    #[test]
+    fn unregistering_a_project_drops_its_owner_digest_and_block_state() {
+        use crate::state_reader::owner_items::OwnerDigest;
+        use crate::ui::screens::owner_block::{Fold, Stop};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut ctx, _rx) = ctx_with_project(dir.path());
+        ctx.owner_digests.insert(
+            ALIAS.to_string(),
+            OwnerDigest {
+                test: 4,
+                ..OwnerDigest::default()
+            },
+        );
+        let block = &mut ctx
+            .view_cache
+            .entry(ALIAS.to_string())
+            .or_default()
+            .owner_block;
+        block.cursor = Some(Stop::FoldLine);
+        block.open_folds.insert(Fold::OldDebt);
+        block.cursor_index = 3;
+
+        confirm_removal(&mut ctx);
+
+        assert!(!ctx.config.projects.contains_key(ALIAS));
+        assert!(
+            !ctx.owner_digests.contains_key(ALIAS),
+            "a removed project's digest must not wait for the prune"
+        );
+        if let Some(cache) = ctx.view_cache.get(ALIAS) {
+            assert!(cache.owner_block.cursor.is_none());
+            assert!(cache.owner_block.open_folds.is_empty());
+            assert_eq!(cache.owner_block.cursor_index, 0);
+        }
     }
 
     /// A view cache entry carrying only the given launcher marker.

@@ -3601,8 +3601,11 @@ impl App {
             // cache entry behind.
             // The digest-only first fill (36 D-03). A registered alias without a
             // digest takes it; one that has a digest keeps it, because a digest
-            // from the reparse task is always newer than a first-fill one
-            // (RESEARCH Pitfall 2). Never a status message.
+            // from the reparse task is never older than a first-fill one
+            // (RESEARCH Pitfall 2). This holds only because removing a
+            // project drops its digest (WR-02): otherwise a re-added alias would
+            // hold the removed project's digest and refuse its own first fill.
+            // Never a status message.
             Action::OwnerDigestLoaded { alias, digest } => {
                 if self.ctx.owner_digest_storable(&alias)
                     && !self.ctx.owner_digests.contains_key(&alias)

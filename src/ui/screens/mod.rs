@@ -1362,8 +1362,12 @@ pub struct AppContext {
     /// * Filled by the reparse task (`ProjectStateLoaded.digest`) and, once per
     ///   alias, by the digest-only first fill (`OwnerDigestLoaded`); never on the
     ///   render path. An alias without an entry renders a blank `You` cell, never
-    ///   `·` (absent data must not read as clean, D-09).
-    /// * Pruned with the other alias-keyed maps in `App::prune_driver_maps`.
+    ///   `·` (absent data must not read as clean, D-09). A project whose folder or
+    ///   `.planning/` is gone holds no entry (WR-01); surfaces read through
+    ///   [`AppContext::owner_digest`], never this map directly.
+    /// * Removed with the project's state when it is removed from the dashboard
+    ///   (WR-02), and pruned with the other alias-keyed maps in
+    ///   `App::prune_driver_maps` as the backstop.
     pub owner_digests: HashMap<String, crate::state_reader::owner_items::OwnerDigest>,
     /// Per-alias running-agents view, from the agents scan (AGENT-05, D-C01).
     ///
