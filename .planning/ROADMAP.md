@@ -232,7 +232,7 @@ Plans:
 **Success Criteria** (what must be TRUE):
 1. From the dashboard, `i`, `j`, `v` starts `/gsd-verify-work N` in the right project in 3 keys or fewer, through `multiplexer::launch` (focusing an existing session when one is live), with the argv built only from the validated phase token and workstream name via `ExecArgv::new`.
 2. The inbox screen is legible at 100x30, filters lanes with `1-4`/`a`, follows the ordering rule, expands groups, and supports `g` go to project, `o` open file and `y` copy checklist.
-3. `A` launches `gsd-tools audit acknowledge …` only after a confirm popup, and the row disappears on the next watcher refresh without a restart; after a UAT passes, its row likewise disappears.
+3. `A` launches `gsd-tools audit-open acknowledge …` only after a confirm popup, and the row disappears on the next watcher refresh without a restart; after a UAT passes, its row likewise disappears.
 4. The help overlay and README ("Owner inbox" section plus the `inbox` schema) describe every key and the CLI contract.
 
 **Human UAT** (from report section 6): ordering in the inbox; launch into the real multiplexer (tmux/herdr); acknowledge round trip on a throwaway project.

@@ -103,7 +103,7 @@ checks the owner can run today (report section 1).
 - [ ] **OWN-21**: `v` runs the group's command through `multiplexer::launch` (focusing an existing
   live session instead when one exists); the argv is built only from the validated phase token and
   workstream name via `ExecArgv::new`.
-- [ ] **OWN-22**: `A` launches gsd-core's `gsd-tools audit acknowledge …` after a confirm popup (D7);
+- [ ] **OWN-22**: `A` launches gsd-core's `gsd-tools audit-open acknowledge …` after a confirm popup (D7);
   the app itself writes nothing into the project. The row disappears on the next watcher refresh.
 - [ ] **OWN-23**: Help overlay and README ("Owner inbox" section plus the `inbox` schema) updated.
 
@@ -119,7 +119,7 @@ All defaults taken as written **[inferred — milestone start 2026-11-14]**:
 | D4 | Archived debt on the dashboard | Dim `(+N old)` only; full list in inbox fold and `--include archived` |
 | D5 | New detail tab vs block | Block on the Phases tab |
 | D6 | `inbox` subcommand vs growing `status` | Separate `inbox`; `status` gets counts only |
-| D7 | Acknowledge writer | Launch gsd-core's `audit acknowledge`; no native write |
+| D7 | Acknowledge writer | Launch gsd-core's `audit-open acknowledge`; no native write |
 | D8 | `unknown` rows without a result in terminal files | Hidden and counted; `failed`/`partial` go to Fix |
 | D9 | Stale threshold | 30 days, `owner.stale_days` in the app config |
 | D10 | Keys | `i` inbox, `/y` filter, `v` run, `A` acknowledge, `y` copy |
@@ -131,8 +131,9 @@ Additional orchestrator calls:
 - OWN-13 and OWN-15 are delivered in Phase 34 and extended (new lanes and `closes_after`) in Phase 35;
   OWN-23 is delivered across Phases 36 and 37. Traceability maps each to the phase that completes it
   **[inferred]**.
-- The exact `gsd-tools audit acknowledge` CLI spelling and per-category flags are confirmed during
-  Phase 37 planning, as the report asks **[inferred]**.
+- The exact acknowledge CLI spelling and per-category flags were confirmed in Phase 37 discuss
+  (37-CONTEXT D-14): `gsd-tools audit-open acknowledge --category … --milestone … --phase <dir
+  token> --file <basename>` (or `--slug` for debug sessions), not `audit acknowledge` **[inferred]**.
 - Upstream gsd-core issues (report section 8) are not milestone requirements; they are reported
   separately **[inferred]**.
 
