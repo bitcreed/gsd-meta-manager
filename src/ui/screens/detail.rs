@@ -2146,11 +2146,15 @@ impl DetailScreen {
             }
             _ => {}
         }
+        // Nothing left to focus (the digest went away, or a refresh left only the
+        // Todos fold or no row at all): hand focus back AND consume the key
+        // (WR-05). The last frame may still have advertised the Owner keys, so
+        // falling through would run `Enter` or `e` as a phase-list key.
         let unavailable = ctx.owner_state_unavailable(&self.alias);
         let Some(digest) = ctx.owner_digests.get(&self.alias).filter(|_| !unavailable) else {
             self.focus = DetailFocus::Content;
             ctx.needs_redraw = true;
-            return None;
+            return Some(ScreenAction::None);
         };
         let view = &mut ctx
             .view_cache
@@ -2162,7 +2166,7 @@ impl DetailScreen {
         if self.owner_block_rows.get() == 0 || sk.stops.is_empty() {
             self.focus = DetailFocus::Content;
             ctx.needs_redraw = true;
-            return None;
+            return Some(ScreenAction::None);
         }
         let page = isize::try_from(self.owner_viewport_rows.get().max(1)).unwrap_or(1);
         let on_fold_line = view.cursor == Some(owner_block::Stop::FoldLine);
@@ -36260,6 +36264,60 @@ mod tests {
         key(&mut screen, &mut ctx, KeyCode::Up);
         screen.handle_key(KeyCode::Char('?'), KeyModifiers::NONE, &mut ctx);
         assert_eq!(screen.focus, DetailFocus::Owner);
+    }
+
+    /// WR-05: when a refresh leaves the focused block with nothing to stop on (only
+    /// the Todos fold, or no digest at all), the next key hands focus back to the
+    /// phase list and is consumed. The frame still advertised the Owner keys, so
+    /// `Enter` must not open a phase-list item and `e` must not enqueue.
+    #[test]
+    fn a_block_left_without_stops_consumes_the_next_key() {
+        use crate::state_reader::owner_items::{Hidden, OwnerDigest};
+        let todos_only = OwnerDigest {
+            hidden: Hidden {
+                todos: 3,
+                todos_oldest_days: Some(5),
+                ..Hidden::default()
+            },
+            ..OwnerDigest::default()
+        };
+        for (code, digest) in [
+            (KeyCode::Enter, Some(todos_only.clone())),
+            (KeyCode::Char('e'), Some(todos_only)),
+            (KeyCode::Enter, None),
+            (KeyCode::Char('e'), None),
+            (KeyCode::Esc, None),
+        ] {
+            let mut ctx = owner_ctx(Some(sample()));
+            let mut screen = owner_screen(&ctx);
+            key(&mut screen, &mut ctx, KeyCode::Up);
+            assert_eq!(screen.focus, DetailFocus::Owner);
+            match digest {
+                Some(digest) => {
+                    ctx.owner_digests.insert(TEST_ALIAS.to_string(), digest);
+                    owner_draw(&screen, &ctx);
+                    assert!(
+                        screen.owner_block_rows.get() > 0,
+                        "the Todos fold line still draws"
+                    );
+                }
+                None => {
+                    ctx.owner_digests.remove(TEST_ALIAS);
+                }
+            }
+            let selected = ctx.view_cache[TEST_ALIAS].pipeline_selected;
+            let action = screen.handle_key(code, KeyModifiers::NONE, &mut ctx);
+            assert!(
+                matches!(action, ScreenAction::None),
+                "{code:?}: consumed, not run as a phase-list key"
+            );
+            assert_eq!(screen.focus, DetailFocus::Content, "{code:?}");
+            assert_eq!(ctx.view_cache[TEST_ALIAS].pipeline_selected, selected);
+            assert!(
+                ctx.status_message.is_none() && ctx.error_message.is_none(),
+                "{code:?}: nothing ran"
+            );
+        }
     }
 
     /// The sample with the phase 24 group's first check carrying detail parts.
