@@ -197,11 +197,11 @@ Plans:
 **Depends on:** Phase 35
 **Verification:** Automatic buffer snapshots plus human UAT
 **UI hint**: yes
-**Plans:** 4 plans
+**Plans:** 1/4 plans executed
 
 Plans:
 **Wave 1**
-- [ ] 36-01-PLAN.md — Tracer: owner digest from the reparse task and a startup/registration first fill into `AppContext.owner_digests`, the `You` column at >= 100 columns, fleet buffer tests
+- [x] 36-01-PLAN.md — Tracer: owner digest from the reparse task and a startup/registration first fill into `AppContext.owner_digests`, the `You` column at >= 100 columns, fleet buffer tests
 
 **Wave 2** *(blocked on Wave 1 completion)*
 - [ ] 36-02-PLAN.md — `You:` summary line with `[i] inbox`, `has owner work` AttentionFirst rank, `/y [lane]` filter, help and README (dashboard part)

@@ -6,10 +6,10 @@ current_phase: 36
 current_phase_name: Dashboard and detail
 status: executing
 stopped_at: Phase 36 UI-SPEC approved
-last_updated: "2026-11-15T00:15:05.251Z"
+last_updated: "2026-11-15T00:16:30.973Z"
 last_activity: 2026-11-14
-last_activity_desc: Phase 35 complete, transitioned to Phase 34
-state_head: feb3a7fb3cf641b1214eb5934c9ebee34e467e91
+last_activity_desc: Phase 36 execution started
+state_head: 7bfe5d1a929119a1c43a5fab5e3d6edf8999219e
 progress:
   total_phases: 4
   completed_phases: 1
@@ -25,14 +25,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-11-14)
 
 **Core value:** See the state of every GSD project at a glance and act on any of them without leaving the TUI.
-**Current focus:** Phase 35 — Decisions, code-needed and gates
+**Current focus:** Phase 36 — Dashboard and detail
 
 ## Current Position
 
-Phase: 36 (Dashboard and detail) — READY TO EXECUTE
-Plan: 6
-Status: Ready to execute
-Last activity: 2026-11-14 — Phase 35 complete, transitioned to Phase 34
+Phase: 36 (Dashboard and detail) — EXECUTING
+Plan: 1 of 4
+Status: Executing Phase 36
+Last activity: 2026-11-14 — Phase 36 execution started
 
 
 ## Deferred Verification
