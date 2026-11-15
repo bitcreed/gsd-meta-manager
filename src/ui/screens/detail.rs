@@ -2192,6 +2192,7 @@ impl DetailScreen {
     fn handle_owner_block_key(
         &mut self,
         code: KeyCode,
+        modifiers: KeyModifiers,
         ctx: &mut AppContext,
     ) -> Option<ScreenAction> {
         use owner_block::{Move, Moved};
@@ -2238,11 +2239,13 @@ impl DetailScreen {
         let mut open = false;
         let mut acknowledge = false;
         let mut copy = false;
+        // The side-effecting letters act only unchorded (WR-01).
+        let plain = owner_actions::is_plain_action_key(modifiers);
         match code {
-            KeyCode::Char('y') => copy = true,
-            KeyCode::Char('v') => run = true,
-            KeyCode::Char('o') => open = true,
-            KeyCode::Char('A') => acknowledge = true,
+            KeyCode::Char('y') if plain => copy = true,
+            KeyCode::Char('v') if plain => run = true,
+            KeyCode::Char('o') if plain => open = true,
+            KeyCode::Char('A') if plain => acknowledge = true,
             KeyCode::Char('j') | KeyCode::Down => {
                 moved = owner_block::move_cursor(view, &sk.stops, Move::Next)
             }
@@ -4247,7 +4250,7 @@ impl Screen for DetailScreen {
     fn handle_key(
         &mut self,
         code: KeyCode,
-        _modifiers: KeyModifiers,
+        modifiers: KeyModifiers,
         ctx: &mut AppContext,
     ) -> ScreenAction {
         // Read through `effective_sub_view`: with the experimental surfaces off
@@ -4376,7 +4379,7 @@ impl Screen for DetailScreen {
         if self.focus == DetailFocus::Owner {
             if current_view != DetailSubView::Pipeline {
                 self.focus = DetailFocus::Content;
-            } else if let Some(action) = self.handle_owner_block_key(code, ctx) {
+            } else if let Some(action) = self.handle_owner_block_key(code, modifiers, ctx) {
                 return action;
             }
         }
@@ -36884,6 +36887,18 @@ mod tests {
             "the block keeps the keyboard"
         );
         assert_eq!(owner_view_of(&ctx).cursor, before.cursor);
+        // WR-01: a chord is not the action key, and the block swallows it.
+        for modifiers in [KeyModifiers::CONTROL, KeyModifiers::ALT] {
+            for letter in ['o', 'v', 'A', 'y'] {
+                let action = screen.handle_key(KeyCode::Char(letter), modifiers, &mut ctx);
+                assert!(
+                    matches!(action, ScreenAction::None),
+                    "{modifiers:?}+{letter} must do nothing"
+                );
+                assert!(ctx.status_message.is_none(), "{modifiers:?}+{letter}");
+                assert_eq!(screen.focus, DetailFocus::Owner);
+            }
+        }
         // The fold line is not a group.
         at(&mut ctx, Stop::FoldLine);
         let action = key(&mut screen, &mut ctx, KeyCode::Char('o'));

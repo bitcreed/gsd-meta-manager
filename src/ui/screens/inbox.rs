@@ -1691,9 +1691,12 @@ impl Screen for InboxScreen {
     fn handle_key(
         &mut self,
         code: KeyCode,
-        _modifiers: KeyModifiers,
+        modifiers: KeyModifiers,
         ctx: &mut AppContext,
     ) -> ScreenAction {
+        // The side-effecting letters act only unchorded (WR-01): Ctrl-V is the
+        // paste reflex and arrives as `Char('v')` with CONTROL.
+        let plain = owner_actions::is_plain_action_key(modifiers);
         match code {
             KeyCode::Esc | KeyCode::Char('q') => {
                 ctx.needs_redraw = true;
@@ -1703,11 +1706,11 @@ impl Screen for InboxScreen {
                 ctx.needs_redraw = true;
                 ScreenAction::Push(Box::new(super::help::HelpScreen::new()))
             }
-            KeyCode::Char('v') => self.run_key(ctx, &mut owner_actions::launch_real),
-            KeyCode::Char('o') => self.open_key(ctx),
-            KeyCode::Char('A') => self.ack_key(ctx),
-            KeyCode::Char('y') => self.copy_key(ctx),
-            KeyCode::Char('g') => self.goto_key(ctx),
+            KeyCode::Char('v') if plain => self.run_key(ctx, &mut owner_actions::launch_real),
+            KeyCode::Char('o') if plain => self.open_key(ctx),
+            KeyCode::Char('A') if plain => self.ack_key(ctx),
+            KeyCode::Char('y') if plain => self.copy_key(ctx),
+            KeyCode::Char('g') if plain => self.goto_key(ctx),
             KeyCode::Enter | KeyCode::Char(' ') => {
                 self.toggle_key(ctx);
                 ScreenAction::None
@@ -4132,6 +4135,36 @@ mod tests {
         ctx.owner_digests.get_mut("dune-app").unwrap().groups[0].file =
             ".planning/phases/24-clock/24-UAT.md".to_owned();
         dir
+    }
+
+    /// WR-01: Ctrl or Alt with an action letter (Ctrl-V is the paste reflex, and
+    /// a terminal in raw mode delivers it as `Char('v')` with CONTROL) is not the
+    /// action: nothing opens, starts or says anything. Shift stays allowed because
+    /// `A` arrives shifted.
+    #[test]
+    fn a_control_or_alt_chord_is_not_an_action_key() {
+        let mut ctx = inbox_fleet_ctx();
+        let _dir = with_real_uat(&mut ctx);
+        let mut screen = open_inbox_and(&mut ctx, &[]);
+        for modifiers in [
+            KeyModifiers::CONTROL,
+            KeyModifiers::ALT,
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        ] {
+            for key in ['o', 'g', 'v', 'A', 'y'] {
+                let action = screen.handle_key(KeyCode::Char(key), modifiers, &mut ctx);
+                assert!(
+                    matches!(action, ScreenAction::None),
+                    "{modifiers:?}+{key} must do nothing"
+                );
+                assert!(ctx.status_message.is_none(), "{modifiers:?}+{key}");
+            }
+        }
+        // The plain key still works, and so does a shifted one.
+        let action = screen.handle_key(KeyCode::Char('o'), KeyModifiers::NONE, &mut ctx);
+        assert!(matches!(action, ScreenAction::Push(_)));
+        let action = screen.handle_key(KeyCode::Char('g'), KeyModifiers::SHIFT, &mut ctx);
+        assert!(matches!(action, ScreenAction::Push(_)));
     }
 
     #[test]

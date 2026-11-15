@@ -143,6 +143,15 @@ pub(crate) fn run_group(
     }
 }
 
+/// Whether a key press may run an owner action (`v`, `o`, `A`, `y`, `g`): no
+/// Control and no Alt. A terminal in raw mode delivers Ctrl-V (the paste reflex)
+/// as `Char('v')` with CONTROL, and Ctrl-O, Ctrl-Y and Ctrl-G likewise. Shift is
+/// allowed because `A` arrives shifted (WR-01).
+pub(crate) fn is_plain_action_key(modifiers: crossterm::event::KeyModifiers) -> bool {
+    use crossterm::event::KeyModifiers as M;
+    !modifiers.intersects(M::CONTROL | M::ALT)
+}
+
 /// The most bytes `o` reads from a source file (D-08, T-37-14): the viewer is for
 /// the owner's own checklists, not for a log someone left in `.planning/`.
 pub(crate) const MAX_VIEW_BYTES: u64 = 1024 * 1024;
