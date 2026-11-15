@@ -585,6 +585,9 @@ pub struct App {
     /// marked here, and the tick re-parses it once its window has passed: the
     /// dedup becomes trailing-edge without a timer of its own.
     pub reparse_pending: std::collections::HashSet<String>,
+    /// The UTC hour (hours since the epoch) the owner ages were last swept at
+    /// (WR-07); `None` until the first sweep. See [`App::sweep_owner_ages`].
+    pub owner_age_hour: Option<i64>,
     /// The host check and the launch call the launch form reaches (30-05).
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub launch_seams: LaunchSeams,
@@ -1009,6 +1012,7 @@ impl App {
             edit_sessions: HashMap::new(),
             new_run_flow: std::collections::HashSet::new(),
             reparse_pending: std::collections::HashSet::new(),
+            owner_age_hour: None,
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             launch_seams: LaunchSeams::default(),
             #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -1097,6 +1101,45 @@ impl App {
             if let Some(path) = self.ctx.config.projects.get(&alias).map(|p| p.path.clone()) {
                 self.schedule_reparse(&alias, &path);
             }
+        }
+    }
+
+    /// Re-parse, once per UTC hour, every project whose owner digest shows an age
+    /// (WR-07).
+    ///
+    /// The reader stores ages, the `stale` flag and the oldest-todo age as whole
+    /// days counted at read time, and a digest is otherwise re-read only when a
+    /// `.planning/` file changes. On a dashboard left open for days a quiet
+    /// project would keep `3 d`, keep `stale` off past `stale_days`, and keep its
+    /// Todos fold at the old age. This sweep bounds that lag to an hour.
+    ///
+    /// It rides the existing 20-tick counter (no timer of its own) and goes
+    /// through [`Self::schedule_reparse`], the only dispatch site, so a swept
+    /// result is ordered like any watcher re-parse. A digest without groups or
+    /// todos shows no age and is skipped, as is the first call, which only
+    /// records the hour (the startup load has just read every digest). This
+    /// relaxes 36 D-03's "no timer-driven recompute" for ages only; a warm
+    /// re-parse costs a `stat` per owner file thanks to the reader's caches.
+    fn sweep_owner_ages(&mut self, now: chrono::DateTime<chrono::Utc>) {
+        let hour = now.timestamp().div_euclid(3600);
+        match self.owner_age_hour.replace(hour) {
+            Some(last) if last != hour => {}
+            _ => return,
+        }
+        let due: Vec<(String, PathBuf)> = self
+            .ctx
+            .config
+            .projects
+            .iter()
+            .filter(|(alias, _)| {
+                self.ctx
+                    .owner_digest(alias)
+                    .is_some_and(|d| !d.groups.is_empty() || d.hidden.todos > 0)
+            })
+            .map(|(alias, project)| (alias.clone(), project.path.clone()))
+            .collect();
+        for (alias, path) in due {
+            self.schedule_reparse(&alias, &path);
         }
     }
 
@@ -2802,6 +2845,10 @@ impl App {
                     // It is pure in-memory map work — no syscall, no file read —
                     // so it runs inline rather than on a blocking task.
                     self.prune_driver_maps();
+
+                    // The hourly owner-age sweep rides this counter too (WR-07):
+                    // at most one re-parse per aged project per UTC hour.
+                    self.sweep_owner_ages(chrono::Utc::now());
                 }
             }
             Action::RawKey(key_event) => {
@@ -5694,6 +5741,64 @@ mod tests {
             dispatched + 1,
             "one trailing re-parse, not one per tick"
         );
+    }
+
+    /// WR-07: ages are whole days counted at read time, so a project whose digest
+    /// shows an age is re-parsed once per UTC hour; a digest without ages is not,
+    /// and neither is the first sweep or a second sweep in the same hour.
+    #[tokio::test]
+    async fn the_owner_age_sweep_re_parses_aged_digests_once_an_hour() {
+        use crate::config::RegisteredProject;
+        use crate::state_reader::owner_items::{Hidden, OwnerDigest};
+        use chrono::TimeZone;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, _rx) = obs_app(dir.path());
+        app.ctx.config.projects.insert(
+            "clean".to_string(),
+            RegisteredProject {
+                path: dir.path().join("clean"),
+                added: "2026-07-29".to_string(),
+                driver_opt_in: None,
+                extra: Default::default(),
+            },
+        );
+        app.ctx.owner_digests.insert(
+            OBS_ALIAS.to_string(),
+            OwnerDigest {
+                hidden: Hidden {
+                    todos: 2,
+                    todos_oldest_days: Some(3),
+                    ..Hidden::default()
+                },
+                ..OwnerDigest::default()
+            },
+        );
+        app.ctx
+            .owner_digests
+            .insert("clean".to_string(), OwnerDigest::default());
+
+        let t0 = chrono::Utc
+            .with_ymd_and_hms(2026, 11, 14, 9, 5, 0)
+            .single()
+            .expect("a valid instant");
+        let before = app.ctx.reparse_dispatches;
+        app.sweep_owner_ages(t0);
+        assert_eq!(
+            app.ctx.reparse_dispatches, before,
+            "the first sweep records"
+        );
+        app.sweep_owner_ages(t0 + chrono::Duration::minutes(50));
+        assert_eq!(app.ctx.reparse_dispatches, before, "same hour");
+        app.sweep_owner_ages(t0 + chrono::Duration::minutes(60));
+        assert_eq!(
+            app.ctx.reparse_dispatches,
+            before + 1,
+            "the next hour re-parses the aged project only"
+        );
+        assert!(app.ctx.last_refresh.contains_key(OBS_ALIAS));
+        assert!(!app.ctx.last_refresh.contains_key("clean"));
+        app.sweep_owner_ages(t0 + chrono::Duration::minutes(70));
+        assert_eq!(app.ctx.reparse_dispatches, before + 1, "once per hour");
     }
 
     /// D-02 / Pitfall 1: a digest-only change redraws and re-sorts but never
