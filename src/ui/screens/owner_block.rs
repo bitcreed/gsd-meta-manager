@@ -643,6 +643,32 @@ fn age_spans(age: &(String, bool), row: &RowCells) -> Vec<Span<'static>> {
     out
 }
 
+/// The phase cell as (Magenta prefix, text) in `width` cells. A workstream name
+/// gives way inside its prefix (`ws v0-14-v\u{2026} ph 26`) so the phase number,
+/// which tells the rows of one workstream apart, is never the part that is cut.
+fn phase_cell(row: &RowCells, width: usize) -> (String, String) {
+    if cells(&row.ws_prefix) + cells(&row.phase) <= width {
+        return (row.ws_prefix.clone(), row.phase.clone());
+    }
+    let name = row
+        .ws_prefix
+        .strip_prefix("ws ")
+        .and_then(|p| p.strip_suffix(' '));
+    if let Some(name) = name {
+        // `ws `, the name, a space, then the phase text with its own lead space.
+        let room = width.saturating_sub(cells("ws ") + 1 + cells(&row.phase));
+        if room >= 2 {
+            return (format!("ws {} ", fit_cells(name, room)), row.phase.clone());
+        }
+    }
+    let cut = fit_cells(&format!("{}{}", row.ws_prefix, row.phase), width);
+    match cut.strip_prefix(row.ws_prefix.as_str()) {
+        Some(rest) => (row.ws_prefix.clone(), rest.to_owned()),
+        None if row.ws_prefix.is_empty() => (String::new(), cut),
+        None => (cut, String::new()),
+    }
+}
+
 /// The row as spans, cut to `width` and without trailing blanks.
 fn row_line(row: &RowCells, grid: &Grid, width: usize) -> Line<'static> {
     let plain = style_for(row, Style::default());
@@ -658,20 +684,14 @@ fn row_line(row: &RowCells, grid: &Grid, width: usize) -> Line<'static> {
         tag_style,
     ));
     // Phase cell: the Magenta `ws` prefix, then the phase text.
-    let full = format!("{}{}", row.ws_prefix, row.phase);
-    let cut = fit_cells(&full, grid.phase_w);
-    let gap = blanks(grid.phase_w.saturating_sub(cells(&cut)));
-    if !row.ws_prefix.is_empty() {
-        let magenta = style_for(row, Style::default().fg(Color::Magenta));
-        match cut.strip_prefix(row.ws_prefix.as_str()) {
-            Some(rest) => {
-                spans.push(Span::styled(row.ws_prefix.clone(), magenta));
-                spans.push(Span::styled(format!("{rest}{gap}"), plain));
-            }
-            None => spans.push(Span::styled(format!("{cut}{gap}"), magenta)),
-        }
+    let (prefix, rest) = phase_cell(row, grid.phase_w);
+    let gap = blanks(grid.phase_w.saturating_sub(cells(&prefix) + cells(&rest)));
+    if prefix.is_empty() {
+        spans.push(Span::styled(format!("{rest}{gap}"), plain));
     } else {
-        spans.push(Span::styled(format!("{cut}{gap}"), plain));
+        let magenta = style_for(row, Style::default().fg(Color::Magenta));
+        spans.push(Span::styled(prefix, magenta));
+        spans.push(Span::styled(format!("{rest}{gap}"), plain));
     }
     spans.push(Span::raw("  "));
     if row.lane == Lane::Blocked {
@@ -1597,6 +1617,27 @@ mod tests {
         assert!(test_row.contains("/gsd-"), "{test_row}");
         let fix_row = rows.iter().find(|r| r.contains("FIX")).expect("fix row");
         assert!(fix_row.contains("/gsd-pl"), "{fix_row}");
+    }
+
+    #[test]
+    fn a_long_workstream_name_gives_way_before_the_phase_number() {
+        let mut digest = sample_owner_digest();
+        let handoff = digest
+            .groups
+            .iter_mut()
+            .find(|g| g.workstream.is_some())
+            .expect("workstream group");
+        handoff.workstream = Some("v0-14-voice".to_owned());
+        handoff.kind = Kind::Uat;
+        handoff.lane = Lane::Test;
+        handoff.phase = "26".to_owned();
+        let model = block_model("sample", "v2.2", &digest, &OwnerBlockState::default(), 100);
+        let rows: Vec<String> = model.body.iter().map(text).collect();
+        let row = rows
+            .iter()
+            .find(|r| r.contains("ws v0-14"))
+            .expect("workstream row");
+        assert!(row.contains("\u{2026} ph 26"), "{row}");
     }
 
     #[test]
