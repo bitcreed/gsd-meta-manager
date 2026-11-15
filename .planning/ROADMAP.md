@@ -227,14 +227,14 @@ Plans:
 **Depends on:** Phase 36
 **Verification:** Automatic snapshots plus human UAT
 **UI hint**: yes
-**Plans:** 1/7 plans executed
+**Plans:** 2/7 plans executed
 
 Plans:
 **Wave 1**
 - [x] 37-01-PLAN.md — Tracer: Decide-lane noise rule: planned-phase CONTEXT questions leave the lanes into `hidden.planned_questions`, top-level question units, fixtures, schema pins and README rows (D-17..D-19)
 
 **Wave 2** *(blocked on Wave 1 completion)*
-- [ ] 37-02-PLAN.md — Tracer: typed `RunCommand` on every owner group (`command` derived from it, unchanged on every fixture) and the Owner block byte-identity pin (D-11 reader side)
+- [x] 37-02-PLAN.md — Tracer: typed `RunCommand` on every owner group (`command` derived from it, unchanged on every fixture) and the Owner block byte-identity pin (D-11 reader side)
 
 **Wave 3** *(blocked on Wave 2 completion)*
 - [ ] 37-03-PLAN.md — Tracer: `i`, `j`, `v` starts the group's command (SC1): `InboxScreen` rows and ordering, `owner_actions` focus-or-launch with launch-time re-validation, D-21 `v`, `i` help and README rows

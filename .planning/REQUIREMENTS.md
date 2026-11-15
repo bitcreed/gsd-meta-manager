@@ -100,7 +100,7 @@ checks the owner can run today (report section 1).
 - [ ] **OWN-20**: Inbox screen (`i` on the dashboard) per report section 3.3: lane filters `1-4`/`a`,
   the ordering rule (closes-a-phase, then milestone progress, then age), expand, `g` go to project,
   `o` open file, `y` copy checklist. Legible at 100x30.
-- [ ] **OWN-21**: `v` runs the group's command through `multiplexer::launch` (focusing an existing
+- [x] **OWN-21**: `v` runs the group's command through `multiplexer::launch` (focusing an existing
   live session instead when one exists); the argv is built only from the validated phase token and
   workstream name via `ExecArgv::new`.
 - [ ] **OWN-22**: `A` launches gsd-core's `gsd-tools audit-open acknowledge …` after a confirm popup (D7);
@@ -186,7 +186,7 @@ Deferred (report section 6):
 | OWN-18 | Phase 36 | Pending |
 | OWN-19 | Phase 36 | Pending |
 | OWN-20 | Phase 37 | Pending |
-| OWN-21 | Phase 37 | Pending |
+| OWN-21 | Phase 37 | Complete |
 | OWN-22 | Phase 37 | Pending |
 | OWN-23 | Phase 37 | Pending |
 
