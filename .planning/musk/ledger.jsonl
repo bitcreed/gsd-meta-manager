@@ -143,3 +143,4 @@
 {"ts":"2026-11-14T23:04:20.044Z","type":"pass","phase":"36","point":"discuss:pre"}
 {"id":"M-0053-90e9dd","ts":"2026-11-14T23:58:56.594Z","type":"cut","class":"impl","unit":"task","ref":"Owner block mouse handling (click focuses a stop, wheel moves the cursor, double-click expands)","reason":"UI-SPEC marks it inferred and deferrable; CONTEXT and OWN-19 do not ask for it; the click guard and a README keyboard-only note stay","phase":"36","point":"plan:pre","status":"applied","qty":1,"inferred":true}
 {"ts":"2026-11-15T02:02:58.272Z","type":"snapshot","phase":"36","measured":{"plans":4,"tasks":12,"tokens":null,"cache_read":null,"basis":"none"},"estimated":{"cuts_applied":1,"reinstated":0,"add_back_ratio":0,"gross":{"basis":"harness","n":1,"p25":0,"p50":18685,"p75":70909},"pass_cost":790,"net":{"basis":"harness","n":1,"p25":-790,"p50":17895,"p75":70119}}}
+{"ts":"2026-11-15T02:26:48.208Z","type":"pass","phase":"37","point":"discuss:pre"}
