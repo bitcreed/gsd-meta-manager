@@ -3108,9 +3108,9 @@ fn owner_scrubbed_program() -> Vec<String> {
 /// The GUI-terminal argv for an Owner inbox command: the separator from
 /// [`terminal_program_separator`], the scrubbed `env -u VAR ... claude` program
 /// of [`owner_scrubbed_program`], then the validated command as one final
-/// element. Every element but the last is authored here, pinned by
-/// `owner_terminal_argv_carries_no_untrusted_element_and_is_pinned_at_three`: the
-/// first two are authored here, the third is the re-validated command string.
+/// element. Every element but the last is authored here (separator, `env`, the
+/// `-u VAR` pairs and `claude`); the last is the re-validated command string.
+/// Pinned by `owner_terminal_argv_carries_no_untrusted_element_and_is_pinned_at_three`.
 pub(crate) fn owner_terminal_argv(
     term: &str,
     cmd: &crate::state_reader::owner_items::RunCommand,
@@ -24408,9 +24408,11 @@ mod tests {
         }
     }
 
-    /// The Owner inbox's GUI argv (37-03, T-37-04): the two authored elements of
-    /// [`launch_terminal_argv`] plus the validated command as ONE third element.
-    /// A fourth element, or a command split on its spaces, fails here.
+    /// The Owner inbox's GUI argv (37-03, T-37-04): the separator, the authored
+    /// scrubbed program (`env -u VAR ... claude`, IN-02), then the validated command
+    /// as ONE final element. An extra element, or a command split on its spaces,
+    /// fails here. (The name predates IN-02, when the argv had three elements; the
+    /// 37-03 plan's acceptance check refers to it.)
     #[test]
     fn owner_terminal_argv_carries_no_untrusted_element_and_is_pinned_at_three() {
         use crate::state_reader::owner_items::{RunCommand, RunVerb};
