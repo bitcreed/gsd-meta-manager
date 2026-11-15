@@ -924,6 +924,14 @@ mod tests {
                 group(Lane::Test, Some(verify(Some("24"), Some("../x")))),
                 "Refused: ../x is not a safe workstream name; nothing started",
             ),
+            (
+                group(Lane::Test, Some(verify(Some("24"), Some("-h")))),
+                "Refused: -h is not a safe workstream name; nothing started",
+            ),
+            (
+                group(Lane::Test, Some(verify(Some("24"), Some(".")))),
+                "Refused: . is not a safe workstream name; nothing started",
+            ),
         ];
         for (group, want) in cases {
             let mut launched = 0;
@@ -1300,6 +1308,10 @@ mod tests {
         bad_ws.workstream = Some("a b".to_owned());
         let mut unknown_ws = ack_group(Kind::Uat, "03", phase_file);
         unknown_ws.workstream = Some("nope".to_owned());
+        let mut flag_ws = ack_group(Kind::Uat, "03", phase_file);
+        flag_ws.workstream = Some("--raw".to_owned());
+        let mut dots_ws = ack_group(Kind::Uat, "03", phase_file);
+        dots_ws.workstream = Some("..".to_owned());
         let mut bad_label = ack_group(Kind::Uat, "03", phase_file);
         bad_label.scope = Scope::Archived {
             label: "v1 0".to_owned(),
@@ -1345,6 +1357,16 @@ mod tests {
                 bad_ws,
                 &state,
                 "Refused: a b is not a safe workstream name; nothing started",
+            ),
+            (
+                flag_ws,
+                &state,
+                "Refused: --raw is not a safe workstream name; nothing started",
+            ),
+            (
+                dots_ws,
+                &state,
+                "Refused: .. is not a safe workstream name; nothing started",
             ),
             (
                 ack_group(Kind::Uat, "03", ".planning/phases/03-x/03 UAT.md"),

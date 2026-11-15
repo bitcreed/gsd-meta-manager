@@ -96,9 +96,14 @@ pub(crate) fn is_command_token(token: &str) -> bool {
     true
 }
 
-/// `^[A-Za-z0-9._-]+$`: the identity alphabet, spelled once in `text`.
+/// `^[A-Za-z0-9._-]+$`: the identity alphabet, spelled once in `text`. Not
+/// flag-shaped (a leading `-` would read as an option in gsd-tools' argv, CWE-88)
+/// and not only dots (`.` and `..` name directories, not workstreams).
 pub(crate) fn is_workstream_name(name: &str) -> bool {
-    !name.is_empty() && name.chars().all(crate::text::is_identity_char)
+    !name.is_empty()
+        && !name.starts_with('-')
+        && !name.chars().all(|c| c == '.')
+        && name.chars().all(crate::text::is_identity_char)
 }
 
 /// The project state a file's phase is looked up in: its workstream's, else the
@@ -1570,6 +1575,12 @@ mod tests {
         assert!(is_workstream_name("ws-1.a_b"));
         assert!(!is_workstream_name(""));
         assert!(!is_workstream_name("a/b"));
+        // WR-04: never flag-shaped, never a directory alias.
+        for bad in ["-x", "--raw", "-", ".", "..", "..."] {
+            assert!(!is_workstream_name(bad), "{bad}");
+        }
+        assert!(is_workstream_name("a-"));
+        assert!(is_workstream_name(".hidden"));
     }
 
     // ---- Plan 34-04: R2, R3, R5, R6, R7 and VERIFICATION lanes ----
