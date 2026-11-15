@@ -5,16 +5,16 @@ milestone_name: Owner Inbox
 current_phase: 37
 current_phase_name: Inbox screen and actions
 status: executing
-stopped_at: Phase 37 UI-SPEC approved
-last_updated: "2026-11-15T03:57:34.808Z"
+stopped_at: Completed 37-01-PLAN.md
+last_updated: "2026-11-15T04:18:10.730Z"
 last_activity: 2026-11-15
-last_activity_desc: Phase 36 executed, reviewed and verified (human_needed)
-state_head: 1c410424699ead7e49e1182a435a9c915e882906
+last_activity_desc: Phase 37 execution started
+state_head: 091aba5436fc20e08a7e1f1b31a9c052e6ea33d1
 progress:
   total_phases: 4
   completed_phases: 1
   total_plans: 21
-  completed_plans: 14
+  completed_plans: 15
   percent: 25
 ---
 
@@ -25,14 +25,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-11-14)
 
 **Core value:** See the state of every GSD project at a glance and act on any of them without leaving the TUI.
-**Current focus:** Phase 36 — Dashboard and detail
+**Current focus:** Phase 37 — Inbox screen and actions
 
 ## Current Position
 
-Phase: 37 (Inbox screen and actions) — READY TO EXECUTE
-Plan: 4 of 4
+Phase: 37 (Inbox screen and actions) — EXECUTING
+Plan: 2 of 7
 Status: Ready to execute
-Last activity: 2026-11-15 — Phase 36 executed, reviewed and verified (human_needed)
+Last activity: 2026-11-14 — Phase 37 execution started
 
 
 ## Deferred Verification
@@ -184,6 +184,7 @@ None. Phase 19's deferred human verification was closed by supersession on 2026-
 | Phase 35 P02 | 1 session | 2 tasks | 12 files |
 | Phase 35 P03 | one session | 2 tasks | 24 files |
 | Phase 35 P04 | one session | 3 tasks | 22 files |
+| Phase 37 P01 | 18 min | 2 tasks | 19 files |
 
 ## Accumulated Context
 
@@ -352,6 +353,7 @@ Recent decisions affecting current work:
 - [Phase 35]: 35-03: stale handoffs are listed with stale true, never filtered; a checkpoint always counts 1 in decide; hidden.todos_unreadable closes IN-05 without a type change
 - [Phase 35]: 35-04: closes_after counts a checkpoint as 1 decision, matching summary.decide
 - [Phase 35]: 35-04: VERIFICATION entries are named by test text in Layer B only; Layer A names stay the oracle's
+- [Phase 37]: D-17 gate reads the CONTEXT scan directory listing (regular PLAN/SUMMARY files), not DiskStatus; acknowledged wins over planned, unreadable stays listed
 
 ### Roadmap Evolution
 
@@ -614,9 +616,9 @@ non-unique bullets in these narrative logs). Disclosed per file instead [inferre
 
 ## Session Continuity
 
-Last session: 2026-11-15T02:40:33.140Z
-Stopped at: Phase 37 UI-SPEC approved
-Resume file: .planning/phases/37-inbox-screen-and-actions/37-UI-SPEC.md
+Last session: 2026-11-15T04:18:10.370Z
+Stopped at: Completed 37-01-PLAN.md
+Resume file: None
 
 Next: push master + tag v2.4.0 (tag push publishes to crates.io); then `/gsd-new-milestone`.
 Earlier (2026-11-11): v2.3.1 released and published to crates.io — Multiplexer Backends (publish fix).
