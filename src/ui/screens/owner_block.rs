@@ -1042,7 +1042,8 @@ pub(crate) fn block_height(model: &BlockModel, tab_height: u16) -> u16 {
         return 0;
     }
     let wanted = 1 + model.body.len() + usize::from(model.fold_line.is_some());
-    let cap = usize::from((tab_height * 40 / 100).max(4));
+    // In `usize`: `tab_height * 40` overflows `u16` past 1638 rows (IN-05).
+    let cap = (usize::from(tab_height) * 40 / 100).max(4);
     u16::try_from(wanted.min(cap)).unwrap_or(u16::MAX)
 }
 
@@ -1619,6 +1620,10 @@ mod tests {
         );
         assert!(!empty.has_content);
         assert_eq!(block_height(&empty, 30), 0);
+        // IN-05: no `u16` overflow on a very tall tab; the content is the bound.
+        let wanted = u16::try_from(1 + model.body.len() + 1).unwrap();
+        assert_eq!(block_height(&model, u16::MAX), wanted);
+        assert_eq!(block_height(&model, 1639), wanted);
     }
 
     #[test]
