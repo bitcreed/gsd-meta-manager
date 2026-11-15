@@ -3814,7 +3814,11 @@ crate::ui::screens::adjudicate_screen!(
      render — Backlog expanded, Archive at its phase list and file list \
      depths, Browse at its file view. Arrival is recorded per state by \
      DETAIL_TAB_ARRIVAL against the chrome baseline, so a populated cache \
-     the render never reads is reported rather than counted.",
+     the render never reads is reported rather than counted. Since 36-03 the \
+     Phases tab also draws the Owner block (header, group rows and fold line \
+     from `ctx.owner_digests`, every project-authored string reaching a cell \
+     through `shown()`); the state \"Phases tab with an Owner block\" probes it \
+     with a hostile digest.",
 );
 
 impl Screen for DetailScreen {

@@ -1684,6 +1684,16 @@ const DETAIL_TAB_ARRIVAL: &[(&str, bool, &str)] = &[
         "Draws all four `GitLogEntry` fields — populated by 21-23.",
     ),
     (
+        "Phases tab with an Owner block",
+        true,
+        "The Phases tab drawn with `hostile_owner_digest` under the probed alias \
+         (36-03, OWN-11). The Owner block's header (alias, milestone, the \
+         `closes after` phase lists), its group rows (phase, workstream, phase \
+         name, command, status phrases built from file status and categories) and \
+         the Old debt label all reach cells through `shown()`; at the probe's 200 \
+         columns every column draws.",
+    ),
+    (
         "Pipeline tab",
         true,
         "Draws the current phase name, status and pause context — and, since \
@@ -1992,6 +2002,16 @@ const DETAIL_SUB_STATES: &[(&str, SubStateArrange)] = &[
         for wave in waves {
             cache.waves_toggles.insert((key.clone(), wave));
         }
+    }),
+    // OWN-11 (36-03): the Phases tab with an Owner block. The hostile digest sits
+    // behind the hostile alias, so the header, the group rows (every column,
+    // the command included at 200 columns) and the fold line all draw digest
+    // strings. `chrome_ctx` has no project state, so there the block is not drawn.
+    ("Phases tab with an Owner block", |identity, ctx| {
+        ctx.detail_sub_view_per_project
+            .insert(identity.to_string(), crate::app::DetailSubView::Pipeline);
+        ctx.owner_digests
+            .insert(identity.to_string(), hostile_owner_digest(identity));
     }),
     ("Backlog tab, expanded", |identity, ctx| {
         ctx.detail_sub_view_per_project
