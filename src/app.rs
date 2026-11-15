@@ -1036,17 +1036,20 @@ impl App {
         tokio::task::spawn_blocking(move || {
             let state = state_reader::parse_project_state(&planning_dir);
             // The owner digest rides the same blocking task (36 D-01): it reads
-            // the reader's own parsed-file caches, never the render path.
-            let digest = state_reader::owner_items::read_owner_digest(
-                &planning_dir,
-                &state,
-                chrono::Utc::now(),
-                stale_days,
-            );
+            // the reader's own parsed-file caches, never the render path. A
+            // reader panic is caught so the state above is still sent (WR-04).
+            let digest = AppContext::guarded_owner_digest(&alias_for_task, || {
+                state_reader::owner_items::read_owner_digest(
+                    &planning_dir,
+                    &state,
+                    chrono::Utc::now(),
+                    stale_days,
+                )
+            });
             let _ = tx.send(Action::ProjectStateLoaded {
                 alias: alias_for_task,
                 state: Box::new(state),
-                digest: Box::new(digest),
+                digest: digest.map(Box::new),
             });
         });
         self.ctx
@@ -2891,12 +2894,15 @@ impl App {
                 // A late result for an unregistered alias must not outlive the
                 // prune, and a project whose folder or `.planning/` is gone holds
                 // no digest at all, so it never reads as clean (WR-01, D-09).
-                let digest_changed = if self.ctx.owner_digest_storable(&alias) {
-                    let differs = self.ctx.owner_digests.get(&alias) != Some(&*digest);
-                    self.ctx.owner_digests.insert(alias.clone(), *digest);
-                    differs
-                } else {
-                    self.ctx.owner_digests.remove(&alias).is_some()
+                // `None` is a reader panic (WR-04): the numbers are unknown, so
+                // the old digest goes too rather than show a past moment.
+                let digest_changed = match digest {
+                    Some(digest) if self.ctx.owner_digest_storable(&alias) => {
+                        let differs = self.ctx.owner_digests.get(&alias) != Some(&*digest);
+                        self.ctx.owner_digests.insert(alias.clone(), *digest);
+                        differs
+                    }
+                    _ => self.ctx.owner_digests.remove(&alias).is_some(),
                 };
                 if changed || digest_changed {
                     self.ctx.recompute_filtered_aliases();
@@ -5609,7 +5615,7 @@ mod tests {
         app.update(Action::ProjectStateLoaded {
             alias: OBS_ALIAS.to_string(),
             state: Box::new(state.clone()),
-            digest: Box::new(changed.clone()),
+            digest: Some(Box::new(changed.clone())),
         });
         assert_eq!(app.ctx.owner_digests[OBS_ALIAS], changed);
         assert!(app.needs_redraw, "a digest change redraws");
@@ -5623,7 +5629,7 @@ mod tests {
         app.update(Action::ProjectStateLoaded {
             alias: OBS_ALIAS.to_string(),
             state: Box::new(moved),
-            digest: Box::new(changed),
+            digest: Some(Box::new(changed)),
         });
         let message = app.ctx.status_message.as_ref().map(|(m, _)| m.as_str());
         assert_eq!(message, Some("Updated: proj"));
@@ -5663,10 +5669,10 @@ mod tests {
         app.update(Action::ProjectStateLoaded {
             alias: OBS_ALIAS.to_string(),
             state: Box::new(state),
-            digest: Box::new(OwnerDigest {
+            digest: Some(Box::new(OwnerDigest {
                 test: 1,
                 ..OwnerDigest::default()
-            }),
+            })),
         });
         assert_eq!(
             app.ctx.filtered_aliases,
@@ -5747,10 +5753,10 @@ mod tests {
         app.update(Action::ProjectStateLoaded {
             alias: OBS_ALIAS.to_string(),
             state: Box::new(present),
-            digest: Box::new(OwnerDigest {
+            digest: Some(Box::new(OwnerDigest {
                 test: 2,
                 ..OwnerDigest::default()
-            }),
+            })),
         });
         assert_eq!(app.ctx.owner_digests[OBS_ALIAS].test, 2, "the control arm");
 
@@ -5762,7 +5768,7 @@ mod tests {
                     presence,
                     ..ProjectState::default()
                 }),
-                digest: Box::new(OwnerDigest::default()),
+                digest: Some(Box::new(OwnerDigest::default())),
             });
             assert!(
                 !app.ctx.owner_digests.contains_key(OBS_ALIAS),
@@ -5797,6 +5803,54 @@ mod tests {
                 "{presence:?}: neither a clean row nor one loading forever"
             );
         }
+    }
+
+    /// WR-04: a panic in the owner reader is caught, so the reparse still delivers
+    /// the parsed state; the project then holds no digest (unknown, not clean).
+    #[tokio::test]
+    async fn an_owner_reader_panic_still_delivers_the_project_state() {
+        use crate::state_reader::owner_items::OwnerDigest;
+        let caught = AppContext::guarded_owner_digest(OBS_ALIAS, || {
+            panic!("a synthetic reader panic");
+        });
+        assert_eq!(caught, None, "the panic is caught, not propagated");
+        let read = AppContext::guarded_owner_digest(OBS_ALIAS, || OwnerDigest {
+            test: 1,
+            ..OwnerDigest::default()
+        });
+        assert_eq!(read.map(|d| d.test), Some(1), "the control arm");
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, _rx) = obs_app(dir.path());
+        app.update(Action::ProjectStateLoaded {
+            alias: OBS_ALIAS.to_string(),
+            state: Box::new(ProjectState::default()),
+            digest: Some(Box::new(OwnerDigest {
+                test: 2,
+                ..OwnerDigest::default()
+            })),
+        });
+        assert!(app.ctx.owner_digests.contains_key(OBS_ALIAS));
+        app.needs_redraw = false;
+
+        let moved = ProjectState {
+            paused: true,
+            ..ProjectState::default()
+        };
+        app.update(Action::ProjectStateLoaded {
+            alias: OBS_ALIAS.to_string(),
+            state: Box::new(moved),
+            digest: caught.map(Box::new),
+        });
+        assert!(
+            app.ctx.project_states[OBS_ALIAS].paused,
+            "the parsed state lands although the reader panicked"
+        );
+        assert!(
+            !app.ctx.owner_digests.contains_key(OBS_ALIAS),
+            "unknown numbers: no digest, never the previous moment"
+        );
+        assert!(app.needs_redraw);
     }
 
     #[tokio::test]

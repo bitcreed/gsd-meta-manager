@@ -48,8 +48,10 @@ pub enum Action {
         // Boxed: ProjectState dwarfs every other variant (clippy::large_enum_variant)
         state: Box<ProjectState>,
         /// The owner digest computed in the same blocking task, right after the
-        /// parse (36 D-01). Boxed for the same reason as `state`.
-        digest: Box<OwnerDigest>,
+        /// parse (36 D-01). Boxed for the same reason as `state`. `None` when the
+        /// owner reader panicked: the state still arrives, the project holds no
+        /// digest (WR-04).
+        digest: Option<Box<OwnerDigest>>,
     },
     GitLogLoaded {
         alias: String,
@@ -186,7 +188,7 @@ pub enum Action {
     ///
     /// Sent by `AppContext::schedule_owner_digest`. The handler fills an alias
     /// that is registered and has no digest yet; a digest delivered by
-    /// `ProjectStateLoaded` is always newer and is never replaced. Plain data, so
+    /// `ProjectStateLoaded` is never older and is never replaced. Plain data, so
     /// `Action` stays `Clone`.
     OwnerDigestLoaded {
         alias: String,

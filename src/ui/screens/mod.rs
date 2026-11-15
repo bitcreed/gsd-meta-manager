@@ -1910,17 +1910,43 @@ impl AppContext {
         let planning_dir = project_path.join(".planning");
         let stale_days = self.config.preferences.owner_stale_days();
         tokio::task::spawn_blocking(move || {
-            let digest = crate::state_reader::owner_items::read_owner_digest(
-                &planning_dir,
-                &state,
-                chrono::Utc::now(),
-                stale_days,
-            );
+            // A reader panic logs and sends nothing: the row keeps no digest,
+            // which reads as not loaded, never as clean (D-09, WR-04).
+            let Some(digest) = Self::guarded_owner_digest(&alias, || {
+                crate::state_reader::owner_items::read_owner_digest(
+                    &planning_dir,
+                    &state,
+                    chrono::Utc::now(),
+                    stale_days,
+                )
+            }) else {
+                return;
+            };
             let _ = tx.send(crate::action::Action::OwnerDigestLoaded {
                 alias,
                 digest: Box::new(digest),
             });
         });
+    }
+
+    /// Run the owner reader `read` for `alias` behind `catch_unwind` (WR-04).
+    ///
+    /// The reader parses project-authored files, the same class of input the
+    /// agents scan and the session-location task already guard this way. Inside
+    /// the reparse task a panic would otherwise kill the task before its send and
+    /// lose the freshly parsed `ProjectState` with it. `None` means the reader
+    /// panicked; the panic is logged.
+    pub(crate) fn guarded_owner_digest(
+        alias: &str,
+        read: impl FnOnce() -> crate::state_reader::owner_items::OwnerDigest,
+    ) -> Option<crate::state_reader::owner_items::OwnerDigest> {
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(read)) {
+            Ok(digest) => Some(digest),
+            Err(_) => {
+                tracing::error!(alias, "the owner reader panicked; no owner digest");
+                None
+            }
+        }
     }
 
     /// This alias's [`attention_rank`], from the state this context holds.
