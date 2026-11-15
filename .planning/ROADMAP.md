@@ -227,7 +227,7 @@ Plans:
 **Depends on:** Phase 36
 **Verification:** Automatic snapshots plus human UAT
 **UI hint**: yes
-**Plans:** 4/7 plans executed
+**Plans:** 5/7 plans executed
 
 Plans:
 **Wave 1**
@@ -243,7 +243,7 @@ Plans:
 - [x] 37-04-PLAN.md — Legible and live: unreadable vs loading (no forever-loading), SC3 refresh, column narrowing, header/fold/footer ladders, lane filters, empty states, SC2 at 100x30
 
 **Wave 5** *(blocked on Wave 4 completion)*
-- [ ] 37-05-PLAN.md — Drill-in: `o` read-only viewer, expand, folds, scroll, `g` to the project on the same group, D-21 `o`
+- [x] 37-05-PLAN.md — Drill-in: `o` read-only viewer, expand, folds, scroll, `g` to the project on the same group, D-21 `o`
 
 **Wave 6** *(blocked on Wave 5 completion)*
 - [ ] 37-06-PLAN.md — `A` via gsd-core `audit-open acknowledge` after a confirm popup: env-scrubbed bounded child, guard edits, oracle round trip, D-21 `A`

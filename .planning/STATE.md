@@ -5,16 +5,16 @@ milestone_name: Owner Inbox
 current_phase: 37
 current_phase_name: Inbox screen and actions
 status: executing
-stopped_at: Completed 37-04-PLAN.md
-last_updated: "2026-11-15T05:07:55.254Z"
+stopped_at: Completed 37-05-PLAN.md
+last_updated: "2026-11-15T05:30:48.025Z"
 last_activity: 2026-11-15
 last_activity_desc: Phase 37 execution started
-state_head: 658e3e57766bbb7445a379b9afe5bf795f64e66b
+state_head: 1ee31533bba9dedd7cbe07d4596ca92609014ff1
 progress:
   total_phases: 4
   completed_phases: 1
   total_plans: 21
-  completed_plans: 18
+  completed_plans: 19
   percent: 25
 ---
 
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-11-14)
 ## Current Position
 
 Phase: 37 (Inbox screen and actions) — EXECUTING
-Plan: 5 of 7
+Plan: 6 of 7
 Status: Ready to execute
 Last activity: 2026-11-14 — Phase 37 execution started
 
@@ -188,6 +188,7 @@ None. Phase 19's deferred human verification was closed by supersession on 2026-
 | Phase 37 P02 | 25 min | 2 tasks | 11 files |
 | Phase 37 P03 | 75 min | 2 tasks | 17 files |
 | Phase 37 P04 | 95min | 2 tasks | 9 files |
+| Phase 37 P05 | 120 min | 3 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -360,6 +361,8 @@ Recent decisions affecting current work:
 - [Phase 37]: D-11: OwnerGroup.run (RunCommand) is the source; command is its Display; Owner block pinned by three goldens
 - [Phase 37]: 37-03 D-11/D-12/D-13: v builds the command only from the typed RunCommand, re-validates tokens at launch, focuses (never injects into) a live session at the exact project path; argv is [env, claude, command-as-one-element]
 - [Phase 37]: 37-04: absent owner data is loading or unreadable (OwnerDigestFailed, no timer); the cursor re-anchors after every digest update; the dashboard still counts a failed project as loading (follow-up)
+- [Phase 37]: 37-05 D-08: o pushes an in-app read-only viewer; file read on the key press only when inside the canonical project .planning/, regular, at most 1 MiB (inferred)
+- [Phase 37]: 37-05 D-07: g re-selects the dashboard row when listed and pushes DetailScreen::opened_on_owner itself; Owner focus only when the identity is a block stop (inferred)
 
 ### Roadmap Evolution
 
@@ -622,8 +625,8 @@ non-unique bullets in these narrative logs). Disclosed per file instead [inferre
 
 ## Session Continuity
 
-Last session: 2026-11-15T05:07:54.886Z
-Stopped at: Completed 37-04-PLAN.md
+Last session: 2026-11-15T05:30:47.658Z
+Stopped at: Completed 37-05-PLAN.md
 Resume file: None
 
 Next: push master + tag v2.4.0 (tag push publishes to crates.io); then `/gsd-new-milestone`.
