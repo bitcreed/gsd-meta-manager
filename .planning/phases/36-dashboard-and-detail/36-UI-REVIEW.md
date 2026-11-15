@@ -270,3 +270,19 @@ These are judgment calls the code cannot settle. The two checks the spec reserve
 - Visual evidence: pre-fix ASCII renders (100 and 140 columns), read for evaluation only
 
 Registry safety audit: not applicable (no shadcn, no third-party registries).
+
+---
+
+## Fixes applied
+
+| Finding | Result |
+|---------|--------|
+| 1. Header clipped by the overflow hint | c230fc5d, fixed (header rung chosen beside the widest row-range hint) |
+| 2. Workstream rows lose `ph N` | 0b6c7711, fixed (name shortened inside its prefix, phase number kept) |
+| 3. FIX row repeats its check count | 95c7f11a, fixed (phrase shows the file status) |
+| 4. Footer offers `[↑]owner` without a stop | 70e76515, fixed (footer keys on "block has a stop") |
+| 5. Command column starved at 100 columns | 979874de, fixed (12-cell command floor reserved before the phrase is sized) |
+| Minor: column grid sized from all rows | skipped: defensible design choice (stable columns while scrolling), changes agreed layout |
+| Minor: help rows clipped | skipped: needs copy decisions on 3 help rows, not a small fix |
+| Minor: fourth `You` ladder rung | skipped: recorded inferred decision, impact only at four-digit counts |
+| SUBJECTIVE items | skipped: human review |
