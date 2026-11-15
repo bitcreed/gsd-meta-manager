@@ -1047,6 +1047,7 @@ fn hostile_owner_digest(identity: &str) -> crate::state_reader::owner_items::Own
         acknowledged: false,
         age_days: Some(3),
         stale: false,
+        run: None,
         command: Some(identity.to_string()),
         supersedes: vec![identity.to_string()],
         counts: GroupCounts {

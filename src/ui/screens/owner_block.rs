@@ -1416,7 +1416,7 @@ pub(crate) fn clamp(view: &mut OwnerBlockState, digest: &OwnerDigest) {
 #[cfg(test)]
 pub(crate) fn sample_owner_digest() -> OwnerDigest {
     use crate::state_reader::owner_items::{
-        ArchivedCounts, Category, GroupCounts, Hidden, LanePhases, OwnerItem,
+        ArchivedCounts, Category, GroupCounts, Hidden, LanePhases, OwnerItem, RunCommand, RunVerb,
     };
     let item = |name: &str, category: Category| OwnerItem {
         id: name.to_owned(),
@@ -1444,6 +1444,11 @@ pub(crate) fn sample_owner_digest() -> OwnerDigest {
         acknowledged: false,
         age_days: Some(2),
         stale: false,
+        run: Some(RunCommand {
+            verb: RunVerb::VerifyWork,
+            phase: Some(phase.to_owned()),
+            workstream: None,
+        }),
         command: Some(format!("/gsd-verify-work {phase}")),
         supersedes: Vec::new(),
         counts: GroupCounts::default(),

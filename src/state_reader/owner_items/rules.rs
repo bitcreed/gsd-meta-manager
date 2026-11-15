@@ -28,7 +28,7 @@ use chrono::{DateTime, Utc};
 use super::handoff::{CheckpointRecord, HandoffRecord};
 use super::{
     AuditFile, AuditItem, AuditKind, Category, ContextFile, DebugSession, GroupCounts, Kind, Lane,
-    OpenScan, Origin, OwnerDigest, OwnerGap, OwnerGroup, OwnerItem, Scope,
+    OpenScan, Origin, OwnerDigest, OwnerGap, OwnerGroup, OwnerItem, RunCommand, RunVerb, Scope,
 };
 use crate::state_reader::disk_status::{DiskStatus, VerificationStatus};
 use crate::state_reader::phase_num::{phase_key, same_phase, PhaseNum};
@@ -110,28 +110,33 @@ fn scope_state<'a>(state: &'a ProjectState, workstream: Option<&str>) -> &'a Pro
 }
 
 /// R10: the command that works on a group, if any.
-fn command_for(
+fn run_for(
     lane: Lane,
     file: &AuditFile,
     phase_number: &str,
     unreadable: usize,
-) -> Option<String> {
+) -> Option<RunCommand> {
     if !matches!(file.scope, Scope::Current) || unreadable > 0 {
         return None;
     }
     if !is_command_token(phase_number) {
         return None;
     }
-    let ws = match file.workstream.as_deref() {
-        Some(name) if is_workstream_name(name) => format!(" --ws {name}"),
+    let workstream = match file.workstream.as_deref() {
+        Some(name) if is_workstream_name(name) => Some(name.to_owned()),
         Some(_) => return None,
-        None => String::new(),
+        None => None,
     };
-    match lane {
-        Lane::Test => Some(format!("/gsd-verify-work {phase_number}{ws}")),
-        Lane::Fix => Some(format!("/gsd-plan-phase {phase_number} --gaps{ws}")),
-        Lane::Decide | Lane::Blocked | Lane::Deferred => None,
-    }
+    let verb = match lane {
+        Lane::Test => RunVerb::VerifyWork,
+        Lane::Fix => RunVerb::PlanPhaseGaps,
+        Lane::Decide | Lane::Blocked | Lane::Deferred => return None,
+    };
+    Some(RunCommand {
+        verb,
+        phase: Some(phase_number.to_owned()),
+        workstream,
+    })
 }
 
 /// Item ids: `<file basename>#<test>` for numbered rows, `#g<k>` for gaps, `#v<k>`
@@ -402,6 +407,7 @@ fn new_group(
 ) -> OwnerGroup {
     let file = ctx.file;
     let counts = counts_of(&entries, unreadable);
+    let run = run_for(lane, file, &ctx.labels.1, unreadable);
     let mut items: Vec<OwnerItem> = entries
         .iter()
         .map(|entry| {
@@ -426,7 +432,8 @@ fn new_group(
         acknowledged: file.acknowledged,
         age_days,
         stale: age_days.is_some_and(|days| days > i64::from(ctx.stale_days)),
-        command: command_for(lane, file, &ctx.labels.1, unreadable),
+        command: run.as_ref().map(ToString::to_string),
+        run,
         supersedes: ctx.supersedes.to_vec(),
         counts,
         items,
@@ -606,7 +613,13 @@ fn signal_item(id: String, name: String, result: String, reason: Option<String>)
 }
 
 /// The command that works a debug session (root-scoped, so never `--ws`).
-const DEBUG_COMMAND: &str = "/gsd-debug";
+fn debug_run() -> RunCommand {
+    RunCommand {
+        verb: RunVerb::Debug,
+        phase: None,
+        workstream: None,
+    }
+}
 
 /// D-03: one group per open debug session, in the Decide lane while it awaits the
 /// owner and in the Fix lane otherwise; an unreadable file is Fix work with
@@ -673,7 +686,8 @@ fn debug_groups(digest: &mut OwnerDigest, sessions: &[DebugSession], ctx: &Conte
             acknowledged: session.acknowledged,
             age_days,
             stale: age_days.is_some_and(|days| days > i64::from(ctx.stale_days)),
-            command: Some(DEBUG_COMMAND.to_owned()),
+            command: Some(debug_run().to_string()),
+            run: Some(debug_run()),
             supersedes: Vec::new(),
             counts: GroupCounts {
                 checks: items.len(),
@@ -854,6 +868,7 @@ fn context_groups(
             age_days,
             stale: age_days.is_some_and(|days| days > i64::from(ctx.stale_days)),
             command: None,
+            run: None,
             supersedes: Vec::new(),
             counts: GroupCounts {
                 checks: items.len(),
@@ -876,11 +891,14 @@ pub(super) struct PauseScan {
 /// The command that resumes a paused scope: `/gsd-resume-work`, with ` --ws <name>`
 /// for a workstream. A workstream name outside the identity alphabet gives none
 /// (T-35-11).
-fn resume_command(workstream: Option<&str>) -> Option<String> {
+fn resume_run(workstream: Option<&str>) -> Option<RunCommand> {
     match workstream {
-        None => Some("/gsd-resume-work".to_owned()),
-        Some(name) if is_workstream_name(name) => Some(format!("/gsd-resume-work --ws {name}")),
-        Some(_) => None,
+        Some(name) if !is_workstream_name(name) => None,
+        _ => Some(RunCommand {
+            verb: RunVerb::ResumeWork,
+            phase: None,
+            workstream: workstream.map(str::to_owned),
+        }),
     }
 }
 
@@ -925,6 +943,7 @@ fn handoff_groups(
             .written
             .or(handoff.modified)
             .map(|moment| days_since(moment, ctx.now));
+        let resume = resume_run(handoff.workstream.as_deref());
         digest.groups.push(OwnerGroup {
             lane: Lane::Decide,
             kind: Kind::Handoff,
@@ -940,7 +959,8 @@ fn handoff_groups(
             age_days,
             stale: scope.stale_handoff.is_some()
                 || age_days.is_some_and(|days| days > i64::from(ctx.stale_days)),
-            command: resume_command(handoff.workstream.as_deref()),
+            command: resume.as_ref().map(ToString::to_string),
+            run: resume,
             supersedes: Vec::new(),
             counts: GroupCounts {
                 checks: items.len(),
@@ -980,6 +1000,7 @@ fn checkpoint_groups(
             .written
             .or(checkpoint.modified)
             .map(|moment| days_since(moment, ctx.now));
+        let resume = resume_run(checkpoint.workstream.as_deref());
         digest.groups.push(OwnerGroup {
             lane: Lane::Decide,
             kind: Kind::Checkpoint,
@@ -994,7 +1015,8 @@ fn checkpoint_groups(
             acknowledged: false,
             age_days,
             stale: age_days.is_some_and(|days| days > i64::from(ctx.stale_days)),
-            command: resume_command(checkpoint.workstream.as_deref()),
+            command: resume.as_ref().map(ToString::to_string),
+            run: resume,
             supersedes: Vec::new(),
             counts: GroupCounts {
                 checks: items.len(),
@@ -1075,7 +1097,8 @@ pub(super) fn build_digest_with(
             }
             let mut group = new_group(&group_ctx, lane, entries, group_unreadable);
             if empty_gaps && lane == Lane::Fix {
-                group.command = command_for(Lane::Fix, file, &labels.1, 0);
+                group.run = run_for(Lane::Fix, file, &labels.1, 0);
+                group.command = group.run.as_ref().map(ToString::to_string);
             }
             digest.groups.push(group);
         }

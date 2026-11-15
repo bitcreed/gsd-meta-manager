@@ -790,6 +790,11 @@ mod tests {
             acknowledged: false,
             age_days: Some(3),
             stale: false,
+            run: Some(crate::state_reader::owner_items::RunCommand {
+                verb: crate::state_reader::owner_items::RunVerb::VerifyWork,
+                phase: Some("01".into()),
+                workstream: None,
+            }),
             command: Some("/gsd-verify-work 01".into()),
             supersedes: Vec::new(),
             counts: GroupCounts {

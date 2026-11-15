@@ -842,3 +842,44 @@ fn an_unreadable_pending_dir_is_flagged() {
     assert_eq!(doc["projects"][0]["hidden"]["todos"], 0);
     assert_eq!(doc["projects"][0]["hidden"]["todos_unreadable"], true);
 }
+
+/// D-11: every group's `command` is its typed `run` spelled out, over every fixture.
+#[test]
+fn run_command_matches_the_command_string_in_every_fixture() {
+    use gsd_meta_manager::state_reader::owner_items::RunVerb;
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/owner");
+    let mut names: Vec<String> = std::fs::read_dir(&root)
+        .unwrap()
+        .map(|e| e.unwrap())
+        .filter(|e| e.path().join(".planning").is_dir())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    assert!(!names.is_empty());
+    let mut seen: Vec<RunVerb> = Vec::new();
+    for name in &names {
+        let (_guard, digest) = digest_of(name);
+        for group in &digest.groups {
+            assert_eq!(
+                group.command,
+                group.run.as_ref().map(ToString::to_string),
+                "{name}: {} {}",
+                group.lane.as_str(),
+                group.file
+            );
+            if let Some(run) = &group.run {
+                if !seen.contains(&run.verb) {
+                    seen.push(run.verb);
+                }
+            }
+        }
+    }
+    for verb in [
+        RunVerb::VerifyWork,
+        RunVerb::PlanPhaseGaps,
+        RunVerb::Debug,
+        RunVerb::ResumeWork,
+    ] {
+        assert!(seen.contains(&verb), "no fixture yields {verb:?}");
+    }
+}

@@ -481,6 +481,42 @@ pub struct GroupCounts {
     pub unreadable: usize,
 }
 
+/// Which GSD command a group is worked with (D-11).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunVerb {
+    VerifyWork,
+    PlanPhaseGaps,
+    Debug,
+    ResumeWork,
+}
+
+/// The typed command of a group: the verb, the phase token as the reader carries
+/// it (already checked by `is_command_token`) and an optional workstream (already
+/// checked by `is_workstream_name`). `Display` is the only place the slash
+/// commands are spelled (D-11).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunCommand {
+    pub verb: RunVerb,
+    pub phase: Option<String>,
+    pub workstream: Option<String>,
+}
+
+impl std::fmt::Display for RunCommand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let phase = self.phase.as_deref().unwrap_or_default();
+        match self.verb {
+            RunVerb::VerifyWork => write!(f, "/gsd-verify-work {phase}")?,
+            RunVerb::PlanPhaseGaps => write!(f, "/gsd-plan-phase {phase} --gaps")?,
+            RunVerb::Debug => write!(f, "/gsd-debug")?,
+            RunVerb::ResumeWork => write!(f, "/gsd-resume-work")?,
+        }
+        if let Some(ws) = &self.workstream {
+            write!(f, " --ws {ws}")?;
+        }
+        Ok(())
+    }
+}
+
 /// One (file, lane) pair of the inbox.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OwnerGroup {
@@ -497,6 +533,9 @@ pub struct OwnerGroup {
     pub acknowledged: bool,
     pub age_days: Option<i64>,
     pub stale: bool,
+    /// The typed command (D-11). `command` is always its `Display`; the launch
+    /// path reads `run`.
+    pub run: Option<RunCommand>,
     pub command: Option<String>,
     pub supersedes: Vec<String>,
     pub counts: GroupCounts,
@@ -604,6 +643,40 @@ pub fn read_owner_digest(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn run_command_display_spells_every_shape() {
+        let run = |verb, phase: Option<&str>, ws: Option<&str>| {
+            RunCommand {
+                verb,
+                phase: phase.map(str::to_owned),
+                workstream: ws.map(str::to_owned),
+            }
+            .to_string()
+        };
+        assert_eq!(
+            run(RunVerb::VerifyWork, Some("24"), None),
+            "/gsd-verify-work 24"
+        );
+        assert_eq!(
+            run(RunVerb::VerifyWork, Some("24"), Some("ws1")),
+            "/gsd-verify-work 24 --ws ws1"
+        );
+        assert_eq!(
+            run(RunVerb::PlanPhaseGaps, Some("16"), None),
+            "/gsd-plan-phase 16 --gaps"
+        );
+        assert_eq!(
+            run(RunVerb::PlanPhaseGaps, Some("16"), Some("ws1")),
+            "/gsd-plan-phase 16 --gaps --ws ws1"
+        );
+        assert_eq!(run(RunVerb::Debug, None, None), "/gsd-debug");
+        assert_eq!(run(RunVerb::ResumeWork, None, None), "/gsd-resume-work");
+        assert_eq!(
+            run(RunVerb::ResumeWork, None, Some("ws1")),
+            "/gsd-resume-work --ws ws1"
+        );
+    }
 
     #[test]
     fn category_tokens_are_upstreams() {

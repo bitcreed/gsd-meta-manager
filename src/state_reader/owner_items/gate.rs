@@ -168,6 +168,7 @@ mod tests {
             acknowledged: false,
             age_days: None,
             stale: false,
+            run: None,
             command: None,
             supersedes: Vec::new(),
             counts: GroupCounts {
