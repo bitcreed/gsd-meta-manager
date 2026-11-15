@@ -8,6 +8,7 @@
 //! lines computed at push time, so `render` does no I/O (OWN-12).
 
 use super::detail::{clamp_scroll, shown, ViewportMetrics};
+use super::owner_block::cells;
 use super::{AppContext, Screen, ScreenAction};
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::layout::Rect;
@@ -25,6 +26,95 @@ fn title_for(alias: &str, path: &str) -> String {
 /// The most lines the viewer holds: the scroll offset and `Paragraph::scroll` are
 /// `u16`, so a line past this could never be reached (WR-06).
 const MAX_LINES: usize = u16::MAX as usize;
+
+/// The key hint for a footer `width` cells wide that also holds `position_w`
+/// cells of scroll position: the longest hint that fits.
+fn footer_keys(width: usize, position_w: usize) -> String {
+    let room = width.saturating_sub(position_w + 2);
+    for hint in [
+        "[Esc]back  [j/k]scroll  [PgUp/PgDn]page  [Home/End]",
+        "[Esc]back  [j/k]scroll  [PgUp/PgDn]page",
+        "[Esc]back  [j/k]scroll",
+        "[Esc]back",
+    ] {
+        if cells(hint) <= room {
+            return hint.to_owned();
+        }
+    }
+    String::new()
+}
+
+/// `line` cut into rows of at most `width` cells, breaking at the last space in
+/// the row when there is one and at the cell boundary otherwise, each span's
+/// style kept. An empty line stays one empty row.
+fn wrap_line(line: &Line<'static>, width: usize) -> Vec<Line<'static>> {
+    let width = width.max(1);
+    let chars: Vec<(char, Style)> = line
+        .spans
+        .iter()
+        .flat_map(|span| span.content.chars().map(move |c| (c, span.style)))
+        .collect();
+    let cw = |c: char| cells(&c.to_string());
+    let total: usize = chars.iter().map(|(c, _)| cw(*c)).sum();
+    let regroup = |part: &[(char, Style)]| -> Line<'static> {
+        let mut spans: Vec<Span<'static>> = Vec::new();
+        let mut text = String::new();
+        let mut style = None;
+        for (c, st) in part {
+            if style.is_some_and(|s| s != *st) {
+                spans.push(Span::styled(
+                    std::mem::take(&mut text),
+                    style.unwrap_or_default(),
+                ));
+            }
+            style = Some(*st);
+            text.push(*c);
+        }
+        if !text.is_empty() {
+            spans.push(Span::styled(text, style.unwrap_or_default()));
+        }
+        Line::from(spans)
+    };
+    if total <= width {
+        return vec![line.clone()];
+    }
+    let mut out = Vec::new();
+    let mut start = 0;
+    while start < chars.len() {
+        let mut used = 0;
+        let mut end = start;
+        let mut last_space = None;
+        while end < chars.len() && used + cw(chars[end].0) <= width {
+            if chars[end].0 == ' ' && end > start {
+                last_space = Some(end);
+            }
+            used += cw(chars[end].0);
+            end += 1;
+        }
+        if end == chars.len() {
+            out.push(regroup(&chars[start..end]));
+            break;
+        }
+        if end == start {
+            // A glyph wider than the row: take it alone so the loop advances.
+            end = start + 1;
+            out.push(regroup(&chars[start..end]));
+            start = end;
+            continue;
+        }
+        match last_space {
+            Some(space) => {
+                out.push(regroup(&chars[start..space]));
+                start = space + 1;
+            }
+            None => {
+                out.push(regroup(&chars[start..end]));
+                start = end;
+            }
+        }
+    }
+    out
+}
 
 pub struct OwnerFileViewScreen {
     title: String,
@@ -156,19 +246,54 @@ impl Screen for OwnerFileViewScreen {
             Style::default().add_modifier(Modifier::BOLD),
         ));
         let inner = block.inner(area);
-        // `new` caps the line count at `u16::MAX`, so this never saturates.
-        let total = u16::try_from(self.lines.len()).unwrap_or(u16::MAX);
+        // The last inner row is the key hint and the scroll position, when the
+        // frame has a row to spare for it.
+        let footer = inner.height >= 3;
+        let body_h = inner.height.saturating_sub(u16::from(footer));
+        // Long lines wrap at the inner width instead of being cut by the border.
+        let mut wrapped: Vec<Line<'static>> = Vec::with_capacity(self.lines.len());
+        for line in &self.lines {
+            wrapped.extend(wrap_line(line, usize::from(inner.width)));
+            if wrapped.len() > MAX_LINES {
+                wrapped.truncate(MAX_LINES);
+                break;
+            }
+        }
+        let total = u16::try_from(wrapped.len()).unwrap_or(u16::MAX);
         self.viewport.set(ViewportMetrics {
             total_lines: total,
-            visible_height: inner.height,
+            visible_height: body_h,
         });
-        let offset = clamp_scroll(self.scroll_offset, total, inner.height);
+        let offset = clamp_scroll(self.scroll_offset, total, body_h);
+        frame.render_widget(block, area);
         frame.render_widget(
-            Paragraph::new(self.lines.clone())
-                .block(block)
-                .scroll((offset, 0)),
-            area,
+            Paragraph::new(wrapped).scroll((offset, 0)),
+            Rect::new(inner.x, inner.y, inner.width, body_h),
         );
+        if footer {
+            let last = usize::from(offset) + usize::from(body_h);
+            let position = if total == 0 {
+                "empty".to_owned()
+            } else {
+                format!(
+                    "{}-{} of {}",
+                    usize::from(offset) + 1,
+                    last.min(usize::from(total)),
+                    total
+                )
+            };
+            let keys = footer_keys(usize::from(inner.width), cells(&position));
+            let pad = usize::from(inner.width).saturating_sub(cells(&keys) + cells(&position));
+            let dim = Style::default().add_modifier(Modifier::DIM);
+            frame.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled(keys, dim),
+                    Span::raw(" ".repeat(pad)),
+                    Span::styled(position, dim),
+                ])),
+                Rect::new(inner.x, inner.y + body_h, inner.width, 1),
+            );
+        }
     }
 
     fn name(&self) -> &str {
@@ -207,6 +332,55 @@ mod tests {
     }
 
     #[test]
+    fn the_viewer_shows_a_key_hint_a_position_and_wraps_long_lines() {
+        let ctx = ctx_with_aliases(&["alder-api"]);
+        let long = format!("{} tail-marker", "word ".repeat(40));
+        let text = format!("{long}\n{}", many_lines(30));
+        let screen = OwnerFileViewScreen::new("alder-api", ".planning/HANDOFF.json", &text);
+        let out = draw(&screen, &ctx, 60, 14);
+        assert!(out.contains("[Esc]back  [j/k]scroll"), "{out}");
+        assert!(out.contains("1-11 of "), "{out}");
+        assert!(!out.contains('\u{2026}'), "nothing is cut: {out}");
+        // The tail of the long line is on screen, wrapped, not lost at the border.
+        assert!(out.contains("tail-marker"), "{out}");
+        let rows: Vec<&str> = out.lines().collect();
+        for row in &rows[1..rows.len() - 1] {
+            assert!(
+                row.starts_with('\u{2502}') && row.ends_with('\u{2502}'),
+                "{row:?}"
+            );
+        }
+        // At 100 columns the same file wraps less and the total changes.
+        let wide = draw(&screen, &ctx, 100, 14);
+        assert!(wide.contains("[PgUp/PgDn]page"), "{wide}");
+        assert!(wide.contains("tail-marker"), "{wide}");
+    }
+
+    #[test]
+    fn wrap_line_keeps_every_cell_and_breaks_at_spaces() {
+        let line = Line::from(vec![
+            Span::raw("alpha beta "),
+            Span::styled(
+                "gamma-delta-epsilon",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+        ]);
+        let rows = wrap_line(&line, 12);
+        let flat: Vec<String> = rows
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        assert_eq!(flat, ["alpha beta", "gamma-delta-", "epsilon"]);
+        assert!(rows.iter().all(|l| cells(
+            &l.spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect::<String>()
+        ) <= 12));
+        assert_eq!(wrap_line(&Line::from(""), 5).len(), 1);
+    }
+
+    #[test]
     fn scrolls_and_pops() {
         let mut ctx = ctx_with_aliases(&["alder-api"]);
         let mut screen =
@@ -225,13 +399,13 @@ mod tests {
         press(&mut screen, &mut ctx, KeyCode::PageDown);
         assert_eq!(
             screen.scroll_offset(),
-            1 + 9,
-            "a page is the height minus 1"
+            1 + 8,
+            "a page is the body height (the hint row is not body) minus 1"
         );
         press(&mut screen, &mut ctx, KeyCode::End);
         assert_eq!(
             screen.scroll_offset(),
-            100 - 10,
+            100 - 9,
             "End clamps to the last page"
         );
         let text = draw(&screen, &ctx, 40, 12);
@@ -239,11 +413,11 @@ mod tests {
         press(&mut screen, &mut ctx, KeyCode::Char('j'));
         assert_eq!(
             screen.scroll_offset(),
-            90,
+            91,
             "down past the end stays clamped"
         );
         press(&mut screen, &mut ctx, KeyCode::Char('k'));
-        assert_eq!(screen.scroll_offset(), 89);
+        assert_eq!(screen.scroll_offset(), 90);
         press(&mut screen, &mut ctx, KeyCode::Home);
         assert_eq!(screen.scroll_offset(), 0);
         press(&mut screen, &mut ctx, KeyCode::Char('k'));
