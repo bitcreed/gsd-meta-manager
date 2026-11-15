@@ -5,11 +5,11 @@ milestone_name: Owner Inbox
 current_phase: 36
 current_phase_name: Dashboard and detail
 status: verifying
-stopped_at: Phase 37 context gathered
-last_updated: "2026-11-15T02:29:03.307Z"
+stopped_at: Phase 37 UI-SPEC approved
+last_updated: "2026-11-15T02:40:33.407Z"
 last_activity: 2026-11-15
 last_activity_desc: Phase 36 executed, reviewed and verified (human_needed)
-state_head: b6e13fefde8d0b9dc9b1dabfe9e82cde5752d641
+state_head: e0613aea3892b143b9c745a3f1fee882f8af304b
 progress:
   total_phases: 4
   completed_phases: 1
@@ -614,9 +614,9 @@ non-unique bullets in these narrative logs). Disclosed per file instead [inferre
 
 ## Session Continuity
 
-Last session: 2026-11-15T02:29:03.039Z
-Stopped at: Phase 37 context gathered
-Resume file: .planning/phases/37-inbox-screen-and-actions/37-CONTEXT.md
+Last session: 2026-11-15T02:40:33.140Z
+Stopped at: Phase 37 UI-SPEC approved
+Resume file: .planning/phases/37-inbox-screen-and-actions/37-UI-SPEC.md
 
 Next: push master + tag v2.4.0 (tag push publishes to crates.io); then `/gsd-new-milestone`.
 Earlier (2026-11-11): v2.3.1 released and published to crates.io — Multiplexer Backends (publish fix).
