@@ -4,12 +4,12 @@ milestone: v2.5.0
 milestone_name: Owner Inbox
 current_phase: 36
 current_phase_name: Dashboard and detail
-status: executing
-stopped_at: Phase 36 UI-SPEC approved
-last_updated: "2026-11-15T00:16:30.973Z"
-last_activity: 2026-11-14
-last_activity_desc: Phase 36 execution started
-state_head: 7bfe5d1a929119a1c43a5fab5e3d6edf8999219e
+status: verifying
+stopped_at: Phase 36 executed; verification human_needed — run /gsd-verify-work 36
+last_updated: "2026-11-15T02:22:15.340Z"
+last_activity: 2026-11-15
+last_activity_desc: Phase 36 executed, reviewed and verified (human_needed)
+state_head: 46231f2f22016421713c555b95ced29afe0c52c7
 progress:
   total_phases: 4
   completed_phases: 1
@@ -30,9 +30,9 @@ See: .planning/PROJECT.md (updated 2026-11-14)
 ## Current Position
 
 Phase: 36 (Dashboard and detail) — EXECUTING
-Plan: 1 of 4
-Status: Executing Phase 36
-Last activity: 2026-11-14 — Phase 36 execution started
+Plan: 4 of 4
+Status: verifying
+Last activity: 2026-11-15 — Phase 36 executed, reviewed and verified (human_needed)
 
 
 ## Deferred Verification
@@ -615,7 +615,7 @@ non-unique bullets in these narrative logs). Disclosed per file instead [inferre
 ## Session Continuity
 
 Last session: 2026-11-14T23:16:51.782Z
-Stopped at: Phase 36 UI-SPEC approved
+Stopped at: Phase 36 executed; verification human_needed — run /gsd-verify-work 36
 Resume file: .planning/phases/36-dashboard-and-detail/36-UI-SPEC.md
 
 Next: push master + tag v2.4.0 (tag push publishes to crates.io); then `/gsd-new-milestone`.
