@@ -197,7 +197,20 @@ Plans:
 **Depends on:** Phase 35
 **Verification:** Automatic buffer snapshots plus human UAT
 **UI hint**: yes
-**Plans:** TBD
+**Plans:** 4 plans
+
+Plans:
+**Wave 1**
+- [ ] 36-01-PLAN.md — Tracer: owner digest from the reparse task and a startup/registration first fill into `AppContext.owner_digests`, the `You` column at >= 100 columns, fleet buffer tests
+
+**Wave 2** *(blocked on Wave 1 completion)*
+- [ ] 36-02-PLAN.md — `You:` summary line with `[i] inbox`, `has owner work` AttentionFirst rank, `/y [lane]` filter, help and README (dashboard part)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+- [ ] 36-03-PLAN.md — Owner block drawn on the detail Phases tab: shared `closes after` wording, header, group rows, collapsed folds line, zero-row gate, escape coverage
+
+**Wave 4** *(blocked on Wave 3 completion)*
+- [ ] 36-04-PLAN.md — Owner block interaction and docs: `DetailFocus::Owner`, expandable groups, opening folds, refresh-safe cursor and scroll, footers, help and README (block part)
 
 **Success Criteria** (what must be TRUE):
 1. At 120 columns the owner can read off the dashboard which three projects to test first; the `You` cell shows at most two lanes in fixed order for the current milestone, a dim `·` when clean, and is hidden below 100 columns.

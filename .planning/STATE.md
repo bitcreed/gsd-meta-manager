@@ -2,18 +2,18 @@
 gsd_state_version: "1.0"
 milestone: v2.5.0
 milestone_name: Owner Inbox
-current_phase: 34
-current_phase_name: Owner items reader + inbox CLI
-status: verifying
+current_phase: 36
+current_phase_name: Dashboard and detail
+status: executing
 stopped_at: Phase 36 UI-SPEC approved
-last_updated: "2026-11-14T23:16:51.963Z"
+last_updated: "2026-11-15T00:15:05.251Z"
 last_activity: 2026-11-14
 last_activity_desc: Phase 35 complete, transitioned to Phase 34
-state_head: 1c3668424abb98f916947198cfbfe3051628a91a
+state_head: feb3a7fb3cf641b1214eb5934c9ebee34e467e91
 progress:
   total_phases: 4
   completed_phases: 1
-  total_plans: 10
+  total_plans: 14
   completed_plans: 10
   percent: 25
 ---
@@ -29,9 +29,9 @@ See: .planning/PROJECT.md (updated 2026-11-14)
 
 ## Current Position
 
-Phase: 34 — Owner items reader + inbox CLI
+Phase: 36 (Dashboard and detail) — READY TO EXECUTE
 Plan: 6
-Status: Phase complete — ready for verification
+Status: Ready to execute
 Last activity: 2026-11-14 — Phase 35 complete, transitioned to Phase 34
 
 
