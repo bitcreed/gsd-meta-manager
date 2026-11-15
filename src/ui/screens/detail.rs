@@ -3950,7 +3950,9 @@ crate::ui::screens::adjudicate_screen!(
      Phases tab also draws the Owner block (header, group rows and fold line \
      from `ctx.owner_digests`, every project-authored string reaching a cell \
      through `shown()`); the state \"Phases tab with an Owner block\" probes it \
-     with a hostile digest.",
+     with a hostile digest. Since 36-04 the block also draws expansion lines \
+     and open-fold rows, probed by the state \"Phases tab with an expanded Owner \
+     block\".",
 );
 
 impl Screen for DetailScreen {

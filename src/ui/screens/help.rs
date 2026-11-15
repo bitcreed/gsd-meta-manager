@@ -345,6 +345,19 @@ pub(super) fn help_lines(experimental: bool) -> Vec<Line<'static>> {
         row("Left / Esc", "Waves pane: back to the phase list"),
         row("Enter", "Agents sub-tab: open the agent's plan in the Phases Waves pane"),
         Line::from(""),
+        // ── The Phases tab's Owner block (36-04, D-21). It only expands and
+        // folds: running, opening, acknowledging and copying are not built, so
+        // none is listed. Every description is unique in this body and ends in
+        // `(detail view)`. Ends with one blank row.
+        heading("Phases Owner Block (detail view)"),
+        Line::from(""),
+        row("Up / k", "Phases tab: from the first phase, enter the Owner block above it (detail view)"),
+        row("j/k g/G", "Owner block: move the row cursor / top / bottom (detail view)"),
+        row("PgUp / PgDn", "Owner block: page the rows (detail view)"),
+        row("Enter / Space", "Owner block: expand or collapse the selected group or fold (detail view)"),
+        row("Left / Right", "Owner block: move between the folds on the fold line (detail view)"),
+        row("Esc", "Owner block: back to the phase list (detail view)"),
+        Line::from(""),
         // ── The mouse (quick 260926-dyf, D-07). Every description is unique
         // in this body. Ends with one blank row.
         heading("Mouse"),
@@ -816,6 +829,54 @@ mod tests {
             text.contains("/term/h") && text.contains("//h"),
             "both needs-a-human filter forms must be documented:\n{text}"
         );
+    }
+
+    #[test]
+    fn help_documents_the_owner_block_keys() {
+        let text = body();
+        let rows: [(&str, &str); 6] = [
+            (
+                "Up / k",
+                "Phases tab: from the first phase, enter the Owner block above it (detail view)",
+            ),
+            (
+                "j/k g/G",
+                "Owner block: move the row cursor / top / bottom (detail view)",
+            ),
+            ("PgUp / PgDn", "Owner block: page the rows (detail view)"),
+            (
+                "Enter / Space",
+                "Owner block: expand or collapse the selected group or fold (detail view)",
+            ),
+            (
+                "Left / Right",
+                "Owner block: move between the folds on the fold line (detail view)",
+            ),
+            ("Esc", "Owner block: back to the phase list (detail view)"),
+        ];
+        let lines: Vec<&str> = text.lines().collect();
+        for (key, description) in rows {
+            let expected = row(key, description).spans[0].content.to_string();
+            assert!(
+                lines.iter().any(|line| *line == expected),
+                "missing the whole row {expected:?}:\n{text}"
+            );
+            assert_eq!(
+                lines.iter().filter(|l| l.contains(description)).count(),
+                1,
+                "{description:?} must be unique in the body"
+            );
+        }
+        // Only the keys the block binds: no action of Phase 37 is advertised.
+        let block: String = lines
+            .iter()
+            .filter(|l| l.contains("Owner block"))
+            .copied()
+            .collect::<Vec<_>>()
+            .join("\n");
+        for forbidden in ["acknowledge", "copy", "launch", "run the", "open the file"] {
+            assert!(!block.contains(forbidden), "{forbidden}: {block}");
+        }
     }
 
     #[test]

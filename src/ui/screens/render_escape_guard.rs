@@ -1694,6 +1694,16 @@ const DETAIL_TAB_ARRIVAL: &[(&str, bool, &str)] = &[
          columns every column draws.",
     ),
     (
+        "Phases tab with an expanded Owner block",
+        true,
+        "The Phases tab drawn with `hostile_owner_digest` under the probed alias, \
+         every current group expanded and Old debt open (36-04, OWN-11). On top of \
+         the collapsed block's strings, the expansion lines (item test number and \
+         name, expected, why, reason and blocked-by detail, gap name, result and \
+         reason, the `file` path), the milestone sub-header and the archived row \
+         with its command all reach cells through `shown()`.",
+    ),
+    (
         "Pipeline tab",
         true,
         "Draws the current phase name, status and pause context — and, since \
@@ -2013,6 +2023,30 @@ const DETAIL_SUB_STATES: &[(&str, SubStateArrange)] = &[
         ctx.owner_digests
             .insert(identity.to_string(), hostile_owner_digest(identity));
     }),
+    // OWN-11 (36-04): the same block with every group expanded and Old debt
+    // open, so the item, detail, gap, file, sub-header and archived-row lines
+    // draw. The keys are DERIVED from the digest, never respelled.
+    (
+        "Phases tab with an expanded Owner block",
+        |identity, ctx| {
+            use crate::ui::screens::owner_block::{skeleton, Fold, OwnerBlockState, Stop};
+            ctx.detail_sub_view_per_project
+                .insert(identity.to_string(), crate::app::DetailSubView::Pipeline);
+            let digest = hostile_owner_digest(identity);
+            let mut view = OwnerBlockState::default();
+            view.open_folds.insert(Fold::OldDebt);
+            for stop in skeleton(&digest, &view).stops {
+                if let Stop::Row(key) = stop {
+                    view.expanded.insert(key);
+                }
+            }
+            ctx.owner_digests.insert(identity.to_string(), digest);
+            ctx.view_cache
+                .entry(identity.to_string())
+                .or_default()
+                .owner_block = view;
+        },
+    ),
     ("Backlog tab, expanded", |identity, ctx| {
         ctx.detail_sub_view_per_project
             .insert(identity.to_string(), crate::app::DetailSubView::Backlog);
