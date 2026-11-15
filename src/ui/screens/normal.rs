@@ -422,6 +422,10 @@ fn compact_pipeline(status: &DiskStatus) -> Line<'static> {
 /// project renders identically to a mid-pipeline one (UIFIX-02 / CR-01).
 const STATUS_COLUMN_MIN_CELLS: u16 = 13;
 
+/// The `You` column's fixed width in cells (36 D-05): wide enough for the widest
+/// normal form, `decide 99 \u{b7} fix 99 ph`.
+const YOU_COLUMN_CELLS: u16 = 21;
+
 /// Resolve the dashboard's header cells and column constraints for a terminal width.
 ///
 /// Single source of truth for the three width tiers, so the render-level tests
@@ -437,7 +441,20 @@ const STATUS_COLUMN_MIN_CELLS: u16 = 13;
 /// `Percentage(30)` already yields 13+ cells from width 44 upward, and adding a floor
 /// there would starve the Alias column at very narrow widths.
 fn dashboard_columns(terminal_width: u16) -> (Vec<&'static str>, Vec<Constraint>) {
-    if terminal_width >= 80 {
+    if terminal_width >= 100 {
+        // The `You` column (OWN-16). Status keeps its 13-cell floor and index 2.
+        (
+            vec!["Alias", "Phase", "Status", "You", "Progress", "Backlog"],
+            vec![
+                Constraint::Percentage(20),
+                Constraint::Percentage(26),
+                Constraint::Min(STATUS_COLUMN_MIN_CELLS),
+                Constraint::Length(YOU_COLUMN_CELLS),
+                Constraint::Percentage(12),
+                Constraint::Percentage(9),
+            ],
+        )
+    } else if terminal_width >= 80 {
         (
             vec!["Alias", "Phase", "Status", "Progress", "Backlog"],
             vec![
@@ -1197,7 +1214,24 @@ impl NormalScreen {
                             .collect::<Vec<_>>(),
                     );
 
-                    let cells: Vec<TableCell> = if terminal_width >= 80 {
+                    let cells: Vec<TableCell> = if terminal_width >= 100 {
+                        // Built from the digest map only: no read, no parse here.
+                        let you_cell = super::owner::you_cell_line(
+                            ctx.owner_digests
+                                .get(alias)
+                                .map(super::owner::owner_numbers)
+                                .as_ref(),
+                            YOU_COLUMN_CELLS,
+                        );
+                        vec![
+                            TableCell::from(alias_cell),
+                            TableCell::from(phase_line),
+                            TableCell::from(status_text),
+                            TableCell::from(you_cell),
+                            TableCell::from(Line::from(progress_cell)),
+                            TableCell::from(Line::from(backlog_cell)),
+                        ]
+                    } else if terminal_width >= 80 {
                         vec![
                             TableCell::from(alias_cell),
                             TableCell::from(phase_line),
@@ -1501,6 +1535,7 @@ fn move_selection_up(ctx: &mut AppContext) {
 mod tests {
     use super::*;
     use crate::app::DetailSubView;
+    use crate::state_reader::owner_items::OwnerDigest;
     use crate::state_reader::{parse_project_state, ProjectState};
     use crate::ui::screens::driver_run::LauncherMarker;
     use std::collections::HashMap;
@@ -1674,6 +1709,7 @@ mod tests {
             error_message: None,
             event_tx: None,
             reparse_dispatches: 0,
+            owner_digests: HashMap::new(),
             agent_views: HashMap::new(),
             agents_scan_in_flight: false,
             sort_mode: crate::ui::screens::SortMode::default(),
@@ -1713,6 +1749,11 @@ mod tests {
             .get_mut(alias)
             .expect("the fixture registered this alias")
             .paused = true;
+    }
+
+    /// Give `alias` an owner digest, as the reparse task would.
+    pub(super) fn owe(ctx: &mut AppContext, alias: &str, digest: OwnerDigest) {
+        ctx.owner_digests.insert(alias.to_string(), digest);
     }
 
     /// Drive the real key handler, exactly as the event loop does.
@@ -2580,6 +2621,25 @@ mod tests {
         assert_eq!(headers_40.len(), 3);
         assert_eq!(widths_40.len(), 3);
         assert_eq!(widths_40[2], Constraint::Percentage(30));
+    }
+
+    #[test]
+    fn the_you_column_shows_owner_numbers_at_100_columns_and_up() {
+        let mut ctx = ctx_with_aliases(&["alpha"]);
+        owe(
+            &mut ctx,
+            "alpha",
+            OwnerDigest {
+                test: 2,
+                ..OwnerDigest::default()
+            },
+        );
+        let wide = rendered_text(&render_dashboard_cells(&ctx, 120, 20)).join("\n");
+        assert!(wide.contains("You"), "the header names the column:\n{wide}");
+        assert!(wide.contains("test 2"), "the cell shows the lane:\n{wide}");
+        let narrow = rendered_text(&render_dashboard_cells(&ctx, 99, 20)).join("\n");
+        assert!(!narrow.contains("You"), "no column below 100:\n{narrow}");
+        assert!(!narrow.contains("test 2"), "no cell below 100:\n{narrow}");
     }
 
     #[test]

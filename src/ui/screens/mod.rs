@@ -13,6 +13,7 @@ pub mod help;
 pub mod normal;
 pub mod oneoff;
 pub mod oneoff_viewer;
+pub mod owner;
 pub mod preferences;
 pub mod queue_delete_confirm;
 
@@ -1343,6 +1344,20 @@ pub struct AppContext {
     ///   production, and the count is a legitimate diagnostic in its own right
     ///   that Phase 18's driver surface may want to render.
     pub reparse_dispatches: u64,
+    /// Per-alias owner digest: what waits on the human, in the current milestone
+    /// and archived (36 D-02).
+    ///
+    /// * A **sibling map**, like `agent_views` below, and for the same reason: it
+    ///   must not live on `ProjectState`. That type's derived `PartialEq` drives
+    ///   the `Updated: {alias}` message and is compared by the driver loop, `next`
+    ///   and the router; a digest field there would make every UAT row flipped to
+    ///   `pass` look like a project change.
+    /// * Filled by the reparse task (`ProjectStateLoaded.digest`) and, once per
+    ///   alias, by the digest-only first fill (`OwnerDigestLoaded`); never on the
+    ///   render path. An alias without an entry renders a blank `You` cell, never
+    ///   `·` (absent data must not read as clean, D-09).
+    /// * Pruned with the other alias-keyed maps in `App::prune_driver_maps`.
+    pub owner_digests: HashMap<String, crate::state_reader::owner_items::OwnerDigest>,
     /// Per-alias running-agents view, from the agents scan (AGENT-05, D-C01).
     ///
     /// * A **sibling map**, shaped like `driver_output` above, for the same
@@ -2425,6 +2440,7 @@ mod tests {
             error_message: None,
             event_tx: None,
             reparse_dispatches: 0,
+            owner_digests: HashMap::new(),
             agent_views: HashMap::new(),
             agents_scan_in_flight: false,
             sort_mode: SortMode::default(),
@@ -2457,6 +2473,16 @@ mod tests {
             class: Some(driver_run::MarkerClass::Driven),
             any_live: true,
         });
+    }
+
+    /// Give `alias` an owner digest, as the reparse task would.
+    #[allow(dead_code)]
+    pub(super) fn owe(
+        ctx: &mut AppContext,
+        alias: &str,
+        digest: crate::state_reader::owner_items::OwnerDigest,
+    ) {
+        ctx.owner_digests.insert(alias.to_string(), digest);
     }
 
     /// Mark `alias` as paused, which is one of the needs-human sources.

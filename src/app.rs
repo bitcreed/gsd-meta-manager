@@ -943,6 +943,7 @@ impl App {
             error_message: None,
             event_tx: None,
             reparse_dispatches: 0,
+            owner_digests: HashMap::new(),
             agent_views: HashMap::new(),
             agents_scan_in_flight: false,
             sort_mode: crate::ui::screens::SortMode::default(),
@@ -1004,13 +1005,23 @@ impl App {
         let tx = tx.clone();
         let alias_for_task = alias.to_string();
         let planning_dir = project_path.join(".planning");
+        let stale_days = self.ctx.config.preferences.owner_stale_days();
 
         self.ctx.reparse_dispatches += 1;
         tokio::task::spawn_blocking(move || {
             let state = state_reader::parse_project_state(&planning_dir);
+            // The owner digest rides the same blocking task (36 D-01): it reads
+            // the reader's own parsed-file caches, never the render path.
+            let digest = state_reader::owner_items::read_owner_digest(
+                &planning_dir,
+                &state,
+                chrono::Utc::now(),
+                stale_days,
+            );
             let _ = tx.send(Action::ProjectStateLoaded {
                 alias: alias_for_task,
                 state: Box::new(state),
+                digest: Box::new(digest),
             });
         });
         self.ctx
@@ -2829,7 +2840,11 @@ impl App {
                     }
                 }
             }
-            Action::ProjectStateLoaded { alias, state } => {
+            Action::ProjectStateLoaded {
+                alias,
+                state,
+                digest,
+            } => {
                 // Detect changes before replacing the old state.
                 // `changed` is true if there was no prior state (first load) or
                 // the freshly-parsed snapshot differs from the cached one.
@@ -2844,12 +2859,21 @@ impl App {
                     }
                     None => true,
                 };
+                // A digest-only change (a UAT row flipped, a ruling made) must
+                // redraw and re-sort but never post `Updated:` (36 Pitfall 1).
+                let digest_changed = self.ctx.owner_digests.get(&alias) != Some(&*digest);
                 self.ctx.project_states.insert(alias.clone(), *state);
-                if changed {
+                // A late result for an unregistered alias must not outlive the prune.
+                if self.ctx.config.projects.contains_key(&alias) {
+                    self.ctx.owner_digests.insert(alias.clone(), *digest);
+                }
+                if changed || digest_changed {
                     self.ctx.recompute_filtered_aliases();
+                    self.needs_redraw = true;
+                }
+                if changed {
                     self.ctx.status_message =
                         Some((format!("Updated: {}", alias), std::time::Instant::now()));
-                    self.needs_redraw = true;
                 }
             }
             Action::GitLogLoaded {
@@ -3602,6 +3626,11 @@ impl App {
         // re-derivation for a project that no longer exists.
         self.ctx
             .last_refresh
+            .retain(|alias, _| registered.contains_key(alias));
+        // One digest per alias ever loaded; a removed project's numbers describe
+        // nothing the user can open, and the dashboard must not rank on them.
+        self.ctx
+            .owner_digests
             .retain(|alias, _| registered.contains_key(alias));
         // `archive_cache` was keyed by MILESTONE when this line first retained
         // it by alias, so every archive went on every pass and the Archive
@@ -5391,9 +5420,20 @@ mod tests {
             let cache = app.ctx.view_cache.entry(alias.to_string()).or_default();
             cache.launcher_selected = 2;
             cache.launcher_selected_id = Some("20261019-a".to_string());
+            app.ctx.owner_digests.insert(
+                alias.to_string(),
+                crate::state_reader::owner_items::OwnerDigest::default(),
+            );
         }
 
         app.prune_driver_maps();
+
+        assert!(
+            !app.ctx.owner_digests.contains_key("gone"),
+            "an unregistered project's owner digest must be pruned with the other \
+             alias-keyed maps"
+        );
+        assert!(app.ctx.owner_digests.contains_key(OBS_ALIAS));
 
         assert!(
             !app.ctx.view_cache.contains_key("gone"),
@@ -5415,6 +5455,130 @@ mod tests {
             Some("20261019-a"),
             "the prune must not clear a live cache's contents"
         );
+    }
+
+    // ── The owner digest (36 D-01, D-02, D-04) ────────────────────────────
+
+    fn copy_tree(from: &std::path::Path, to: &std::path::Path) {
+        std::fs::create_dir_all(to).expect("create dir");
+        for entry in std::fs::read_dir(from).expect("read dir") {
+            let entry = entry.expect("dir entry");
+            let target = to.join(entry.file_name());
+            if entry.file_type().expect("file type").is_dir() {
+                copy_tree(&entry.path(), &target);
+            } else {
+                std::fs::copy(entry.path(), &target).expect("copy file");
+            }
+        }
+    }
+
+    /// A synthetic fixture project copied under `root`.
+    fn copy_owner_fixture(name: &str, root: &std::path::Path) {
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/owner")
+            .join(name)
+            .join(".planning");
+        copy_tree(&src, &root.join(".planning"));
+    }
+
+    /// Receive until a `ProjectStateLoaded` arrives, hand it to `app`.
+    async fn deliver_reparse(app: &mut App, rx: &mut tokio::sync::mpsc::UnboundedReceiver<Action>) {
+        let wait = async {
+            loop {
+                let action = rx.recv().await.expect("the channel stays open");
+                if matches!(action, Action::ProjectStateLoaded { .. }) {
+                    return action;
+                }
+            }
+        };
+        let action = tokio::time::timeout(std::time::Duration::from_secs(10), wait)
+            .await
+            .expect("a ProjectStateLoaded within 10 s");
+        app.update(action);
+    }
+
+    /// D-04: a watcher refresh puts a fresh digest in the map, and a UAT row
+    /// flipped to `pass` lowers the count the `You` cell is built from.
+    #[tokio::test]
+    async fn a_watcher_refresh_delivers_a_fresh_owner_digest() {
+        use crate::ui::screens::owner::{owner_numbers, you_cell_line};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path();
+        copy_owner_fixture("uat-pending", root);
+        let (mut app, mut rx) = obs_app(root);
+
+        app.update(planning_change(root));
+        deliver_reparse(&mut app, &mut rx).await;
+        let first = app
+            .ctx
+            .owner_digests
+            .get(OBS_ALIAS)
+            .expect("the first refresh delivers a digest")
+            .clone();
+        assert!(first.test > 0, "the fixture has pending checks");
+        let first_cell = you_cell_line(Some(&owner_numbers(&first)), 21);
+
+        let uat = root.join(".planning/phases/01-alpha/01-UAT.md");
+        let text = std::fs::read_to_string(&uat).expect("read the UAT file");
+        assert!(text.contains("result: pending"));
+        std::fs::write(&uat, text.replacen("result: pending", "result: pass", 1))
+            .expect("rewrite the UAT file");
+        app.ctx.last_refresh.remove(OBS_ALIAS);
+
+        app.update(planning_change(root));
+        deliver_reparse(&mut app, &mut rx).await;
+        let second = app
+            .ctx
+            .owner_digests
+            .get(OBS_ALIAS)
+            .expect("the second refresh delivers a digest");
+        assert_eq!(second.test, first.test - 1, "one pending check was passed");
+        let second_cell = you_cell_line(Some(&owner_numbers(second)), 21);
+        assert_ne!(first_cell, second_cell, "the You cell text changes");
+    }
+
+    /// D-02 / Pitfall 1: a digest-only change redraws and re-sorts but never
+    /// posts `Updated:`; a changed state still does.
+    #[tokio::test]
+    async fn a_digest_only_change_redraws_without_an_updated_message() {
+        use crate::state_reader::owner_items::OwnerDigest;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, _rx) = obs_app(dir.path());
+        let state = crate::state_reader::ProjectState::default();
+        app.ctx
+            .project_states
+            .insert(OBS_ALIAS.to_string(), state.clone());
+        app.ctx
+            .owner_digests
+            .insert(OBS_ALIAS.to_string(), OwnerDigest::default());
+        app.needs_redraw = false;
+        app.ctx.status_message = None;
+
+        let changed = OwnerDigest {
+            test: 3,
+            ..OwnerDigest::default()
+        };
+        app.update(Action::ProjectStateLoaded {
+            alias: OBS_ALIAS.to_string(),
+            state: Box::new(state.clone()),
+            digest: Box::new(changed.clone()),
+        });
+        assert_eq!(app.ctx.owner_digests[OBS_ALIAS], changed);
+        assert!(app.needs_redraw, "a digest change redraws");
+        assert!(
+            app.ctx.status_message.is_none(),
+            "a digest-only change must not post an Updated message"
+        );
+
+        let mut moved = state;
+        moved.paused = true;
+        app.update(Action::ProjectStateLoaded {
+            alias: OBS_ALIAS.to_string(),
+            state: Box::new(moved),
+            digest: Box::new(changed),
+        });
+        let message = app.ctx.status_message.as_ref().map(|(m, _)| m.as_str());
+        assert_eq!(message, Some("Updated: proj"));
     }
 
     // ── The launcher rows and the sub-view ────────────────────────────────
@@ -5762,6 +5926,10 @@ mod tests {
             app.ctx
                 .last_refresh
                 .insert(alias.to_string(), std::time::Instant::now());
+            app.ctx.owner_digests.insert(
+                alias.to_string(),
+                crate::state_reader::owner_items::OwnerDigest::default(),
+            );
             // Keyed alias THEN milestone. This fixture used to insert the alias
             // as the map's only key, which is how it passed while the real map
             // was keyed by milestone and the prune emptied it every pass.
@@ -5786,6 +5954,7 @@ mod tests {
             view_cache,
             last_refresh,
             archive_cache,
+            owner_digests,
 
             // Alias-keyed but deliberately NOT pruned, with the reason on the
             // field: `project_states` is the registry's own mirror and is
@@ -5831,11 +6000,13 @@ mod tests {
         assert!(!view_cache.contains_key(GONE), "view_cache leaked");
         assert!(!last_refresh.contains_key(GONE), "last_refresh leaked");
         assert!(!archive_cache.has_alias(GONE), "archive_cache leaked");
+        assert!(!owner_digests.contains_key(GONE), "owner_digests leaked");
 
         // The control arm for all of them at once: the registered alias kept
         // everything, so none of the assertions above passed because the prune
         // cleared the map.
         assert!(last_refresh.contains_key(OBS_ALIAS));
+        assert!(owner_digests.contains_key(OBS_ALIAS));
         assert!(archive_cache.get(OBS_ALIAS, "v1.0").is_some());
         let kept = view_cache
             .get(OBS_ALIAS)

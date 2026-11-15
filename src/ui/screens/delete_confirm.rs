@@ -254,6 +254,7 @@ mod tests {
             error_message: None,
             event_tx: Some(tx),
             reparse_dispatches: 0,
+            owner_digests: HashMap::new(),
             agent_views: HashMap::new(),
             agents_scan_in_flight: false,
             sort_mode: crate::ui::screens::SortMode::default(),

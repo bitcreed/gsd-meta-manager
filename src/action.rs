@@ -1,4 +1,5 @@
 use crate::state_reader::git_ops::{GitCommitDetail, GitLogEntry};
+use crate::state_reader::owner_items::OwnerDigest;
 use crate::state_reader::ProjectState;
 use crossterm::event::KeyEvent;
 
@@ -46,6 +47,9 @@ pub enum Action {
         alias: String,
         // Boxed: ProjectState dwarfs every other variant (clippy::large_enum_variant)
         state: Box<ProjectState>,
+        /// The owner digest computed in the same blocking task, right after the
+        /// parse (36 D-01). Boxed for the same reason as `state`.
+        digest: Box<OwnerDigest>,
     },
     GitLogLoaded {
         alias: String,
