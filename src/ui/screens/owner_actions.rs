@@ -28,7 +28,7 @@ use crate::state_reader::owner_items::{
     is_command_token, is_workstream_name, Kind, Lane, OwnerDigest, OwnerGroup, RunCommand, RunVerb,
     Scope,
 };
-use crate::state_reader::queue_md::{resolve_gsd_tools, GsdToolsCmd};
+use crate::state_reader::queue_md::{resolve_user_gsd_tools, GsdToolsCmd};
 use crate::state_reader::ProjectState;
 use crate::ui::screens::{AppContext, ScreenAction};
 use std::path::{Path, PathBuf};
@@ -645,13 +645,15 @@ pub(crate) fn test_launcher() -> GsdToolsCmd {
     }
 }
 
-/// The launcher for `project`: the one the queue uses, project-local first.
-fn resolve_launcher(project: &Path) -> Option<GsdToolsCmd> {
+/// The launcher the acknowledge writer runs: the user's own gsd-core install
+/// only, never one the registered project ships (WR-05: the project is untrusted
+/// input, and the child runs with the TUI's environment).
+fn resolve_launcher() -> Option<GsdToolsCmd> {
     #[cfg(test)]
     if let Some(forced) = FORCED_LAUNCHER.with(|cell| cell.borrow().clone()) {
         return forced;
     }
-    resolve_gsd_tools(project)
+    resolve_user_gsd_tools()
 }
 
 /// Everything `A` needs before it may open the popup, or the status line that
@@ -678,7 +680,7 @@ pub(crate) fn ack_request(
         group,
         active_workstream_is_set(&project.path),
     )?;
-    let launcher = resolve_launcher(&project.path).ok_or_else(|| {
+    let launcher = resolve_launcher().ok_or_else(|| {
         "gsd-tools.cjs not found. Install: npx -y @opengsd/gsd-core@latest --claude --local"
             .to_owned()
     })?;
