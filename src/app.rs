@@ -549,6 +549,10 @@ impl Default for OneoffSeams {
     }
 }
 
+/// How much longer an acknowledge outcome stays on the status line than the usual
+/// 3 s (37 UI review #7).
+const OWNER_ACK_STATUS_EXTRA: std::time::Duration = std::time::Duration::from_secs(9);
+
 pub struct App {
     pub should_quit: bool,
     pub needs_redraw: bool,
@@ -3317,9 +3321,14 @@ impl App {
                 outcome,
             } => {
                 self.ctx.owner_ack_busy.remove(&(alias, file));
+                // The child may run 10 s and its failure line is the owner's only
+                // explanation, so the line outlives the usual 3 s: the stamp is set
+                // ahead of now (`elapsed` reads zero until then).
+                let stamp = std::time::Instant::now();
+                let stamp = stamp.checked_add(OWNER_ACK_STATUS_EXTRA).unwrap_or(stamp);
                 self.ctx.status_message = Some((
                     crate::text::render_for_terminal(&outcome).to_string(),
-                    std::time::Instant::now(),
+                    stamp,
                 ));
                 self.needs_redraw = true;
             }
@@ -6704,6 +6713,13 @@ mod tests {
         });
         let (text, _) = app.ctx.status_message.clone().expect("status line");
         assert!(text.starts_with("Acknowledge failed: bad"), "{text:?}");
+        let stamp = app.ctx.status_message.as_ref().expect("status line").1;
+        assert!(
+            stamp > std::time::Instant::now() + std::time::Duration::from_secs(5),
+            "the outcome outlives the usual 3 s"
+        );
+        app.update(Action::Tick);
+        assert!(app.ctx.status_message.is_some(), "a tick keeps it");
         assert!(!text.chars().any(char::is_control), "{text:?}");
         assert!(app.needs_redraw);
         assert_eq!(
