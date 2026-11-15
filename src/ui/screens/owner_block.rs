@@ -1540,6 +1540,7 @@ pub(crate) fn sample_owner_digest() -> OwnerDigest {
             todos: 11,
             todos_oldest_days: Some(96),
             todos_unreadable: false,
+            planned_questions: 0,
         },
         closes_after: ClosesAfter {
             test: 12,

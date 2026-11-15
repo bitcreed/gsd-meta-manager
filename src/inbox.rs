@@ -159,6 +159,7 @@ fn project_json(entry: &ProjectEntry, filters: &Filters) -> Value {
             json!({
                 "deferred": 0,
                 "acknowledged_files": 0,
+                "planned_questions": 0,
                 "todos": 0,
                 "noise": 0,
                 "todos_oldest_days": Value::Null,
@@ -182,6 +183,7 @@ fn project_json(entry: &ProjectEntry, filters: &Filters) -> Value {
             json!({
                 "deferred": entry.digest.hidden.deferred,
                 "acknowledged_files": entry.digest.hidden.acknowledged_files,
+                "planned_questions": entry.digest.hidden.planned_questions,
                 "todos": entry.digest.hidden.todos,
                 "noise": entry.digest.hidden.noise,
                 "todos_oldest_days": entry.digest.hidden.todos_oldest_days,
@@ -235,6 +237,7 @@ pub fn build_document(entries: &[ProjectEntry], filters: &Filters) -> Value {
             },
             "deferred": sum(|d| d.hidden.deferred),
             "acknowledged_files": sum(|d| d.hidden.acknowledged_files),
+            "planned_questions": sum(|d| d.hidden.planned_questions),
             "superseded": sum(|d| d.superseded),
             "noise": sum(|d| d.hidden.noise),
         },
@@ -942,6 +945,8 @@ mod tests {
         assert_eq!(project["groups"], json!([]));
         assert_eq!(project["todos"], json!([]));
         assert_eq!(project["hidden"]["noise"], 0);
+        assert_eq!(project["hidden"]["planned_questions"], 0);
+        assert_eq!(doc["summary"]["planned_questions"], 0);
         assert_eq!(doc["summary"]["projects"], 1);
     }
 

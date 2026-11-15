@@ -820,6 +820,13 @@ fn context_groups(
         if items.is_empty() && !unreadable {
             continue;
         }
+        // D-17: the open questions of a planned phase are counted, never listed.
+        // [inferred] An acknowledged file keeps its own path (acknowledged wins over
+        // planned) and an unreadable one stays listed (fail-safe).
+        if file.phase_planned && !file.acknowledged && !unreadable {
+            digest.hidden.planned_questions += items.len();
+            continue;
+        }
         if file.acknowledged {
             digest.hidden.acknowledged_files += 1;
         }
@@ -2102,6 +2109,7 @@ mod tests {
             modified: None,
             acknowledged: false,
             unreadable: None,
+            phase_planned: false,
         }
     }
 
@@ -2177,6 +2185,37 @@ mod tests {
         assert_eq!(d.groups.len(), 1);
         assert!(d.groups[0].acknowledged);
         assert_eq!((d.decide, d.hidden.acknowledged_files), (0, 1));
+    }
+
+    #[test]
+    fn an_acknowledged_planned_context_counts_as_acknowledged() {
+        let mut file = context_file(CONTEXT, Scope::Current, &["- a?", "- b?"]);
+        file.acknowledged = true;
+        file.phase_planned = true;
+        let d = digest_of_context(vec![file]);
+        assert_eq!(d.hidden.acknowledged_files, 1);
+        assert_eq!(d.hidden.planned_questions, 0);
+        assert_eq!(d.groups.len(), 1);
+    }
+
+    #[test]
+    fn an_unreadable_planned_context_stays_listed() {
+        let mut file = context_file(CONTEXT, Scope::Current, &[]);
+        file.unreadable = Some(Unreadable::Io);
+        file.phase_planned = true;
+        let d = digest_of_context(vec![file]);
+        assert_eq!(d.groups.len(), 1);
+        assert_eq!(d.groups[0].counts.unreadable, 1);
+        assert_eq!(d.hidden.planned_questions, 0);
+    }
+
+    #[test]
+    fn a_planned_context_is_counted_not_listed() {
+        let mut file = context_file(CONTEXT, Scope::Current, &["- a?", "- RESOLVED: b", "- c?"]);
+        file.phase_planned = true;
+        let d = digest_of_context(vec![file]);
+        assert!(d.groups.is_empty());
+        assert_eq!((d.decide, d.hidden.planned_questions), (0, 2));
     }
 
     #[test]

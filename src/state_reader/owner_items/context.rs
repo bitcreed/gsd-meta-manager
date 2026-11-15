@@ -217,6 +217,16 @@ pub(crate) fn parse_context(text: &str) -> ParsedContext {
     }
 }
 
+/// Whether a phase directory entry is a plan artifact: `PLAN.md`, `*-PLAN.md`,
+/// `SUMMARY.md` or `*-SUMMARY.md` (presence, not pairing; `*-PLAN-CHECK.md` and the
+/// like do not count). D-17.
+fn is_plan_artifact(name: &str) -> bool {
+    name == "PLAN.md"
+        || name == "SUMMARY.md"
+        || name.ends_with("-PLAN.md")
+        || name.ends_with("-SUMMARY.md")
+}
+
 /// Every CONTEXT document with open questions, process-free, sorted by `rel_path`.
 pub(super) fn scan_context_questions(
     planning_dir: &Path,
@@ -264,9 +274,22 @@ fn scan_with(
         let Ok(entries) = std::fs::read_dir(&target.path) else {
             continue;
         };
-        let mut names: Vec<String> = entries
-            .flatten()
-            .filter_map(|entry| entry.file_name().into_string().ok())
+        // One listing serves both: the CONTEXT names exactly as upstream reads them (no
+        // file-type filter, Layer A) and the D-17 flag, which counts regular files only
+        // (a directory or symlink named like a plan does not mark the phase planned).
+        let mut phase_planned = false;
+        let mut listing: Vec<String> = Vec::new();
+        for entry in entries.flatten() {
+            let Ok(name) = entry.file_name().into_string() else {
+                continue;
+            };
+            if is_plan_artifact(&name) && entry.file_type().is_ok_and(|kind| kind.is_file()) {
+                phase_planned = true;
+            }
+            listing.push(name);
+        }
+        let mut names: Vec<String> = listing
+            .into_iter()
             .filter(|name| name.contains("-CONTEXT") && name.ends_with(".md"))
             .collect();
         names.sort();
@@ -302,6 +325,7 @@ fn scan_with(
                 modified: None,
                 acknowledged: false,
                 unreadable: None,
+                phase_planned,
             };
             match open_checked(&real) {
                 Ok(opened) => {
@@ -571,6 +595,55 @@ mod tests {
         let stream = files.iter().find(|f| f.phase == "01").unwrap();
         assert_eq!(stream.workstream.as_deref(), Some("ws1"));
         assert!(stream.in_current_milestone);
+    }
+
+    #[test]
+    fn plan_artifacts_are_plans_and_summaries_only() {
+        for name in ["PLAN.md", "02-01-PLAN.md", "SUMMARY.md", "02-01-SUMMARY.md"] {
+            assert!(is_plan_artifact(name), "{name}");
+        }
+        for name in [
+            "02-01-PLAN-CHECK.md",
+            "02-01-PLAN-REVIEW.md",
+            "02-REVIEW.md",
+            "02-CONTEXT.md",
+            "PLAN.txt",
+            "NOPLAN.md.bak",
+        ] {
+            assert!(!is_plan_artifact(name), "{name}");
+        }
+    }
+
+    #[test]
+    fn the_scan_flags_a_phase_with_a_plan_or_summary_file() {
+        let planned_with = |extra: &str| {
+            let dir = project();
+            let phase = dir.path().join(".planning/phases/01-alpha");
+            write(&phase.join("01-CONTEXT.md"), ONE);
+            if !extra.is_empty() {
+                write(&phase.join(extra), "x\n");
+            }
+            let files = scan_of(dir.path());
+            assert_eq!(files.len(), 1, "{extra}");
+            files[0].phase_planned
+        };
+        assert!(planned_with("01-01-PLAN.md"));
+        assert!(planned_with("01-01-SUMMARY.md"));
+        assert!(planned_with("PLAN.md"));
+        assert!(planned_with("SUMMARY.md"));
+        assert!(!planned_with(""));
+        assert!(!planned_with("01-01-PLAN-CHECK.md"));
+        assert!(!planned_with("01-REVIEW.md"));
+    }
+
+    #[test]
+    fn a_directory_named_like_a_plan_does_not_mark_the_phase_planned() {
+        let dir = project();
+        let phase = dir.path().join(".planning/phases/01-alpha");
+        write(&phase.join("01-CONTEXT.md"), ONE);
+        std::fs::create_dir_all(phase.join("01-01-PLAN.md")).unwrap();
+        let files = scan_of(dir.path());
+        assert!(!files[0].phase_planned);
     }
 
     #[test]

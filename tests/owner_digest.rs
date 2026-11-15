@@ -599,6 +599,44 @@ fn context_questions_fill_decide() {
     assert!(text.contains("3 open questions in 02-CONTEXT.md"), "{text}");
 }
 
+#[test]
+fn a_planned_phase_hides_its_open_questions() {
+    let (_g, e) = entry_of("context-planned", "plan");
+    let d = &e.digest;
+    // Phase 02 (3 questions) and the archived phase 00 (1) have plans: counted, not listed.
+    assert_eq!(d.hidden.planned_questions, 4);
+    assert_eq!((d.decide, d.archived.decide), (2, 0));
+    // Phase 02 is built, and its questions no longer gate the milestone.
+    assert_eq!(d.closes_after.decide, 0);
+
+    let doc = build_document(std::slice::from_ref(&e), &include_all());
+    let files: Vec<&str> = groups(&doc)
+        .iter()
+        .filter(|g| g["kind"] == "context_questions")
+        .map(|g| g["file"].as_str().unwrap())
+        .collect();
+    assert_eq!(files.len(), 1, "{files:?}");
+    assert!(files[0].ends_with("phases/03-bravo/03-CONTEXT.md"));
+    assert_eq!(doc["summary"]["planned_questions"], 4);
+    assert_eq!(doc["summary"]["decide"], 2);
+    assert_eq!(doc["summary"]["archived"]["decide"], 0);
+    assert_eq!(doc["projects"][0]["hidden"]["planned_questions"], 4);
+    assert_eq!(doc["schema_version"], 1);
+}
+
+#[test]
+fn a_summary_only_phase_counts_as_planned() {
+    let (_g, e) = entry_of("context-summary-only", "sum");
+    let d = &e.digest;
+    assert_eq!(d.hidden.planned_questions, 2);
+    assert_eq!(d.decide, 0);
+    let doc = build_document(std::slice::from_ref(&e), &include_all());
+    assert!(groups(&doc)
+        .iter()
+        .all(|g| g["kind"] != "context_questions"));
+    assert_eq!(doc["summary"]["planned_questions"], 2);
+}
+
 fn handoff_groups_of(doc: &Value) -> Vec<&Value> {
     groups(doc)
         .iter()

@@ -226,6 +226,7 @@ fn every_entry_group_and_item_carries_the_schema_v1_keys() {
             "archived",
             "deferred",
             "acknowledged_files",
+            "planned_questions",
             "superseded",
             "noise",
         ])
@@ -247,6 +248,7 @@ fn every_entry_group_and_item_carries_the_schema_v1_keys() {
     let hidden_keys = set(&[
         "deferred",
         "acknowledged_files",
+        "planned_questions",
         "todos",
         "noise",
         "todos_oldest_days",
@@ -316,6 +318,7 @@ fn every_entry_group_and_item_carries_the_schema_v1_keys() {
         serde_json::json!({
             "deferred": 0,
             "acknowledged_files": 0,
+            "planned_questions": 0,
             "todos": 0,
             "noise": 0,
             "todos_oldest_days": null,
@@ -647,6 +650,7 @@ const INBOX_PATHS: &[&str] = &[
     "summary.archived.decide",
     "summary.deferred",
     "summary.acknowledged_files",
+    "summary.planned_questions",
     "summary.superseded",
     "summary.noise",
     "projects",
@@ -697,6 +701,7 @@ const INBOX_PATHS: &[&str] = &[
     "projects[].hidden",
     "projects[].hidden.deferred",
     "projects[].hidden.acknowledged_files",
+    "projects[].hidden.planned_questions",
     "projects[].hidden.todos",
     "projects[].hidden.noise",
     "projects[].hidden.todos_oldest_days",

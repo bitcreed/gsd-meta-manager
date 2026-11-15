@@ -351,6 +351,9 @@ pub struct ContextFile {
     pub modified: Option<DateTime<Utc>>,
     pub acknowledged: bool,
     pub unreadable: Option<Unreadable>,
+    /// The phase directory holds a PLAN or SUMMARY file (Layer B input from the scan's
+    /// directory listing, never compared with the oracle; D-17).
+    pub phase_planned: bool,
 }
 
 /// Layer A for the open signals: what `audit-open` reports besides UAT files.
@@ -498,6 +501,9 @@ pub struct Hidden {
     pub todos_oldest_days: Option<i64>,
     /// Listing the pending todos failed (`todos` is then 0, not "clean").
     pub todos_unreadable: bool,
+    /// CONTEXT open questions of phases that already have a PLAN or SUMMARY file
+    /// (D-17): counted, never listed.
+    pub planned_questions: usize,
 }
 
 /// Item counts of archived groups.

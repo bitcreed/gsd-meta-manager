@@ -609,7 +609,7 @@ Schema version 1:
   "summary": {
     "projects": 2, "test": 3, "decide": 0, "fix_phases": 1, "fix_debug": 0, "blocked": 1, "closeable_phases": 1,
     "archived": {"test": 0, "blocked": 0, "fix": 0, "decide": 0},
-    "deferred": 0, "acknowledged_files": 0, "superseded": 0, "noise": 0
+    "deferred": 0, "acknowledged_files": 0, "planned_questions": 0, "superseded": 0, "noise": 0
   },
   "projects": [
     {
@@ -653,7 +653,7 @@ Schema version 1:
           ]
         }
       ],
-      "hidden": {"deferred": 0, "acknowledged_files": 0, "todos": 1, "noise": 0, "todos_oldest_days": 0, "todos_unreadable": false},
+      "hidden": {"deferred": 0, "acknowledged_files": 0, "planned_questions": 0, "todos": 1, "noise": 0, "todos_oldest_days": 0, "todos_unreadable": false},
       "todos": [{"file": "2026-01-01-first.md", "title": "First todo"}]
     },
     {
@@ -663,7 +663,7 @@ Schema version 1:
       "error": {"kind": "unresolved", "message": "gone-app is neither a directory containing .planning/ nor a registered project"},
       "milestone": null,
       "groups": [],
-      "hidden": {"deferred": 0, "acknowledged_files": 0, "todos": 0, "noise": 0, "todos_oldest_days": null, "todos_unreadable": false},
+      "hidden": {"deferred": 0, "acknowledged_files": 0, "planned_questions": 0, "todos": 0, "noise": 0, "todos_oldest_days": null, "todos_unreadable": false},
       "todos": []
     }
   ]
@@ -689,6 +689,7 @@ Schema version 1:
 | `summary.archived.decide` | integer | archived open CONTEXT questions |
 | `summary.deferred` | integer | items in `deferred-items.md` files |
 | `summary.acknowledged_files` | integer | files hidden because the owner acknowledged them: UAT and VERIFICATION files, debug sessions and CONTEXT files |
+| `summary.planned_questions` | integer | CONTEXT open questions of phases that already have plans; counted, never listed |
 | `summary.superseded` | integer | raw items dropped because a UAT replaces their VERIFICATION file |
 | `summary.noise` | integer | items with an unknown result in a finished file, dropped as not owner work |
 | `projects` | array | registry order, or the order named |
@@ -746,6 +747,7 @@ Schema version 1:
 | `projects[].hidden` | object | what the lists leave out, always the full counts |
 | `projects[].hidden.deferred` | integer | deferred items |
 | `projects[].hidden.acknowledged_files` | integer | acknowledged UAT and VERIFICATION files, debug sessions and CONTEXT files |
+| `projects[].hidden.planned_questions` | integer | CONTEXT open questions of phases that already have plans; counted, never listed |
 | `projects[].hidden.todos` | integer | pending todos (at most 200), listed or not; 0 when the pending folder could not be read |
 | `projects[].hidden.noise` | integer | items with an unknown result in a finished file |
 | `projects[].hidden.todos_oldest_days` | integer or null | whole days since the oldest pending todo's `created:` value, else its file time; null without todos |
