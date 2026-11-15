@@ -139,3 +139,18 @@ Not applicable: `shadcn_initialized: false`, ratatui widgets only, no third-part
 - `src/ui/screens/detail.rs` (`owner_block_footer_spans`)
 - `src/archive.rs` (`render_markdown_lines`, viewer rendering)
 - Snapshots: `phase37-screens.txt` (100x40 and 140x40: default, after `a`, `A` popup, help) and `phase36-screens.txt` (dashboard and Owner block, frozen)
+
+---
+
+## Fixes applied
+
+Applied after the audit; each is one `fix(37)` commit with its tests (the legibility test uses a synthetic real-shaped fleet: long alias, 30 workstream and decimal-phase rows, long titles; no real project text).
+
+1. **Phase identity (Top fix 1, test gap 8).** `grid_for_inbox` now narrows the alias (to 10, then 8) and the name (to 16, then 12, then 8) before the phase cell, and floors the phase cell at its phase text plus a trimmed workstream name (12, 8, 4, 2 cells kept in turn; 5 only as a last resort). `RowCells::phase_cell_floor` is additive; `phase_cell` and the Owner block are untouched. **Deviation from the UI-SPEC narrowing contract (D-04: phrase, then phase, then alias, then name):** the contract shrank the phase cell to 5 first, which is what removed the phase number on a real fleet; the order is now phrase, alias, name, phase. `grid_for_inbox_matches_the_ui_spec_table` changed one value (60 columns: phase cell 7, not 5). The phrase column is still sized over every lane (no reflow on a lane switch), so the empty phrase column and the Age width are unchanged; phrase still gives way first, down to 12.
+2. **Help (Top fix 2).** Owner rows wider than 76 cells (the Owner Work and Owner Inbox sections, plus rows that document the Owner block or the inbox) are hand-wrapped with an empty-key hanging indent (`wrapped_row`); other sections keep their authored rows. `?` from the inbox opens `HelpScreen::at_section("Owner Inbox")`.
+3. **`A` popup (Top fix 3).** Label and value share a row; paths and the argv break at `/` and spaces under a hanging indent (11 cells for fields, 2 for the argv); the argv is drawn in normal weight, not DIM. The argv content is unchanged.
+4. **`o` viewer (Top fix 4).** Lines wrap at the inner width (word break, style kept; the 1 MiB and line caps stay), and a footer row shows `[Esc]back  [j/k]scroll  [PgUp/PgDn]page  [Home/End]` (laddered by width) with `first-last of total`. Page size is now the body height minus one.
+5. **IN-02 (37-REVIEW-FIX).** The `v` launch runs `env -u VAR ... claude <cmd>` for every `ACK_ENV_REMOVE` variable, for the multiplexer and GUI-terminal backends (argv pin tests updated; the README does not document the argv).
+6. **Status lifetime (Top fix 7), the acknowledge outcome only.** The line is stamped 9 s ahead, so it lives 12 s; other messages keep 3 s. A persistent-until-key policy was not added.
+
+Not changed (human UAT items): default lane ordering (D-02), the frozen Owner block footer (fix 6) and lane counts (fix 5).
