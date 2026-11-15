@@ -14,6 +14,7 @@ pub mod normal;
 pub mod oneoff;
 pub mod oneoff_viewer;
 pub mod owner;
+pub mod owner_block;
 pub mod preferences;
 pub mod queue_delete_confirm;
 

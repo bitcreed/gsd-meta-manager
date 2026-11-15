@@ -1,6 +1,7 @@
 use super::driver_confirm::{DriverAction, DriverConfirmScreen};
 use super::enqueue::EnqueueScreen;
 use super::help::HelpScreen;
+use super::owner_block;
 use super::queue_delete_confirm::QueueDeleteConfirmScreen;
 use super::{AppContext, Screen, ScreenAction};
 use crate::action::Action;
@@ -78,7 +79,7 @@ pub(super) const PAGE_SCROLL_LINES: u16 = 20;
 /// on the CARRIER ([`crate::text::Untrusted`]) rather than on the escape helper.
 /// A `GitLogEntry` field reaches a cell through `entry.field.shown()` and never
 /// through here.
-fn shown(value: &str) -> String {
+pub(super) fn shown(value: &str) -> String {
     crate::text::render_for_terminal(value).to_string()
 }
 
@@ -7453,7 +7454,34 @@ impl DetailScreen {
         }
     }
 
+    /// The Phases tab: the Owner block (36-03, D5) above the phase list and
+    /// pipeline split, which keeps the remaining area. The block draws only from
+    /// `ctx.owner_digests` (memory), takes zero rows when it has nothing to show,
+    /// the tab is short, or a focused Waves pane owns the whole tab.
     fn render_pipeline_tab(&self, frame: &mut Frame, area: Rect, ctx: &AppContext) {
+        if let (Some(state), Some(digest)) = (
+            ctx.project_states.get(&self.alias),
+            ctx.owner_digests.get(&self.alias),
+        ) {
+            let model = owner_block::block_model(&self.alias, &state.milestone, digest, area.width);
+            let mut height = owner_block::block_height(&model, area.height);
+            if self.focus == DetailFocus::Pane
+                && area.width < roadmap_view::ROADMAP_SIDE_BY_SIDE_MIN_COLS
+            {
+                height = 0;
+            }
+            if height > 0 {
+                let parts =
+                    Layout::vertical([Constraint::Length(height), Constraint::Min(0)]).split(area);
+                owner_block::render_owner_block(frame, parts[0], &model, 0);
+                self.render_phases_body(frame, parts[1], ctx);
+                return;
+            }
+        }
+        self.render_phases_body(frame, area, ctx);
+    }
+
+    fn render_phases_body(&self, frame: &mut Frame, area: Rect, ctx: &AppContext) {
         let alias = &self.alias;
         let state = ctx.project_states.get(alias);
         let cache = ctx.view_cache.get(alias);
@@ -9303,7 +9331,7 @@ fn substage_table(inf: &DiskInference) -> [(&'static str, bool, u8); 16] {
 
 /// `spans` cut to at most `cols` cells, the cut marked with `…` in the style of
 /// the span it fell in — [`fit_cells`] for a styled line.
-fn fit_spans(spans: Vec<Span<'static>>, cols: usize) -> Line<'static> {
+pub(super) fn fit_spans(spans: Vec<Span<'static>>, cols: usize) -> Line<'static> {
     let line = Line::from(spans);
     if line.width() <= cols {
         return line;
@@ -35534,6 +35562,322 @@ mod tests {
                 .agents_selected = agent_line_index(&view, index);
             screen.agents_enter(&mut ctx);
             assert_eq!(opened(&ctx), want, "from {path}");
+        }
+    }
+
+    // ── Owner block on the Phases tab (36-03) ───────────────────────────────
+
+    /// `waves_ctx` with two phases and `milestone` set, parked on Phases.
+    fn owner_ctx(digest: Option<crate::state_reader::owner_items::OwnerDigest>) -> AppContext {
+        let a = waves_inference(&[("1-01", None, Some(1))], &[]);
+        let b = waves_inference(&[("2-01", None, Some(1))], &[]);
+        let mut ctx = waves_ctx(vec![("1", "One", a), ("2", "Two", b)], "1");
+        ctx.project_states
+            .get_mut(TEST_ALIAS)
+            .expect("state")
+            .milestone = "v2.2".to_string();
+        if let Some(digest) = digest {
+            ctx.owner_digests.insert(TEST_ALIAS.to_string(), digest);
+        }
+        ctx
+    }
+
+    /// Draw only the Phases tab into a `width`x`height` backend, one line per row.
+    fn render_phases_at(
+        screen: &DetailScreen,
+        ctx: &AppContext,
+        width: u16,
+        height: u16,
+    ) -> Vec<String> {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("backend");
+        terminal
+            .draw(|frame| screen.render_pipeline_tab(frame, frame.area(), ctx))
+            .expect("draw the Phases tab");
+        let buffer = terminal.backend().buffer().clone();
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buffer.cell((x, y)).map_or(" ", |c| c.symbol()).to_string())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    fn sample() -> crate::state_reader::owner_items::OwnerDigest {
+        super::owner_block::sample_owner_digest()
+    }
+
+    #[test]
+    fn an_empty_or_missing_digest_leaves_the_phases_tab_unchanged() {
+        let screen = DetailScreen::new(TEST_ALIAS.to_string());
+        let none = owner_ctx(None);
+        let empty = owner_ctx(Some(
+            crate::state_reader::owner_items::OwnerDigest::default(),
+        ));
+        for (w, h) in [(80, 24), (120, 30), (140, 40)] {
+            assert_eq!(
+                render_phases_at(&screen, &none, w, h),
+                render_phases_at(&screen, &empty, w, h),
+                "{w}x{h}"
+            );
+            assert!(!render_phases_at(&screen, &none, w, h)
+                .join("\n")
+                .contains("Owner"));
+        }
+        // Only acknowledged, archived-zero and Deferred groups with no todos: nothing.
+        let mut quiet = sample();
+        quiet.groups.retain(|g| {
+            g.acknowledged || g.lane == crate::state_reader::owner_items::Lane::Deferred
+        });
+        quiet.groups.retain(|g| !g.acknowledged);
+        quiet.archived = Default::default();
+        quiet.hidden = Default::default();
+        let quiet = owner_ctx(Some(quiet));
+        assert_eq!(
+            render_phases_at(&screen, &none, 120, 30),
+            render_phases_at(&screen, &quiet, 120, 30)
+        );
+    }
+
+    #[test]
+    fn the_owner_block_hides_below_twelve_tab_rows() {
+        let screen = DetailScreen::new(TEST_ALIAS.to_string());
+        let ctx = owner_ctx(Some(sample()));
+        let none = owner_ctx(None);
+        let short = render_phases_at(&screen, &ctx, 120, 11);
+        assert_eq!(short, render_phases_at(&screen, &none, 120, 11));
+        let tall = render_phases_at(&screen, &ctx, 120, 12);
+        assert!(tall[0].starts_with("Owner "), "{}", tall[0]);
+        // The cap at 12 rows is 4: header, two body rows, the fold line.
+        assert!(tall[3].contains("Old debt"), "{tall:#?}");
+        assert!(tall[4].contains("Phases"), "{tall:#?}");
+    }
+
+    #[test]
+    fn the_owner_block_draws_above_no_phases_found() {
+        let screen = DetailScreen::new(TEST_ALIAS.to_string());
+        let mut ctx = test_ctx();
+        ctx.project_states.insert(
+            TEST_ALIAS.to_string(),
+            crate::state_reader::ProjectState::default(),
+        );
+        ctx.owner_digests.insert(TEST_ALIAS.to_string(), sample());
+        let rows = render_phases_at(&screen, &ctx, 120, 30);
+        assert!(rows[0].starts_with("Owner "), "{}", rows[0]);
+        let found = rows
+            .iter()
+            .position(|r| r.contains("No phases found"))
+            .expect("No phases found");
+        assert!(found > 1, "{rows:#?}");
+    }
+
+    #[test]
+    fn the_full_tab_waves_pane_hides_the_owner_block() {
+        let mut ctx = tracer_ctx();
+        ctx.owner_digests.insert(TEST_ALIAS.to_string(), sample());
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        assert!(render_detail_to_text_at(&screen, &ctx, 80, 24).contains("Owner "));
+        press(&mut screen, &mut ctx, KeyCode::Right);
+        assert_eq!(screen.focus, DetailFocus::Pane);
+        let text = render_detail_to_text_at(&screen, &ctx, 80, 24);
+        assert!(!text.contains("Owner "), "{text}");
+        assert!(text.contains("Waves"), "{text}");
+    }
+
+    #[test]
+    fn sc4_the_owner_block_heads_the_phases_tab_at_120x30() {
+        let screen = DetailScreen::new(TEST_ALIAS.to_string());
+        let ctx = owner_ctx(Some(sample()));
+        let text = render_detail_to_text_at(&screen, &ctx, 120, 30);
+        let lines: Vec<&str> = text.lines().collect();
+        let header = lines
+            .iter()
+            .position(|l| l.contains("Owner "))
+            .expect("header");
+        assert!(
+            lines[header].contains("sample") || lines[header].contains("proj"),
+            "{text}"
+        );
+        assert!(
+            lines[header].contains("v2.2 closes after: test 12"),
+            "{text}"
+        );
+        let block = &lines[header..];
+        let row = |needle: &str| {
+            block
+                .iter()
+                .find(|l| l.contains(needle))
+                .copied()
+                .unwrap_or_else(|| panic!("{needle}: {text}"))
+        };
+        let closes = row("clock-faces");
+        assert!(
+            closes.contains("TEST")
+                && closes.contains("6 checks")
+                && closes.contains("closes phase"),
+            "{closes}"
+        );
+        assert!(closes.contains("/gsd-verify-work 24"), "{closes}");
+        assert!(row("+ fix 1").contains("first-unlock"));
+        assert!(row("all checks passed, run /gsd-verify-work 22 to finalize").contains("TEST"));
+        assert!(row("awaiting your confirmation").contains("/gsd-debug"));
+        assert!(row("ws v14 handoff").contains("/gsd-resume-work --ws v14"));
+        assert!(row("1 failed check, 1 gap").contains("/gsd-plan-phase 25 --gaps"));
+        assert!(row("2 device \u{b7} 1 third party \u{b7} 1 other").contains("BLOCKED"));
+        let fold = row("Old debt (6)");
+        assert!(
+            fold.contains("Acknowledged (8 files)") && fold.contains("Todos 11 (oldest 96 d)"),
+            "{fold}"
+        );
+        // The phase list still renders below the block.
+        assert!(block.iter().any(|l| l.contains("Phases")), "{text}");
+        assert!(text.contains("One") && text.contains("Two"), "{text}");
+    }
+
+    #[test]
+    fn the_owner_block_row_grid_drops_command_then_age() {
+        let screen = DetailScreen::new(TEST_ALIAS.to_string());
+        let ctx = owner_ctx(Some(sample()));
+        let row_at = |w: u16, h: u16| {
+            render_phases_at(&screen, &ctx, w, h)
+                .into_iter()
+                .find(|l| l.contains("clock-faces"))
+                .expect("the ph 24 row")
+        };
+        let w100 = row_at(100, 30);
+        assert!(
+            w100.contains("/gsd-ve") && w100.contains("2 d"),
+            "the command is kept (cut to the room left): {w100}"
+        );
+        for (w, h) in [(99, 30), (80, 24)] {
+            let row = row_at(w, h);
+            assert!(!row.contains("/gsd-verify-work"), "{w}: {row}");
+            assert!(row.contains("2 d"), "{w}: {row}");
+        }
+        let w79 = row_at(79, 30);
+        assert!(
+            !w79.contains("/gsd-verify-work") && !w79.contains("2 d"),
+            "{w79}"
+        );
+        assert!(
+            w79.contains("closes phase") && w79.contains("clock-faces"),
+            "{w79}"
+        );
+        assert!(
+            !w79.contains('\u{2026}'),
+            "the name ends in an ellipsis only after both are gone: {w79}"
+        );
+        // A long name is cut only once the command and the age are gone.
+        let mut long = sample();
+        for g in &mut long.groups {
+            if g.phase == "24" {
+                g.phase_name = "n".repeat(80);
+            }
+        }
+        let ctx = owner_ctx(Some(long));
+        let cut = |w: u16| {
+            render_phases_at(&screen, &ctx, w, 30)
+                .into_iter()
+                .find(|l| l.contains("nnnn"))
+                .expect("the long-name row")
+        };
+        assert!(cut(79).contains('\u{2026}'));
+        assert!(!cut(79).contains("2 d"));
+    }
+
+    #[test]
+    fn a_fold_only_block_has_no_body() {
+        let screen = DetailScreen::new(TEST_ALIAS.to_string());
+        let mut digest = crate::state_reader::owner_items::OwnerDigest::default();
+        digest.hidden.todos = 4;
+        digest.hidden.todos_oldest_days = Some(9);
+        let ctx = owner_ctx(Some(digest));
+        let rows = render_phases_at(&screen, &ctx, 120, 30);
+        assert!(rows[0].starts_with("Owner "), "{}", rows[0]);
+        assert!(rows[1].contains("Todos 4 (oldest 9 d)"), "{}", rows[1]);
+        assert!(rows[2].contains("Phases"), "{}", rows[2]);
+    }
+
+    #[test]
+    fn a_clipped_block_shows_its_row_range() {
+        let screen = DetailScreen::new(TEST_ALIAS.to_string());
+        let ctx = owner_ctx(Some(sample()));
+        // 16 tab rows: the cap is 6, so 4 of the 8 body rows fit.
+        let rows = render_phases_at(&screen, &ctx, 120, 16);
+        assert!(rows[0].trim_end().ends_with(" 1-4 of 8"), "{}", rows[0]);
+        assert!(
+            rows[5].contains("Old debt"),
+            "the fold line stays pinned: {rows:#?}"
+        );
+        assert!(rows[1].contains("TEST"), "{rows:#?}");
+        // Nothing is clipped on a tall tab: no hint.
+        let tall = render_phases_at(&screen, &ctx, 120, 40);
+        assert!(!tall[0].contains(" of 8"), "{}", tall[0]);
+    }
+
+    #[test]
+    fn a_click_in_the_owner_block_selects_no_phase() {
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        let mut ctx = owner_ctx(Some(sample()));
+        let text = render_detail_to_text_at(&screen, &ctx, 120, 30);
+        let before = ctx
+            .view_cache
+            .get(TEST_ALIAS)
+            .map_or(0, |c| c.pipeline_selected);
+        let header = text
+            .lines()
+            .position(|l| l.contains("Owner "))
+            .expect("header");
+        for offset in 0..4u16 {
+            let row = u16::try_from(header).expect("row") + offset;
+            let _ = screen.handle_mouse(
+                MouseInput::Click {
+                    column: 10,
+                    row,
+                    double: false,
+                },
+                &mut ctx,
+            );
+            assert_eq!(
+                ctx.view_cache
+                    .get(TEST_ALIAS)
+                    .map_or(0, |c| c.pipeline_selected),
+                before,
+                "row {row}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_long_text_digest_stays_inside_the_block() {
+        let screen = DetailScreen::new(TEST_ALIAS.to_string());
+        let long = format!("{}\u{1b}[31m", "z".repeat(300));
+        let mut digest = sample();
+        for g in &mut digest.groups {
+            g.phase_name = long.clone();
+            g.phase = long.clone();
+            g.command = Some(long.clone());
+            if let crate::state_reader::owner_items::Scope::Archived { label, .. } = &mut g.scope {
+                *label = long.clone();
+            }
+        }
+        digest.closes_after.lane_phases.test = vec![long.clone(); 3];
+        digest.closes_after.not_built = vec![long.clone()];
+        let ctx = owner_ctx(Some(digest.clone()));
+        for w in [80u16, 120] {
+            let rows = render_phases_at(&screen, &ctx, w, 30);
+            let joined = rows.join("\n");
+            assert!(
+                joined.chars().all(|c| c == '\n' || !c.is_control()),
+                "no raw control on screen at {w}"
+            );
+            let model = super::owner_block::block_model(TEST_ALIAS, "v2.2", &digest, w);
+            for line in model.body.iter().chain(model.fold_line.iter()) {
+                assert!(line.width() <= usize::from(w), "{w}");
+            }
+            assert!(rows[0].starts_with("Owner "));
         }
     }
 }

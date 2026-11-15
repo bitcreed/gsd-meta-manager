@@ -252,12 +252,12 @@ fn phase_key(phase: &str) -> (u64, String) {
     (digits.parse().unwrap_or(u64::MAX), phase.to_string())
 }
 
-fn plural(count: usize, one: &str, many: &str) -> String {
+pub(crate) fn plural(count: usize, one: &str, many: &str) -> String {
     format!("{count} {}", if count == 1 { one } else { many })
 }
 
 /// `2 device · 1 third party`: the blocked items by what they wait for.
-fn blocked_tally(group: &OwnerGroup) -> String {
+pub(crate) fn blocked_tally(group: &OwnerGroup) -> String {
     const ORDER: [(Category, &str); 5] = [
         (Category::ServerBlocked, "server"),
         (Category::DeviceNeeded, "device"),
@@ -287,7 +287,7 @@ fn blocked_tally(group: &OwnerGroup) -> String {
     parts.join(" · ")
 }
 
-fn detail(group: &OwnerGroup) -> String {
+pub(crate) fn detail(group: &OwnerGroup) -> String {
     if group.bookkeeping_only {
         let command = group
             .command
@@ -487,6 +487,68 @@ fn phase_list(phases: &[String]) -> String {
         .join(" ")
 }
 
+/// How much of a `closes after` clause list to build.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ClauseForm {
+    /// Every phase listed.
+    Full,
+    /// At most this many phases per list, then ` …`.
+    PhasesCapped(usize),
+    /// Counts only, no phase lists.
+    CountsOnly,
+}
+
+/// The `closes after` clauses of one project: the lane clauses (`test 12 (ph 21 22)`)
+/// and the separate not-built clause (`not built ph 26`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct ClosesAfterClauses {
+    pub lanes: Vec<String>,
+    pub not_built: Option<String>,
+}
+
+/// The shared wording of the R8 gate (CLI line and the Owner block header): lanes in
+/// the order test, decide, unblock, fix, zero lanes omitted; `no owner work` when all
+/// four are zero and phases are open; `not built ph …` for unbuilt phases. Each phase
+/// string is escaped and capped on its own.
+pub(crate) fn closes_after_clauses(gate: &ClosesAfter, form: ClauseForm) -> ClosesAfterClauses {
+    let phases = |list: &[String]| -> String {
+        match form {
+            ClauseForm::Full | ClauseForm::CountsOnly => phase_list(list),
+            ClauseForm::PhasesCapped(cap) if list.len() > cap => {
+                format!("{} \u{2026}", phase_list(&list[..cap]))
+            }
+            ClauseForm::PhasesCapped(_) => phase_list(list),
+        }
+    };
+    let with_phases = |head: String, list: &[String]| -> String {
+        if form == ClauseForm::CountsOnly {
+            head
+        } else {
+            format!("{head} (ph {})", phases(list))
+        }
+    };
+    let lanes = [
+        ("test", gate.test, &gate.lane_phases.test),
+        ("decide", gate.decide, &gate.lane_phases.decide),
+        ("unblock", gate.blocked, &gate.lane_phases.blocked),
+        ("fix", gate.fix, &gate.lane_phases.fix),
+    ];
+    let mut out: Vec<String> = lanes
+        .iter()
+        .filter(|(_, count, _)| *count > 0)
+        .map(|(label, count, list)| with_phases(format!("{label} {count}"), list))
+        .collect();
+    if out.is_empty() && !gate.phases_open.is_empty() {
+        out.push(with_phases("no owner work".to_owned(), &gate.phases_open));
+    }
+    let not_built =
+        (!gate.not_built.is_empty()).then(|| format!("not built ph {}", phases(&gate.not_built)));
+    ClosesAfterClauses {
+        lanes: out,
+        not_built,
+    }
+}
+
 /// One `closes after:` line per project with open or not-built current-milestone
 /// phases (D-13, §3.2): the lanes that hold work, each with its phases.
 ///
@@ -501,28 +563,9 @@ fn push_closes_after(out: &mut Vec<String>, read: &[&ProjectEntry]) {
             if gate.phases_open.is_empty() && gate.not_built.is_empty() {
                 return None;
             }
-            let lanes = [
-                ("test", gate.test, &gate.lane_phases.test),
-                ("decide", gate.decide, &gate.lane_phases.decide),
-                ("unblock", gate.blocked, &gate.lane_phases.blocked),
-                ("fix", gate.fix, &gate.lane_phases.fix),
-            ];
-            let mut parts: Vec<String> = lanes
-                .iter()
-                .filter(|(_, count, _)| *count > 0)
-                .map(|(label, count, phases)| {
-                    format!("{label} {count} (ph {})", phase_list(phases))
-                })
-                .collect();
-            if parts.is_empty() && !gate.phases_open.is_empty() {
-                parts.push(format!(
-                    "no owner work (ph {})",
-                    phase_list(&gate.phases_open)
-                ));
-            }
-            if !gate.not_built.is_empty() {
-                parts.push(format!("not built ph {}", phase_list(&gate.not_built)));
-            }
+            let clauses = closes_after_clauses(gate, ClauseForm::Full);
+            let mut parts = clauses.lanes;
+            parts.extend(clauses.not_built);
             let version = entry
                 .milestone_version
                 .as_deref()
@@ -785,6 +828,56 @@ mod tests {
         assert_eq!(doc["summary"]["decide"], 0);
         assert_eq!(doc["summary"]["fix_debug"], 0);
         assert!(doc["projects"][0]["milestone"]["version"].is_null());
+    }
+
+    #[test]
+    fn closes_after_clauses_forms() {
+        use crate::state_reader::owner_items::LanePhases;
+        let ph = |list: &[&str]| list.iter().map(|p| (*p).to_owned()).collect::<Vec<_>>();
+        let gate = ClosesAfter {
+            test: 12,
+            decide: 0,
+            fix: 1,
+            blocked: 5,
+            phases_open: ph(&["20", "21"]),
+            not_built: ph(&["26"]),
+            lane_phases: LanePhases {
+                test: ph(&["21", "22", "24"]),
+                decide: Vec::new(),
+                fix: ph(&["25"]),
+                blocked: ph(&["20", "23"]),
+            },
+        };
+        let full = closes_after_clauses(&gate, ClauseForm::Full);
+        assert_eq!(
+            full.lanes,
+            [
+                "test 12 (ph 21 22 24)",
+                "unblock 5 (ph 20 23)",
+                "fix 1 (ph 25)"
+            ]
+        );
+        assert_eq!(full.not_built.as_deref(), Some("not built ph 26"));
+        let capped = closes_after_clauses(&gate, ClauseForm::PhasesCapped(2));
+        assert_eq!(capped.lanes[0], "test 12 (ph 21 22 \u{2026})");
+        assert_eq!(capped.lanes[2], "fix 1 (ph 25)");
+        let counts = closes_after_clauses(&gate, ClauseForm::CountsOnly);
+        assert_eq!(counts.lanes, ["test 12", "unblock 5", "fix 1"]);
+
+        let idle = ClosesAfter {
+            phases_open: ph(&["20", "21"]),
+            ..Default::default()
+        };
+        assert_eq!(
+            closes_after_clauses(&idle, ClauseForm::Full).lanes,
+            ["no owner work (ph 20 21)"]
+        );
+        assert_eq!(
+            closes_after_clauses(&idle, ClauseForm::CountsOnly).lanes,
+            ["no owner work"]
+        );
+        let none = closes_after_clauses(&ClosesAfter::default(), ClauseForm::Full);
+        assert!(none.lanes.is_empty() && none.not_built.is_none());
     }
 
     #[test]
