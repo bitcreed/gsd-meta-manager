@@ -181,6 +181,17 @@ pub enum Action {
         alias: String,
         marker: crate::ui::screens::driver_run::LauncherMarker,
     },
+    /// One project's owner digest, computed off the render thread without a
+    /// re-parse: the first fill at startup and after a registration (36 D-03).
+    ///
+    /// Sent by `AppContext::schedule_owner_digest`. The handler fills an alias
+    /// that is registered and has no digest yet; a digest delivered by
+    /// `ProjectStateLoaded` is always newer and is never replaced. Plain data, so
+    /// `Action` stays `Clone`.
+    OwnerDigestLoaded {
+        alias: String,
+        digest: Box<OwnerDigest>,
+    },
     /// The user confirmed stopping launcher run `run_id` of `alias` from the Driver
     /// tab (28-07, D-11).
     ///
@@ -492,6 +503,12 @@ mod tests {
             scanned.clone(),
             Action::LauncherMarkerScanned { .. }
         ));
+
+        let filled = Action::OwnerDigestLoaded {
+            alias: "proj".to_string(),
+            digest: Box::new(OwnerDigest::default()),
+        };
+        assert!(matches!(filled.clone(), Action::OwnerDigestLoaded { .. }));
 
         let steered = Action::DriverSteered {
             alias: "proj".to_string(),

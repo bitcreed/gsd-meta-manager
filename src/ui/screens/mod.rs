@@ -1869,6 +1869,39 @@ impl AppContext {
         self.schedule_selected_run_refresh(alias, &path, &run_id);
     }
 
+    /// Compute one project's owner digest on a blocking task and send it back as
+    /// [`Action::OwnerDigestLoaded`] (36 D-03, the first fill).
+    ///
+    /// Digest-only: it clones the state already parsed for `alias` and never calls
+    /// `parse_project_state`, so `reparse_dispatches` and the OBS-06 guarantee keep
+    /// their meaning. It is the only second dispatch site next to
+    /// `App::schedule_reparse`. Silent without an event channel or a stored state.
+    /// `pub` because `src/main.rs` is the binary crate.
+    pub fn schedule_owner_digest(&self, alias: &str, project_path: &std::path::Path) {
+        let Some(tx) = &self.event_tx else {
+            return;
+        };
+        let Some(state) = self.project_states.get(alias).cloned() else {
+            return;
+        };
+        let tx = tx.clone();
+        let alias = alias.to_string();
+        let planning_dir = project_path.join(".planning");
+        let stale_days = self.config.preferences.owner_stale_days();
+        tokio::task::spawn_blocking(move || {
+            let digest = crate::state_reader::owner_items::read_owner_digest(
+                &planning_dir,
+                &state,
+                chrono::Utc::now(),
+                stale_days,
+            );
+            let _ = tx.send(crate::action::Action::OwnerDigestLoaded {
+                alias,
+                digest: Box::new(digest),
+            });
+        });
+    }
+
     /// This alias's [`attention_rank`], from the state this context holds.
     ///
     /// **`driven_and_live` is gated here as well as in `row_badge`, and the

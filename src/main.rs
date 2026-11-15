@@ -537,6 +537,20 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
             // Store event_tx on App context so creation flow can send actions back
             app.ctx.event_tx = Some(event_bus.tx.clone());
 
+            // First fill of the owner digests (36 D-03): one blocking task per
+            // registered project, so the first frame paints its rows at once and
+            // the `You` cells fill as the results arrive. Nothing here blocks.
+            let registered: Vec<(String, std::path::PathBuf)> = app
+                .ctx
+                .config
+                .projects
+                .iter()
+                .map(|(alias, project)| (alias.clone(), project.path.clone()))
+                .collect();
+            for (alias, path) in &registered {
+                app.ctx.schedule_owner_digest(alias, path);
+            }
+
             // Initialize file watcher for all registered projects
             let mut watcher = FileWatcher::new(event_bus.tx.clone())?;
             for project in app.ctx.config.projects.values() {

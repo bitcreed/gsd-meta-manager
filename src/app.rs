@@ -2579,6 +2579,7 @@ impl App {
             let state = state_reader::parse_project_state(&planning_dir);
             self.ctx.change_tracker.record_initial(alias, &state);
             self.ctx.project_states.insert(alias.clone(), state);
+            self.ctx.schedule_owner_digest(alias, path);
 
             tracing::info!(
                 alias = %alias,
@@ -2983,6 +2984,7 @@ impl App {
                     // Load project state for the new alias
                     let state = state_reader::parse_project_state(&planning_dir);
                     self.ctx.project_states.insert(alias.clone(), state);
+                    self.ctx.schedule_owner_digest(&alias, &path);
 
                     self.ctx.status_message = Some((
                         format!("Created project \"{}\"", alias),
@@ -3567,6 +3569,19 @@ impl App {
             // A one-project marker scan landed (30-03, D-13). Only a registered alias
             // is accepted, so a scan answered after the project was removed leaves no
             // cache entry behind.
+            // The digest-only first fill (36 D-03). A registered alias without a
+            // digest takes it; one that has a digest keeps it, because a digest
+            // from the reparse task is always newer than a first-fill one
+            // (RESEARCH Pitfall 2). Never a status message.
+            Action::OwnerDigestLoaded { alias, digest } => {
+                if self.ctx.config.projects.contains_key(&alias)
+                    && !self.ctx.owner_digests.contains_key(&alias)
+                {
+                    self.ctx.owner_digests.insert(alias, *digest);
+                    self.ctx.recompute_filtered_aliases();
+                    self.needs_redraw = true;
+                }
+            }
             Action::LauncherMarkerScanned { alias, marker } => {
                 if self.ctx.experimental && self.ctx.config.projects.contains_key(&alias) {
                     let cache = self.ctx.view_cache.entry(alias).or_default();
@@ -5579,6 +5594,81 @@ mod tests {
         });
         let message = app.ctx.status_message.as_ref().map(|(m, _)| m.as_str());
         assert_eq!(message, Some("Updated: proj"));
+    }
+
+    /// The digest-only first fill arrives without a re-parse and without a message.
+    #[tokio::test]
+    async fn a_first_fill_digest_arrives_without_a_reparse() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path();
+        copy_owner_fixture("uat-pending", root);
+        let (mut app, mut rx) = obs_app(root);
+        app.ctx.project_states.insert(
+            OBS_ALIAS.to_string(),
+            state_reader::parse_project_state(&root.join(".planning")),
+        );
+
+        let before = app.ctx.reparse_dispatches;
+        app.ctx.schedule_owner_digest(OBS_ALIAS, root);
+        assert_eq!(
+            app.ctx.reparse_dispatches, before,
+            "no re-parse is scheduled"
+        );
+
+        let action = tokio::time::timeout(std::time::Duration::from_secs(10), rx.recv())
+            .await
+            .expect("an OwnerDigestLoaded within 10 s")
+            .expect("the channel stays open");
+        assert!(matches!(action, Action::OwnerDigestLoaded { .. }));
+        app.update(action);
+
+        assert!(app.ctx.owner_digests[OBS_ALIAS].test > 0);
+        assert!(app.ctx.status_message.is_none());
+        assert_eq!(app.ctx.reparse_dispatches, before);
+    }
+
+    /// RESEARCH Pitfall 2: a reparse digest is always newer than a first-fill one.
+    #[tokio::test]
+    async fn a_first_fill_never_replaces_a_reparse_digest() {
+        use crate::state_reader::owner_items::OwnerDigest;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, _rx) = obs_app(dir.path());
+        let d1 = OwnerDigest {
+            test: 1,
+            ..OwnerDigest::default()
+        };
+        let d2 = OwnerDigest {
+            test: 2,
+            ..OwnerDigest::default()
+        };
+        app.ctx
+            .owner_digests
+            .insert(OBS_ALIAS.to_string(), d1.clone());
+        app.update(Action::OwnerDigestLoaded {
+            alias: OBS_ALIAS.to_string(),
+            digest: Box::new(d2),
+        });
+        assert_eq!(app.ctx.owner_digests[OBS_ALIAS], d1);
+    }
+
+    #[tokio::test]
+    async fn a_first_fill_for_an_unregistered_alias_is_dropped() {
+        use crate::state_reader::owner_items::OwnerDigest;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, _rx) = obs_app(dir.path());
+        app.update(Action::OwnerDigestLoaded {
+            alias: "gone".to_string(),
+            digest: Box::new(OwnerDigest::default()),
+        });
+        assert!(!app.ctx.owner_digests.contains_key("gone"));
+        app.update(Action::OwnerDigestLoaded {
+            alias: OBS_ALIAS.to_string(),
+            digest: Box::new(OwnerDigest::default()),
+        });
+        assert!(
+            app.ctx.owner_digests.contains_key(OBS_ALIAS),
+            "the control arm: a registered alias is filled"
+        );
     }
 
     // ── The launcher rows and the sub-view ────────────────────────────────

@@ -204,6 +204,7 @@ fn do_add_project(ctx: &mut AppContext, alias: &str, path: &Path) {
             let planning_dir = canonical.join(".planning");
             let state = state_reader::parse_project_state(&planning_dir);
             ctx.project_states.insert(alias.to_string(), state);
+            ctx.schedule_owner_digest(alias, &canonical);
 
             ctx.status_message = Some((format!("Added \"{}\"", alias), std::time::Instant::now()));
             ctx.input_buffer.clear();
