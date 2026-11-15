@@ -72,6 +72,13 @@ pub enum FilterColumn {
     /// survives. `/h` alone (an empty term) is therefore "every project waiting
     /// on a human" with no special case in the grammar.
     NeedsHuman,
+    /// Rows with owner work (36 OWN-18, D-14), optionally in one lane.
+    ///
+    /// A predicate like [`FilterColumn::NeedsHuman`]: the term still matches
+    /// across every column and this narrows what survives, so `/y` alone is
+    /// "every project with owner work". `None` is any lane; `Some(lane)` keeps
+    /// rows whose count in that lane is above zero. `blocked` is not a lane.
+    OwnerWork(Option<crate::ui::screens::owner::OwnerLane>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -85,11 +92,29 @@ pub enum StatusCategory {
 
 /// Split a filter string into its term and the column or predicate it narrows.
 ///
-/// The suffix grammar is `term/x`. `h` joins `n`, `p` and `s` for "needs a
+/// The suffix grammar is `term/x`; `y` adds owner work and takes an optional
+/// lane (`/y test`, `/y decide`, `/y fix`, short `/yt /yd /yf`). `h` joins `n`, `p` and `s` for "needs a
 /// human" (OBS-07): the other three letters were taken and `h` is both free and
 /// mnemonic. On screen the search prompt supplies its own leading `/`, so the
 /// all-rows form renders as `//h` while the stored `filter_text` is `/h`.
 pub fn parse_filter(input: &str) -> (String, FilterColumn) {
+    use crate::ui::screens::owner::OwnerLane;
+    // `/y [lane]` (D-14): the long lane words and the short forms are matched
+    // before the bare `/y`. Any other word after `/y ` falls through to a plain
+    // term, so `//y bogus` matches nothing.
+    for (suffix, lane) in [
+        ("/y test", Some(OwnerLane::Test)),
+        ("/y decide", Some(OwnerLane::Decide)),
+        ("/y fix", Some(OwnerLane::Fix)),
+        ("/yt", Some(OwnerLane::Test)),
+        ("/yd", Some(OwnerLane::Decide)),
+        ("/yf", Some(OwnerLane::Fix)),
+        ("/y", None),
+    ] {
+        if let Some(term) = input.strip_suffix(suffix) {
+            return (term.to_string(), FilterColumn::OwnerWork(lane));
+        }
+    }
     if let Some(term) = input.strip_suffix("/p") {
         (term.to_string(), FilterColumn::Phase)
     } else if let Some(term) = input.strip_suffix("/n") {
@@ -5594,6 +5619,56 @@ mod tests {
         });
         let message = app.ctx.status_message.as_ref().map(|(m, _)| m.as_str());
         assert_eq!(message, Some("Updated: proj"));
+    }
+
+    /// D-02: under attention first, an unchanged state with a new digest that
+    /// carries owner work moves the project up, without an `Updated:` message.
+    #[tokio::test]
+    async fn a_digest_only_change_re_sorts_under_attention_first() {
+        use crate::config::RegisteredProject;
+        use crate::state_reader::owner_items::OwnerDigest;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, _rx) = obs_app(dir.path());
+        app.ctx.config.projects.insert(
+            "alpha".to_string(),
+            RegisteredProject {
+                path: dir.path().to_path_buf(),
+                added: "2026-07-29".to_string(),
+                driver_opt_in: None,
+                extra: Default::default(),
+            },
+        );
+        let state = crate::state_reader::ProjectState::default();
+        for alias in ["alpha", OBS_ALIAS] {
+            app.ctx
+                .project_states
+                .insert(alias.to_string(), state.clone());
+            app.ctx
+                .owner_digests
+                .insert(alias.to_string(), OwnerDigest::default());
+        }
+        app.ctx.sort_mode = crate::ui::screens::SortMode::AttentionFirst;
+        app.ctx.recompute_filtered_aliases();
+        assert_eq!(app.ctx.filtered_aliases, ["alpha", OBS_ALIAS]);
+        app.ctx.status_message = None;
+
+        app.update(Action::ProjectStateLoaded {
+            alias: OBS_ALIAS.to_string(),
+            state: Box::new(state),
+            digest: Box::new(OwnerDigest {
+                test: 1,
+                ..OwnerDigest::default()
+            }),
+        });
+        assert_eq!(
+            app.ctx.filtered_aliases,
+            [OBS_ALIAS, "alpha"],
+            "the digest alone moved the project to the owner-work rank"
+        );
+        assert!(
+            app.ctx.status_message.is_none(),
+            "no Updated: message for a digest-only change"
+        );
     }
 
     /// The digest-only first fill arrives without a re-parse and without a message.

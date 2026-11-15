@@ -1488,20 +1488,25 @@ pub(crate) fn state_has_attention_evidence(state: &ProjectState) -> bool {
 
 /// Where a project sorts under [`SortMode::AttentionFirst`]: lower is sooner.
 ///
-/// Three ranks and no more, because the sort is stable and alphabetical order is
+/// Four ranks and no more, because the sort is stable and alphabetical order is
 /// preserved within each: rank 0 is a project waiting on a human, rank 1 is one
-/// being driven right now, and rank 2 is everything else. Driven-and-live ranks
-/// **below** needs-a-human deliberately — a live run needs nothing from the
-/// user, while a parked one does.
+/// with owner work (decide, test or fix in the current milestone, 36 D-13),
+/// rank 2 is one being driven right now, and rank 3 is everything else.
+/// Driven-and-live ranks **below** needs-a-human deliberately — a live run needs
+/// nothing from the user, while a parked one does. Owner work ranks above a
+/// driven run because it is the user's own to-do list. The owner rank needs no
+/// experimental flag; the driven rank keeps its gate in `attention_rank_for`.
 ///
 /// Pure, so the ordering is testable without a dashboard.
-pub fn attention_rank(needs_human: bool, driven_and_live: bool) -> u8 {
+pub fn attention_rank(needs_human: bool, has_owner_work: bool, driven_and_live: bool) -> u8 {
     if needs_human {
         0
-    } else if driven_and_live {
+    } else if has_owner_work {
         1
-    } else {
+    } else if driven_and_live {
         2
+    } else {
+        3
     }
 }
 
@@ -1922,7 +1927,29 @@ impl AppContext {
                 .get(alias)
                 .and_then(|cache| cache.launcher_marker)
                 .is_some_and(|marker| marker.class == Some(driver_run::MarkerClass::Driven));
-        attention_rank(self.needs_attention_for(alias), driven_and_live)
+        let has_owner_work = self
+            .owner_digests
+            .get(alias)
+            .map(owner::owner_numbers)
+            .is_some_and(|n| owner::has_owner_work(&n));
+        attention_rank(
+            self.needs_attention_for(alias),
+            has_owner_work,
+            driven_and_live,
+        )
+    }
+
+    /// Whether `alias` passes the `/y [lane]` filter (D-14): no digest never
+    /// matches; no lane means any owner work; a lane means its count is above 0.
+    pub(crate) fn owner_work_matches(&self, alias: &str, lane: Option<owner::OwnerLane>) -> bool {
+        let Some(digest) = self.owner_digests.get(alias) else {
+            return false;
+        };
+        let numbers = owner::owner_numbers(digest);
+        match lane {
+            None => owner::has_owner_work(&numbers),
+            Some(lane) => owner::lane_count(&numbers, lane) > 0,
+        }
     }
 
     /// Get the alias of the currently selected project, if any.
@@ -2002,6 +2029,12 @@ impl AppContext {
                     // every alias, so `needs_human` alone decides (OBS-07).
                     FilterColumn::NeedsHuman => {
                         matches_any_column() && self.needs_attention_for(alias)
+                    }
+                    // Same shape: the term narrows across every column and the
+                    // owner-work predicate (optionally one lane) decides alone
+                    // when the term is empty (OWN-18).
+                    FilterColumn::OwnerWork(lane) => {
+                        matches_any_column() && self.owner_work_matches(alias, lane)
                     }
                 }
             })
@@ -2509,7 +2542,6 @@ mod tests {
     }
 
     /// Give `alias` an owner digest, as the reparse task would.
-    #[allow(dead_code)]
     pub(super) fn owe(
         ctx: &mut AppContext,
         alias: &str,
@@ -2929,13 +2961,191 @@ mod tests {
         );
 
         assert_eq!(
-            attention_rank(true, true),
+            attention_rank(true, false, true),
             0,
             "needs-a-human outranks driven-and-live: a live run needs nothing \
              from the user, a parked one does"
         );
-        assert_eq!(attention_rank(false, true), 1);
-        assert_eq!(attention_rank(false, false), 2);
+        assert_eq!(attention_rank(false, false, true), 2);
+        assert_eq!(attention_rank(false, false, false), 3);
+    }
+
+    use crate::state_reader::owner_items::{ArchivedCounts, OwnerDigest};
+
+    /// A counts-only digest for the owner-work tests.
+    fn digest(test: usize, decide: usize, fix_phases: usize, fix_debug: usize) -> OwnerDigest {
+        OwnerDigest {
+            test,
+            decide,
+            fix_phases,
+            fix_debug,
+            ..OwnerDigest::default()
+        }
+    }
+
+    #[test]
+    fn the_attention_rank_table_covers_every_combination() {
+        for driven in [false, true] {
+            for owner in [false, true] {
+                assert_eq!(attention_rank(true, owner, driven), 0, "{owner} {driven}");
+            }
+        }
+        assert_eq!(attention_rank(false, true, true), 1);
+        assert_eq!(attention_rank(false, true, false), 1);
+        assert_eq!(attention_rank(false, false, true), 2);
+        assert_eq!(attention_rank(false, false, false), 3);
+    }
+
+    #[test]
+    fn attention_first_puts_owner_work_between_humans_and_driven_runs() {
+        let mut ctx = ctx_with_aliases(&["alpha", "bravo", "charlie", "delta", "echo"]);
+        ctx.experimental = true;
+        pause(&mut ctx, "echo");
+        owe(&mut ctx, "delta", digest(1, 0, 0, 0));
+        owe(&mut ctx, "bravo", digest(0, 2, 0, 0));
+        drive(&mut ctx, "charlie");
+        ctx.sort_mode = SortMode::AttentionFirst;
+        assert_eq!(
+            ctx.sorted_aliases(),
+            vec!["echo", "bravo", "delta", "charlie", "alpha"],
+            "needs a human, then owner work, then driven, then the rest"
+        );
+        // Owner work plus driven ranks 1; needs a human plus owner work ranks 0.
+        drive(&mut ctx, "delta");
+        owe(&mut ctx, "echo", digest(4, 0, 0, 0));
+        assert_eq!(ctx.attention_rank_for("delta"), 1);
+        assert_eq!(ctx.attention_rank_for("echo"), 0);
+        assert_eq!(ctx.attention_rank_for("charlie"), 2);
+        assert_eq!(ctx.attention_rank_for("alpha"), 3);
+        // The owner rank does not depend on the experimental flag.
+        ctx.experimental = false;
+        assert_eq!(ctx.attention_rank_for("bravo"), 1);
+        assert_eq!(
+            ctx.attention_rank_for("charlie"),
+            3,
+            "the driven gate holds"
+        );
+    }
+
+    #[test]
+    fn blocked_and_archived_debt_alone_is_not_owner_work() {
+        let mut ctx = ctx_with_aliases(&["alpha", "bravo"]);
+        owe(
+            &mut ctx,
+            "alpha",
+            OwnerDigest {
+                blocked: 4,
+                archived: ArchivedCounts {
+                    test: 3,
+                    ..ArchivedCounts::default()
+                },
+                ..OwnerDigest::default()
+            },
+        );
+        assert_eq!(ctx.attention_rank_for("alpha"), 3);
+        drive(&mut ctx, "alpha");
+        ctx.experimental = true;
+        assert_eq!(ctx.attention_rank_for("alpha"), 2);
+        owe(
+            &mut ctx,
+            "alpha",
+            OwnerDigest {
+                blocked: 4,
+                archived: ArchivedCounts {
+                    test: 3,
+                    ..ArchivedCounts::default()
+                },
+                test: 1,
+                ..OwnerDigest::default()
+            },
+        );
+        assert_eq!(ctx.attention_rank_for("alpha"), 1);
+    }
+
+    #[test]
+    fn owner_work_ordering_is_stable_inside_a_rank() {
+        let mut ctx = ctx_with_aliases(&["delta", "alpha", "charlie", "bravo"]);
+        for alias in ["delta", "charlie", "alpha"] {
+            owe(&mut ctx, alias, digest(1, 0, 0, 0));
+        }
+        ctx.sort_mode = SortMode::AttentionFirst;
+        assert_eq!(
+            ctx.sorted_aliases(),
+            vec!["alpha", "charlie", "delta", "bravo"]
+        );
+    }
+
+    #[test]
+    fn an_empty_registry_sorts_and_filters_to_an_empty_list() {
+        let mut ctx = ctx_with_aliases(&[]);
+        ctx.sort_mode = SortMode::AttentionFirst;
+        ctx.filter_text = "/y".to_string();
+        ctx.recompute_filtered_aliases();
+        assert!(ctx.filtered_aliases.is_empty());
+        assert!(ctx.sorted_aliases().is_empty());
+    }
+
+    #[test]
+    fn the_owner_work_filter_parses_every_form() {
+        use crate::app::{parse_filter, FilterColumn};
+        use crate::ui::screens::owner::OwnerLane::{Decide, Fix, Test};
+        let f = |term: &str, lane| (term.to_string(), FilterColumn::OwnerWork(lane));
+        assert_eq!(parse_filter("api/y"), f("api", None));
+        assert_eq!(parse_filter("/y"), f("", None));
+        assert_eq!(parse_filter("/y test"), f("", Some(Test)));
+        assert_eq!(parse_filter("api/yt"), f("api", Some(Test)));
+        assert_eq!(parse_filter("/y decide"), f("", Some(Decide)));
+        assert_eq!(parse_filter("/yd"), f("", Some(Decide)));
+        assert_eq!(parse_filter("/y fix"), f("", Some(Fix)));
+        assert_eq!(parse_filter("/yf"), f("", Some(Fix)));
+        assert_eq!(
+            parse_filter("/y bogus"),
+            ("/y bogus".to_string(), FilterColumn::All)
+        );
+        assert_eq!(
+            parse_filter("/h"),
+            (String::new(), FilterColumn::NeedsHuman)
+        );
+        assert_eq!(parse_filter("x/n"), ("x".to_string(), FilterColumn::Name));
+        assert_eq!(parse_filter("x/p"), ("x".to_string(), FilterColumn::Phase));
+        assert_eq!(parse_filter("x/s"), ("x".to_string(), FilterColumn::Status));
+    }
+
+    #[test]
+    fn owner_work_filters_select_by_lane() {
+        let mut ctx = ctx_with_aliases(&["lime-debug", "maple", "nettle", "oak", "pine"]);
+        owe(&mut ctx, "lime-debug", digest(0, 0, 0, 2));
+        owe(&mut ctx, "maple", digest(3, 0, 1, 0));
+        owe(&mut ctx, "nettle", digest(0, 1, 0, 0));
+        owe(
+            &mut ctx,
+            "oak",
+            OwnerDigest {
+                blocked: 5,
+                ..OwnerDigest::default()
+            },
+        );
+        // `pine` has no digest and never matches.
+        for (filter, expected) in [
+            ("/y", vec!["lime-debug", "maple", "nettle"]),
+            ("/y test", vec!["maple"]),
+            ("/yt", vec!["maple"]),
+            ("/y decide", vec!["nettle"]),
+            ("/yd", vec!["nettle"]),
+            ("/y fix", vec!["lime-debug", "maple"]),
+            ("/yf", vec!["lime-debug", "maple"]),
+            ("lime/y", vec!["lime-debug"]),
+            ("/y bogus", vec![]),
+            ("/y blocked", vec![]),
+        ] {
+            ctx.filter_text = filter.to_string();
+            ctx.recompute_filtered_aliases();
+            assert_eq!(ctx.filtered_aliases, expected, "{filter:?}");
+        }
+        ctx.owner_digests.clear();
+        ctx.filter_text = "/y".to_string();
+        ctx.recompute_filtered_aliases();
+        assert!(ctx.filtered_aliases.is_empty(), "no digests, no match");
     }
 
     #[test]

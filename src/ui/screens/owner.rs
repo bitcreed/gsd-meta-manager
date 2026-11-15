@@ -167,6 +167,26 @@ pub(crate) fn you_cell_line(numbers: Option<&OwnerNumbers>, cells: u16) -> Line<
     ))
 }
 
+/// One lane of the `/y [lane]` filter (D-14).
+///
+/// A closed three-variant enum rather than `owner_items::Lane`, so a
+/// `/y blocked` filter cannot be represented: blocked work is not the owner's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OwnerLane {
+    Test,
+    Decide,
+    Fix,
+}
+
+/// The count one lane holds for a project (Fix is `fix_phases + fix_debug`).
+pub(crate) fn lane_count(numbers: &OwnerNumbers, lane: OwnerLane) -> usize {
+    match lane {
+        OwnerLane::Test => numbers.test,
+        OwnerLane::Decide => numbers.decide,
+        OwnerLane::Fix => numbers.fix,
+    }
+}
+
 /// The fleet totals over the visible rows (D-11): the same numbers the `You`
 /// cell shows, summed, so the summary line can never disagree with the table.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -712,7 +732,11 @@ mod tests {
     }
 
     #[test]
-    fn the_hint_is_nine_cells() {
+    fn lanes_and_hint() {
+        let n = numbers(1, 2, 3, true, 0);
+        assert_eq!(lane_count(&n, OwnerLane::Decide), 1);
+        assert_eq!(lane_count(&n, OwnerLane::Test), 2);
+        assert_eq!(lane_count(&n, OwnerLane::Fix), 3);
         let hint: String = summary_right_spans()
             .iter()
             .map(|s| s.content.as_ref())

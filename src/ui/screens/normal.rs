@@ -2879,7 +2879,7 @@ mod tests {
     fn summary_totals_equal_the_sum_of_the_visible_cells() {
         use super::super::owner::{owner_numbers, owner_totals};
         let mut ctx = owner_fleet_ctx();
-        for filter in ["", "e/n", "-/n"] {
+        for filter in ["", "e/n", "-/n", "/y", "/y test"] {
             ctx.filter_text = filter.to_string();
             ctx.recompute_filtered_aliases();
             let totals = owner_totals(
@@ -2911,6 +2911,26 @@ mod tests {
                     .iter()
                     .filter(|n| super::super::owner::has_owner_work(n))
                     .count()
+            );
+        }
+        // The two fleet texts of the D-11 truth for the filtered subsets.
+        for (filter, expected) in [
+            (
+                "/y",
+                "You: test 40 (8 close) \u{b7} decide 5 \u{b7} fix 11 \u{b7} 11 of 11 projects",
+            ),
+            (
+                "/y test",
+                "You: test 40 (8 close) \u{b7} decide 2 \u{b7} fix 5 phases \u{b7} 6 of 6 projects",
+            ),
+        ] {
+            ctx.filter_text = filter.to_string();
+            ctx.recompute_filtered_aliases();
+            let rows = render_dashboard_cells(&ctx, 120, 20);
+            assert!(
+                summary_row(&rows).starts_with(expected),
+                "{filter:?}: {:?}",
+                summary_row(&rows)
             );
         }
     }
@@ -2982,6 +3002,61 @@ mod tests {
         for (symbol, fg) in &rows[rows.len() - 2] {
             assert_eq!(*fg, Color::Reset, "summary cell {symbol:?}");
         }
+    }
+
+    #[test]
+    fn sort_and_filter_by_owner_work_at_120() {
+        let mut ctx = owner_fleet_ctx();
+        let order = |ctx: &AppContext| -> Vec<String> {
+            let text = rendered_text(&render_dashboard_cells(ctx, 120, 20));
+            let mut seen: Vec<(usize, String)> = ctx
+                .project_states
+                .keys()
+                .filter_map(|alias| {
+                    text.iter()
+                        .position(|row| row.contains(alias.as_str()))
+                        .map(|y| (y, alias.clone()))
+                })
+                .collect();
+            seen.sort();
+            seen.into_iter().map(|(_, alias)| alias).collect()
+        };
+        ctx.sort_mode = SortMode::AttentionFirst;
+        ctx.recompute_filtered_aliases();
+        assert_eq!(
+            order(&ctx),
+            [
+                "fir-sync",
+                "alder-api",
+                "birch-cli",
+                "cedar-web",
+                "dune-app",
+                "elm-shop",
+                "kale-triple",
+                "lime-debug",
+                "maple-mixed",
+                "nettle-old",
+                "oak-flat",
+                "gum-tool",
+                "holly-pics",
+                "iris-blocked",
+                "juno-pending",
+            ]
+        );
+
+        ctx.filter_text = "/y".to_string();
+        ctx.recompute_filtered_aliases();
+        let listed = order(&ctx);
+        assert_eq!(listed.len(), 11);
+        for hidden in ["gum-tool", "holly-pics", "iris-blocked", "juno-pending"] {
+            assert!(!listed.iter().any(|a| a == hidden), "{hidden} is hidden");
+        }
+
+        ctx.filter_text = "/y bogus".to_string();
+        ctx.recompute_filtered_aliases();
+        assert!(order(&ctx).is_empty(), "no project row renders");
+        let rows = render_dashboard_cells(&ctx, 120, 20);
+        assert!(summary_row(&rows).starts_with("You: \u{b7}"), "{rows:?}");
     }
 
     #[test]
