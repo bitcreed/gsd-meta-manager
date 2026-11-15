@@ -535,7 +535,7 @@ fn finish_copy_text(lines: Vec<String>) -> Result<(String, usize), String> {
     if text.len() > crate::clipboard::MAX_COPY_BYTES {
         return Err(format!(
             "Too large to copy ({} KiB): narrow the lane with 1-4",
-            text.len() / 1024
+            text.len().div_ceil(1024)
         ));
     }
     Ok((text, lines.len()))
@@ -1697,6 +1697,12 @@ mod tests {
             message.starts_with("Too large to copy (")
                 && message.ends_with(" KiB): narrow the lane with 1-4"),
             "{message}"
+        );
+        // IN-05: one byte over the limit never prints as the limit itself.
+        let just_over = finish_copy_text(vec!["x".repeat(crate::clipboard::MAX_COPY_BYTES)]);
+        assert_eq!(
+            just_over,
+            Err("Too large to copy (65 KiB): narrow the lane with 1-4".to_owned())
         );
         force_clipboard(None);
         assert!(seam_ran().is_empty(), "nothing was sent");
