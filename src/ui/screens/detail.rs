@@ -1573,6 +1573,47 @@ impl DetailScreen {
         screen
     }
 
+    /// The inbox's `g` (37-05, D-07): the Phases tab with the Owner block focused
+    /// on the group `key`, when that identity is one of the block's cursor stops
+    /// for this project's digest (a current row, or a row of an open fold);
+    /// otherwise the tab top with focus on the content, so the first key after
+    /// opening acts normally. The block's own state in `ctx.view_cache` carries
+    /// the cursor, exactly as if the owner had walked there.
+    pub(crate) fn opened_on_owner(
+        alias: String,
+        key: &owner_block::GroupKey,
+        ctx: &mut AppContext,
+    ) -> Self {
+        let mut screen = Self::opened_on(alias, DetailSubView::Pipeline, ctx);
+        let unavailable = ctx.owner_state_unavailable(&screen.alias);
+        let Some(digest) = ctx
+            .owner_digests
+            .get(&screen.alias)
+            .filter(|_| !unavailable)
+        else {
+            return screen;
+        };
+        let view = &mut ctx
+            .view_cache
+            .entry(screen.alias.clone())
+            .or_default()
+            .owner_block;
+        let stops = owner_block::skeleton(digest, view).stops;
+        let wanted = owner_block::Stop::Row(key.clone());
+        if let Some(index) = stops.iter().position(|stop| *stop == wanted) {
+            view.cursor = Some(wanted);
+            view.cursor_index = index;
+            screen.focus = DetailFocus::Owner;
+        }
+        screen
+    }
+
+    /// Whether the Owner block holds the keyboard (tests).
+    #[cfg(test)]
+    pub(crate) fn owner_focused(&self) -> bool {
+        self.focus == DetailFocus::Owner
+    }
+
     /// Open on the Config tab already switched to the Global scope: the
     /// overview's route to the `~/.gsd/defaults.json` template editor
     /// (the global-settings todo). Hosted by a registered project only because
@@ -2143,11 +2184,11 @@ impl DetailScreen {
     ///
     /// Same contract as [`Self::handle_waves_pane_key`]: `Some(action)` consumes
     /// the key, `None` lets it fall through to the main match. `Enter`/`Space` only
-    /// toggle view state; `v` runs the selected group through the same
-    /// `owner_actions` functions the inbox uses (37-03, D-21), and `e`, `o`, `A`
-    /// and `y` are swallowed so none of them reaches Content (`e` would enqueue)
-    /// nor opens, acknowledges or copies anything (the later Phase 37 plans own
-    /// those).
+    /// toggle view state; `v` runs and `o` opens the selected group's file
+    /// through the same `owner_actions` functions the inbox uses (37-03, 37-05,
+    /// D-21), and `e`, `A` and `y` are swallowed so none of them reaches Content
+    /// (`e` would enqueue) nor acknowledges or copies anything (the later Phase 37
+    /// plans own those).
     fn handle_owner_block_key(
         &mut self,
         code: KeyCode,
@@ -2194,8 +2235,10 @@ impl DetailScreen {
         let on_fold_line = view.cursor == Some(owner_block::Stop::FoldLine);
         let mut moved = Moved::Within;
         let mut run = false;
+        let mut open = false;
         match code {
             KeyCode::Char('v') => run = true,
+            KeyCode::Char('o') => open = true,
             KeyCode::Char('j') | KeyCode::Down => {
                 moved = owner_block::move_cursor(view, &sk.stops, Move::Next)
             }
@@ -2222,7 +2265,7 @@ impl DetailScreen {
             KeyCode::Esc => {
                 self.focus = DetailFocus::Content;
             }
-            // `e o A y`, `←`/`→` off the fold line and every other key.
+            // `e A y`, `←`/`→` off the fold line and every other key.
             _ => {}
         }
         match moved {
@@ -2233,8 +2276,48 @@ impl DetailScreen {
         if run {
             return Some(self.owner_run(ctx, &mut owner_actions::launch_real));
         }
+        if open {
+            return Some(self.owner_open(ctx));
+        }
         ctx.needs_redraw = true;
         Some(ScreenAction::None)
+    }
+
+    /// `o` on the Owner block (37-05, D-21): the group under the cursor's source
+    /// file in the read-only viewer, through [`owner_actions::open_target`], the
+    /// function the inbox's `o` calls. The fold line says what to select.
+    fn owner_open(&mut self, ctx: &mut AppContext) -> ScreenAction {
+        let outcome = {
+            let Some(digest) = ctx.owner_digest(&self.alias) else {
+                return ScreenAction::None;
+            };
+            let view = ctx
+                .view_cache
+                .get(&self.alias)
+                .map(|cache| cache.owner_block.clone())
+                .unwrap_or_default();
+            let sk = owner_block::skeleton(digest, &view);
+            let Some(at) = owner_block::resolve_cursor(&view, &sk.stops) else {
+                return ScreenAction::None;
+            };
+            match &sk.stops[at] {
+                owner_block::Stop::FoldLine => {
+                    Err("Select a group row to open its file".to_owned())
+                }
+                owner_block::Stop::Row(key) => {
+                    let files = owner_block::files_for(digest, key);
+                    owner_actions::open_target(ctx, &self.alias, &files)
+                }
+            }
+        };
+        ctx.needs_redraw = true;
+        match outcome {
+            Ok(action) => action,
+            Err(message) => {
+                ctx.status_message = Some((message, std::time::Instant::now()));
+                ScreenAction::None
+            }
+        }
     }
 
     /// `v` on the Owner block (37-03, D-21): run the group under the cursor through
@@ -36417,7 +36500,7 @@ mod tests {
         let mut screen = owner_screen(&ctx);
         key(&mut screen, &mut ctx, KeyCode::Up);
         let before = owner_view_of(&ctx);
-        for c in ['e', 'o', 'A', 'y', 'x'] {
+        for c in ['e', 'A', 'y', 'x'] {
             let action = key(&mut screen, &mut ctx, KeyCode::Char(c));
             assert!(matches!(action, ScreenAction::None), "{c}");
             assert_eq!(screen.focus, DetailFocus::Owner, "{c}");
@@ -36494,6 +36577,79 @@ mod tests {
                 "/gsd-verify-work 24".to_owned()
             )]
         );
+    }
+
+    /// D-21 (37-05): `o` on a group row of the Owner block opens the same read-only
+    /// viewer the inbox does, through `owner_actions::open_target`; on the fold line
+    /// it says what to select; the block's own state does not change.
+    #[test]
+    fn owner_block_o_opens_the_viewer() {
+        use crate::config::RegisteredProject;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let phase = dir.path().join(".planning/phases/24-clock");
+        std::fs::create_dir_all(&phase).unwrap();
+        std::fs::write(phase.join("24-UAT.md"), "# Phase 24 UAT\n").unwrap();
+        let mut digest = sample();
+        let group = digest
+            .groups
+            .iter_mut()
+            .find(|g| g.phase == "24" && g.lane == crate::state_reader::owner_items::Lane::Test)
+            .expect("the phase 24 TEST group");
+        group.file = ".planning/phases/24-clock/24-UAT.md".to_owned();
+        let wanted = GroupKey::of(group);
+        let mut ctx = owner_ctx(Some(digest));
+        ctx.config.projects.insert(
+            TEST_ALIAS.to_string(),
+            RegisteredProject {
+                path: dir.path().to_path_buf(),
+                added: "2026-07-29".to_string(),
+                driver_opt_in: None,
+                extra: Default::default(),
+            },
+        );
+        let mut screen = owner_screen(&ctx);
+        key_press_up(&mut screen, &mut ctx);
+        let at = |ctx: &mut AppContext, stop: Stop| {
+            ctx.view_cache
+                .entry(TEST_ALIAS.to_string())
+                .or_default()
+                .owner_block
+                .cursor = Some(stop);
+        };
+        at(&mut ctx, Stop::Row(wanted.clone()));
+        let before = owner_view_of(&ctx);
+        let action = key(&mut screen, &mut ctx, KeyCode::Char('o'));
+        let ScreenAction::Push(viewer) = action else {
+            panic!("`o` pushes the viewer");
+        };
+        assert_eq!(viewer.name(), "owner_file_view");
+        assert_eq!(
+            screen.focus,
+            DetailFocus::Owner,
+            "the block keeps the keyboard"
+        );
+        assert_eq!(owner_view_of(&ctx).cursor, before.cursor);
+        // The fold line is not a group.
+        at(&mut ctx, Stop::FoldLine);
+        let action = key(&mut screen, &mut ctx, KeyCode::Char('o'));
+        assert!(matches!(action, ScreenAction::None));
+        assert_eq!(
+            ctx.status_message.as_ref().map(|(m, _)| m.as_str()),
+            Some("Select a group row to open its file")
+        );
+        // A row whose file is gone says so.
+        std::fs::remove_file(phase.join("24-UAT.md")).unwrap();
+        at(&mut ctx, Stop::Row(wanted));
+        let action = key(&mut screen, &mut ctx, KeyCode::Char('o'));
+        assert!(matches!(action, ScreenAction::None));
+        assert_eq!(
+            ctx.status_message.as_ref().map(|(m, _)| m.as_str()),
+            Some("Cannot open .planning/phases/24-clock/24-UAT.md: not readable")
+        );
+    }
+
+    fn key_press_up(screen: &mut DetailScreen, ctx: &mut AppContext) {
+        key(screen, ctx, KeyCode::Up);
     }
 
     #[test]

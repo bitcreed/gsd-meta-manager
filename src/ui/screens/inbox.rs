@@ -23,7 +23,7 @@ use super::detail::{fit_cells, fit_spans, shown};
 use super::driver::DRY_RUN_LOADING;
 use super::owner::{owner_numbers, OWNER_SEP};
 use super::owner_actions;
-use super::owner_block::{self, blanks, cells, pad, GroupKey, RowCells, RowSrc};
+use super::owner_block::{self, blanks, cells, pad, Fold, GroupKey, RowCells, RowSrc};
 use super::{AppContext, Screen, ScreenAction};
 use crate::inbox::phase_key;
 use crate::state_reader::owner_items::Lane;
@@ -36,6 +36,7 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 use std::cell::Cell;
 use std::cmp::Ordering;
+use std::collections::HashSet;
 
 /// A row's identity across digest refreshes: the project and the group inside it.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -44,7 +45,8 @@ pub struct InboxKey {
     pub key: GroupKey,
 }
 
-/// One cursor stop. The fold line joins in 37-05.
+/// One cursor stop: a group row (current or in an open fold), or the pinned fold
+/// line as a whole (its sub-cursor is `InboxViewState::fold_cursor`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum InboxStop {
     Row(InboxKey),
@@ -127,6 +129,13 @@ pub struct InboxViewState {
     pub cursor_index: usize,
     /// The first body line drawn.
     pub offset: usize,
+    /// Groups whose lines are shown under their row (D-06); identities, never
+    /// indices, in memory only.
+    pub expanded: HashSet<InboxKey>,
+    /// Open folds (D-02); Triage never opens.
+    pub open_folds: HashSet<Fold>,
+    /// The fold the fold line's sub-cursor rests on.
+    pub fold_cursor: Option<Fold>,
 }
 
 /// The sections in D-02 order.
@@ -172,6 +181,9 @@ pub(crate) struct InboxRow {
     pub progress: (u32, u32),
     /// Open current-milestone phases with plans (`closes_after.phases_open`).
     pub phases_open: usize,
+    /// `Some` for a row listed by an open fold (Old debt, Acknowledged), `None`
+    /// for a current row.
+    pub fold: Option<Fold>,
 }
 
 impl InboxRow {
@@ -212,6 +224,7 @@ pub(crate) fn inbox_rows(ctx: &AppContext) -> Vec<InboxRow> {
                 src,
                 progress,
                 phases_open,
+                fold: None,
             });
         }
     }
@@ -283,6 +296,7 @@ pub(crate) fn visible_rows(ctx: &AppContext) -> Vec<InboxRow> {
 
 /// The index of the cursor in `rows`; a vanished identity resolves to its last
 /// index clamped to the list. `None` for an empty list.
+#[cfg(test)]
 pub(crate) fn resolve_cursor(view: &InboxViewState, rows: &[InboxRow]) -> Option<usize> {
     if rows.is_empty() {
         return None;
@@ -294,21 +308,169 @@ pub(crate) fn resolve_cursor(view: &InboxViewState, rows: &[InboxRow]) -> Option
     Some(found.unwrap_or_else(|| view.cursor_index.min(rows.len() - 1)))
 }
 
+/// The folds the fold line offers, in line order (D-02, D-19): Old debt and
+/// Acknowledged when they have content, Triage when todos were counted or could
+/// not be read (it is a stop so a refusal can reach it, but it never opens).
+pub(crate) fn fleet_folds(ctx: &AppContext) -> Vec<Fold> {
+    let t = fold_totals(ctx);
+    let mut folds = Vec::new();
+    if t.old_debt > 0 {
+        folds.push(Fold::OldDebt);
+    }
+    if t.acknowledged > 0 {
+        folds.push(Fold::Acknowledged);
+    }
+    if t.todos > 0 || t.todos_unreadable > 0 {
+        folds.push(Fold::Todos);
+    }
+    folds
+}
+
+/// The rows an open `fold` lists over every project that has a digest: Old debt
+/// by milestone (rank, then label) with each project's lane order inside, the
+/// Acknowledged rows by project. Triage lists nothing.
+fn fold_rows(ctx: &AppContext, fold: Fold) -> Vec<InboxRow> {
+    let mut aliases: Vec<&String> = ctx.config.projects.keys().collect();
+    aliases.sort();
+    let mut rows = Vec::new();
+    for alias in aliases {
+        let Some(digest) = ctx.owner_digest(alias) else {
+            continue;
+        };
+        let sources = match fold {
+            Fold::OldDebt => owner_block::old_debt_sources(digest),
+            Fold::Acknowledged => owner_block::acknowledged_sources(digest),
+            Fold::Todos => Vec::new(),
+        };
+        let progress = (0, 0);
+        for src in sources {
+            rows.push(InboxRow {
+                alias: alias.clone(),
+                section: Section::of(&src),
+                src,
+                progress,
+                phases_open: 0,
+                fold: Some(fold),
+            });
+        }
+    }
+    if fold == Fold::OldDebt {
+        // Stable: the alias and lane order inside one milestone label survives.
+        rows.sort_by_key(|row| {
+            (
+                owner_block::archived_rank(&row.src.group),
+                owner_block::scope_label(&row.src.group.scope),
+            )
+        });
+    }
+    rows
+}
+
+/// Every cursor stop that is a group row, in body order: the listed current rows,
+/// then the rows of the open folds (D-02).
+pub(crate) fn stop_rows(ctx: &AppContext) -> Vec<InboxRow> {
+    let mut rows = visible_rows(ctx);
+    let folds = fleet_folds(ctx);
+    for fold in [Fold::OldDebt, Fold::Acknowledged] {
+        if ctx.inbox_view.open_folds.contains(&fold) && folds.contains(&fold) {
+            rows.extend(fold_rows(ctx, fold));
+        }
+    }
+    rows
+}
+
+/// The cursor as an index over the stops: `0..rows.len()` for a group row,
+/// `rows.len()` for the fold line (present when a fold is selectable). A vanished
+/// identity falls to the row that took its index, else the one before (D-10); no
+/// cursor yet is the first stop. `None` when there is no stop at all.
+pub(crate) fn cursor_pos(ctx: &AppContext, rows: &[InboxRow]) -> Option<usize> {
+    let has_fold = !fleet_folds(ctx).is_empty();
+    let count = rows.len() + usize::from(has_fold);
+    if count == 0 {
+        return None;
+    }
+    let view = &ctx.inbox_view;
+    Some(match &view.cursor {
+        Some(InboxStop::FoldLine) => count - 1,
+        Some(InboxStop::Row(key)) => rows
+            .iter()
+            .position(|row| row.key() == *key)
+            .unwrap_or_else(|| view.cursor_index.min(count - 1)),
+        None => 0,
+    })
+}
+
+/// Put the cursor on stop `to` (clamped): the row's identity, or the fold line.
+fn set_cursor(ctx: &mut AppContext, rows: &[InboxRow], to: usize) {
+    let folds = fleet_folds(ctx);
+    let count = rows.len() + usize::from(!folds.is_empty());
+    if count == 0 {
+        ctx.inbox_view.cursor = None;
+        ctx.inbox_view.cursor_index = 0;
+        return;
+    }
+    let to = to.min(count - 1);
+    if to < rows.len() {
+        ctx.inbox_view.cursor = Some(InboxStop::Row(rows[to].key()));
+    } else {
+        ctx.inbox_view.cursor = Some(InboxStop::FoldLine);
+        if !ctx
+            .inbox_view
+            .fold_cursor
+            .is_some_and(|fold| folds.contains(&fold))
+        {
+            ctx.inbox_view.fold_cursor = folds.first().copied();
+        }
+    }
+    ctx.inbox_view.cursor_index = to;
+}
+
+/// The fold the sub-cursor rests on: the stored one when it is still offered,
+/// else the first.
+fn sub_cursor(ctx: &AppContext) -> Option<Fold> {
+    let folds = fleet_folds(ctx);
+    ctx.inbox_view
+        .fold_cursor
+        .filter(|fold| folds.contains(fold))
+        .or_else(|| folds.first().copied())
+}
+
+/// D-10: forget what a refresh made vanish. An expanded identity that no digest
+/// lists any more leaves the set (even one a filter or a closed fold hides now,
+/// which stays expanded while it exists); a fold with no content is closed.
+fn prune_view(ctx: &mut AppContext) {
+    let mut live: HashSet<InboxKey> = inbox_rows(ctx).iter().map(InboxRow::key).collect();
+    for fold in [Fold::OldDebt, Fold::Acknowledged] {
+        live.extend(fold_rows(ctx, fold).iter().map(InboxRow::key));
+    }
+    ctx.inbox_view.expanded.retain(|key| live.contains(key));
+    let folds = fleet_folds(ctx);
+    ctx.inbox_view
+        .open_folds
+        .retain(|fold| *fold != Fold::Todos && folds.contains(fold));
+    if !ctx
+        .inbox_view
+        .fold_cursor
+        .is_some_and(|fold| folds.contains(&fold))
+    {
+        ctx.inbox_view.fold_cursor = None;
+    }
+}
+
 /// After a digest update (a watcher refresh, a first fill, a failure) move the
 /// cursor's identity onto what resolves now (D-10, SC3): the group itself when it
 /// survives, else the row that took its place (the next one), else the previous
-/// one, else nothing. Without a cursor there is nothing to anchor: the first row
-/// is implicit.
+/// one, else the fold line, else nothing. Expansion and open folds of surviving
+/// groups stay. Without a cursor there is nothing to anchor: the first stop is
+/// implicit.
 pub(crate) fn reanchor(ctx: &mut AppContext) {
+    prune_view(ctx);
     if ctx.inbox_view.cursor.is_none() {
         return;
     }
-    let rows = visible_rows(ctx);
-    match resolve_cursor(&ctx.inbox_view, &rows) {
-        Some(at) => {
-            ctx.inbox_view.cursor = Some(InboxStop::Row(rows[at].key()));
-            ctx.inbox_view.cursor_index = at;
-        }
+    let rows = stop_rows(ctx);
+    match cursor_pos(ctx, &rows) {
+        Some(at) => set_cursor(ctx, &rows, at),
         None => {
             ctx.inbox_view.cursor = None;
             ctx.inbox_view.cursor_index = 0;
@@ -381,7 +543,7 @@ fn cells_of(ctx: &AppContext, row: &InboxRow) -> Option<Cells> {
     let digest = ctx.owner_digest(&row.alias)?;
     let mut cells = row.src.cells(digest);
     // Section 1 says "closes a phase" in its title: no per-row phrase there.
-    if row.section == Section::TestCloses && !row.src.group.bookkeeping_only {
+    if row.fold.is_none() && row.section == Section::TestCloses && !row.src.group.bookkeeping_only {
         cells.phrase.clear();
     }
     Some(Cells {
@@ -501,11 +663,15 @@ fn dim() -> Style {
 }
 
 /// One group row as spans, cut to `width`, the cursor row Cyan + BOLD throughout.
-fn row_line(c: &Cells, grid: &Grid, width: usize, cursor: bool) -> Line<'static> {
+fn row_line(c: &Cells, grid: &Grid, width: usize, cursor: bool, expanded: bool) -> Line<'static> {
     let plain = owner_block::style_for(&c.cells, Style::default());
     let mut spans: Vec<Span<'static>> = vec![
         Span::raw(if cursor { ">" } else { " " }),
-        Span::raw(glyphs::TRIANGLE_RIGHT_SMALL),
+        Span::raw(if expanded {
+            glyphs::TRIANGLE_DOWN_SMALL
+        } else {
+            glyphs::TRIANGLE_RIGHT_SMALL
+        }),
         Span::raw(" "),
         Span::styled(pad(&c.alias, grid.alias_w, false), plain),
         Span::raw("  "),
@@ -605,43 +771,115 @@ fn title_line(section: Section, heads: Option<&Grid>, width: usize) -> Line<'sta
     fit_spans(spans, width)
 }
 
-/// One line of the body: a section title or the row with that index.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// One line of the body: a section title, a milestone sub-header, the row with
+/// that index (over the stop rows), or a line under an expanded row.
+#[derive(Debug, Clone, PartialEq)]
 enum BodyItem {
     Title(Section),
+    /// An archived milestone's label above its Old debt rows (DIM, escaped).
+    Sub(String),
     Row(usize),
+    Extra(Line<'static>),
 }
 
-/// The body's lines over the visible rows, titles in front of each section.
-fn body_plan(rows: &[InboxRow]) -> Vec<BodyItem> {
+/// The body's lines over the stop rows: titles in front of each section, a
+/// sub-header in front of each Old debt milestone, `extra(row)` under a row.
+fn build_plan(
+    rows: &[InboxRow],
+    extra: &mut dyn FnMut(&InboxRow) -> Vec<Line<'static>>,
+) -> Vec<BodyItem> {
     let mut plan = Vec::new();
     let mut last: Option<Section> = None;
+    let mut last_label: Option<Option<String>> = None;
     for (index, row) in rows.iter().enumerate() {
-        if last != Some(row.section) {
-            plan.push(BodyItem::Title(row.section));
-            last = Some(row.section);
+        if row.fold.is_none() {
+            if last != Some(row.section) {
+                plan.push(BodyItem::Title(row.section));
+                last = Some(row.section);
+            }
+        } else if row.fold == Some(Fold::OldDebt) {
+            let label = owner_block::scope_label(&row.src.group.scope);
+            if last_label.as_ref() != Some(&label) {
+                plan.push(BodyItem::Sub(
+                    label.as_deref().map(shown).unwrap_or_default(),
+                ));
+                last_label = Some(label);
+            }
         }
         plan.push(BodyItem::Row(index));
+        plan.extend(extra(row).into_iter().map(BodyItem::Extra));
     }
     plan
 }
 
+/// The body's lines with nothing expanded.
+#[cfg(test)]
+fn body_plan(rows: &[InboxRow]) -> Vec<BodyItem> {
+    build_plan(rows, &mut |_| Vec::new())
+}
+
+/// The lines under an expanded row (D-06): the Owner block's own formatter one
+/// cell further right (the inbox gutter is three cells), then, inbox only, the
+/// exact command `v` would launch.
+fn expansion_for(ctx: &AppContext, row: &InboxRow, width: usize) -> Vec<Line<'static>> {
+    let mut lines = owner_block::expansion_lines(&row.src, width, 1);
+    let group = ctx
+        .owner_digest(&row.alias)
+        .and_then(|digest| owner_block::group_for(digest, &row.src.key))
+        .unwrap_or_else(|| row.src.group.clone());
+    if let Ok(plan) = owner_actions::run_plan(ctx, &row.alias, &group) {
+        lines.push(owner_block::dim_line(
+            5,
+            &format!("run {}", shown(&plan.command.to_string())),
+            width,
+        ));
+    }
+    if row.fold == Some(Fold::Acknowledged) {
+        for line in &mut lines {
+            for span in &mut line.spans {
+                span.style = span.style.add_modifier(Modifier::DIM);
+            }
+        }
+    }
+    lines
+}
+
+/// [`build_plan`] with the expanded rows' lines at `width`.
+fn full_plan(ctx: &AppContext, rows: &[InboxRow], width: usize) -> Vec<BodyItem> {
+    build_plan(rows, &mut |row| {
+        if ctx.inbox_view.expanded.contains(&row.key()) {
+            expansion_for(ctx, row, width)
+        } else {
+            Vec::new()
+        }
+    })
+}
+
 /// The first body line drawn so the cursor row is visible, keeping `offset` when
-/// it already is. A row that opens its section brings its title with it.
+/// it already is. A row that opens its section (or milestone) brings its title
+/// with it, and its expansion stays in view when it fits.
 fn scroll_for(offset: usize, plan: &[BodyItem], cursor_row: usize, height: usize) -> usize {
     if height == 0 {
         return 0;
     }
     let line = plan
         .iter()
-        .position(|item| *item == BodyItem::Row(cursor_row))
+        .position(|item| matches!(item, BodyItem::Row(index) if *index == cursor_row))
         .unwrap_or(0);
-    let top = if line > 0 && matches!(plan[line - 1], BodyItem::Title(_)) {
+    let top = if line > 0 && matches!(plan[line - 1], BodyItem::Title(_) | BodyItem::Sub(_)) {
         line - 1
     } else {
         line
     };
+    let mut end = line;
+    while end + 1 < plan.len() && matches!(plan[end + 1], BodyItem::Extra(_)) {
+        end += 1;
+    }
+    let end = end.min(line + height - 1);
     let mut offset = offset;
+    if end >= offset + height {
+        offset = end + 1 - height;
+    }
     if top < offset {
         offset = top;
     }
@@ -815,12 +1053,23 @@ struct FooterKey {
 }
 
 /// The hints in the UI-SPEC footer order, **only for keys that work**: later
-/// plans insert their key at its UI-SPEC position (`Enter`, `g`, `o`, `A`, `y`)
-/// when it works.
-const FOOTER_KEYS: [FooterKey; 4] = [
+/// plans insert their key at its UI-SPEC position (`A`, `y`) when it works.
+const FOOTER_KEYS: [FooterKey; 7] = [
     FooterKey {
         key: "[j/k]",
         labels: ["move", "move", "move"],
+        rung3: true,
+        rung4: false,
+    },
+    FooterKey {
+        key: "[Enter]",
+        labels: ["expand", "expand", "expand"],
+        rung3: true,
+        rung4: false,
+    },
+    FooterKey {
+        key: "[g]",
+        labels: ["o to project", "oto", "oto"],
         rung3: true,
         rung4: false,
     },
@@ -829,6 +1078,12 @@ const FOOTER_KEYS: [FooterKey; 4] = [
         labels: ["run command", "run", "run"],
         rung3: true,
         rung4: true,
+    },
+    FooterKey {
+        key: "[o]",
+        labels: ["pen file", "pen", "pen"],
+        rung3: true,
+        rung4: false,
     },
     FooterKey {
         key: "[Esc]",
@@ -844,6 +1099,36 @@ const FOOTER_KEYS: [FooterKey; 4] = [
     },
 ];
 
+/// The hints while the cursor rests on the fold line: `[y]copy` joins in 37-07.
+fn fold_footer(rung: usize) -> Vec<Span<'static>> {
+    let bold = Style::default().add_modifier(Modifier::BOLD);
+    let hints: &[(&str, &str)] = if rung == 0 {
+        &[
+            ("[\u{2190}/\u{2192}]", "fold"),
+            ("[Enter]", "expand"),
+            ("[j/k]", "move"),
+            ("[Esc]", "back"),
+            ("[?]", "help"),
+        ]
+    } else {
+        &[
+            ("[\u{2190}/\u{2192}]", "fold"),
+            ("[Enter]", "expand"),
+            ("[j/k]", "move"),
+            ("[?]", "help"),
+        ]
+    };
+    let mut spans = vec![Span::raw("  ")];
+    for (index, (key, label)) in hints.iter().enumerate() {
+        if index > 0 {
+            spans.push(Span::raw("  "));
+        }
+        spans.push(Span::styled((*key).to_owned(), bold));
+        spans.push(Span::raw((*label).to_owned()));
+    }
+    spans
+}
+
 /// The hints of one rung, two leading spaces, `[key]` BOLD.
 fn footer_rung(rung: usize, has_stops: bool) -> Vec<Span<'static>> {
     let bold = Style::default().add_modifier(Modifier::BOLD);
@@ -852,8 +1137,8 @@ fn footer_rung(rung: usize, has_stops: bool) -> Vec<Span<'static>> {
     for hint in &FOOTER_KEYS {
         // With no stop (an empty inbox) only the keys that need none remain.
         let keep = match hint.key {
-            "[j/k]" | "[v]" => has_stops,
-            _ => true,
+            "[Esc]" | "[?]" => true,
+            _ => has_stops,
         };
         let kept = match rung {
             0 | 1 => true,
@@ -874,8 +1159,9 @@ fn footer_rung(rung: usize, has_stops: bool) -> Vec<Span<'static>> {
 }
 
 /// The footer: the status message while one is live, else the first rung of the
-/// hint ladder that fits `width`.
-fn footer_line(ctx: &AppContext, width: usize, has_stops: bool) -> Line<'static> {
+/// hint ladder that fits `width` (the fold-line hints while the cursor rests on
+/// the fold line).
+fn footer_line(ctx: &AppContext, width: usize, has_stops: bool, on_fold: bool) -> Line<'static> {
     if let Some((message, _)) = &ctx.status_message {
         // The status line is composed from authored copy and project text in one
         // string, so the escape happens here, at the consumer (as on the dashboard).
@@ -883,7 +1169,14 @@ fn footer_line(ctx: &AppContext, width: usize, has_stops: bool) -> Line<'static>
     }
     let mut last = Vec::new();
     for rung in 0..4 {
-        let spans = footer_rung(rung, has_stops);
+        let spans = if on_fold {
+            if rung > 1 {
+                break;
+            }
+            fold_footer(rung)
+        } else {
+            footer_rung(rung, has_stops)
+        };
         if spans.iter().map(Span::width).sum::<usize>() <= width {
             return Line::from(spans);
         }
@@ -942,8 +1235,19 @@ impl FoldTotals {
 
 /// The pinned fold line (UI-SPEC "Fold-line ladder"): the first of three rungs
 /// that fits, folds without content omitted, then `fit_cells` on the shortest.
-/// `None` when no fold has content. Collapsed only; opening is 37-05.
+/// `None` when no fold has content. An open fold's marker is the down triangle.
+#[cfg(test)]
 fn fold_line(ctx: &AppContext, width: usize) -> Option<Line<'static>> {
+    fold_line_at(ctx, width, None)
+}
+
+/// [`fold_line`], and when the cursor rests on it (`cursor` is the sub-cursor's
+/// fold) the `>` gutter and the sub-cursor's fold in Cyan + BOLD.
+fn fold_line_at(
+    ctx: &AppContext,
+    width: usize,
+    cursor: Option<Option<Fold>>,
+) -> Option<Line<'static>> {
     let t = fold_totals(ctx);
     if t.is_empty() {
         return None;
@@ -959,7 +1263,7 @@ fn fold_line(ctx: &AppContext, width: usize) -> Option<Line<'static>> {
     let projects = |n: usize| plural(n, "project", "projects");
     let all_unreadable = t.todos == 0;
     // (old debt, acknowledged, triage) texts of one rung; the third is DIM.
-    let rung = |n: usize| -> Vec<(String, bool)> {
+    let rung = |n: usize| -> Vec<(String, bool, Fold)> {
         let mut parts = Vec::new();
         if t.old_debt > 0 {
             parts.push((
@@ -977,6 +1281,7 @@ fn fold_line(ctx: &AppContext, width: usize) -> Option<Line<'static>> {
                     _ => format!("Old debt ({})", t.old_debt),
                 },
                 false,
+                Fold::OldDebt,
             ));
         }
         if t.acknowledged > 0 {
@@ -986,6 +1291,7 @@ fn fold_line(ctx: &AppContext, width: usize) -> Option<Line<'static>> {
                     _ => format!("Acknowledged ({})", t.acknowledged),
                 },
                 false,
+                Fold::Acknowledged,
             ));
         }
         if t.todos > 0 || t.todos_unreadable > 0 {
@@ -1010,21 +1316,30 @@ fn fold_line(ctx: &AppContext, width: usize) -> Option<Line<'static>> {
                 ),
                 (_, false) => format!("Triage {}", t.todos),
             };
-            parts.push((text, true));
+            parts.push((text, true, Fold::Todos));
         }
         parts
     };
-    let build = |parts: Vec<(String, bool)>| -> Vec<Span<'static>> {
-        let mut spans = vec![Span::raw(" ")];
-        for (index, (text, muted)) in parts.into_iter().enumerate() {
+    let build = |parts: Vec<(String, bool, Fold)>| -> Vec<Span<'static>> {
+        let mut spans = vec![if cursor.is_some() {
+            Span::styled(">", owner_block::cursor_style())
+        } else {
+            Span::raw(" ")
+        }];
+        for (index, (text, muted, fold)) in parts.into_iter().enumerate() {
             if index > 0 {
                 spans.push(Span::raw("   "));
             }
-            let style = if muted { dim() } else { Style::default() };
-            spans.push(Span::styled(
-                format!("{} {text}", glyphs::TRIANGLE_RIGHT_SMALL),
-                style,
-            ));
+            let mut style = if muted { dim() } else { Style::default() };
+            if cursor == Some(Some(fold)) {
+                style = style.patch(owner_block::cursor_style());
+            }
+            let marker = if ctx.inbox_view.open_folds.contains(&fold) {
+                glyphs::TRIANGLE_DOWN_SMALL
+            } else {
+                glyphs::TRIANGLE_RIGHT_SMALL
+            };
+            spans.push(Span::styled(format!("{marker} {text}"), style));
         }
         spans
     };
@@ -1045,31 +1360,45 @@ fn fold_line(ctx: &AppContext, width: usize) -> Option<Line<'static>> {
 pub struct InboxScreen {
     /// The body height of the last frame, for `PageUp`/`PageDown` and the scroll.
     viewport: Cell<usize>,
+    /// The width of the last frame: expansion lines are cut to it, and the
+    /// scroll counts them.
+    width: Cell<usize>,
 }
 
 /// The rows under the body.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct Pinned {
     rule: Rect,
     fold: Rect,
     footer: Rect,
     has_stops: bool,
+    /// The cursor rests on the fold line.
+    on_fold: bool,
+    /// ` {first}-{last} of {total}` while body rows are clipped.
+    hint: Option<String>,
 }
 
 impl InboxScreen {
     /// The rule row, the pinned fold line and the footer under the body.
     fn render_pinned(&self, frame: &mut Frame, ctx: &AppContext, pinned: Pinned, width: usize) {
         if pinned.rule.height > 0 {
-            frame.render_widget(
-                Paragraph::new(Line::from(Span::styled("\u{2500}".repeat(width), dim()))),
-                pinned.rule,
-            );
+            let mut spans = Vec::new();
+            let mut rule_w = width;
+            if let Some(hint) = pinned.hint.as_deref().filter(|h| cells(h) < width) {
+                rule_w = width - cells(hint);
+                spans.push(Span::styled("\u{2500}".repeat(rule_w), dim()));
+                spans.push(Span::styled(hint.to_owned(), dim()));
+            } else {
+                spans.push(Span::styled("\u{2500}".repeat(rule_w), dim()));
+            }
+            frame.render_widget(Paragraph::new(Line::from(spans)), pinned.rule);
         }
-        if let (Some(fold), true) = (fold_line(ctx, width), pinned.fold.height > 0) {
+        let cursor = pinned.on_fold.then(|| sub_cursor(ctx));
+        if let (Some(fold), true) = (fold_line_at(ctx, width, cursor), pinned.fold.height > 0) {
             frame.render_widget(Paragraph::new(fold), pinned.fold);
         }
         frame.render_widget(
-            Paragraph::new(footer_line(ctx, width, pinned.has_stops)),
+            Paragraph::new(footer_line(ctx, width, pinned.has_stops, pinned.on_fold)),
             pinned.footer,
         );
     }
@@ -1077,20 +1406,26 @@ impl InboxScreen {
     pub fn new() -> Self {
         Self {
             viewport: Cell::new(0),
+            width: Cell::new(80),
         }
     }
 
-    /// Move the cursor to row `to` (clamped) and keep it in view.
-    fn move_to(&self, ctx: &mut AppContext, rows: &[InboxRow], to: usize) {
-        let Some(row) = rows.get(to.min(rows.len().saturating_sub(1))) else {
+    /// Scroll so the row at stop `at` (with its expansion) is in view; the fold
+    /// line is pinned and never scrolls.
+    fn follow(&self, ctx: &mut AppContext, rows: &[InboxRow], at: usize) {
+        if at >= rows.len() {
             return;
-        };
-        let to = to.min(rows.len() - 1);
-        ctx.inbox_view.cursor = Some(InboxStop::Row(row.key()));
-        ctx.inbox_view.cursor_index = to;
-        let plan = body_plan(rows);
+        }
+        let plan = full_plan(ctx, rows, self.width.get());
         ctx.inbox_view.offset =
-            scroll_for(ctx.inbox_view.offset, &plan, to, self.viewport.get().max(1));
+            scroll_for(ctx.inbox_view.offset, &plan, at, self.viewport.get().max(1));
+    }
+
+    /// Move the cursor to stop `to` (clamped) and keep it in view.
+    fn move_to(&self, ctx: &mut AppContext, rows: &[InboxRow], to: usize) {
+        set_cursor(ctx, rows, to);
+        let at = ctx.inbox_view.cursor_index;
+        self.follow(ctx, rows, at);
     }
 
     /// `1`-`4` and `a` (D-03): the same key again returns to the default lanes.
@@ -1111,8 +1446,8 @@ impl InboxScreen {
     }
 
     fn step(&self, ctx: &mut AppContext, by: isize) {
-        let rows = visible_rows(ctx);
-        let Some(at) = resolve_cursor(&ctx.inbox_view, &rows) else {
+        let rows = stop_rows(ctx);
+        let Some(at) = cursor_pos(ctx, &rows) else {
             return;
         };
         let to = at.saturating_add_signed(by);
@@ -1120,18 +1455,139 @@ impl InboxScreen {
         ctx.needs_redraw = true;
     }
 
+    /// The group row under the cursor, `Ok(None)` when the cursor is on the fold
+    /// line, `Err(())` when there is no stop (the key is then ignored).
+    fn selected(ctx: &AppContext) -> Result<Option<InboxRow>, ()> {
+        let rows = stop_rows(ctx);
+        match cursor_pos(ctx, &rows) {
+            None => Err(()),
+            Some(at) => Ok(rows.get(at).cloned()),
+        }
+    }
+
+    fn say(ctx: &mut AppContext, message: String) {
+        ctx.status_message = Some((message, std::time::Instant::now()));
+        ctx.needs_redraw = true;
+    }
+
+    /// `Enter` / `Space` (D-06): toggle the group row's expansion; on the fold
+    /// line open or close the fold under the sub-cursor (Triage is refused). It
+    /// never launches anything and never moves the cursor.
+    fn toggle_key(&self, ctx: &mut AppContext) {
+        let rows = stop_rows(ctx);
+        let Some(at) = cursor_pos(ctx, &rows) else {
+            return;
+        };
+        if let Some(row) = rows.get(at) {
+            let key = row.key();
+            if !ctx.inbox_view.expanded.remove(&key) {
+                ctx.inbox_view.expanded.insert(key);
+            }
+            self.follow(ctx, &rows, at);
+        } else {
+            match sub_cursor(ctx) {
+                Some(Fold::Todos) => Self::say(
+                    ctx,
+                    "Todos are only counted here: see gsd-meta-manager inbox --include todos"
+                        .to_owned(),
+                ),
+                Some(fold) => {
+                    let was_open = ctx.inbox_view.open_folds.remove(&fold);
+                    if !was_open {
+                        ctx.inbox_view.open_folds.insert(fold);
+                    }
+                }
+                None => {}
+            }
+        }
+        ctx.needs_redraw = true;
+    }
+
+    /// `Left` / `Right` on the fold line: move the sub-cursor between the
+    /// folds; on a group row they are swallowed.
+    fn fold_step(&self, ctx: &mut AppContext, forward: bool) {
+        let rows = stop_rows(ctx);
+        let Some(at) = cursor_pos(ctx, &rows) else {
+            return;
+        };
+        if at < rows.len() {
+            return;
+        }
+        let folds = fleet_folds(ctx);
+        let here = sub_cursor(ctx).and_then(|fold| folds.iter().position(|f| *f == fold));
+        let to = match (here, forward) {
+            (Some(i), true) => (i + 1).min(folds.len().saturating_sub(1)),
+            (Some(i), false) => i.saturating_sub(1),
+            (None, _) => 0,
+        };
+        ctx.inbox_view.fold_cursor = folds.get(to).copied();
+        ctx.needs_redraw = true;
+    }
+
+    /// `o` (D-08): the group's source file in the read-only viewer. No stop, no
+    /// message; the fold line says what to select.
+    fn open_key(&self, ctx: &mut AppContext) -> ScreenAction {
+        let row = match Self::selected(ctx) {
+            Err(()) => return ScreenAction::None,
+            Ok(None) => {
+                Self::say(ctx, "Select a group row to open its file".to_owned());
+                return ScreenAction::None;
+            }
+            Ok(Some(row)) => row,
+        };
+        match owner_actions::open_target(ctx, &row.alias, &row.src.files) {
+            Ok(action) => {
+                ctx.needs_redraw = true;
+                action
+            }
+            Err(message) => {
+                Self::say(ctx, message);
+                ScreenAction::None
+            }
+        }
+    }
+
+    /// `g` (D-07): the project's detail view on the Phases tab with the Owner
+    /// block on the same group. The inbox pushes the screen itself: the App's
+    /// project-open helper refuses once more than the dashboard is on the stack.
+    /// The dashboard table is re-selected to the project when it is listed there,
+    /// so the dashboard below shows the same project when the owner comes back
+    /// all the way (RESEARCH Pitfall 6).
+    fn goto_key(&self, ctx: &mut AppContext) -> ScreenAction {
+        let row = match Self::selected(ctx) {
+            Err(()) => return ScreenAction::None,
+            Ok(None) => {
+                Self::say(ctx, "Select a group row to open its project".to_owned());
+                return ScreenAction::None;
+            }
+            Ok(Some(row)) => row,
+        };
+        if let Some(index) = ctx.filtered_aliases.iter().position(|a| *a == row.alias) {
+            ctx.table_state.select(Some(index));
+        }
+        ctx.needs_redraw = true;
+        ScreenAction::Push(Box::new(super::detail::DetailScreen::opened_on_owner(
+            row.alias.clone(),
+            &row.src.key,
+            ctx,
+        )))
+    }
+
     /// `v` (D-11, D-12): run the selected group's command through `launch`. No
-    /// stop, no message, no action.
+    /// stop, no message, no action; on the fold line the status says what to do.
     pub(crate) fn run_key(
         &self,
         ctx: &mut AppContext,
         launch: &mut dyn FnMut(&owner_actions::RunPlan) -> String,
     ) -> ScreenAction {
-        let rows = visible_rows(ctx);
-        let Some(at) = resolve_cursor(&ctx.inbox_view, &rows) else {
-            return ScreenAction::None;
+        let row = match Self::selected(ctx) {
+            Err(()) => return ScreenAction::None,
+            Ok(None) => {
+                Self::say(ctx, "Select a group row to run its command".to_owned());
+                return ScreenAction::None;
+            }
+            Ok(Some(row)) => row,
         };
-        let row = &rows[at];
         // The group is looked up by its identity as the key is pressed; a BLOCKED
         // aggregate has no single group, so its row's own group stands in and the
         // run path refuses it by lane.
@@ -1140,8 +1596,7 @@ impl InboxScreen {
             .and_then(|digest| owner_block::group_for(digest, &row.src.key))
             .unwrap_or_else(|| row.src.group.clone());
         let message = owner_actions::run_group(ctx, &row.alias, &group, launch);
-        ctx.status_message = Some((message, std::time::Instant::now()));
-        ctx.needs_redraw = true;
+        Self::say(ctx, message);
         ScreenAction::None
     }
 }
@@ -1180,6 +1635,20 @@ impl Screen for InboxScreen {
                 ScreenAction::Push(Box::new(super::help::HelpScreen::new()))
             }
             KeyCode::Char('v') => self.run_key(ctx, &mut owner_actions::launch_real),
+            KeyCode::Char('o') => self.open_key(ctx),
+            KeyCode::Char('g') => self.goto_key(ctx),
+            KeyCode::Enter | KeyCode::Char(' ') => {
+                self.toggle_key(ctx);
+                ScreenAction::None
+            }
+            KeyCode::Left => {
+                self.fold_step(ctx, false);
+                ScreenAction::None
+            }
+            KeyCode::Right => {
+                self.fold_step(ctx, true);
+                ScreenAction::None
+            }
             KeyCode::Char(key) if LaneFilter::of_key(key).is_some() => {
                 self.filter_key(ctx, key);
                 ScreenAction::None
@@ -1222,6 +1691,7 @@ impl Screen for InboxScreen {
             return;
         }
         let width = usize::from(area.width);
+        self.width.set(width);
         let spacer = u16::from(area.height >= 7);
         // The spacer goes first on a short screen, then the fold line (UI-SPEC).
         let fold_height = u16::from(area.height >= 6 && !fold_totals(ctx).is_empty());
@@ -1239,7 +1709,10 @@ impl Screen for InboxScreen {
             header,
         );
 
-        let rows = visible_rows(ctx);
+        let rows = stop_rows(ctx);
+        let cursor = cursor_pos(ctx, &rows);
+        let has_stops = cursor.is_some();
+        let on_fold = cursor.is_some_and(|at| at >= rows.len());
         if rows.is_empty() {
             self.viewport.set(usize::from(body.height));
             frame.render_widget(
@@ -1253,23 +1726,29 @@ impl Screen for InboxScreen {
                 rule,
                 fold,
                 footer,
-                has_stops: false,
+                has_stops,
+                on_fold,
+                hint: None,
             };
             self.render_pinned(frame, ctx, pinned, width);
             return;
         }
-        let every: Vec<Cells> = inbox_rows(ctx)
+        let mut every: Vec<Cells> = inbox_rows(ctx)
             .iter()
+            .chain(rows.iter().filter(|row| row.fold.is_some()))
             .filter_map(|row| cells_of(ctx, row))
             .collect();
+        every.shrink_to_fit();
         let grid = grid_for_inbox(&every, width);
-        let plan = body_plan(&rows);
+        let plan = full_plan(ctx, &rows, width);
         let height = usize::from(body.height);
         self.viewport.set(height);
-        let cursor = resolve_cursor(&ctx.inbox_view, &rows);
-        let offset = match cursor {
+        let offset = match cursor.filter(|at| *at < rows.len()) {
             Some(at) => scroll_for(ctx.inbox_view.offset, &plan, at, height),
-            None => 0,
+            None => ctx
+                .inbox_view
+                .offset
+                .min(plan.len().saturating_sub(height.max(1))),
         };
         let mut lines: Vec<Line<'static>> = Vec::with_capacity(height);
         for (line_index, item) in plan.iter().enumerate().skip(offset).take(height) {
@@ -1277,18 +1756,43 @@ impl Screen for InboxScreen {
                 BodyItem::Title(section) => {
                     title_line(*section, (line_index == 0).then_some(&grid), width)
                 }
-                BodyItem::Row(index) => match cells_of(ctx, &rows[*index]) {
-                    Some(c) => row_line(&c, &grid, width, cursor == Some(*index)),
-                    None => Line::from(""),
-                },
+                BodyItem::Sub(label) => owner_block::dim_line(2, label, width),
+                BodyItem::Extra(line) => line.clone(),
+                BodyItem::Row(index) => {
+                    let row = &rows[*index];
+                    match cells_of(ctx, row) {
+                        Some(c) => {
+                            let expanded = ctx.inbox_view.expanded.contains(&row.key());
+                            let mut line =
+                                row_line(&c, &grid, width, cursor == Some(*index), expanded);
+                            if row.fold == Some(Fold::Acknowledged) {
+                                for span in &mut line.spans {
+                                    span.style = span.style.add_modifier(Modifier::DIM);
+                                }
+                            }
+                            line
+                        }
+                        None => Line::from(""),
+                    }
+                }
             });
         }
         frame.render_widget(Paragraph::new(lines), body);
+        let hint = (height > 0 && plan.len() > height).then(|| {
+            format!(
+                " {}-{} of {}",
+                offset + 1,
+                (offset + height).min(plan.len()),
+                plan.len()
+            )
+        });
         let pinned = Pinned {
             rule,
             fold,
             footer,
-            has_stops: true,
+            has_stops,
+            on_fold,
+            hint,
         };
         self.render_pinned(frame, ctx, pinned, width);
     }
@@ -1767,7 +2271,10 @@ mod tests {
         // The footer lists only the keys that work.
         assert!(text[29].contains("[j/k]move"), "{:?}", text[29]);
         assert!(text[29].contains("[v]run command"));
-        assert!(!text[29].contains("[g]"));
+        assert!(text[29].contains("[Enter]expand"));
+        assert!(text[29].contains("[g]o to project"));
+        assert!(text[29].contains("[o]pen file"));
+        assert!(!text[29].contains("[A]"), "not yet: 37-06");
         // The first row is Cyan + BOLD, every cell of it.
         let buffer = draw(&ctx, 100, 30);
         let y = (closes + 1) as u16;
@@ -2163,21 +2670,37 @@ mod tests {
         }
         // The footer ladder: the first rung that fits.
         let ctx = inbox_fleet_ctx();
-        let footer = |w: usize| line_text(&footer_line(&ctx, w, true));
+        let footer = |w: usize| line_text(&footer_line(&ctx, w, true, false));
         assert_eq!(
-            footer(47),
-            "  [j/k]move  [v]run command  [Esc]back  [?]help"
+            footer(92),
+            "  [j/k]move  [Enter]expand  [g]o to project  [v]run command  [o]pen file  [Esc]back  [?]help"
         );
-        assert_eq!(footer(46), "  [j/k]move  [v]run  [Esc]back  [?]help");
-        assert_eq!(footer(37), "  [j/k]move  [v]run  [?]help");
-        assert_eq!(footer(26), "  [v]run  [?]help");
+        assert_eq!(
+            footer(91),
+            "  [j/k]move  [Enter]expand  [g]oto  [v]run  [o]pen  [Esc]back  [?]help"
+        );
+        assert_eq!(
+            footer(69),
+            "  [j/k]move  [Enter]expand  [g]oto  [v]run  [o]pen  [?]help"
+        );
+        assert_eq!(footer(58), "  [v]run  [?]help");
         assert_eq!(
             footer(10),
             "  [v]run \u{2026}",
             "the minimal rung is cut to W"
         );
+        // The cursor on the fold line has its own hints (UI-SPEC "Footer ladder").
+        let fold = |w: usize| line_text(&footer_line(&ctx, w, true, true));
         assert_eq!(
-            line_text(&footer_line(&ctx, 80, false)),
+            fold(80),
+            "  [\u{2190}/\u{2192}]fold  [Enter]expand  [j/k]move  [Esc]back  [?]help"
+        );
+        assert_eq!(
+            fold(50),
+            "  [\u{2190}/\u{2192}]fold  [Enter]expand  [j/k]move  [?]help"
+        );
+        assert_eq!(
+            line_text(&footer_line(&ctx, 80, false, false)),
             "  [Esc]back  [?]help",
             "no stops, no movement or run key"
         );
@@ -2269,9 +2792,9 @@ mod tests {
             );
             assert!(header_line(&ctx, w, None).width() <= w, "header W {w}");
             assert!(
-                footer_line(&ctx, w, true).width() <= w,
+                footer_line(&ctx, w, true, false).width() <= w,
                 "footer W {w}: {:?}",
-                footer_line(&ctx, w, true)
+                footer_line(&ctx, w, true, false)
             );
             if let Some(fold) = fold_line(&ctx, w) {
                 assert!(fold.width() <= w, "fold W {w}");
@@ -2279,7 +2802,10 @@ mod tests {
             for row in &rows {
                 let c = cells_of(&ctx, row).expect("cells");
                 for cursor in [false, true] {
-                    assert!(row_line(&c, &grid, w, cursor).width() <= w, "row W {w}");
+                    assert!(
+                        row_line(&c, &grid, w, cursor, false).width() <= w,
+                        "row W {w}"
+                    );
                 }
             }
             for section in [Section::TestCloses, Section::Blocked] {
@@ -2868,15 +3394,17 @@ mod tests {
     fn j_k_home_end_and_paging_move_the_cursor() {
         let mut ctx = inbox_fleet_ctx();
         let mut screen = open_inbox_and(&mut ctx, &[]);
-        let rows = visible_rows(&ctx);
-        let at = |ctx: &AppContext| resolve_cursor(&ctx.inbox_view, &rows).unwrap();
+        let rows = stop_rows(&ctx);
+        let at = |ctx: &AppContext| cursor_pos(ctx, &rows).unwrap();
         assert_eq!(at(&ctx), 0);
+        // The fold line is the last stop: `End` and `j` past the last row reach it.
         screen.handle_key(KeyCode::End, KeyModifiers::NONE, &mut ctx);
-        assert_eq!(at(&ctx), rows.len() - 1);
+        assert_eq!(at(&ctx), rows.len(), "End lands on the fold line");
+        assert_eq!(ctx.inbox_view.cursor, Some(InboxStop::FoldLine));
         screen.handle_key(KeyCode::Char('j'), KeyModifiers::NONE, &mut ctx);
-        assert_eq!(at(&ctx), rows.len() - 1, "stays on the last row");
+        assert_eq!(at(&ctx), rows.len(), "stays on the fold line");
         screen.handle_key(KeyCode::Char('k'), KeyModifiers::NONE, &mut ctx);
-        assert_eq!(at(&ctx), rows.len() - 2);
+        assert_eq!(at(&ctx), rows.len() - 1);
         screen.handle_key(KeyCode::Home, KeyModifiers::NONE, &mut ctx);
         assert_eq!(at(&ctx), 0);
         screen.handle_key(KeyCode::Char('k'), KeyModifiers::NONE, &mut ctx);
@@ -2914,6 +3442,731 @@ mod tests {
                     "h={height} c={cursor}"
                 );
             }
+        }
+    }
+
+    // --- drill-in: expand, folds, scroll, `o`, `g` (37-05) -------------------
+
+    /// Draw `screen` itself (so it learns the width and the body height, as in the
+    /// app, where a frame always precedes a key) and return the rows as text.
+    fn render_with(screen: &dyn Screen, ctx: &AppContext, w: u16, h: u16) -> Vec<String> {
+        let mut terminal = Terminal::new(TestBackend::new(w, h)).expect("backend");
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                screen.render(frame, area, ctx);
+            })
+            .expect("draw");
+        let buffer = terminal.backend().buffer().clone();
+        (0..h)
+            .map(|y| {
+                (0..w)
+                    .map(|x| buffer.cell((x, y)).expect("cell").symbol().to_owned())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    /// Each key after a frame, as the app delivers them.
+    fn keys_on(
+        screen: &mut dyn Screen,
+        ctx: &mut AppContext,
+        codes: &[KeyCode],
+        (w, h): (u16, u16),
+    ) -> Vec<ScreenAction> {
+        codes
+            .iter()
+            .map(|code| {
+                let _ = render_with(&*screen, ctx, w, h);
+                screen.handle_key(*code, KeyModifiers::NONE, ctx)
+            })
+            .collect()
+    }
+
+    fn line_of<'a>(text: &'a [String], needle: &str) -> (usize, &'a String) {
+        text.iter()
+            .enumerate()
+            .find(|(_, l)| l.contains(needle))
+            .unwrap_or_else(|| panic!("no row with {needle:?} in {text:#?}"))
+    }
+
+    /// The fleet plus archived and acknowledged groups, so the folds have rows.
+    fn fleet_with_folds() -> AppContext {
+        let mut ctx = inbox_fleet_ctx();
+        let archived = |phase: &'static str, name: &'static str, label: &str, rank: usize| {
+            let mut g = test_group(phase, name, 2, false, 40, false);
+            g.scope = Scope::Archived {
+                label: label.to_owned(),
+                rank,
+            };
+            g.file = format!("milestones/{label}/{phase}-UAT.md");
+            g
+        };
+        let holly = ctx.owner_digests.get_mut("holly-pics").unwrap();
+        holly.groups.push(archived("03", "old-gate", "v1.0", 0));
+        holly.groups.push(archived("02", "older-gate", "v0.9", 1));
+        let mut ack = test_group("08", "signed-off", 1, false, 5, false);
+        ack.acknowledged = true;
+        ctx.owner_digests
+            .get_mut("elm-shop")
+            .unwrap()
+            .groups
+            .push(ack);
+        ctx
+    }
+
+    fn key_of(ctx: &AppContext, alias: &str, phase: &str) -> InboxKey {
+        stop_rows(ctx)
+            .iter()
+            .find(|row| row.alias == alias && row.src.group.phase == phase)
+            .unwrap_or_else(|| panic!("no row {alias} {phase}"))
+            .key()
+    }
+
+    fn put_cursor_on(ctx: &mut AppContext, alias: &str, phase: &str) {
+        let rows = stop_rows(ctx);
+        let at = rows
+            .iter()
+            .position(|row| row.alias == alias && row.src.group.phase == phase)
+            .expect("a row");
+        ctx.inbox_view.cursor = Some(InboxStop::Row(rows[at].key()));
+        ctx.inbox_view.cursor_index = at;
+    }
+
+    #[test]
+    fn enter_expands_a_group_with_its_run_line() {
+        let mut ctx = inbox_fleet_ctx();
+        let mut screen = open_inbox_and(&mut ctx, &[]);
+        let size = (100, 30);
+        keys_on(&mut *screen, &mut ctx, &[KeyCode::Enter], size);
+        let text = render_with(&*screen, &ctx, size.0, size.1);
+        let (at, row) = line_of(&text, "dune-app");
+        assert!(row.starts_with(">\u{25be} dune-app"), "{row:?}");
+        // Items at column 5, five of six, then `... 1 more`; the file and the
+        // command at column 5.
+        for i in 0..5 {
+            assert_eq!(text[at + 1 + i].trim_end(), format!("     check {i}"));
+        }
+        assert_eq!(text[at + 6].trim_end(), "     \u{2026} 1 more");
+        assert_eq!(text[at + 7].trim_end(), "     file phases/24/24-UAT.md");
+        assert_eq!(text[at + 8].trim_end(), "     run /gsd-verify-work 24");
+        assert!(
+            text[at + 9].starts_with(" \u{25b8} alder-api"),
+            "{:?}",
+            text[at + 9]
+        );
+        // Everything under the row but the items is DIM.
+        let buffer = draw_screen(&*screen, &ctx, size);
+        let dim_at = |y: usize| {
+            buffer
+                .cell((6, y as u16))
+                .unwrap()
+                .modifier
+                .contains(Modifier::DIM)
+        };
+        assert!(!dim_at(at + 1), "the item line is not DIM");
+        assert!(dim_at(at + 6) && dim_at(at + 7) && dim_at(at + 8));
+        // The cursor stays on the row; `j` moves into the next group row.
+        keys_on(&mut *screen, &mut ctx, &[KeyCode::Char('j')], size);
+        let text = render_with(&*screen, &ctx, size.0, size.1);
+        assert!(line_of(&text, "alder-api")
+            .1
+            .starts_with(">\u{25b8} alder-api"));
+        assert!(line_of(&text, "dune-app")
+            .1
+            .starts_with(" \u{25be} dune-app"));
+        // `Enter` and `Space` toggle; collapsing shows nothing under the row.
+        keys_on(
+            &mut *screen,
+            &mut ctx,
+            &[KeyCode::Char('k'), KeyCode::Enter],
+            size,
+        );
+        let text = render_with(&*screen, &ctx, size.0, size.1);
+        assert!(!text.join("\n").contains("check 0"));
+        keys_on(&mut *screen, &mut ctx, &[KeyCode::Char(' ')], size);
+        assert!(render_with(&*screen, &ctx, size.0, size.1)
+            .join("\n")
+            .contains("check 0"));
+        keys_on(&mut *screen, &mut ctx, &[KeyCode::Char(' ')], size);
+        assert!(ctx.inbox_view.expanded.is_empty());
+    }
+
+    fn draw_screen(
+        screen: &dyn Screen,
+        ctx: &AppContext,
+        (w, h): (u16, u16),
+    ) -> ratatui::buffer::Buffer {
+        let mut terminal = Terminal::new(TestBackend::new(w, h)).expect("backend");
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                screen.render(frame, area, ctx);
+            })
+            .expect("draw");
+        terminal.backend().buffer().clone()
+    }
+
+    #[test]
+    fn a_group_without_a_command_has_no_run_line_and_a_blocked_row_lists_its_files() {
+        let mut ctx = inbox_fleet_ctx();
+        // iris-gate's BLOCKED row over two files; cedar's DECIDE row has no command.
+        let mut second = ctx.owner_digests["iris-gate"].groups[0].clone();
+        second.file = "phases/23/23-VERIFICATION.md".to_owned();
+        second.items = vec![item("d")];
+        ctx.owner_digests
+            .get_mut("iris-gate")
+            .unwrap()
+            .groups
+            .push(second);
+        let mut screen = open_inbox_and(&mut ctx, &[]);
+        let size = (100, 40);
+        keys_on(&mut *screen, &mut ctx, &[KeyCode::Char('4')], size);
+        keys_on(&mut *screen, &mut ctx, &[KeyCode::Enter], size);
+        let text = render_with(&*screen, &ctx, size.0, size.1).join("\n");
+        assert!(text.contains("file phases/23/23-UAT.md"), "{text}");
+        assert!(text.contains("file phases/23/23-VERIFICATION.md"));
+        assert!(!text.contains("run /"), "BLOCKED has no command");
+        keys_on(
+            &mut *screen,
+            &mut ctx,
+            &[KeyCode::Char('4'), KeyCode::Char('2')],
+            size,
+        );
+        put_cursor_on(&mut ctx, "cedar-web", "07");
+        keys_on(&mut *screen, &mut ctx, &[KeyCode::Enter], size);
+        let text = render_with(&*screen, &ctx, size.0, size.1).join("\n");
+        assert!(text.contains("file phases/07/07-CONTEXT.md"), "{text}");
+        assert!(!text.contains("run /"), "a DECIDE question has no command");
+    }
+
+    #[test]
+    fn expansion_survives_a_refresh_and_a_vanished_group_is_dropped() {
+        let mut ctx = fleet_with_folds();
+        let mut screen = open_inbox_and(&mut ctx, &[]);
+        let size = (100, 40);
+        // Expand dune-app and alder-api, open Old debt from the fold line.
+        keys_on(
+            &mut *screen,
+            &mut ctx,
+            &[
+                KeyCode::Enter,
+                KeyCode::Char('j'),
+                KeyCode::Enter,
+                KeyCode::End,
+                KeyCode::Enter,
+            ],
+            size,
+        );
+        let dune = key_of(&ctx, "dune-app", "24");
+        let alder = key_of(&ctx, "alder-api", "10");
+        assert_eq!(ctx.inbox_view.expanded.len(), 2);
+        assert!(ctx.inbox_view.open_folds.contains(&Fold::OldDebt));
+        assert_eq!(ctx.inbox_view.cursor, Some(InboxStop::FoldLine));
+        // dune-app's group vanishes on a refresh: it leaves the set, the rest stays.
+        ctx.owner_digests
+            .insert("dune-app".to_owned(), OwnerDigest::default());
+        reanchor(&mut ctx);
+        assert!(!ctx.inbox_view.expanded.contains(&dune));
+        assert!(ctx.inbox_view.expanded.contains(&alder));
+        assert!(ctx.inbox_view.open_folds.contains(&Fold::OldDebt));
+        assert_eq!(ctx.inbox_view.cursor, Some(InboxStop::FoldLine));
+        let _ = render_with(&*screen, &ctx, size.0, size.1);
+        // The same group coming back is not expanded again.
+        ctx.owner_digests.insert(
+            "dune-app".to_owned(),
+            digest(vec![test_group(
+                "24",
+                "widget-clock-faces",
+                6,
+                true,
+                2,
+                false,
+            )]),
+        );
+        reanchor(&mut ctx);
+        assert!(!ctx.inbox_view.expanded.contains(&dune));
+        // A fold whose content vanishes is closed, and the cursor leaves the fold
+        // line only when no fold is left at all.
+        ctx.owner_digests
+            .insert("holly-pics".to_owned(), OwnerDigest::default());
+        reanchor(&mut ctx);
+        assert!(!ctx.inbox_view.open_folds.contains(&Fold::OldDebt));
+        assert_eq!(ctx.inbox_view.cursor, Some(InboxStop::FoldLine));
+        for alias in ["cedar-web", "elm-shop", "lime-bug"] {
+            ctx.owner_digests
+                .insert(alias.to_owned(), OwnerDigest::default());
+        }
+        reanchor(&mut ctx);
+        assert_ne!(ctx.inbox_view.cursor, Some(InboxStop::FoldLine));
+        let _ = render_with(&*screen, &ctx, size.0, size.1);
+    }
+
+    #[test]
+    fn the_fold_line_walks_and_opens_old_debt_and_acknowledged() {
+        let mut ctx = fleet_with_folds();
+        let mut screen = open_inbox_and(&mut ctx, &[]);
+        let size = (100, 44);
+        // `j` past the last group reaches the fold line, sub-cursor on Old debt.
+        let rows = stop_rows(&ctx).len();
+        let downs = vec![KeyCode::Char('j'); rows];
+        keys_on(&mut *screen, &mut ctx, &downs, size);
+        assert_eq!(ctx.inbox_view.cursor, Some(InboxStop::FoldLine));
+        assert_eq!(sub_cursor(&ctx), Some(Fold::OldDebt));
+        let text = render_with(&*screen, &ctx, size.0, size.1);
+        let (_, fold) = line_of(&text, "Old debt");
+        assert!(fold.starts_with(">\u{25b8} Old debt"), "{fold:?}");
+        // `\u{2192}` and `\u{2190}` move the sub-cursor and clamp at the ends.
+        let seen: Vec<Option<Fold>> = [
+            KeyCode::Right,
+            KeyCode::Right,
+            KeyCode::Right,
+            KeyCode::Left,
+            KeyCode::Left,
+            KeyCode::Left,
+        ]
+        .iter()
+        .map(|code| {
+            keys_on(&mut *screen, &mut ctx, &[*code], size);
+            sub_cursor(&ctx)
+        })
+        .collect();
+        assert_eq!(
+            seen,
+            [
+                Some(Fold::Acknowledged),
+                Some(Fold::Todos),
+                Some(Fold::Todos),
+                Some(Fold::Acknowledged),
+                Some(Fold::OldDebt),
+                Some(Fold::OldDebt),
+            ]
+        );
+        // Enter opens Old debt: archived rows under DIM milestone sub-headers.
+        keys_on(&mut *screen, &mut ctx, &[KeyCode::Enter], size);
+        let text = render_with(&*screen, &ctx, size.0, size.1);
+        let v10 = line_of(&text, "  v1.0").0;
+        let v09 = line_of(&text, "  v0.9").0;
+        assert!(v10 < v09, "rank 0 before rank 1");
+        assert!(text[v10 + 1].contains("holly-pics") && text[v10 + 1].contains("03"));
+        assert!(text[v09 + 1].contains("holly-pics") && text[v09 + 1].contains("02"));
+        assert!(line_of(&text, "Old debt").1.contains("\u{25be} Old debt"));
+        let buffer = draw_screen(&*screen, &ctx, size);
+        assert!(buffer
+            .cell((2, v10 as u16))
+            .unwrap()
+            .modifier
+            .contains(Modifier::DIM));
+        // The fold rows are stops: `k` from the fold line lands on the last.
+        keys_on(&mut *screen, &mut ctx, &[KeyCode::Char('k')], size);
+        let last = stop_rows(&ctx).last().unwrap().key();
+        assert_eq!(ctx.inbox_view.cursor, Some(InboxStop::Row(last)));
+        assert_eq!(last_alias(&ctx), "holly-pics");
+        // Expanding a fold row shows its lines; `j` returns to the fold line.
+        keys_on(
+            &mut *screen,
+            &mut ctx,
+            &[KeyCode::Enter, KeyCode::Char('j')],
+            size,
+        );
+        assert_eq!(ctx.inbox_view.cursor, Some(InboxStop::FoldLine));
+        // Enter again closes Old debt.
+        keys_on(&mut *screen, &mut ctx, &[KeyCode::Enter], size);
+        assert!(ctx.inbox_view.open_folds.is_empty());
+        assert!(!render_with(&*screen, &ctx, size.0, size.1)
+            .join("\n")
+            .contains("v1.0"));
+        // Acknowledged: all rows DIM.
+        keys_on(
+            &mut *screen,
+            &mut ctx,
+            &[KeyCode::Right, KeyCode::Enter],
+            size,
+        );
+        assert!(ctx.inbox_view.open_folds.contains(&Fold::Acknowledged));
+        let text = render_with(&*screen, &ctx, size.0, size.1);
+        let (ack_line, _) = text
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, l)| l.contains("elm-shop"))
+            .unwrap();
+        let buffer = draw_screen(&*screen, &ctx, size);
+        for x in 3..11u16 {
+            assert!(
+                buffer
+                    .cell((x, ack_line as u16))
+                    .unwrap()
+                    .modifier
+                    .contains(Modifier::DIM),
+                "x={x}"
+            );
+        }
+        assert!(line_of(&text, "Acknowledged")
+            .1
+            .contains("\u{25be} Acknowledged"));
+    }
+
+    fn last_alias(ctx: &AppContext) -> String {
+        stop_rows(ctx).last().unwrap().alias.clone()
+    }
+
+    #[test]
+    fn triage_never_expands() {
+        let mut ctx = fleet_with_folds();
+        let mut screen = open_inbox_and(&mut ctx, &[]);
+        let size = (100, 30);
+        keys_on(
+            &mut *screen,
+            &mut ctx,
+            &[KeyCode::End, KeyCode::Right, KeyCode::Right],
+            size,
+        );
+        assert_eq!(sub_cursor(&ctx), Some(Fold::Todos));
+        ctx.status_message = None;
+        keys_on(&mut *screen, &mut ctx, &[KeyCode::Enter], size);
+        assert!(ctx.inbox_view.open_folds.is_empty(), "Triage never opens");
+        assert_eq!(
+            ctx.status_message.as_ref().map(|(m, _)| m.as_str()),
+            Some("Todos are only counted here: see gsd-meta-manager inbox --include todos")
+        );
+        // `Space` is refused the same way; `v`, `o` and `g` name what to select.
+        for (key, want) in [
+            ('v', "Select a group row to run its command"),
+            ('o', "Select a group row to open its file"),
+            ('g', "Select a group row to open its project"),
+        ] {
+            ctx.status_message = None;
+            let action = keys_on(&mut *screen, &mut ctx, &[KeyCode::Char(key)], size).remove(0);
+            assert!(matches!(action, ScreenAction::None), "{key}");
+            assert_eq!(
+                ctx.status_message.as_ref().map(|(m, _)| m.as_str()),
+                Some(want)
+            );
+        }
+        assert_eq!(ctx.inbox_view.cursor, Some(InboxStop::FoldLine));
+    }
+
+    #[test]
+    fn the_inbox_scrolls_with_the_cursor() {
+        let mut ctx = inbox_fleet_ctx();
+        let mut screen = open_inbox_and(&mut ctx, &[]);
+        // 14 rows: the body is 9 lines for 13 plan lines (4 titles, 9 rows).
+        let size = (100, 14);
+        let text = render_with(&*screen, &ctx, size.0, size.1);
+        let rule = text.iter().position(|l| l.starts_with('\u{2500}')).unwrap();
+        assert!(text[rule].ends_with(" 1-9 of 13"), "{:?}", text[rule]);
+        assert!(text[rule].starts_with("\u{2500}\u{2500}"));
+        // The fold line is pinned under the rule, whatever scrolls.
+        assert!(text[rule + 1].contains("Old debt"));
+        // Walking down scrolls whole rows; the cursor row is always drawn.
+        for step in 0..8 {
+            keys_on(&mut *screen, &mut ctx, &[KeyCode::Char('j')], size);
+            let text = render_with(&*screen, &ctx, size.0, size.1);
+            let rows = stop_rows(&ctx);
+            let at = cursor_pos(&ctx, &rows).unwrap();
+            let alias = &rows[at].alias;
+            assert!(
+                text.iter()
+                    .any(|l| l.starts_with(&format!(">\u{25b8} {alias}"))),
+                "step {step}: {alias} not drawn\n{text:#?}"
+            );
+            assert!(text.iter().any(|l| l.contains("Old debt")), "fold pinned");
+        }
+        let text = render_with(&*screen, &ctx, size.0, size.1);
+        let rule = text.iter().position(|l| l.starts_with('\u{2500}')).unwrap();
+        assert!(text[rule].ends_with(" 5-13 of 13"), "{:?}", text[rule]);
+        // Home brings the first section's title back with the first row.
+        keys_on(&mut *screen, &mut ctx, &[KeyCode::Home], size);
+        let text = render_with(&*screen, &ctx, size.0, size.1);
+        assert!(text
+            .iter()
+            .any(|l| l.contains("TEST \u{2014} closes a phase")));
+        assert_eq!(ctx.inbox_view.offset, 0);
+        // A section's first row brings its own title along.
+        put_cursor_on(&mut ctx, "cedar-web", "07");
+        keys_on(
+            &mut *screen,
+            &mut ctx,
+            &[KeyCode::Char('j'), KeyCode::Char('k')],
+            size,
+        );
+        let text = render_with(&*screen, &ctx, size.0, size.1);
+        assert!(text.iter().any(|l| l.trim() == "DECIDE"), "{text:#?}");
+        // `PgDn` moves by the body height minus 1 (8 stops), clamped to the end.
+        keys_on(
+            &mut *screen,
+            &mut ctx,
+            &[KeyCode::Home, KeyCode::PageDown],
+            size,
+        );
+        assert_eq!(ctx.inbox_view.cursor_index, 8);
+        keys_on(&mut *screen, &mut ctx, &[KeyCode::PageDown], size);
+        assert_eq!(ctx.inbox_view.cursor, Some(InboxStop::FoldLine));
+        keys_on(&mut *screen, &mut ctx, &[KeyCode::PageUp], size);
+        assert_eq!(ctx.inbox_view.cursor_index, 1);
+        // No hint when nothing is clipped; zero-height and zero-stop never panic.
+        let text = render_with(&*screen, &ctx, 100, 40);
+        assert!(!text.iter().any(|l| l.contains(" of ")));
+        let empty = ctx_with_aliases(&["alder-api"]);
+        let _ = render_with(&*screen, &empty, 100, 3);
+    }
+
+    // --- `o` and `g` ----------------------------------------------------------
+
+    /// `dune-app`'s project folder is a real temp dir holding its UAT file, and
+    /// its group points at it.
+    fn with_real_uat(ctx: &mut AppContext) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let phase = dir.path().join(".planning/phases/24-clock");
+        std::fs::create_dir_all(&phase).unwrap();
+        std::fs::write(phase.join("24-UAT.md"), "# Phase 24 UAT\n\n- check one\n").unwrap();
+        ctx.config.projects.get_mut("dune-app").unwrap().path = dir.path().to_path_buf();
+        ctx.owner_digests.get_mut("dune-app").unwrap().groups[0].file =
+            ".planning/phases/24-clock/24-UAT.md".to_owned();
+        dir
+    }
+
+    #[test]
+    fn o_opens_the_viewer_and_never_the_editor() {
+        let mut ctx = inbox_fleet_ctx();
+        let _dir = with_real_uat(&mut ctx);
+        let mut screen = open_inbox_and(&mut ctx, &[]);
+        let size = (100, 30);
+        let before = ctx.inbox_view.cursor.clone();
+        let action = keys_on(&mut *screen, &mut ctx, &[KeyCode::Char('o')], size).remove(0);
+        let ScreenAction::Push(mut viewer) = action else {
+            panic!("`o` pushes the viewer, never SuspendAndEdit");
+        };
+        assert_eq!(viewer.name(), "owner_file_view");
+        assert!(ctx.status_message.is_none(), "opening shows no message");
+        let text = render_with(&*viewer, &ctx, 100, 12).join("\n");
+        assert!(
+            text.contains("dune-app \u{b7} .planning/phases/24-clock/24-UAT.md"),
+            "{text}"
+        );
+        assert!(text.contains("Phase 24 UAT"));
+        // `Esc` returns; the inbox cursor is where it was.
+        let back = viewer.handle_key(KeyCode::Esc, KeyModifiers::NONE, &mut ctx);
+        assert!(matches!(back, ScreenAction::Pop));
+        assert_eq!(ctx.inbox_view.cursor, before);
+        // A missing file is a status line, no push.
+        keys_on(&mut *screen, &mut ctx, &[KeyCode::Char('j')], size);
+        let action = keys_on(&mut *screen, &mut ctx, &[KeyCode::Char('o')], size).remove(0);
+        assert!(matches!(action, ScreenAction::None));
+        assert_eq!(
+            ctx.status_message.as_ref().map(|(m, _)| m.as_str()),
+            Some("Cannot open phases/10/10-UAT.md: not readable")
+        );
+        // An empty inbox ignores the key and says nothing.
+        let mut empty = ctx_with_aliases(&["alder-api"]);
+        let mut screen = open_inbox_and(&mut empty, &[]);
+        let action = keys_on(&mut *screen, &mut empty, &[KeyCode::Char('o')], size).remove(0);
+        assert!(matches!(action, ScreenAction::None));
+        assert!(empty.status_message.is_none());
+    }
+
+    #[test]
+    fn o_on_a_blocked_row_over_two_files_points_at_expand() {
+        let mut ctx = inbox_fleet_ctx();
+        let mut second = ctx.owner_digests["iris-gate"].groups[0].clone();
+        second.file = "phases/23/23-VERIFICATION.md".to_owned();
+        ctx.owner_digests
+            .get_mut("iris-gate")
+            .unwrap()
+            .groups
+            .push(second);
+        let mut screen = open_inbox_and(&mut ctx, &[]);
+        let size = (100, 30);
+        let action = keys_on(
+            &mut *screen,
+            &mut ctx,
+            &[KeyCode::Char('4'), KeyCode::Char('o')],
+            size,
+        )
+        .remove(1);
+        assert!(matches!(action, ScreenAction::None));
+        assert_eq!(
+            ctx.status_message.as_ref().map(|(m, _)| m.as_str()),
+            Some("2 files behind this row: expand it with Enter, or press g")
+        );
+    }
+
+    #[test]
+    fn g_opens_the_project_on_the_same_group() {
+        use super::super::owner_block::Stop;
+        let mut ctx = inbox_fleet_ctx();
+        let mut screen = open_inbox_and(&mut ctx, &[]);
+        let size = (100, 30);
+        put_cursor_on(&mut ctx, "cedar-web", "05");
+        let fix_key = stop_rows(&ctx)
+            .iter()
+            .find(|r| r.alias == "cedar-web" && r.src.group.lane == Lane::Fix)
+            .unwrap()
+            .key();
+        ctx.inbox_view.cursor = Some(InboxStop::Row(fix_key.clone()));
+        let at = ctx
+            .filtered_aliases
+            .iter()
+            .position(|a| a == "cedar-web")
+            .unwrap();
+        ctx.table_state.select(Some(0));
+        let action = keys_on(&mut *screen, &mut ctx, &[KeyCode::Char('g')], size).remove(0);
+        let ScreenAction::Push(detail) = action else {
+            panic!("`g` pushes the detail view itself");
+        };
+        assert_eq!(detail.name(), "detail");
+        assert_eq!(
+            ctx.table_state.selected(),
+            Some(at),
+            "the dashboard follows"
+        );
+        assert_eq!(
+            ctx.view_cache["cedar-web"].owner_block.cursor,
+            Some(Stop::Row(fix_key.key.clone()))
+        );
+        assert!(ctx.status_message.is_none());
+        // The detail view holds the keyboard on the Owner block.
+        let opened = super::super::detail::DetailScreen::opened_on_owner(
+            "cedar-web".to_owned(),
+            &fix_key.key,
+            &mut ctx,
+        );
+        assert!(opened.owner_focused());
+        // A project the dashboard filter hides still opens, and the table stays.
+        ctx.filtered_aliases = vec!["alder-api".to_owned()];
+        ctx.table_state.select(Some(0));
+        put_cursor_on(&mut ctx, "dune-app", "24");
+        let action = keys_on(&mut *screen, &mut ctx, &[KeyCode::Char('g')], size).remove(0);
+        assert!(matches!(action, ScreenAction::Push(_)));
+        assert_eq!(ctx.table_state.selected(), Some(0));
+    }
+
+    #[test]
+    fn g_on_a_group_the_block_does_not_list_lands_on_the_tab_top() {
+        let mut ctx = fleet_with_folds();
+        // holly-pics' archived group is not a stop while its Old debt fold is closed.
+        let key = key_of_all(&ctx, "holly-pics", "03");
+        let opened = super::super::detail::DetailScreen::opened_on_owner(
+            "holly-pics".to_owned(),
+            &key,
+            &mut ctx,
+        );
+        assert!(!opened.owner_focused(), "the tab top, focus on the content");
+        assert_eq!(ctx.view_cache["holly-pics"].owner_block.cursor, None);
+        // An alias with no digest at all opens the same way.
+        let none = super::super::detail::DetailScreen::opened_on_owner(
+            "alder-api".to_owned(),
+            &key,
+            &mut ctx,
+        );
+        assert!(!none.owner_focused());
+    }
+
+    fn key_of_all(ctx: &AppContext, alias: &str, phase: &str) -> GroupKey {
+        ctx.owner_digests[alias]
+            .groups
+            .iter()
+            .find(|g| g.phase == phase)
+            .map(GroupKey::of)
+            .expect("a group")
+    }
+
+    #[test]
+    fn q_from_the_detail_view_returns_to_the_inbox() {
+        let mut ctx = inbox_fleet_ctx();
+        let mut stack: Vec<Box<dyn Screen>> = vec![Box::new(NormalScreen::new())];
+        let ScreenAction::Push(inbox) =
+            stack[0].handle_key(KeyCode::Char('i'), KeyModifiers::NONE, &mut ctx)
+        else {
+            panic!("`i` pushes the inbox");
+        };
+        stack.push(inbox);
+        let size = (120, 40);
+        // Move to the third row, then `g`.
+        for code in [KeyCode::Char('j'), KeyCode::Char('j'), KeyCode::Char('g')] {
+            let _ = render_with(&**stack.last().unwrap(), &ctx, size.0, size.1);
+            match stack
+                .last_mut()
+                .unwrap()
+                .handle_key(code, KeyModifiers::NONE, &mut ctx)
+            {
+                ScreenAction::Push(screen) => stack.push(screen),
+                ScreenAction::None => {}
+                _ => panic!("unexpected action"),
+            }
+        }
+        assert_eq!(stack.len(), 3);
+        assert_eq!(stack[2].name(), "detail");
+        let cursor = ctx.inbox_view.cursor.clone();
+        // A frame first (the app always draws before the next key), then `q`.
+        let _ = render_with(&**stack.last().unwrap(), &ctx, size.0, size.1);
+        let action =
+            stack
+                .last_mut()
+                .unwrap()
+                .handle_key(KeyCode::Char('q'), KeyModifiers::NONE, &mut ctx);
+        assert!(
+            matches!(action, ScreenAction::Pop),
+            "`q` leaves the detail view"
+        );
+        stack.pop();
+        assert_eq!(stack.last().unwrap().name(), "inbox");
+        assert_eq!(
+            ctx.inbox_view.cursor, cursor,
+            "the inbox cursor did not move"
+        );
+    }
+
+    #[test]
+    fn a_hostile_drilled_in_inbox_has_no_raw_control_cell_and_nothing_past_the_width() {
+        let hostile = "a\u{1b}[31m\u{202e}b\u{200b}c\u{7}";
+        let long = format!("{hostile}{}", "x".repeat(300));
+        let mut ctx = ctx_with_aliases(&[long.as_str()]);
+        let mut g = test_group("24", "widget", 6, true, 2, false);
+        g.phase_name = long.clone();
+        g.file = long.clone();
+        for item in &mut g.items {
+            item.name = long.clone();
+            item.expected = Some(long.clone());
+        }
+        let mut old = g.clone();
+        old.scope = Scope::Archived {
+            label: long.clone(),
+            rank: 0,
+        };
+        let mut d = digest(vec![g, old]);
+        d.archived.test = 1;
+        owe(&mut ctx, &long, d);
+        ctx.status_message = Some((
+            format!("Cannot open {long}: not readable"),
+            std::time::Instant::now(),
+        ));
+        let key = key_of(&ctx, &long, "24");
+        ctx.inbox_view.expanded.insert(key);
+        ctx.inbox_view.open_folds.insert(Fold::OldDebt);
+        for width in [80u16, 120] {
+            let rows = stop_rows(&ctx);
+            for line in full_plan(&ctx, &rows, usize::from(width)) {
+                if let BodyItem::Extra(line) = line {
+                    assert!(
+                        line.width() <= usize::from(width),
+                        "{width}: {}",
+                        line.width()
+                    );
+                }
+            }
+            let screen = InboxScreen::new();
+            let buffer = draw_screen(&screen, &ctx, (width, 40));
+            for cell in buffer.content() {
+                assert!(
+                    !cell.symbol().chars().any(char::is_control),
+                    "{:?}",
+                    cell.symbol()
+                );
+            }
+            let text = render_with(&screen, &ctx, width, 40).join("\n");
+            assert!(!text.contains('\u{1b}') && !text.contains('\u{202e}'));
         }
     }
 }

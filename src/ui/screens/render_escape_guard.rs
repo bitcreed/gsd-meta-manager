@@ -378,6 +378,7 @@ const SCREEN_IDENTITY_DISPOSITIONS: &[FixtureRow] = &[
     ("NormalScreen", "src/ui/screens/normal.rs"),
     ("OneoffScreen", "src/ui/screens/oneoff.rs"),
     ("OneoffViewerScreen", "src/ui/screens/oneoff_viewer.rs"),
+    ("OwnerFileViewScreen", "src/ui/screens/owner_file_view.rs"),
     ("PoliteStopScreen", "src/ui/screens/driver_steer.rs"),
     ("PreferencesScreen", "src/ui/screens/preferences.rs"),
     (
@@ -2285,6 +2286,28 @@ fn fixture_for(type_name: &str) -> Option<Fixture> {
                 status_message_like_app_builds_it(identity),
                 std::time::Instant::now(),
             ));
+            // 37-05: every row expanded (items, details, gaps, file and run lines),
+            // Old debt open (rows under the hostile milestone sub-header), the
+            // cursor on the fold line, and a status message from the `o` refusals.
+            let mut drilled = probe_ctx(identity);
+            drilled
+                .owner_digests
+                .insert(identity.to_string(), hostile_owner_digest(identity));
+            let keys: Vec<_> = super::inbox::inbox_rows(&drilled)
+                .iter()
+                .map(super::inbox::InboxRow::key)
+                .collect();
+            drilled.inbox_view.expanded.extend(keys);
+            drilled
+                .inbox_view
+                .open_folds
+                .insert(super::owner_block::Fold::OldDebt);
+            drilled.inbox_view.cursor = Some(super::inbox::InboxStop::FoldLine);
+            drilled.inbox_view.fold_cursor = Some(super::owner_block::Fold::OldDebt);
+            drilled.status_message = Some((
+                format!("Cannot open {identity}: not readable"),
+                std::time::Instant::now(),
+            ));
             vec![
                 one_state(
                     "inbox over hostile owner digests",
@@ -2295,6 +2318,36 @@ fn fixture_for(type_name: &str) -> Option<Fixture> {
                     "inbox with a status message",
                     with_status,
                     Box::new(super::inbox::InboxScreen::new()),
+                ),
+                one_state(
+                    "inbox expanded, Old debt open, fold line selected",
+                    drilled,
+                    Box::new(super::inbox::InboxScreen::new()),
+                ),
+            ]
+        }),
+
+        // The read-only file viewer behind `o` (37-05): the identity is the
+        // alias, the project-relative path and every line of the file, in a
+        // markdown and in a plain-text state.
+        "OwnerFileViewScreen" => Some(|identity| {
+            let text = format!("{identity}\n```\n{identity}\n```\n- {identity}");
+            vec![
+                one_state(
+                    "viewer over a markdown file",
+                    probe_ctx(identity),
+                    Box::new(super::owner_file_view::OwnerFileViewScreen::new(
+                        identity, identity, &text,
+                    )),
+                ),
+                one_state(
+                    "viewer over a plain file",
+                    probe_ctx(identity),
+                    Box::new(super::owner_file_view::OwnerFileViewScreen::new(
+                        identity,
+                        "HANDOFF.json",
+                        &text,
+                    )),
                 ),
             ]
         }),

@@ -98,7 +98,7 @@ pub(crate) fn group_for(digest: &OwnerDigest, key: &GroupKey) -> Option<OwnerGro
         .cloned()
 }
 
-fn scope_label(scope: &Scope) -> Option<String> {
+pub(crate) fn scope_label(scope: &Scope) -> Option<String> {
     match scope {
         Scope::Current => None,
         Scope::Archived { label, .. } => Some(label.clone()),
@@ -481,7 +481,7 @@ pub(crate) fn current_sources(digest: &OwnerDigest) -> Vec<RowSrc> {
     picked
 }
 
-fn archived_rank(group: &OwnerGroup) -> usize {
+pub(crate) fn archived_rank(group: &OwnerGroup) -> usize {
     match &group.scope {
         Scope::Archived { rank, .. } => *rank,
         Scope::Current => 0,
@@ -490,7 +490,7 @@ fn archived_rank(group: &OwnerGroup) -> usize {
 
 /// The rows an open Old debt shows: the archived groups the inbox lists with
 /// `--include archived`, by milestone rank, then lane.
-fn old_debt_sources(digest: &OwnerDigest) -> Vec<RowSrc> {
+pub(crate) fn old_debt_sources(digest: &OwnerDigest) -> Vec<RowSrc> {
     let filters = inbox::Filters {
         archived: true,
         ..Default::default()
@@ -505,7 +505,7 @@ fn old_debt_sources(digest: &OwnerDigest) -> Vec<RowSrc> {
 }
 
 /// The rows an open Acknowledged shows: the groups flagged `acknowledged`.
-fn acknowledged_sources(digest: &OwnerDigest) -> Vec<RowSrc> {
+pub(crate) fn acknowledged_sources(digest: &OwnerDigest) -> Vec<RowSrc> {
     let filters = inbox::Filters {
         archived: true,
         acknowledged: true,
@@ -520,6 +520,19 @@ fn acknowledged_sources(digest: &OwnerDigest) -> Vec<RowSrc> {
     groups.into_iter().map(RowSrc::single).collect()
 }
 
+/// The distinct source files behind the row with identity `key` (current, old
+/// debt or acknowledged): one for a group, several for a BLOCKED aggregate. Empty
+/// for an identity that has vanished.
+pub(crate) fn files_for(digest: &OwnerDigest, key: &GroupKey) -> Vec<String> {
+    current_sources(digest)
+        .into_iter()
+        .chain(old_debt_sources(digest))
+        .chain(acknowledged_sources(digest))
+        .find(|src| src.key == *key)
+        .map(|src| src.files)
+        .unwrap_or_default()
+}
+
 /// Archived plus acknowledged totals behind the Old debt fold (matches the CLI).
 fn old_debt_total(digest: &OwnerDigest) -> usize {
     digest.archived.test + digest.archived.blocked + digest.archived.fix + digest.archived.decide
@@ -527,7 +540,7 @@ fn old_debt_total(digest: &OwnerDigest) -> usize {
 
 /// The selectable folds (D-19): Old debt when it has content, Acknowledged when
 /// the digest carries acknowledged groups; Todos never.
-fn selectable_folds(digest: &OwnerDigest) -> Vec<Fold> {
+pub(crate) fn selectable_folds(digest: &OwnerDigest) -> Vec<Fold> {
     let mut folds = Vec::new();
     if old_debt_total(digest) > 0 {
         folds.push(Fold::OldDebt);
@@ -928,7 +941,7 @@ fn fold_line(
 // ---------------------------------------------------------------------------
 
 /// One dimmed line indented `indent` cells, every string already escaped.
-fn dim_line(indent: usize, text: &str, width: usize) -> Line<'static> {
+pub(crate) fn dim_line(indent: usize, text: &str, width: usize) -> Line<'static> {
     let text = format!("{}{text}", blanks(indent));
     Line::from(Span::styled(fit_cells(&text, width), dim()))
 }
@@ -968,31 +981,35 @@ fn gap_text(gap: &crate::state_reader::owner_items::OwnerGap) -> String {
 
 /// The lines under an expanded group row: up to five items, each with its detail
 /// and gap lines, then `... N more`, then one `file` line per distinct file.
-fn expansion_lines(src: &RowSrc, width: usize) -> Vec<Line<'static>> {
+pub(crate) fn expansion_lines(src: &RowSrc, width: usize, shift: usize) -> Vec<Line<'static>> {
     let items = src.items();
     let mut lines: Vec<Line<'static>> = Vec::new();
     for item in items.iter().take(MAX_ITEMS) {
         lines.push(Line::from(Span::raw(fit_cells(
-            &format!("    {}", item_text(item)),
+            &format!("{}{}", blanks(4 + shift), item_text(item)),
             width,
         ))));
         if let Some(detail) = detail_text(item) {
-            lines.push(dim_line(7, &detail, width));
+            lines.push(dim_line(7 + shift, &detail, width));
         }
         for gap in item.gaps.iter().take(MAX_GAPS) {
-            lines.push(dim_line(7, &gap_text(gap), width));
+            lines.push(dim_line(7 + shift, &gap_text(gap), width));
         }
         if item.gaps.len() > MAX_GAPS {
             let more = item.gaps.len() - MAX_GAPS;
-            lines.push(dim_line(7, &format!("\u{2026} {more} more gaps"), width));
+            lines.push(dim_line(
+                7 + shift,
+                &format!("\u{2026} {more} more gaps"),
+                width,
+            ));
         }
     }
     if items.len() > MAX_ITEMS {
         let more = items.len() - MAX_ITEMS;
-        lines.push(dim_line(4, &format!("\u{2026} {more} more"), width));
+        lines.push(dim_line(4 + shift, &format!("\u{2026} {more} more"), width));
     }
     for file in src.files.iter().filter(|f| !f.is_empty()) {
-        lines.push(dim_line(4, &format!("file {}", shown(file)), width));
+        lines.push(dim_line(4 + shift, &format!("file {}", shown(file)), width));
     }
     lines
 }
@@ -1059,7 +1076,7 @@ pub(crate) fn block_model(
             }
             body.push(line);
             if view.expanded.contains(&src.key) {
-                for mut extra in expansion_lines(src, width) {
+                for mut extra in expansion_lines(src, width, 0) {
                     if dimmed {
                         patch_line(&mut extra, Style::default().add_modifier(Modifier::DIM));
                     }

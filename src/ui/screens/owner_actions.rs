@@ -20,10 +20,11 @@ use crate::session_detector::ClaudeSession;
 use crate::state_reader::owner_items::{
     is_command_token, is_workstream_name, Lane, OwnerGroup, RunCommand, RunVerb,
 };
-use crate::ui::screens::AppContext;
-use std::path::PathBuf;
+use crate::ui::screens::{AppContext, ScreenAction};
+use std::path::{Path, PathBuf};
 
-use super::detail::{owner_mux_argv, owner_terminal_argv, resolve_launch_plan};
+use super::detail::{owner_mux_argv, owner_terminal_argv, resolve_launch_plan, shown};
+use super::owner_file_view::OwnerFileViewScreen;
 
 /// What `v` is about to do, fully resolved and validated.
 #[derive(Debug, Clone)]
@@ -127,6 +128,59 @@ pub(crate) fn run_group(
         Ok(plan) => launch(&plan),
         Err(message) => message,
     }
+}
+
+/// The most bytes `o` reads from a source file (D-08, T-37-14): the viewer is for
+/// the owner's own checklists, not for a log someone left in `.planning/`.
+pub(crate) const MAX_VIEW_BYTES: u64 = 1024 * 1024;
+
+/// The text of the project file `rel` (a POSIX path relative to the project
+/// root), or `None` when it may not or cannot be shown (T-37-13, T-37-14).
+///
+/// `rel` comes from a project file, so it is untrusted: both the project's
+/// `.planning/` directory and the target are canonicalized (symlinks and `..`
+/// resolved), the target must lie inside the first, be a regular file and be at
+/// most [`MAX_VIEW_BYTES`] long. Any failure is `None`; the caller says only
+/// that the file is not readable.
+pub(crate) fn read_owner_file(project_root: &Path, rel: &str) -> Option<String> {
+    let planning = project_root.join(".planning").canonicalize().ok()?;
+    let target = project_root.join(rel).canonicalize().ok()?;
+    if !target.starts_with(&planning) {
+        return None;
+    }
+    let meta = std::fs::metadata(&target).ok()?;
+    if !meta.is_file() || meta.len() > MAX_VIEW_BYTES {
+        return None;
+    }
+    let bytes = std::fs::read(&target).ok()?;
+    Some(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// `o` (D-08): read the file behind a row and push the read-only viewer, or the
+/// status line that says why not. `files` are the row's distinct source files
+/// (one for a group, several for a BLOCKED aggregate). **Called from key arms
+/// only**: the read happens on the key press, never on the render path, and
+/// nothing is spawned (T-37-16).
+pub(crate) fn open_target(
+    ctx: &AppContext,
+    alias: &str,
+    files: &[String],
+) -> Result<ScreenAction, String> {
+    let files: Vec<&String> = files.iter().filter(|f| !f.is_empty()).collect();
+    let [file] = files.as_slice() else {
+        return match files.len() {
+            0 => Err("Cannot open this row: no source file".to_owned()),
+            n => Err(format!(
+                "{n} files behind this row: expand it with Enter, or press g"
+            )),
+        };
+    };
+    let not_readable = || format!("Cannot open {}: not readable", shown(file));
+    let project = ctx.config.projects.get(alias).ok_or_else(not_readable)?;
+    let text = read_owner_file(&project.path, file).ok_or_else(not_readable)?;
+    Ok(ScreenAction::Push(Box::new(OwnerFileViewScreen::new(
+        alias, file, &text,
+    ))))
 }
 
 #[cfg(test)]
@@ -296,5 +350,114 @@ mod tests {
         // A failure passes through unchanged.
         let failed = "Tab-switching requires running inside tmux or herdr (none detected)";
         assert_eq!(focus_status(failed.to_owned(), &cmd), failed);
+    }
+
+    // --- `o`: the contained read (37-05) -----------------------------------
+
+    /// A project root with `.planning/phases/24-x/24-UAT.md` and a registry entry.
+    fn project_with_uat(alias: &str) -> (tempfile::TempDir, AppContext) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let phase = dir.path().join(".planning/phases/24-x");
+        std::fs::create_dir_all(&phase).unwrap();
+        std::fs::write(phase.join("24-UAT.md"), "# UAT\n\n- a check\n").unwrap();
+        let mut ctx = ctx_with_aliases(&[alias]);
+        ctx.config.projects.get_mut(alias).unwrap().path = dir.path().to_path_buf();
+        (dir, ctx)
+    }
+
+    #[test]
+    fn read_owner_file_stays_inside_planning() {
+        let (dir, _ctx) = project_with_uat("alder-api");
+        let root = dir.path();
+        let ok = ".planning/phases/24-x/24-UAT.md";
+        assert_eq!(
+            read_owner_file(root, ok).as_deref(),
+            Some("# UAT\n\n- a check\n")
+        );
+        // Missing, a directory, and a path that climbs out with `..`.
+        assert_eq!(read_owner_file(root, ".planning/phases/24-x/nope.md"), None);
+        assert_eq!(read_owner_file(root, ".planning/phases"), None);
+        std::fs::write(root.join("outside.md"), "secret").unwrap();
+        assert_eq!(read_owner_file(root, ".planning/../outside.md"), None);
+        assert_eq!(read_owner_file(root, "../outside.md"), None);
+        assert_eq!(read_owner_file(root, "outside.md"), None);
+        // No `.planning/` at all.
+        let bare = tempfile::tempdir().unwrap();
+        std::fs::write(bare.path().join("x.md"), "x").unwrap();
+        assert_eq!(read_owner_file(bare.path(), "x.md"), None);
+        // One byte over the cap is refused, the cap itself is read.
+        let big = root.join(".planning/big.md");
+        std::fs::write(&big, vec![b'a'; MAX_VIEW_BYTES as usize]).unwrap();
+        assert!(read_owner_file(root, ".planning/big.md").is_some());
+        std::fs::write(&big, vec![b'a'; MAX_VIEW_BYTES as usize + 1]).unwrap();
+        assert_eq!(read_owner_file(root, ".planning/big.md"), None);
+        // Invalid UTF-8 is decoded lossily, not refused.
+        std::fs::write(root.join(".planning/odd.md"), [b'o', 0xff, b'k']).unwrap();
+        assert_eq!(
+            read_owner_file(root, ".planning/odd.md").as_deref(),
+            Some("o\u{fffd}k")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_out_of_planning_is_not_followed() {
+        let (dir, _ctx) = project_with_uat("alder-api");
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret.md"), "secret").unwrap();
+        let link = dir.path().join(".planning/link.md");
+        std::os::unix::fs::symlink(outside.path().join("secret.md"), &link).unwrap();
+        assert_eq!(read_owner_file(dir.path(), ".planning/link.md"), None);
+        // A symlink to a file inside `.planning/` is fine.
+        let inner = dir.path().join(".planning/inner.md");
+        std::os::unix::fs::symlink(dir.path().join(".planning/phases/24-x/24-UAT.md"), &inner)
+            .unwrap();
+        assert!(read_owner_file(dir.path(), ".planning/inner.md").is_some());
+        // The whole `.planning/` pointing elsewhere is not inside itself either.
+        let swapped = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("a.md"), "a").unwrap();
+        std::os::unix::fs::symlink(outside.path(), swapped.path().join(".planning")).unwrap();
+        // The target resolves under the (canonical) `.planning/`, so it is read:
+        // the containment is relative to wherever `.planning/` really is.
+        assert!(read_owner_file(swapped.path(), ".planning/a.md").is_some());
+    }
+
+    #[test]
+    fn open_target_pushes_the_viewer_or_says_why_not() {
+        let (_dir, ctx) = project_with_uat("alder-api");
+        let one = vec![".planning/phases/24-x/24-UAT.md".to_owned()];
+        let Ok(ScreenAction::Push(screen)) = open_target(&ctx, "alder-api", &one) else {
+            panic!("a readable file pushes the viewer");
+        };
+        assert_eq!(screen.name(), "owner_file_view");
+        let missing = vec![".planning/phases/24-x/gone.md".to_owned()];
+        assert_eq!(
+            open_target(&ctx, "alder-api", &missing).err().as_deref(),
+            Some("Cannot open .planning/phases/24-x/gone.md: not readable")
+        );
+        assert_eq!(
+            open_target(&ctx, "nobody", &one).err().as_deref(),
+            Some("Cannot open .planning/phases/24-x/24-UAT.md: not readable")
+        );
+        // A hostile file name is escaped in the message.
+        let hostile = vec![".planning/\u{1b}[2J.md".to_owned()];
+        let message = open_target(&ctx, "alder-api", &hostile).err().unwrap();
+        assert!(!message.chars().any(char::is_control), "{message:?}");
+    }
+
+    #[test]
+    fn a_blocked_row_over_two_files_points_at_expand() {
+        let (_dir, ctx) = project_with_uat("alder-api");
+        let two = vec![
+            ".planning/phases/24-x/24-UAT.md".to_owned(),
+            ".planning/phases/24-x/24-VERIFICATION.md".to_owned(),
+        ];
+        assert_eq!(
+            open_target(&ctx, "alder-api", &two).err().as_deref(),
+            Some("2 files behind this row: expand it with Enter, or press g")
+        );
+        // Duplicates and blanks do not count as files.
+        let dup = vec![".planning/phases/24-x/24-UAT.md".to_owned(), String::new()];
+        assert!(open_target(&ctx, "alder-api", &dup).is_ok());
     }
 }
