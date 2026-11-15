@@ -506,7 +506,7 @@ pub(super) fn help_lines(experimental: bool) -> Vec<Line<'static>> {
             "Nothing waits on you here (blocked work is not yours to act on)",
         ),
         row("(+N old)", "N more test, decide or fix items in archived milestones (detail Old debt adds blocked ones)"),
-        row("(blank)", "No owner data loaded yet"),
+        row("(blank)", "No owner data: not loaded yet, or the folder or its .planning/ is gone"),
         Line::from(""),
         // ── The badge legend. Glyph plus text label on every row, so nothing
         // is carried by colour alone.
@@ -918,7 +918,7 @@ mod tests {
                 "Nothing waits on you here (blocked work is not yours to act on)",
             ),
             ("(+N old)", "N more test, decide or fix items in archived milestones (detail Old debt adds blocked ones)"),
-            ("(blank)", "No owner data loaded yet"),
+            ("(blank)", "No owner data: not loaded yet, or the folder or its .planning/ is gone"),
         ];
         let lines: Vec<&str> = text.lines().collect();
         for (key, description) in rows {

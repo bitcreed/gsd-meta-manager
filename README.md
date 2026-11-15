@@ -382,7 +382,7 @@ and shows at most two lanes for the current milestone, always in the order `deci
 | `fix 2` | open debug investigations count as fixes but not as phases |
 | `·` | nothing waits on you (blocked work is not yours to act on) |
 | `(+3 old)` | 3 more test, decide or fix items in archived milestones (the detail Old debt fold also counts blocked ones, so it can be higher) |
-| (blank) | the owner data has not loaded yet |
+| (blank) | no owner data: it has not loaded yet, or the folder or its `.planning/` is gone |
 
 A summary line under the table adds the totals over the visible rows
 (`You: test 43 in 20 phases (17 close) · decide 9 · fix 9 phases · 11 of 20 projects`)
