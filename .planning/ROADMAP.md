@@ -227,7 +227,7 @@ Plans:
 **Depends on:** Phase 36
 **Verification:** Automatic snapshots plus human UAT
 **UI hint**: yes
-**Plans:** 3/7 plans executed
+**Plans:** 4/7 plans executed
 
 Plans:
 **Wave 1**
@@ -240,7 +240,7 @@ Plans:
 - [x] 37-03-PLAN.md — Tracer: `i`, `j`, `v` starts the group's command (SC1): `InboxScreen` rows and ordering, `owner_actions` focus-or-launch with launch-time re-validation, D-21 `v`, `i` help and README rows
 
 **Wave 4** *(blocked on Wave 3 completion)*
-- [ ] 37-04-PLAN.md — Legible and live: unreadable vs loading (no forever-loading), SC3 refresh, column narrowing, header/fold/footer ladders, lane filters, empty states, SC2 at 100x30
+- [x] 37-04-PLAN.md — Legible and live: unreadable vs loading (no forever-loading), SC3 refresh, column narrowing, header/fold/footer ladders, lane filters, empty states, SC2 at 100x30
 
 **Wave 5** *(blocked on Wave 4 completion)*
 - [ ] 37-05-PLAN.md — Drill-in: `o` read-only viewer, expand, folds, scroll, `g` to the project on the same group, D-21 `o`
