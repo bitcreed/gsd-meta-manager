@@ -197,7 +197,7 @@ Plans:
 **Depends on:** Phase 35
 **Verification:** Automatic buffer snapshots plus human UAT
 **UI hint**: yes
-**Plans:** 2/4 plans executed
+**Plans:** 3/4 plans executed
 
 Plans:
 **Wave 1**
@@ -207,7 +207,7 @@ Plans:
 - [x] 36-02-PLAN.md — `You:` summary line with `[i] inbox`, `has owner work` AttentionFirst rank, `/y [lane]` filter, help and README (dashboard part)
 
 **Wave 3** *(blocked on Wave 2 completion)*
-- [ ] 36-03-PLAN.md — Owner block drawn on the detail Phases tab: shared `closes after` wording, header, group rows, collapsed folds line, zero-row gate, escape coverage
+- [x] 36-03-PLAN.md — Owner block drawn on the detail Phases tab: shared `closes after` wording, header, group rows, collapsed folds line, zero-row gate, escape coverage
 
 **Wave 4** *(blocked on Wave 3 completion)*
 - [ ] 36-04-PLAN.md — Owner block interaction and docs: `DetailFocus::Owner`, expandable groups, opening folds, refresh-safe cursor and scroll, footers, help and README (block part)
