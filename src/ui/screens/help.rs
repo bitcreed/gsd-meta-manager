@@ -231,7 +231,7 @@ pub(super) fn help_lines(experimental: bool) -> Vec<Line<'static>> {
         row("s", SORT_ROW),
         row(
             "i",
-            "Owner inbox (for now: shows how to run gsd-meta-manager inbox)",
+            "Owner inbox: one list of what waits on you across every project (decide, test, fix)",
         ),
         row("a", "Add project"),
         row("c", "Create new project"),
@@ -482,7 +482,7 @@ pub(super) fn help_lines(experimental: bool) -> Vec<Line<'static>> {
         ),
         Line::from(""),
         // ── What the You column and the summary line say (36 D-21). Only
-        // surfaces this build has; the inbox screen is Phase 37.
+        // surfaces this build has; the inbox screen's own help section is 37-07.
         heading("Owner Work"),
         Line::from(""),
         row(
@@ -889,7 +889,7 @@ mod tests {
             ),
             (
                 "i",
-                "Owner inbox (for now: shows how to run gsd-meta-manager inbox)",
+                "Owner inbox: one list of what waits on you across every project (decide, test, fix)",
             ),
             ("/term/y", "Search all columns, owner-work rows only"),
             ("//y", "Every project with owner work (decide, test or fix)"),
@@ -941,10 +941,6 @@ mod tests {
         };
         assert!(at("Owner Work") > at("Filter Syntax"));
         assert!(at("Owner Work") < at("Dashboard Badges"));
-        assert!(
-            !text.contains("opens the inbox screen"),
-            "the inbox screen is not built yet"
-        );
     }
 
     #[test]

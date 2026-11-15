@@ -256,7 +256,7 @@ Options:
 | `b`              | Open project detail on the Backlog tab |
 | `/`              | Filter projects. Type to filter; `Enter` keeps the filter, `Esc` clears it. The help overlay (`?`) lists the filter syntax; `//y [lane]` lists projects with owner work |
 | `s`              | Toggle sort: alphabetical / attention first (waiting on a human, then owner work, then driven) |
-| `i`              | Owner inbox (currently shows how to run `gsd-meta-manager inbox`) |
+| `i`              | Owner inbox: every project's owner work in one list |
 | `a`              | Add an existing project: type an alias, `Enter`, then its path, `Enter`; `Esc` cancels |
 | `c`              | Create a new project: enter a name, then a path (`Tab` completes it), then confirm with `y` / `Enter` |
 | `d`              | Remove the selected project from the registry after a `y` / `n` confirm; project files are not deleted |

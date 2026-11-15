@@ -1,6 +1,7 @@
 use super::driver_confirm::{DriverAction, DriverConfirmScreen};
 use super::enqueue::EnqueueScreen;
 use super::help::HelpScreen;
+use super::owner_actions;
 use super::owner_block;
 use super::queue_delete_confirm::QueueDeleteConfirmScreen;
 use super::{AppContext, Screen, ScreenAction};
@@ -2141,10 +2142,12 @@ impl DetailScreen {
     /// A key while the Phases tab's Owner block has the keyboard (36-04, D-20).
     ///
     /// Same contract as [`Self::handle_waves_pane_key`]: `Some(action)` consumes
-    /// the key, `None` lets it fall through to the main match. The block is
-    /// read-only: `Enter`/`Space` only toggle view state, and `e`, `o`, `v`, `A`
+    /// the key, `None` lets it fall through to the main match. `Enter`/`Space` only
+    /// toggle view state; `v` runs the selected group through the same
+    /// `owner_actions` functions the inbox uses (37-03, D-21), and `e`, `o`, `A`
     /// and `y` are swallowed so none of them reaches Content (`e` would enqueue)
-    /// nor launches, opens, acknowledges or copies anything (Phase 37 owns those).
+    /// nor opens, acknowledges or copies anything (the later Phase 37 plans own
+    /// those).
     fn handle_owner_block_key(
         &mut self,
         code: KeyCode,
@@ -2190,7 +2193,9 @@ impl DetailScreen {
         let page = isize::try_from(self.owner_viewport_rows.get().max(1)).unwrap_or(1);
         let on_fold_line = view.cursor == Some(owner_block::Stop::FoldLine);
         let mut moved = Moved::Within;
+        let mut run = false;
         match code {
+            KeyCode::Char('v') => run = true,
             KeyCode::Char('j') | KeyCode::Down => {
                 moved = owner_block::move_cursor(view, &sk.stops, Move::Next)
             }
@@ -2217,7 +2222,7 @@ impl DetailScreen {
             KeyCode::Esc => {
                 self.focus = DetailFocus::Content;
             }
-            // `e o v A y`, `←`/`→` off the fold line and every other key.
+            // `e o A y`, `←`/`→` off the fold line and every other key.
             _ => {}
         }
         match moved {
@@ -2225,8 +2230,49 @@ impl DetailScreen {
             Moved::PastFirst => self.focus = DetailFocus::TabBar,
             Moved::Within => {}
         }
+        if run {
+            return Some(self.owner_run(ctx, &mut owner_actions::launch_real));
+        }
         ctx.needs_redraw = true;
         Some(ScreenAction::None)
+    }
+
+    /// `v` on the Owner block (37-03, D-21): run the group under the cursor through
+    /// [`owner_actions::run_group`], the same function the inbox's `v` calls. The
+    /// result is the status line; the fold line and a vanished or BLOCKED row get
+    /// their own copy. `launch` is a parameter so tests record instead of launching.
+    fn owner_run(
+        &mut self,
+        ctx: &mut AppContext,
+        launch: &mut dyn FnMut(&owner_actions::RunPlan) -> String,
+    ) -> ScreenAction {
+        let message = {
+            let Some(digest) = ctx.owner_digest(&self.alias) else {
+                return ScreenAction::None;
+            };
+            let view = ctx
+                .view_cache
+                .get(&self.alias)
+                .map(|cache| cache.owner_block.clone())
+                .unwrap_or_default();
+            let sk = owner_block::skeleton(digest, &view);
+            let Some(at) = owner_block::resolve_cursor(&view, &sk.stops) else {
+                return ScreenAction::None;
+            };
+            match &sk.stops[at] {
+                owner_block::Stop::FoldLine => "Select a group row to run its command".to_owned(),
+                owner_block::Stop::Row(key) => match owner_block::group_for(digest, key) {
+                    Some(group) => owner_actions::run_group(ctx, &self.alias, &group, launch),
+                    None if key.lane == "blocked" => {
+                        "No command for BLOCKED work: unblock it first".to_owned()
+                    }
+                    None => "No command for this row".to_owned(),
+                },
+            }
+        };
+        ctx.status_message = Some((message, std::time::Instant::now()));
+        ctx.needs_redraw = true;
+        ScreenAction::None
     }
 
     /// `↑`/`k` from the first phase row: enter the Owner block on its last stop
@@ -24147,6 +24193,61 @@ mod tests {
         }
     }
 
+    /// The Owner inbox's GUI argv (37-03, T-37-04): the two authored elements of
+    /// [`launch_terminal_argv`] plus the validated command as ONE third element.
+    /// A fourth element, or a command split on its spaces, fails here.
+    #[test]
+    fn owner_terminal_argv_carries_no_untrusted_element_and_is_pinned_at_three() {
+        use crate::state_reader::owner_items::{RunCommand, RunVerb};
+        let commands = [
+            RunCommand {
+                verb: RunVerb::VerifyWork,
+                phase: Some("24".to_owned()),
+                workstream: None,
+            },
+            RunCommand {
+                verb: RunVerb::PlanPhaseGaps,
+                phase: Some("16".to_owned()),
+                workstream: Some("v14".to_owned()),
+            },
+            RunCommand {
+                verb: RunVerb::Debug,
+                phase: None,
+                workstream: None,
+            },
+        ];
+        for (term, expected_separator) in [
+            ("kitty", "-e"),
+            ("alacritty", "-e"),
+            ("gnome-terminal", "--"),
+            ("xterm", "-e"),
+            ("ptyxis", "--"),
+            ("xdg-terminal-exec", "--"),
+            ("x-terminal-emulator", "-e"),
+            ("wezterm", "-e"),
+            ("/usr/bin/gnome-terminal", "--"),
+        ] {
+            for command in &commands {
+                assert_eq!(
+                    owner_terminal_argv(term, command),
+                    vec![
+                        expected_separator.to_string(),
+                        "claude".to_string(),
+                        command.to_string()
+                    ],
+                    "owner_terminal_argv({term:?}, {command}) must be the separator, the \
+                     program name and the command as one element"
+                );
+            }
+        }
+        // The multiplexer vector has the same shape behind a leading `env`.
+        let mux = owner_mux_argv(&commands[0]).expect("a valid argv");
+        assert_eq!(
+            mux.as_slice(),
+            ["env", "claude", "/gsd-verify-work 24"].map(String::from)
+        );
+    }
+
     /// **The capability half of the fix** (T-21-27-06, prohibition 2).
     ///
     /// Every launcher [`resolve_launch_plan`] can return, plus the unbounded
@@ -36315,7 +36416,7 @@ mod tests {
         let mut screen = owner_screen(&ctx);
         key(&mut screen, &mut ctx, KeyCode::Up);
         let before = owner_view_of(&ctx);
-        for c in ['e', 'o', 'v', 'A', 'y', 'x'] {
+        for c in ['e', 'o', 'A', 'y', 'x'] {
             let action = key(&mut screen, &mut ctx, KeyCode::Char(c));
             assert!(matches!(action, ScreenAction::None), "{c}");
             assert_eq!(screen.focus, DetailFocus::Owner, "{c}");
@@ -36332,6 +36433,66 @@ mod tests {
         assert_eq!(before.cursor, after.cursor);
         assert!(after.expanded.is_empty() && after.open_folds.is_empty());
         assert!(ctx.status_message.is_none() && ctx.error_message.is_none());
+    }
+
+    #[test]
+    fn owner_block_v_runs_the_selected_group() {
+        use crate::config::RegisteredProject;
+        let mut ctx = owner_ctx(Some(sample()));
+        ctx.config.projects.insert(
+            TEST_ALIAS.to_string(),
+            RegisteredProject {
+                path: std::path::PathBuf::from("/nonexistent/proj"),
+                added: "2026-07-29".to_string(),
+                driver_opt_in: None,
+                extra: Default::default(),
+            },
+        );
+        let mut screen = owner_screen(&ctx);
+        let at = |ctx: &mut AppContext, stop: Stop| {
+            ctx.view_cache
+                .entry(TEST_ALIAS.to_string())
+                .or_default()
+                .owner_block
+                .cursor = Some(stop);
+        };
+        let mut runs: Vec<(std::path::PathBuf, String)> = Vec::new();
+        let mut run = |ctx: &mut AppContext, screen: &mut DetailScreen| {
+            ctx.status_message = None;
+            screen.owner_run(ctx, &mut |plan| {
+                runs.push((plan.cwd.clone(), plan.command.to_string()));
+                "ran".to_owned()
+            });
+            ctx.status_message.as_ref().map(|(m, _)| m.clone())
+        };
+        // A TEST row: one recorded launch for exactly that group.
+        at(&mut ctx, Stop::Row(key_24()));
+        assert_eq!(run(&mut ctx, &mut screen).as_deref(), Some("ran"));
+        // The fold line is not a group.
+        at(&mut ctx, Stop::FoldLine);
+        assert_eq!(
+            run(&mut ctx, &mut screen).as_deref(),
+            Some("Select a group row to run its command")
+        );
+        // A BLOCKED aggregate row has no command.
+        let digest = sample();
+        let blocked = digest
+            .groups
+            .iter()
+            .find(|g| g.lane == crate::state_reader::owner_items::Lane::Blocked)
+            .expect("a BLOCKED group");
+        at(&mut ctx, Stop::Row(GroupKey::aggregate(blocked)));
+        assert_eq!(
+            run(&mut ctx, &mut screen).as_deref(),
+            Some("No command for BLOCKED work: unblock it first")
+        );
+        assert_eq!(
+            runs,
+            [(
+                std::path::PathBuf::from("/nonexistent/proj"),
+                "/gsd-verify-work 24".to_owned()
+            )]
+        );
     }
 
     #[test]
