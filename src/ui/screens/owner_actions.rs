@@ -161,12 +161,26 @@ pub(crate) fn read_owner_file(project_root: &Path, rel: &str) -> Option<String> 
     if !target.starts_with(&planning) {
         return None;
     }
-    let meta = std::fs::metadata(&target).ok()?;
-    if !meta.is_file() || meta.len() > MAX_VIEW_BYTES {
+    // One handle for the check and the read: a file swapped or grown after the
+    // size check cannot be read past the cap (WR-06, T-37-14).
+    let file = std::fs::File::open(&target).ok()?;
+    if !file.metadata().ok()?.is_file() {
         return None;
     }
-    let bytes = std::fs::read(&target).ok()?;
+    let bytes = read_capped(file, MAX_VIEW_BYTES)?;
     Some(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// At most `cap` bytes of `source`; `None` when it holds more, or cannot be read.
+/// Reads one byte past the cap and no further, however long the source is.
+fn read_capped(source: impl std::io::Read, cap: u64) -> Option<Vec<u8>> {
+    use std::io::Read as _;
+    let mut bytes = Vec::new();
+    source
+        .take(cap.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .ok()?;
+    (u64::try_from(bytes.len()).ok()? <= cap).then_some(bytes)
 }
 
 /// `o` (D-08): read the file behind a row and push the read-only viewer, or the
@@ -1098,6 +1112,17 @@ mod tests {
             read_owner_file(root, ".planning/odd.md").as_deref(),
             Some("o\u{fffd}k")
         );
+    }
+
+    /// WR-06: the read is bounded by the cap itself, not by an earlier size check
+    /// a growing or swapped file can outrun.
+    #[test]
+    fn read_capped_stops_one_byte_past_the_cap() {
+        assert_eq!(read_capped(&b"abc"[..], 3), Some(b"abc".to_vec()));
+        assert_eq!(read_capped(&b"abcd"[..], 3), None);
+        assert_eq!(read_capped(&b""[..], 0), Some(Vec::new()));
+        // A source with no end is refused after cap + 1 bytes, not read forever.
+        assert_eq!(read_capped(std::io::repeat(b'a'), 1024), None);
     }
 
     #[cfg(unix)]

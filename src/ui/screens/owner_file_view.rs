@@ -22,6 +22,10 @@ fn title_for(alias: &str, path: &str) -> String {
     format!(" {} \u{b7} {} ", shown(alias), shown(path))
 }
 
+/// The most lines the viewer holds: the scroll offset and `Paragraph::scroll` are
+/// `u16`, so a line past this could never be reached (WR-06).
+const MAX_LINES: usize = u16::MAX as usize;
+
 pub struct OwnerFileViewScreen {
     title: String,
     /// The file as lines, escaped once at push time.
@@ -35,13 +39,22 @@ impl OwnerFileViewScreen {
     /// A viewer over `text`: markdown files through the Docs renderer, anything
     /// else (`HANDOFF.json`) as one escaped line per text line.
     pub fn new(alias: &str, path: &str, text: &str) -> Self {
-        let lines = if path.to_ascii_lowercase().ends_with(".md") {
+        let mut lines = if path.to_ascii_lowercase().ends_with(".md") {
             crate::archive::render_markdown_lines(text)
         } else {
             text.lines()
                 .map(|line| Line::from(Span::raw(shown(line))))
                 .collect()
         };
+        if lines.len() > MAX_LINES {
+            // Say so instead of letting a long file look complete.
+            let hidden = lines.len() - (MAX_LINES - 1);
+            lines.truncate(MAX_LINES - 1);
+            lines.push(Line::from(Span::styled(
+                format!("\u{2026} {hidden} more lines not shown"),
+                Style::default().add_modifier(Modifier::DIM),
+            )));
+        }
         Self {
             title: title_for(alias, path),
             lines,
@@ -143,6 +156,7 @@ impl Screen for OwnerFileViewScreen {
             Style::default().add_modifier(Modifier::BOLD),
         ));
         let inner = block.inner(area);
+        // `new` caps the line count at `u16::MAX`, so this never saturates.
         let total = u16::try_from(self.lines.len()).unwrap_or(u16::MAX);
         self.viewport.set(ViewportMetrics {
             total_lines: total,
@@ -246,6 +260,27 @@ mod tests {
             press(&mut screen, &mut ctx, KeyCode::Char('e')),
             ScreenAction::None
         ));
+    }
+
+    /// WR-06: a file with more lines than a `u16` scroll can reach says so.
+    #[test]
+    fn a_file_past_the_scroll_range_ends_with_a_notice() {
+        let ctx = ctx_with_aliases(&["alder-api"]);
+        let text = many_lines(70_000);
+        let mut screen = OwnerFileViewScreen::new("alder-api", ".planning/HANDOFF.json", &text);
+        assert_eq!(screen.line_count(), usize::from(u16::MAX));
+        let mut ctx = ctx;
+        let _ = draw(&screen, &ctx, 60, 6);
+        screen.handle_key(KeyCode::End, KeyModifiers::NONE, &mut ctx);
+        let shown = draw(&screen, &ctx, 60, 6);
+        let hidden = 70_000 - (usize::from(u16::MAX) - 1);
+        assert!(
+            shown.contains(&format!("\u{2026} {hidden} more lines not shown")),
+            "{shown}"
+        );
+        // A file that fits gets no notice.
+        let fits = OwnerFileViewScreen::new("alder-api", ".planning/a.json", &many_lines(10));
+        assert_eq!(fits.line_count(), 10);
     }
 
     #[test]
