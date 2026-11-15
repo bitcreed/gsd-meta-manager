@@ -2642,12 +2642,313 @@ mod tests {
         assert!(!narrow.contains("test 2"), "no cell below 100:\n{narrow}");
     }
 
+    /// Counts-only digest, as the fleet literals need it.
+    fn counts(test: usize, closeable: usize, decide: usize, fix_phases: usize) -> OwnerDigest {
+        OwnerDigest {
+            test,
+            closeable_phases: closeable,
+            decide,
+            fix_phases,
+            ..OwnerDigest::default()
+        }
+    }
+
+    /// The 15-project fleet of the UI-SPEC "Fixture fleet" table (synthetic
+    /// names, counts only). `juno-pending` gets no digest; `fir-sync` is paused.
+    /// Statuses and one missing folder spread the rows over Green, Yellow, Red
+    /// and the default color, for the quiet-color test.
+    pub(super) fn owner_fleet_ctx() -> AppContext {
+        let aliases = [
+            "alder-api",
+            "birch-cli",
+            "cedar-web",
+            "dune-app",
+            "elm-shop",
+            "fir-sync",
+            "gum-tool",
+            "holly-pics",
+            "iris-blocked",
+            "juno-pending",
+            "kale-triple",
+            "lime-debug",
+            "maple-mixed",
+            "nettle-old",
+            "oak-flat",
+        ];
+        let mut ctx = ctx_with_aliases(&aliases);
+        pause(&mut ctx, "fir-sync");
+        ctx.project_states.get_mut("alder-api").unwrap().status = "executing".to_string();
+        ctx.project_states.get_mut("birch-cli").unwrap().status = "verifying".to_string();
+        ctx.project_states.get_mut("cedar-web").unwrap().presence = ProjectPresence::FolderMissing;
+        ctx.project_states.get_mut("dune-app").unwrap().status = "blocked".to_string();
+
+        owe(&mut ctx, "alder-api", counts(3, 1, 0, 0));
+        owe(&mut ctx, "birch-cli", counts(10, 4, 0, 0));
+        owe(&mut ctx, "cedar-web", counts(6, 0, 0, 4));
+        owe(&mut ctx, "dune-app", counts(12, 3, 0, 0));
+        owe(&mut ctx, "elm-shop", counts(0, 0, 1, 2));
+        owe(&mut ctx, "fir-sync", counts(0, 0, 1, 0));
+        owe(&mut ctx, "gum-tool", OwnerDigest::default());
+        let mut holly = OwnerDigest::default();
+        holly.archived.test = 3;
+        owe(&mut ctx, "holly-pics", holly);
+        owe(
+            &mut ctx,
+            "iris-blocked",
+            OwnerDigest {
+                blocked: 4,
+                ..OwnerDigest::default()
+            },
+        );
+        owe(&mut ctx, "kale-triple", counts(5, 0, 2, 1));
+        owe(
+            &mut ctx,
+            "lime-debug",
+            OwnerDigest {
+                fix_debug: 2,
+                ..OwnerDigest::default()
+            },
+        );
+        owe(
+            &mut ctx,
+            "maple-mixed",
+            OwnerDigest {
+                fix_phases: 1,
+                fix_debug: 1,
+                ..OwnerDigest::default()
+            },
+        );
+        let mut nettle = counts(0, 0, 1, 0);
+        nettle.archived.test = 2;
+        owe(&mut ctx, "nettle-old", nettle);
+        owe(&mut ctx, "oak-flat", counts(4, 0, 0, 0));
+        ctx.recompute_filtered_aliases();
+        ctx
+    }
+
+    /// The fleet's expected `You` cell per alias (UI-SPEC "Fixture fleet").
+    const FLEET_CELLS: [(&str, &str); 15] = [
+        ("alder-api", "test 3 \u{2192} closes 1"),
+        ("birch-cli", "test 10 \u{2192} closes 4"),
+        ("cedar-web", "test 6 \u{b7} fix 4 ph"),
+        ("dune-app", "test 12 \u{2192} closes 3"),
+        ("elm-shop", "decide 1 \u{b7} fix 2 ph"),
+        ("fir-sync", "decide 1"),
+        ("gum-tool", "\u{b7}"),
+        ("holly-pics", "\u{b7} (+3 old)"),
+        ("iris-blocked", "\u{b7}"),
+        ("juno-pending", ""),
+        ("kale-triple", "decide 2 \u{b7} test 5"),
+        ("lime-debug", "fix 2"),
+        ("maple-mixed", "fix 2"),
+        ("nettle-old", "decide 1 (+2 old)"),
+        ("oak-flat", "test 4"),
+    ];
+
+    /// The trimmed text of `row` between the `You` and `Progress` header columns,
+    /// measured from the rendered header like [`status_cell_text`].
+    pub(super) fn you_cell_text(rows: &[Vec<(String, Color)>], row: &[(String, Color)]) -> String {
+        let (start, end) = you_span(rows);
+        row[start..end]
+            .iter()
+            .map(|(s, _)| s.as_str())
+            .collect::<String>()
+            .trim()
+            .to_string()
+    }
+
+    /// The `You` column's [start, end) cell range, from the rendered header.
+    fn you_span(rows: &[Vec<(String, Color)>]) -> (usize, usize) {
+        let header = row_with(rows, "Progress");
+        let start = find_in_row(header, "You").expect("You header");
+        let end = find_in_row(header, "Progress").expect("Progress header");
+        (start, end)
+    }
+
+    #[test]
+    fn the_you_tier_resolves_the_specified_column_widths() {
+        // UI-SPEC "Resolved column widths": Alias, Phase, Status, You, Progress, Backlog.
+        let table: [(u16, [u16; 6]); 5] = [
+            (100, [18, 19, 13, 21, 11, 9]),
+            (120, [23, 30, 13, 21, 14, 10]),
+            (140, [27, 36, 18, 21, 17, 12]),
+            (160, [31, 41, 25, 21, 19, 14]),
+            (200, [39, 51, 39, 21, 23, 18]),
+        ];
+        for (width, expected) in table {
+            let (headers, constraints) = dashboard_columns(width);
+            assert_eq!(headers.len(), 6, "six columns at {width}");
+            let inner = width - 2 - 2;
+            let got: Vec<u16> = Layout::horizontal(constraints)
+                .flex(Flex::Start)
+                .spacing(1)
+                .split(Rect::new(0, 0, inner, 1))
+                .iter()
+                .map(|r| r.width)
+                .collect();
+            assert_eq!(got, expected, "resolved widths at {width}");
+        }
+        assert_eq!(status_column_cells(100), 13);
+        assert_eq!(status_column_cells(120), 13);
+        assert!(status_column_cells(200) >= 22);
+        // The boundary: the cell vector and the header agree at 99 and 100.
+        assert_eq!(dashboard_columns(99).0.len(), 5);
+        assert_eq!(dashboard_columns(100).0.len(), 6);
+    }
+
+    #[test]
+    fn below_100_columns_the_dashboard_ignores_owner_digests() {
+        let loaded = owner_fleet_ctx();
+        let mut bare = owner_fleet_ctx();
+        bare.owner_digests.clear();
+        for width in [60u16, 80, 99] {
+            let with = rendered_text(&render_dashboard_cells(&loaded, width, 20));
+            let without = rendered_text(&render_dashboard_cells(&bare, width, 20));
+            assert_eq!(with, without, "byte-identical at {width}");
+            assert!(
+                !with.iter().any(|line| line.contains("You")),
+                "no You header at {width}"
+            );
+        }
+        let wide = rendered_text(&render_dashboard_cells(&loaded, 100, 20));
+        assert!(wide.iter().any(|line| line.contains("You")));
+    }
+
+    #[test]
+    fn the_you_column_shows_every_fleet_cell_at_100_120_and_140() {
+        let ctx = owner_fleet_ctx();
+        for width in [100u16, 120, 140] {
+            let rows = render_dashboard_cells(&ctx, width, 20);
+            for (alias, expected) in FLEET_CELLS {
+                let row = row_with(&rows, alias);
+                assert_eq!(
+                    you_cell_text(&rows, row),
+                    expected,
+                    "{alias} at width {width}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn sc1_the_three_closeable_test_projects_read_legibly_at_120() {
+        let ctx = owner_fleet_ctx();
+        let rows = render_dashboard_cells(&ctx, 120, 20);
+        for (alias, form) in [
+            ("alder-api", "test 3 \u{2192} closes 1"),
+            ("birch-cli", "test 10 \u{2192} closes 4"),
+            ("dune-app", "test 12 \u{2192} closes 3"),
+        ] {
+            let row = row_with(&rows, alias);
+            assert_eq!(you_cell_text(&rows, row), form, "{alias} is unclipped");
+        }
+        // Every non-blank value starts in the same column.
+        let (start, _) = you_span(&rows);
+        for (alias, expected) in FLEET_CELLS {
+            if expected.is_empty() {
+                continue;
+            }
+            let row = row_with(&rows, alias);
+            let first = expected.chars().next().unwrap().to_string();
+            assert_eq!(row[start].0, first, "{alias} starts at column {start}");
+        }
+    }
+
+    #[test]
+    fn sc2_blocked_and_archived_only_projects_show_no_lane_text() {
+        let ctx = owner_fleet_ctx();
+        let rows = render_dashboard_cells(&ctx, 120, 20);
+        let blocked = you_cell_text(&rows, row_with(&rows, "iris-blocked"));
+        let archived = you_cell_text(&rows, row_with(&rows, "holly-pics"));
+        assert_eq!(blocked, "\u{b7}");
+        assert_eq!(archived, "\u{b7} (+3 old)");
+        for cell in [blocked, archived] {
+            for word in ["test", "decide", "fix"] {
+                assert!(!cell.contains(word), "{cell:?} holds {word}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_you_cell_is_quiet_on_every_row_color() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let ctx = owner_fleet_ctx();
+        let mut terminal = Terminal::new(TestBackend::new(120, 20)).expect("terminal");
+        let screen = NormalScreen::new();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                Screen::render(&screen, frame, area, &ctx);
+            })
+            .expect("draw");
+        let buffer = terminal.backend().buffer().clone();
+        let rows = render_dashboard_cells(&ctx, 120, 20);
+        let (start, end) = you_span(&rows);
+
+        let mut row_colors = std::collections::HashSet::new();
+        for (alias, expected) in FLEET_CELLS {
+            let y = rows
+                .iter()
+                .position(|r| find_in_row(r, alias).is_some())
+                .expect("row") as u16;
+            // The status cell's row color shows on the alias column's text.
+            let alias_x = find_in_row(&rows[y as usize], alias).unwrap() as u16;
+            row_colors.insert(format!("{:?}", buffer.cell((alias_x, y)).unwrap().fg));
+            if expected.is_empty() {
+                continue;
+            }
+            let dim_expected = expected == "\u{b7}" || expected == "\u{b7} (+3 old)";
+            for x in start..end {
+                let cell = buffer.cell((x as u16, y)).unwrap();
+                if cell.symbol().trim().is_empty() {
+                    continue;
+                }
+                assert_eq!(
+                    cell.fg,
+                    Color::Reset,
+                    "{alias} cell {x} {:?}",
+                    cell.symbol()
+                );
+                if dim_expected {
+                    assert!(
+                        cell.modifier.contains(Modifier::DIM),
+                        "{alias} {:?} is dim",
+                        cell.symbol()
+                    );
+                }
+            }
+            if expected == "decide 1 (+2 old)" {
+                let old_x = start + expected.find('(').unwrap();
+                assert!(buffer
+                    .cell((old_x as u16, y))
+                    .unwrap()
+                    .modifier
+                    .contains(Modifier::DIM));
+            }
+        }
+        assert!(
+            row_colors.len() >= 3,
+            "the fleet must cover several row colors, got {row_colors:?}"
+        );
+    }
+
+    #[test]
+    fn a_project_without_a_digest_has_a_blank_you_cell() {
+        let ctx = owner_fleet_ctx();
+        let rows = render_dashboard_cells(&ctx, 120, 20);
+        let juno = row_with(&rows, "juno-pending");
+        assert_eq!(you_cell_text(&rows, juno), "");
+        let (start, end) = you_span(&rows);
+        assert!(juno[start..end].iter().all(|(s, _)| s == " "));
+    }
+
     #[test]
     fn test_dashboard_columns_header_and_width_counts_match() {
         // Header vector and width vector must stay the same length at every
         // tier, with Status always at index 2 — the invariant that keeps the
         // per-row cell vector in `render_main` from drifting out of step.
-        for width in [200u16, 120, 80, 79, 60, 59, 40, 20] {
+        for width in [200u16, 120, 100, 99, 80, 79, 60, 59, 40, 20] {
             let (headers, widths) = dashboard_columns(width);
             assert_eq!(
                 headers.len(),
