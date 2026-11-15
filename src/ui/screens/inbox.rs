@@ -3617,7 +3617,11 @@ mod tests {
         assert_eq!(opened[0].0, PathBuf::from("/nonexistent/dune-app"));
         assert_eq!(
             opened[0].1,
-            ["env", "claude", "/gsd-verify-work 24"].map(String::from)
+            [
+                crate::ui::screens::detail::scrubbed_program(),
+                vec!["/gsd-verify-work 24".to_owned()]
+            ]
+            .concat()
         );
         assert_eq!(
             ctx.status_message.as_ref().map(|(m, _)| m.as_str()),
@@ -3636,7 +3640,11 @@ mod tests {
         assert_eq!(opened[0].0, PathBuf::from("/nonexistent/alder-api"));
         assert_eq!(
             opened[0].1,
-            ["env", "claude", "/gsd-verify-work 10"].map(String::from)
+            [
+                crate::ui::screens::detail::scrubbed_program(),
+                vec!["/gsd-verify-work 10".to_owned()]
+            ]
+            .concat()
         );
     }
 

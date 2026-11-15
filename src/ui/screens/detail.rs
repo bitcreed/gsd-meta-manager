@@ -3085,22 +3085,38 @@ fn mux_launch_argv() -> Result<crate::multiplexer::ExecArgv, crate::multiplexer:
 pub(crate) fn owner_mux_argv(
     cmd: &crate::state_reader::owner_items::RunCommand,
 ) -> Result<crate::multiplexer::ExecArgv, crate::multiplexer::MuxError> {
-    let mut argv = vec!["env".to_string()];
-    argv.extend(claude_launch_args());
+    let mut argv = owner_scrubbed_program();
     argv.push(cmd.to_string());
     crate::multiplexer::ExecArgv::new(argv)
 }
 
+/// `env -u VAR ... claude`: the program an Owner inbox launch runs, with the
+/// workstream and session-pointer variables the acknowledge child also drops
+/// (`owner_actions::ACK_ENV_REMOVE`) removed from the new session's environment.
+/// Inherited from this TUI they would make a root-scoped command (`--ws` absent)
+/// resolve to another workstream (37 IN-02). Every element is authored here.
+fn owner_scrubbed_program() -> Vec<String> {
+    let mut argv = vec!["env".to_string()];
+    for var in super::owner_actions::ACK_ENV_REMOVE {
+        argv.push("-u".to_string());
+        argv.push((*var).to_string());
+    }
+    argv.extend(claude_launch_args());
+    argv
+}
+
 /// The GUI-terminal argv for an Owner inbox command: the separator from
-/// [`terminal_program_separator`], `claude`, then the validated command as one
-/// element. Three elements exactly, pinned by
+/// [`terminal_program_separator`], the scrubbed `env -u VAR ... claude` program
+/// of [`owner_scrubbed_program`], then the validated command as one final
+/// element. Every element but the last is authored here, pinned by
 /// `owner_terminal_argv_carries_no_untrusted_element_and_is_pinned_at_three`: the
 /// first two are authored here, the third is the re-validated command string.
 pub(crate) fn owner_terminal_argv(
     term: &str,
     cmd: &crate::state_reader::owner_items::RunCommand,
 ) -> Vec<String> {
-    let mut argv = launch_terminal_argv(term);
+    let mut argv = vec![terminal_program_separator(term).to_string()];
+    argv.extend(owner_scrubbed_program());
     argv.push(cmd.to_string());
     argv
 }
@@ -3131,6 +3147,17 @@ pub(crate) fn owner_terminal_argv(
 fn launch_terminal_argv(term: &str) -> Vec<String> {
     let mut argv = vec![terminal_program_separator(term).to_string()];
     argv.extend(claude_launch_args());
+    argv
+}
+
+/// `env -u VAR ... claude`, the test twin of `owner_scrubbed_program`.
+#[cfg(test)]
+pub(crate) fn scrubbed_program() -> Vec<String> {
+    let mut argv = vec!["env".to_owned()];
+    for var in crate::ui::screens::owner_actions::ACK_ENV_REMOVE {
+        argv.extend(["-u".to_owned(), (*var).to_owned()]);
+    }
+    argv.push("claude".to_owned());
     argv
 }
 
@@ -24418,11 +24445,12 @@ mod tests {
             for command in &commands {
                 assert_eq!(
                     owner_terminal_argv(term, command),
-                    vec![
-                        expected_separator.to_string(),
-                        "claude".to_string(),
-                        command.to_string()
-                    ],
+                    [
+                        vec![expected_separator.to_string()],
+                        scrubbed_program(),
+                        vec![command.to_string()]
+                    ]
+                    .concat(),
                     "owner_terminal_argv({term:?}, {command}) must be the separator, the \
                      program name and the command as one element"
                 );
@@ -24432,8 +24460,13 @@ mod tests {
         let mux = owner_mux_argv(&commands[0]).expect("a valid argv");
         assert_eq!(
             mux.as_slice(),
-            ["env", "claude", "/gsd-verify-work 24"].map(String::from)
+            [scrubbed_program(), vec!["/gsd-verify-work 24".to_owned()]].concat()
         );
+        // IN-02: the session selectors are removed, never inherited.
+        for var in ["GSD_WORKSTREAM", "GSD_SESSION_KEY", "TMUX_PANE"] {
+            let at = mux.as_slice().iter().position(|e| e == var).expect(var);
+            assert_eq!(mux.as_slice()[at - 1], "-u");
+        }
     }
 
     /// **The capability half of the fix** (T-21-27-06, prohibition 2).
