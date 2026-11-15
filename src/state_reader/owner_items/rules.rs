@@ -71,7 +71,7 @@ fn place(item: &AuditItem, file_status: &str) -> Placement {
 }
 
 /// `^\d+[A-Za-z]?(\.\d+)*$`.
-pub(super) fn is_command_token(token: &str) -> bool {
+pub(crate) fn is_command_token(token: &str) -> bool {
     let bytes = token.as_bytes();
     let mut at = bytes.iter().take_while(|b| b.is_ascii_digit()).count();
     if at == 0 {
@@ -97,7 +97,7 @@ pub(super) fn is_command_token(token: &str) -> bool {
 }
 
 /// `^[A-Za-z0-9._-]+$`: the identity alphabet, spelled once in `text`.
-fn is_workstream_name(name: &str) -> bool {
+pub(crate) fn is_workstream_name(name: &str) -> bool {
     !name.is_empty() && name.chars().all(crate::text::is_identity_char)
 }
 

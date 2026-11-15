@@ -800,17 +800,14 @@ impl Screen for NormalScreen {
                 ctx.needs_redraw = true;
                 ScreenAction::None
             }
-            // Interim `i` (36 D-12): the inbox screen lands in Phase 37, so
-            // until then the key only says how to open it. It pushes nothing,
-            // launches nothing and writes nothing. Phase 37 replaces this arm.
+            // The Owner inbox (37-03, D-01). `i` resets the inbox's view state so
+            // every visit starts on the first row, and pushes the screen; `Esc`
+            // and `q` pop back here with the selection, sort and filter as they
+            // were. No status message: the 36 interim message is gone.
             KeyCode::Char('i') => {
-                ctx.status_message = Some((
-                    "Inbox screen not built yet: run gsd-meta-manager inbox in a terminal"
-                        .to_string(),
-                    std::time::Instant::now(),
-                ));
+                ctx.inbox_view = Default::default();
                 ctx.needs_redraw = true;
-                ScreenAction::None
+                ScreenAction::Push(Box::new(super::inbox::InboxScreen::new()))
             }
             // Mouse capture toggle (quick 260926-dyf, D-06 / I-2). Runtime
             // only; App flips the desired state and says so. Free: nothing in
@@ -1755,6 +1752,7 @@ mod tests {
             event_tx: None,
             reparse_dispatches: 0,
             owner_digests: HashMap::new(),
+            inbox_view: Default::default(),
             agent_views: HashMap::new(),
             agents_scan_in_flight: false,
             sort_mode: crate::ui::screens::SortMode::default(),
@@ -2974,20 +2972,46 @@ mod tests {
     }
 
     #[test]
-    fn the_i_key_points_at_the_inbox_command() {
+    fn the_i_key_opens_the_inbox_screen() {
         let mut ctx = owner_fleet_ctx();
         let mut screen = NormalScreen::new();
         let action = screen.handle_key(KeyCode::Char('i'), KeyModifiers::NONE, &mut ctx);
-        assert!(matches!(action, ScreenAction::None));
-        assert_eq!(
-            ctx.status_message.as_ref().map(|(m, _)| m.as_str()),
-            Some("Inbox screen not built yet: run gsd-meta-manager inbox in a terminal")
-        );
+        assert!(matches!(action, ScreenAction::Push(_)));
+        assert!(ctx.status_message.is_none(), "`i` shows no message");
         let action = screen.handle_key(KeyCode::Char('y'), KeyModifiers::NONE, &mut ctx);
         assert!(
             matches!(action, ScreenAction::None),
             "a bare y stays unbound"
         );
+    }
+
+    #[test]
+    fn esc_and_q_leave_the_inbox_with_the_dashboard_unchanged() {
+        for leave in [KeyCode::Esc, KeyCode::Char('q')] {
+            let mut ctx = owner_fleet_ctx();
+            let mut screen = NormalScreen::new();
+            screen.handle_key(KeyCode::Char('j'), KeyModifiers::NONE, &mut ctx);
+            let before = (
+                ctx.selected_alias(),
+                ctx.sort_mode,
+                ctx.filter_text.clone(),
+                ctx.filtered_aliases.clone(),
+            );
+            let ScreenAction::Push(mut inbox) =
+                screen.handle_key(KeyCode::Char('i'), KeyModifiers::NONE, &mut ctx)
+            else {
+                panic!("`i` must push the inbox");
+            };
+            let action = inbox.handle_key(leave, KeyModifiers::NONE, &mut ctx);
+            assert!(matches!(action, ScreenAction::Pop), "{leave:?}");
+            let after = (
+                ctx.selected_alias(),
+                ctx.sort_mode,
+                ctx.filter_text.clone(),
+                ctx.filtered_aliases.clone(),
+            );
+            assert_eq!(before, after, "{leave:?}");
+        }
     }
 
     #[test]

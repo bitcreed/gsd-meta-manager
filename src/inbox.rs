@@ -250,7 +250,7 @@ pub fn build_document(entries: &[ProjectEntry], filters: &Filters) -> Value {
 // ---------------------------------------------------------------------------
 
 /// A phase number as a sort key: numeric first, then the raw text.
-fn phase_key(phase: &str) -> (u64, String) {
+pub(crate) fn phase_key(phase: &str) -> (u64, String) {
     let digits: String = phase.chars().take_while(char::is_ascii_digit).collect();
     (digits.parse().unwrap_or(u64::MAX), phase.to_string())
 }

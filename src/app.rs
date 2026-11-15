@@ -981,6 +981,7 @@ impl App {
             event_tx: None,
             reparse_dispatches: 0,
             owner_digests: HashMap::new(),
+            inbox_view: crate::ui::screens::inbox::InboxViewState::default(),
             agent_views: HashMap::new(),
             agents_scan_in_flight: false,
             sort_mode: crate::ui::screens::SortMode::default(),
@@ -6497,6 +6498,10 @@ mod tests {
             active_sessions: _,
             // PID-keyed (a session's multiplexer location), not per alias.
             session_locations: _,
+            // The Owner inbox's cursor identity (37-03): one value, not a map. A
+            // vanished project's row simply stops resolving and the cursor clamps
+            // to its neighbor on the next frame, so there is nothing to prune.
+            inbox_view: _,
         } = &app.ctx;
 
         assert!(!view_cache.contains_key(GONE), "view_cache leaked");

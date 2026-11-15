@@ -3,10 +3,12 @@
 //
 // The user's rule: focus ALWAYS follows the target session's own multiplexer,
 // whatever the TUI's location; the TUI's location only decides where a NEW
-// session launches. Two UI paths focus a session:
+// session launches. Three UI paths focus a session:
 //
 //   * the Sessions panel / main-overview Tab in `src/ui/screens/normal.rs`;
-//   * the project tab-switch in `src/ui/screens/detail.rs`.
+//   * the project tab-switch in `src/ui/screens/detail.rs`;
+//   * the Owner inbox's `v` on a project with a live session, in
+//     `src/ui/screens/owner_actions.rs`.
 //
 // They must go through the SAME per-session routing function,
 // `crate::multiplexer::focus_message`. If either grew its own way to a backend
@@ -28,7 +30,11 @@ const SRC_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src");
 
 /// The only files allowed to call the focus entry. Adding a third focus path is
 /// a deliberate edit of this list, made in the same commit.
-const FOCUS_CALLERS: &[&str] = &["src/ui/screens/detail.rs", "src/ui/screens/normal.rs"];
+const FOCUS_CALLERS: &[&str] = &[
+    "src/ui/screens/detail.rs",
+    "src/ui/screens/normal.rs",
+    "src/ui/screens/owner_actions.rs",
+];
 
 /// Seam internals no code outside `src/multiplexer/` may call: reaching a
 /// backend any other way bypasses the per-session routing.

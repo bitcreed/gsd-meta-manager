@@ -263,6 +263,7 @@ mod tests {
             event_tx: Some(tx),
             reparse_dispatches: 0,
             owner_digests: HashMap::new(),
+            inbox_view: Default::default(),
             agent_views: HashMap::new(),
             agents_scan_in_flight: false,
             sort_mode: crate::ui::screens::SortMode::default(),

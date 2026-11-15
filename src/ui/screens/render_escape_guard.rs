@@ -372,6 +372,7 @@ const SCREEN_IDENTITY_DISPOSITIONS: &[FixtureRow] = &[
     ("EditLintConfirmScreen", "src/ui/screens/driver_steer.rs"),
     ("EnqueueScreen", "src/ui/screens/enqueue.rs"),
     ("HelpScreen", "src/ui/screens/help.rs"),
+    ("InboxScreen", "src/ui/screens/inbox.rs"),
     ("LaunchFormScreen", "src/ui/screens/driver_launch.rs"),
     ("LintPopupScreen", "src/ui/screens/driver_launch.rs"),
     ("NormalScreen", "src/ui/screens/normal.rs"),
@@ -2263,6 +2264,39 @@ fn fixture_for(type_name: &str) -> Option<Fixture> {
                 probe_ctx(identity),
                 Box::new(super::help::HelpScreen::new()),
             )]
+        }),
+
+        // The Owner inbox (37-03): the hostile identity is the registered alias AND
+        // every digest string behind it (phase, phase name, file, file status,
+        // workstream, command). The group rows draw the alias, the phase cell
+        // (with the workstream prefix), the name and the phrase; the header draws
+        // the fleet numbers. A second state adds a status message that carries the
+        // identity, as `v`'s refusals do with a phase token or workstream name.
+        "InboxScreen" => Some(|identity| {
+            let mut with_owner = probe_ctx(identity);
+            with_owner
+                .owner_digests
+                .insert(identity.to_string(), hostile_owner_digest(identity));
+            let mut with_status = probe_ctx(identity);
+            with_status
+                .owner_digests
+                .insert(identity.to_string(), hostile_owner_digest(identity));
+            with_status.status_message = Some((
+                status_message_like_app_builds_it(identity),
+                std::time::Instant::now(),
+            ));
+            vec![
+                one_state(
+                    "inbox over hostile owner digests",
+                    with_owner,
+                    Box::new(super::inbox::InboxScreen::new()),
+                ),
+                one_state(
+                    "inbox with a status message",
+                    with_status,
+                    Box::new(super::inbox::InboxScreen::new()),
+                ),
+            ]
         }),
 
         "PreferencesScreen" => Some(|identity| {

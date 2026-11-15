@@ -1012,7 +1012,8 @@ pub fn launch_with(
 }
 
 /// [`launch_with`] with the real GUI spawner. **The real-environment entry,
-/// called only from `detail.rs`.** A test that called it inside herdr would open
+/// called from `detail.rs` and from `owner_actions.rs` (the Owner inbox's `v`,
+/// 37-03).** A test that called it inside herdr would open
 /// a real tab, so tests use [`launch_with`] with injected backends.
 pub fn launch(
     plan: &LaunchPlan,
@@ -1213,7 +1214,9 @@ fn reveal_client(
 }
 
 /// [`focus_with`] over the detected process environment. **The
-/// real-environment entry, called only from `normal.rs` and `detail.rs`.**
+/// real-environment entry, called only from `normal.rs`, `detail.rs` and
+/// `owner_actions.rs` (the Owner inbox's `v` on a project with a live session,
+/// 37-03).**
 ///
 /// There is ONE entry for both focus paths, the Sessions panel and the
 /// tab-switch, so they cannot route differently (`tests/focus_entry_guard.rs`

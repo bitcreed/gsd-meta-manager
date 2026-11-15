@@ -44,6 +44,9 @@ use chrono::{DateTime, Utc};
 
 use super::ProjectState;
 
+// The launch path re-validates the tokens it builds an argv from (D-11).
+pub(crate) use rules::{is_command_token, is_workstream_name};
+
 /// What kind of document an [`AuditFile`] was read from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AuditKind {

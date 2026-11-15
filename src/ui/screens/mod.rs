@@ -10,10 +10,12 @@ pub mod driver_run;
 pub mod driver_steer;
 pub mod enqueue;
 pub mod help;
+pub mod inbox;
 pub mod normal;
 pub mod oneoff;
 pub mod oneoff_viewer;
 pub mod owner;
+pub mod owner_actions;
 pub mod owner_block;
 pub mod preferences;
 pub mod queue_delete_confirm;
@@ -1369,6 +1371,11 @@ pub struct AppContext {
     ///   (WR-02), and pruned with the other alias-keyed maps in
     ///   `App::prune_driver_maps` as the backstop.
     pub owner_digests: HashMap<String, crate::state_reader::owner_items::OwnerDigest>,
+    /// The Owner inbox's view state (37-03, D-10): the cursor identity and the
+    /// scroll offset. It lives on the context rather than on `InboxScreen` so a
+    /// popup pushed above the inbox can repaint it as its background, and `i`
+    /// on the dashboard resets it so every visit starts on the first row.
+    pub inbox_view: inbox::InboxViewState,
     /// Per-alias running-agents view, from the agents scan (AGENT-05, D-C01).
     ///
     /// * A **sibling map**, shaped like `driver_output` above, for the same
@@ -2596,6 +2603,7 @@ mod tests {
             event_tx: None,
             reparse_dispatches: 0,
             owner_digests: HashMap::new(),
+            inbox_view: inbox::InboxViewState::default(),
             agent_views: HashMap::new(),
             agents_scan_in_flight: false,
             sort_mode: SortMode::default(),

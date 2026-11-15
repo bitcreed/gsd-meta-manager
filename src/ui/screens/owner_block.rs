@@ -62,7 +62,7 @@ pub struct GroupKey {
 }
 
 impl GroupKey {
-    fn of(group: &OwnerGroup) -> Self {
+    pub(crate) fn of(group: &OwnerGroup) -> Self {
         Self {
             lane: group.lane.as_str(),
             kind: group.kind.as_str(),
@@ -74,7 +74,7 @@ impl GroupKey {
     }
 
     /// A BLOCKED aggregate row: one per (workstream, phase), over all its files.
-    fn aggregate(group: &OwnerGroup) -> Self {
+    pub(crate) fn aggregate(group: &OwnerGroup) -> Self {
         Self {
             lane: "blocked",
             kind: "blocked",
@@ -82,6 +82,20 @@ impl GroupKey {
             ..Self::of(group)
         }
     }
+}
+
+/// The group with identity `key` (current, archived or acknowledged), cloned.
+/// `None` for a BLOCKED row's key (the row aggregates several groups and has no
+/// single one to run) and for an identity that has vanished from the digest.
+pub(crate) fn group_for(digest: &OwnerDigest, key: &GroupKey) -> Option<OwnerGroup> {
+    if key.lane == "blocked" {
+        return None;
+    }
+    digest
+        .groups
+        .iter()
+        .find(|group| GroupKey::of(group) == *key)
+        .cloned()
 }
 
 fn scope_label(scope: &Scope) -> Option<String> {
@@ -159,17 +173,17 @@ fn dim() -> Style {
     muted_style()
 }
 
-fn blanks(n: usize) -> String {
+pub(crate) fn blanks(n: usize) -> String {
     " ".repeat(n)
 }
 
-fn cells(text: &str) -> usize {
+pub(crate) fn cells(text: &str) -> usize {
     Span::raw(text).width()
 }
 
 /// `text` cut to `w` cells and padded with blanks to exactly `w` (or `w` blanks
 /// in front when `right`).
-fn pad(text: &str, w: usize, right: bool) -> String {
+pub(crate) fn pad(text: &str, w: usize, right: bool) -> String {
     let cut = fit_cells(text, w);
     let gap = w.saturating_sub(cells(&cut));
     if right {
@@ -236,22 +250,22 @@ fn header_line(alias: &str, milestone: &str, gate: &ClosesAfter, width: usize) -
 // ---------------------------------------------------------------------------
 
 /// One body row before layout: every string already escaped.
-struct RowCells {
-    lane: Lane,
+pub(crate) struct RowCells {
+    pub(crate) lane: Lane,
     /// `ws {name} ` (Magenta) for a workstream group.
-    ws_prefix: String,
-    phase: String,
-    name: String,
-    checks: String,
-    phrase: String,
-    green_phrase: bool,
-    bookkeeping: bool,
-    age: Option<(String, bool)>,
-    command: String,
+    pub(crate) ws_prefix: String,
+    pub(crate) phase: String,
+    pub(crate) name: String,
+    pub(crate) checks: String,
+    pub(crate) phrase: String,
+    pub(crate) green_phrase: bool,
+    pub(crate) bookkeeping: bool,
+    pub(crate) age: Option<(String, bool)>,
+    pub(crate) command: String,
 }
 
 impl RowCells {
-    fn phase_cell_width(&self) -> usize {
+    pub(crate) fn phase_cell_width(&self) -> usize {
         cells(&self.ws_prefix) + cells(&self.phase)
     }
 }
@@ -315,7 +329,11 @@ fn test_phrase(digest: &OwnerDigest, group: &OwnerGroup) -> (String, bool) {
     (parts.join(" "), false)
 }
 
-fn row_cells(digest: &OwnerDigest, group: &OwnerGroup, merged: Option<&OwnerGroup>) -> RowCells {
+pub(crate) fn row_cells(
+    digest: &OwnerDigest,
+    group: &OwnerGroup,
+    merged: Option<&OwnerGroup>,
+) -> RowCells {
     let blocked = group.lane == Lane::Blocked;
     let ws_prefix = group
         .workstream
@@ -383,11 +401,12 @@ fn row_cells(digest: &OwnerDigest, group: &OwnerGroup, merged: Option<&OwnerGrou
 
 /// One body row's source groups (D-18): the group the row speaks for, the BLOCKED
 /// aggregate over its siblings, and the distinct files behind it.
-struct RowSrc {
-    group: OwnerGroup,
-    merged: Option<OwnerGroup>,
-    files: Vec<String>,
-    key: GroupKey,
+#[derive(Clone)]
+pub(crate) struct RowSrc {
+    pub(crate) group: OwnerGroup,
+    pub(crate) merged: Option<OwnerGroup>,
+    pub(crate) files: Vec<String>,
+    pub(crate) key: GroupKey,
 }
 
 impl RowSrc {
@@ -405,7 +424,7 @@ impl RowSrc {
         &self.merged.as_ref().unwrap_or(&self.group).items
     }
 
-    fn cells(&self, digest: &OwnerDigest) -> RowCells {
+    pub(crate) fn cells(&self, digest: &OwnerDigest) -> RowCells {
         row_cells(digest, &self.group, self.merged.as_ref())
     }
 }
@@ -413,7 +432,7 @@ impl RowSrc {
 /// The current rows in D-17 order: TEST (closes-a-phase first), DECIDE, FIX, then
 /// one BLOCKED row per (workstream, phase), each lane in digest order, root groups
 /// before workstream groups.
-fn current_sources(digest: &OwnerDigest) -> Vec<RowSrc> {
+pub(crate) fn current_sources(digest: &OwnerDigest) -> Vec<RowSrc> {
     let mut picked: Vec<RowSrc> = Vec::new();
     let mut blocked_seen: Vec<(Option<String>, String)> = Vec::new();
     for group in digest.groups.iter().filter(|g| is_owner_row(g)) {
@@ -627,7 +646,7 @@ fn grid_for(rows: &[RowCells], width: usize) -> Grid {
     }
 }
 
-fn style_for(row: &RowCells, style: Style) -> Style {
+pub(crate) fn style_for(row: &RowCells, style: Style) -> Style {
     if row.lane == Lane::Blocked {
         style.add_modifier(Modifier::DIM)
     } else {
@@ -635,7 +654,7 @@ fn style_for(row: &RowCells, style: Style) -> Style {
     }
 }
 
-fn age_spans(age: &(String, bool), row: &RowCells) -> Vec<Span<'static>> {
+pub(crate) fn age_spans(age: &(String, bool), row: &RowCells) -> Vec<Span<'static>> {
     let mut out = vec![Span::styled(age.0.clone(), dim())];
     if age.1 {
         out.push(Span::styled(" ", dim()));
@@ -650,7 +669,7 @@ fn age_spans(age: &(String, bool), row: &RowCells) -> Vec<Span<'static>> {
 /// The phase cell as (Magenta prefix, text) in `width` cells. A workstream name
 /// gives way inside its prefix (`ws v0-14-v\u{2026} ph 26`) so the phase number,
 /// which tells the rows of one workstream apart, is never the part that is cut.
-fn phase_cell(row: &RowCells, width: usize) -> (String, String) {
+pub(crate) fn phase_cell(row: &RowCells, width: usize) -> (String, String) {
     if cells(&row.ws_prefix) + cells(&row.phase) <= width {
         return (row.ws_prefix.clone(), row.phase.clone());
     }
@@ -1224,7 +1243,7 @@ pub(crate) fn render_owner_block(
     }
 }
 
-fn cursor_style() -> Style {
+pub(crate) fn cursor_style() -> Style {
     Style::default()
         .fg(Color::Cyan)
         .add_modifier(Modifier::BOLD)
@@ -2315,6 +2334,36 @@ mod tests {
                 None,
             ),
         ]
+    }
+
+    #[test]
+    fn group_for_finds_a_group_by_identity() {
+        let digest = sample_owner_digest();
+        let first = digest
+            .groups
+            .iter()
+            .find(|g| g.lane == Lane::Test && g.phase == "24")
+            .expect("the fixture's TEST ph 24 group");
+        let key = GroupKey::of(first);
+        assert_eq!(group_for(&digest, &key).as_ref(), Some(first));
+        // An acknowledged group is still found by its identity.
+        let acked = digest
+            .groups
+            .iter()
+            .find(|g| g.acknowledged)
+            .expect("an acknowledged group");
+        assert!(group_for(&digest, &GroupKey::of(acked)).is_some());
+        // A BLOCKED aggregate key has no single group.
+        let blocked = digest
+            .groups
+            .iter()
+            .find(|g| g.lane == Lane::Blocked)
+            .expect("a BLOCKED group");
+        assert!(group_for(&digest, &GroupKey::aggregate(blocked)).is_none());
+        // A vanished identity is None.
+        let mut gone = key.clone();
+        gone.phase = "99".to_owned();
+        assert!(group_for(&digest, &gone).is_none());
     }
 
     /// The 36 layout is frozen (coordinator directive 4): the block renders the

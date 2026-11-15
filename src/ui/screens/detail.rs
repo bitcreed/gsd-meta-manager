@@ -2564,7 +2564,7 @@ const DISCOVERY_LAUNCHERS: &[&str] = &["xdg-terminal-exec", "x-terminal-emulator
 /// where it is a pure function of injected facts and can be asserted for
 /// environments nobody is running in — including the exact one the bug was
 /// reported from.
-fn resolve_launch_plan() -> crate::multiplexer::LaunchPlan {
+pub(crate) fn resolve_launch_plan() -> crate::multiplexer::LaunchPlan {
     let (env, backends) = crate::multiplexer::detect_current();
     crate::multiplexer::plan_launch(
         env,
@@ -2608,7 +2608,7 @@ fn resolve_launch_plan() -> crate::multiplexer::LaunchPlan {
 /// silent** — the emulator rejects the flag and the operator sees the failure —
 /// which is the direction prohibition 3 asks for: an emulator that cannot be
 /// driven by an argv is reported, not silently handled by quoting.
-fn terminal_program_separator(term: &str) -> &'static str {
+pub(crate) fn terminal_program_separator(term: &str) -> &'static str {
     let stem = term.rsplit('/').next().unwrap_or(term);
     match stem {
         "gnome-terminal" => "--",
@@ -2837,6 +2837,41 @@ fn mux_launch_argv() -> Result<crate::multiplexer::ExecArgv, crate::multiplexer:
     let mut argv = vec!["env".to_string()];
     argv.extend(claude_launch_args());
     crate::multiplexer::ExecArgv::new(argv)
+}
+
+/// The program vector handed to the innermost multiplexer's `open` for an Owner
+/// inbox command (37-03, D-13): `env`, `claude`, and the command string as ONE
+/// element. Same leading `env` as [`mux_launch_argv`], for the same reason (tmux
+/// hands a single-element program to `sh -c`).
+///
+/// **CWE-88 (T-37-04).** The only untrusted-derived element is the command, and
+/// it is the `Display` of a typed [`RunCommand`](crate::state_reader::owner_items::RunCommand)
+/// whose phase and workstream the caller re-validated with `is_command_token` /
+/// `is_workstream_name` at launch. It is one element, so a space inside it never
+/// splits into a second argument, and it starts with `/` so `claude` reads it as a
+/// slash command, not an option. The project path travels as the cwd, never as a
+/// `cd` string.
+pub(crate) fn owner_mux_argv(
+    cmd: &crate::state_reader::owner_items::RunCommand,
+) -> Result<crate::multiplexer::ExecArgv, crate::multiplexer::MuxError> {
+    let mut argv = vec!["env".to_string()];
+    argv.extend(claude_launch_args());
+    argv.push(cmd.to_string());
+    crate::multiplexer::ExecArgv::new(argv)
+}
+
+/// The GUI-terminal argv for an Owner inbox command: the separator from
+/// [`terminal_program_separator`], `claude`, then the validated command as one
+/// element. Three elements exactly, pinned by
+/// `owner_terminal_argv_carries_no_untrusted_element_and_is_pinned_at_three`: the
+/// first two are authored here, the third is the re-validated command string.
+pub(crate) fn owner_terminal_argv(
+    term: &str,
+    cmd: &crate::state_reader::owner_items::RunCommand,
+) -> Vec<String> {
+    let mut argv = launch_terminal_argv(term);
+    argv.push(cmd.to_string());
+    argv
 }
 
 /// The argv for launching a NEW Claude session. Same shape, same reason — see
@@ -20321,6 +20356,7 @@ mod tests {
             event_tx: None,
             reparse_dispatches: 0,
             owner_digests: HashMap::new(),
+            inbox_view: Default::default(),
             agent_views: HashMap::new(),
             agents_scan_in_flight: false,
             sort_mode: crate::ui::screens::SortMode::default(),
