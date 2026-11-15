@@ -344,6 +344,14 @@ fn row_cells(digest: &OwnerDigest, group: &OwnerGroup, merged: Option<&OwnerGrou
             let (text, green) = test_phrase(digest, group);
             (shown(&text), green)
         }
+    } else if group.lane == Lane::Fix
+        && counted
+        && group.counts.failed == 0
+        && group.counts.unreadable == 0
+    {
+        // `inbox::detail` would only repeat the Checks column here: say what the
+        // file reports instead.
+        (shown(&group.file_status.replace('_', " ")), false)
     } else {
         (shown(&inbox::detail(group)), false)
     };
@@ -1539,6 +1547,25 @@ mod tests {
             &block_model("sample", "v2.2", &digest, &OwnerBlockState::default(), 21).header
         )
         .ends_with('\u{2026}'));
+    }
+
+    #[test]
+    fn a_fix_row_without_failed_checks_does_not_repeat_its_check_count() {
+        let mut digest = sample_owner_digest();
+        let fix = digest
+            .groups
+            .iter_mut()
+            .find(|g| g.lane == Lane::Fix && g.phase == "25")
+            .expect("fix group");
+        fix.counts.failed = 0;
+        fix.counts.gaps = 0;
+        fix.counts.checks = 7;
+        fix.file_status = "gaps_found".to_owned();
+        let model = block_model("sample", "v2.2", &digest, &OwnerBlockState::default(), 140);
+        let rows: Vec<String> = model.body.iter().map(text).collect();
+        let row = rows.iter().find(|r| r.contains("FIX")).expect("fix row");
+        assert_eq!(row.matches("7 checks").count(), 1, "{row}");
+        assert!(row.contains("gaps found"), "{row}");
     }
 
     #[test]
