@@ -1356,6 +1356,7 @@ mod tests {
             Some("/gsd-plan-phase 01 --gaps")
         );
         assert_eq!(command(Lane::Blocked), None);
+        assert_run_agrees(&d);
 
         let mut hostile = file(vec![row("1", "pending", Category::Pending)]);
         hostile.phase = "x; rm -rf".to_owned();
@@ -1474,6 +1475,88 @@ mod tests {
         f.phase = "07".to_owned();
         f.phase_dir = "07-gamma-ray".to_owned();
         assert_eq!(digest(vec![f]).groups[0].phase_name, "gamma-ray");
+    }
+
+    /// `command` is `run` spelled out, on every group of `d`.
+    fn assert_run_agrees(d: &OwnerDigest) {
+        for g in &d.groups {
+            assert_eq!(
+                g.command,
+                g.run.as_ref().map(ToString::to_string),
+                "{} {}",
+                g.lane.as_str(),
+                g.file
+            );
+        }
+    }
+
+    fn run_of(verb: RunVerb, phase: Option<&str>, ws: Option<&str>) -> Option<RunCommand> {
+        Some(RunCommand {
+            verb,
+            phase: phase.map(str::to_owned),
+            workstream: ws.map(str::to_owned),
+        })
+    }
+
+    #[test]
+    fn run_for_keeps_the_command_rules() {
+        let f = file(Vec::new());
+        let with_ws = |name: &str| {
+            let mut f = file(Vec::new());
+            f.workstream = Some(name.to_owned());
+            f
+        };
+        assert_eq!(
+            run_for(Lane::Test, &f, "24", 0),
+            run_of(RunVerb::VerifyWork, Some("24"), None)
+        );
+        assert_eq!(
+            run_for(Lane::Test, &with_ws("ws1"), "24", 0),
+            run_of(RunVerb::VerifyWork, Some("24"), Some("ws1"))
+        );
+        assert_eq!(
+            run_for(Lane::Fix, &f, "16", 0),
+            run_of(RunVerb::PlanPhaseGaps, Some("16"), None)
+        );
+        assert_eq!(
+            run_for(Lane::Fix, &with_ws("ws1"), "16", 0),
+            run_of(RunVerb::PlanPhaseGaps, Some("16"), Some("ws1"))
+        );
+        for lane in [Lane::Decide, Lane::Blocked, Lane::Deferred] {
+            assert_eq!(run_for(lane, &f, "24", 0), None, "{lane:?}");
+        }
+        assert_eq!(run_for(Lane::Test, &f, "24", 1), None, "unreadable");
+        let mut archived = file(Vec::new());
+        archived.scope = Scope::Archived {
+            label: "v1.0".to_owned(),
+            rank: 0,
+        };
+        assert_eq!(run_for(Lane::Test, &archived, "24", 0), None, "archived");
+        for bad in ["1;rm", "\u{ff12}\u{ff14}", "", "24."] {
+            assert_eq!(run_for(Lane::Test, &f, bad, 0), None, "{bad}");
+        }
+        for bad in ["a b", "../x"] {
+            assert_eq!(run_for(Lane::Fix, &with_ws(bad), "16", 0), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn resume_run_names_only_safe_workstreams() {
+        assert_eq!(resume_run(None), run_of(RunVerb::ResumeWork, None, None));
+        assert_eq!(
+            resume_run(Some("ws1")),
+            run_of(RunVerb::ResumeWork, None, Some("ws1"))
+        );
+        assert_eq!(resume_run(Some("a b")), None);
+    }
+
+    #[test]
+    fn the_fix_reassignment_sets_run_and_command_together() {
+        let d = digest(vec![verification("gaps_found", None, Vec::new())]);
+        let g = &d.groups[0];
+        assert_eq!(g.counts.unreadable, 1);
+        assert_eq!(g.run, run_of(RunVerb::PlanPhaseGaps, Some("01"), None));
+        assert_eq!(g.command.as_deref(), Some("/gsd-plan-phase 01 --gaps"));
     }
 
     #[test]
@@ -2041,6 +2124,8 @@ mod tests {
         assert_eq!(group.counts.unreadable, 1);
         assert!(group.items.is_empty());
         assert_eq!(group.command.as_deref(), Some("/gsd-debug"));
+        assert_eq!(group.run, run_of(RunVerb::Debug, None, None));
+        assert_run_agrees(&digest);
         assert_eq!(digest.fix_debug, 1);
     }
 
@@ -2376,6 +2461,7 @@ mod tests {
         assert!(commands.contains(&(None, Some("/gsd-resume-work"))));
         assert!(commands.contains(&(Some("a"), Some("/gsd-resume-work --ws a"))));
         assert!(commands.contains(&(Some("bad name"), None)));
+        assert_run_agrees(&d);
         assert_eq!(d.decide, 3);
     }
 
@@ -2417,6 +2503,7 @@ mod tests {
         assert_eq!((g.lane, g.kind), (Lane::Fix, Kind::Verification));
         assert_eq!((g.counts.unreadable, g.items.len()), (1, 0));
         assert_eq!(g.command.as_deref(), Some("/gsd-plan-phase 01 --gaps"));
+        assert_run_agrees(&d);
         assert_eq!((d.fix_phases, d.closeable_phases), (1, 0));
     }
 
@@ -2441,6 +2528,11 @@ mod tests {
             d.groups[0].command.as_deref(),
             Some("/gsd-plan-phase 01 --gaps --ws w")
         );
+        assert_eq!(
+            d.groups[0].run,
+            run_of(RunVerb::PlanPhaseGaps, Some("01"), Some("w"))
+        );
+        assert_run_agrees(&d);
     }
 
     #[test]
