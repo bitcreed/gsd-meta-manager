@@ -146,6 +146,9 @@ pub(crate) struct BlockModel {
     pub folds: Vec<Fold>,
     /// The index in `fold_line.spans` of each fold's text.
     pub fold_marks: Vec<(Fold, usize)>,
+    /// The fold line and its marks picked for two cells less, drawn when the
+    /// cursor is on it: the `> ` gutter then fits without cutting the tail (IN-02).
+    pub cursor_fold_line: Option<(Line<'static>, Vec<(Fold, usize)>)>,
 }
 
 fn dim() -> Style {
@@ -1009,6 +1012,7 @@ pub(crate) fn block_model(
     push_rows(&old, old_cells, true, false);
     push_rows(&ack, ack_cells, false, true);
 
+    let cursor_fold_line = fold_line(digest, view, width.saturating_sub(CURSOR_GUTTER_CELLS));
     let (fold_line, fold_marks) = match fold_line(digest, view, width) {
         Some((line, marks)) => (Some(line), marks),
         None => (None, Vec::new()),
@@ -1026,6 +1030,7 @@ pub(crate) fn block_model(
         stop_lines,
         folds: sk.folds,
         fold_marks,
+        cursor_fold_line,
     }
 }
 
@@ -1182,18 +1187,25 @@ fn mark_cursor_row(line: &mut Line<'static>) {
     }
 }
 
+/// The cells the fold line's `> ` cursor gutter takes.
+const CURSOR_GUTTER_CELLS: usize = 2;
+
 /// The fold line behind a cursor: a `> ` gutter in front and the fold under the
-/// sub-cursor BOLD plus Cyan. The line keeps to `width` cells.
+/// sub-cursor BOLD plus Cyan. The line keeps to `width` cells; its rung was picked
+/// for `width - 2`, so the gutter does not push a fitting rung into `…` (IN-02).
 fn fold_line_with_cursor(
     model: &BlockModel,
     line: &Line<'static>,
     fold: Option<Fold>,
     width: usize,
 ) -> Line<'static> {
+    let (line, marks) = match &model.cursor_fold_line {
+        Some((narrow, marks)) => (narrow, marks),
+        None => (line, &model.fold_marks),
+    };
     let mut spans = line.spans.clone();
     let target = fold.and_then(|f| {
-        model
-            .fold_marks
+        marks
             .iter()
             .find(|(candidate, _)| *candidate == f)
             .map(|(_, index)| *index)
@@ -1746,6 +1758,35 @@ mod tests {
             "{three}"
         );
         assert!(at(30).ends_with('\u{2026}'));
+    }
+
+    /// IN-02: a rung that fits the width exactly would lose its tail to `…` once
+    /// the cursor's `> ` gutter is added, so the cursor line picks its rung for two
+    /// cells less and the fold under the sub-cursor stays whole.
+    #[test]
+    fn the_cursor_fold_line_picks_its_rung_for_the_gutter() {
+        let digest = sample_owner_digest();
+        let view = OwnerBlockState::default();
+        let rung_two = block_model("s", "m", &digest, &view, 80).fold_line.unwrap();
+        let exact = rung_two.width();
+        let model = block_model("s", "m", &digest, &view, u16::try_from(exact).unwrap());
+        let plain = model.fold_line.clone().unwrap();
+        assert_eq!(text(&plain), text(&rung_two), "the rung fits exactly");
+        let cursor = fold_line_with_cursor(&model, &plain, Some(Fold::Todos), exact);
+        let shown = text(&cursor);
+        assert!(cursor.width() <= exact, "{shown}");
+        assert!(shown.starts_with("> "), "{shown}");
+        assert!(!shown.contains('\u{2026}'), "no fold is cut: {shown}");
+        assert!(shown.ends_with("Todos 11"), "{shown}");
+        let todos = cursor
+            .spans
+            .iter()
+            .find(|s| s.content.contains("Todos"))
+            .expect("the Todos fold");
+        assert!(
+            todos.style.add_modifier.contains(Modifier::BOLD),
+            "{todos:?}"
+        );
     }
 
     #[test]
