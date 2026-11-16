@@ -277,6 +277,11 @@ LLM-goal-layer design, were superseded by spikes 001/002. See Active and Key Dec
   must support a dry-run mode that reports the commands it would issue without issuing them.
   **Amended 2026-10-29 — user decision: CTRL-02/CTRL-03 superseded by sandboxed launcher + DIRECTION.md stop rules; Phase 31 retirement of drive dry-run/opt-in gate accepted.** The dry-run clause is superseded; stoppability stands.
 - **Portability**: Should work for any GSD user, not hardcoded to one user's setup
+- **GSD files are read-only** *(user decision 2026-11-16)*: The tool reads GSD's files
+  (`.planning/**`, `$GSD_HOME`) but never writes them itself. Every change goes through
+  `gsd-tools` or a GSD command (launched slash command, with the user's intent spelled out
+  in plain language for GSD to record). The tool's own state lives in its own namespace
+  (`.planning/meta-manager/`) or under XDG dirs.
 
 ## Key Decisions
 

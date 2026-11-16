@@ -12,6 +12,7 @@ A TUI command center for managing multiple GSD-run projects from a single interf
 - **State reading**: Must not require running Claude/GSD to check status — read from files or cached state
 - **Non-intrusive**: Must not interfere with running GSD instances on active projects
 - **Portability**: Should work for any GSD user, not hardcoded to one user's setup
+- **GSD files are read-only**: Read GSD's files (`.planning/**`, `$GSD_HOME`) but never write them directly. Change them only through `gsd-tools` or a launched GSD command that states the user's intent in plain language. Own state lives in `.planning/meta-manager/` or XDG dirs.
 <!-- GSD:project-end -->
 
 <!-- GSD:stack-start source:research/STACK.md -->
