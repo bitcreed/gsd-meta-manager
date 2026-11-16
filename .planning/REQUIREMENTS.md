@@ -107,6 +107,43 @@ checks the owner can run today (report section 1).
   the app itself writes nothing into the project. The row disappears on the next watcher refresh.
 - [x] **OWN-23**: Help overlay and README ("Owner inbox" section plus the `inbox` schema) updated.
 
+### Digest and triage hygiene (OWN-24..28)
+
+Added 2026-11-16 after the first real use of the inbox (owner feedback) **[inferred — numbering
+continues OWN-xx; grouped into Phase 38]**.
+
+- [ ] **OWN-24**: Plain `gsd-meta-manager inbox` defaults to a short digest (~15-25 lines): totals,
+  the per-project `closes after` block, and the top ~5 next actions ranked by payoff (fewest checks
+  per phase closed first; older items rank lower). *Test: golden output on the fixtures; line budget
+  asserted.*
+- [ ] **OWN-25**: `inbox <alias>` prints the full checklist for one project; `inbox --lane
+  test|decide|fix|blocked` prints one lane across projects; `inbox --all` prints the pre-Phase-38
+  full output. `--json` keeps carrying everything; changes are additive only (existing key paths in
+  `tests/inbox_cli.rs` unchanged).
+- [ ] **OWN-26**: Multi-project views (CLI digest and lane views, TUI inbox on `i`) show each phase
+  collapsed by default as one entry (count + action), never its individual checks; a scripted
+  checklist UAT (for example 51 numbered steps) reads as one entry.
+- [ ] **OWN-27**: Parsing hygiene: items older than ~90 days fold into one stale line; duplicate UAT
+  files for the same phase merge into one entry (live example: sentriq phase 43 listed twice); the
+  `1 check`/`2 checks` column aligns in the TUI.
+- [ ] **OWN-28**: Heuristic labels, label only (never hide or move a row): rows whose text matches
+  decision keywords (`Owner decision`, ratify, approve, accept, review, OK, ...) are tagged
+  `decision?`; rows whose text says resolved/fixed-by are tagged `looks resolved`. Both are exposed
+  as additive `--json` fields. Promotes OWN-F02 as a label-only heuristic **[inferred]**.
+
+### Check actions through GSD (OWN-29..31)
+
+- [ ] **OWN-29**: TUI actions on a check or a phase in the inbox and the detail Owner block: "won't
+  do" (with a reason) and "defer/move to phase M"; the existing `A` acknowledge stays as is.
+- [ ] **OWN-30**: Each action launches a GSD command in the project (for example
+  `/gsd-verify-work N`) with a prepared plain-language instruction stating the owner's intent ("the
+  user will not perform test K: <reason>", "defer test K as a follow-up to phase M"); a confirm popup
+  shows the exact command and instruction before launching.
+- [ ] **OWN-31**: A defer/move also files a todo for the target phase through gsd-core
+  (`gsd-tools todo …` or `/gsd-capture`) so the moved check comes up again; the app never edits a
+  GSD file itself (CLAUDE.md "GSD files are read-only"). *Test: source scan plus a round trip on a
+  throwaway project.*
+
 ## Decisions adopted from the report (section 7)
 
 All defaults taken as written **[inferred — milestone start 2026-11-14]**:
@@ -142,7 +179,7 @@ Additional orchestrator calls:
 Deferred (report section 6):
 
 - **OWN-F01**: STATE.md `### Blockers/Concerns` parsing
-- **OWN-F02**: Heuristic "this UAT row is really a ruling" detection
+- **OWN-F02**: Heuristic "this UAT row is really a ruling" detection (label-only form promoted to OWN-28; moving or hiding rows stays deferred)
 - **OWN-F03**: Todo triage UI beyond a count
 - **OWN-F04**: Seeds and threads as owner work
 - **OWN-F05**: Native acknowledge writer
@@ -189,12 +226,20 @@ Deferred (report section 6):
 | OWN-21 | Phase 37 | Complete |
 | OWN-22 | Phase 37 | Complete |
 | OWN-23 | Phase 37 | Complete |
+| OWN-24 | Phase 38 | Pending |
+| OWN-25 | Phase 38 | Pending |
+| OWN-26 | Phase 38 | Pending |
+| OWN-27 | Phase 38 | Pending |
+| OWN-28 | Phase 38 | Pending |
+| OWN-29 | Phase 39 | Pending |
+| OWN-30 | Phase 39 | Pending |
+| OWN-31 | Phase 39 | Pending |
 
 **Coverage:**
-- v2.5.0 requirements: 23 total
-- Mapped to phases: 23
+- v2.5.0 requirements: 31 total
+- Mapped to phases: 31
 - Unmapped: 0 ✓
 
 ---
 *Requirements defined: 2026-11-14*
-*Last updated: 2026-11-14 after milestone v2.5.0 start*
+*Last updated: 2026-11-16 after adding Phases 38-39 (OWN-24..31)*
