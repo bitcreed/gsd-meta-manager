@@ -4968,6 +4968,35 @@ mod tests {
     }
 
     #[test]
+    fn a_partly_folded_blocked_phase_is_one_row() {
+        let blocked = |kind: Kind, file: &str, age: i64| {
+            let mut g = group(G {
+                lane: Lane::Blocked,
+                kind,
+                phase: "23",
+                name: "store-listing",
+                checks: 0,
+                closes: false,
+                age: Some(age),
+                stale: false,
+            });
+            g.file = file.to_owned();
+            g.items = vec![item("a")];
+            g
+        };
+        let d = digest(vec![
+            blocked(Kind::Uat, "phases/23/23-UAT.md", 3),
+            blocked(Kind::Checkpoint, "phases/23/.continue-here.md", 200),
+        ]);
+        let (lane, stale) = owner_block::inbox_sources(&d, 90);
+        let keys: Vec<_> = lane.iter().chain(stale.iter()).map(|s| &s.key).collect();
+        assert_eq!(keys.len(), 1, "one aggregate row for the phase: {keys:?}");
+        // The newest sibling decides the placement: the fresh file keeps it in the lane.
+        assert_eq!(lane.len(), 1);
+        assert_eq!(lane[0].files.len(), 2);
+    }
+
+    #[test]
     fn inbox_sources_sort_is_total() {
         let mut stale_a = test_group("11", "old-a", 2, false, 120, false);
         stale_a.file = "phases/11/11-UAT.md".to_owned();

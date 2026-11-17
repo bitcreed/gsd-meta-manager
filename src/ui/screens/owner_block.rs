@@ -579,7 +579,10 @@ pub(crate) fn inbox_sources(digest: &OwnerDigest, fold_days: u32) -> (Vec<RowSrc
     let mut halves: [Vec<RowSrc>; 2] = [Vec::new(), Vec::new()];
     for (half, folded) in halves.iter_mut().zip([false, true]) {
         let mut blocked_seen: Vec<(Option<String>, String)> = Vec::new();
-        for entry in entries.iter().filter(|e| e.folded == folded) {
+        for entry in entries
+            .iter()
+            .filter(|e| e.folded == folded || e.group.lane == Lane::Blocked)
+        {
             let group = &entry.group;
             if group.lane == Lane::Blocked {
                 let key = (group.workstream.clone(), group.phase.clone());
@@ -587,17 +590,23 @@ pub(crate) fn inbox_sources(digest: &OwnerDigest, fold_days: u32) -> (Vec<RowSrc
                     continue;
                 }
                 // A BLOCKED row stays the 36 aggregate over every file of its
-                // (workstream, phase): a merged blocked entry contributes its parts.
-                let siblings: Vec<&OwnerGroup> = entries
+                // (workstream, phase), whatever the age of each file: a merged
+                // blocked entry contributes its parts. The row is one row with one
+                // identity, so it sits in the Stale fold only when every sibling is
+                // folded; one fresh sibling keeps the whole aggregate in its lane.
+                let blocked_entries: Vec<&TriageEntry> = entries
                     .iter()
                     .filter(|e| {
-                        e.folded == folded
-                            && e.group.lane == Lane::Blocked
+                        e.group.lane == Lane::Blocked
                             && e.group.workstream == key.0
                             && e.group.phase == key.1
                     })
-                    .flat_map(|e| e.parts.iter())
                     .collect();
+                if blocked_entries.iter().all(|e| e.folded) != folded {
+                    continue;
+                }
+                let siblings: Vec<&OwnerGroup> =
+                    blocked_entries.iter().flat_map(|e| e.parts.iter()).collect();
                 let mut merged = group.clone();
                 merged.items = siblings
                     .iter()
