@@ -1124,11 +1124,11 @@ fn totals_line(entries: &[ProjectEntry]) -> String {
         String::new()
     };
     format!(
-        "Owner inbox: {} projects · test {} · decide {} · fix {} phases{debug_tail} · blocked {}",
-        entries.len(),
+        "Owner inbox: {} · test {} · decide {} · fix {}{debug_tail} · blocked {}",
+        plural(entries.len(), "project", "projects"),
         sum(|d| d.test),
         sum(|d| d.decide),
-        sum(|d| d.fix_phases),
+        plural(sum(|d| d.fix_phases), "phase", "phases"),
         sum(|d| d.blocked),
     )
 }
@@ -1174,7 +1174,8 @@ fn fold_lines(
             "checks"
         };
         folds.push(format!(
-            "Old debt: {old_total} {unit} in {old_projects} projects (archived milestones)"
+            "Old debt: {old_total} {unit} in {} (archived milestones)",
+            plural(old_projects, "project", "projects")
         ));
     }
     if let Some((totals, fold_days)) = stale {
@@ -1197,7 +1198,9 @@ fn fold_lines(
     let todo_projects = read.iter().filter(|e| e.digest.hidden.todos > 0).count();
     if !filters.todos && todo_total > 0 {
         folds.push(format!(
-            "Triage: {todo_total} pending todos in {todo_projects} projects"
+            "Triage: {} in {}",
+            plural(todo_total, "pending todo", "pending todos"),
+            plural(todo_projects, "project", "projects")
         ));
     }
     // A pending folder that could not be listed counts 0; say so, since nothing is
@@ -1208,7 +1211,8 @@ fn fold_lines(
         .count();
     if todos_unreadable > 0 {
         folds.push(format!(
-            "Triage: pending todos unreadable in {todos_unreadable} projects"
+            "Triage: pending todos unreadable in {}",
+            plural(todos_unreadable, "project", "projects")
         ));
     }
     folds
@@ -1807,11 +1811,11 @@ mod tests {
         };
         assert_eq!(
             fold(0),
-            "Old debt: 2 checks in 1 projects (archived milestones)"
+            "Old debt: 2 checks in 1 project (archived milestones)"
         );
         assert_eq!(
             fold(3),
-            "Old debt: 5 items in 1 projects (archived milestones)"
+            "Old debt: 5 items in 1 project (archived milestones)"
         );
     }
 
@@ -1829,7 +1833,7 @@ mod tests {
             let text = render_text(&[broken.clone(), entry(Vec::new())], &filters);
             assert!(
                 text.lines()
-                    .any(|line| line == "Triage: pending todos unreadable in 1 projects"),
+                    .any(|line| line == "Triage: pending todos unreadable in 1 project"),
                 "{text}"
             );
         }
@@ -1928,7 +1932,7 @@ mod tests {
         e.digest.hidden.deferred = 3;
         let text = render_digest(&[e], 90);
         let lines: Vec<&str> = text.lines().collect();
-        assert!(lines[0].starts_with("Owner inbox: 1 projects"), "{text}");
+        assert!(lines[0].starts_with("Owner inbox: 1 project "), "{text}");
         let next = lines.iter().position(|l| *l == "NEXT").expect("NEXT");
         assert!(lines[next + 1].contains("ph 01"), "{text}");
         assert!(lines[next + 1].contains("\u{2192} closes phase"), "{text}");

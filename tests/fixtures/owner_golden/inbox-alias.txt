@@ -1,4 +1,4 @@
-Owner inbox: 1 projects · test 3 · decide 0 · fix 0 phases · blocked 0
+Owner inbox: 1 project · test 3 · decide 0 · fix 0 phases · blocked 0
 
 TEST — closes a phase
   merge  ph market/43  Trader mode  3 checks · 2 files  4 d  /gsd-verify-work 43 --ws market
@@ -8,7 +8,7 @@ TEST — closes a phase
     file 43-VERIFICATION.md
     - [ ] check the order ticket on a phone
 
-Owner inbox: 1 projects · test 3 · decide 0 · fix 0 phases · blocked 0
+Owner inbox: 1 project · test 3 · decide 0 · fix 0 phases · blocked 0
 
   old-ledger closes after: test 3 (ph 01 02)
 
@@ -21,7 +21,7 @@ STALE (> 90 d)
     - [ ] Ledger export
     - [ ] Balance column
 
-Owner inbox: 1 projects · test 8 · decide 1 · fix 1 phases · blocked 0
+Owner inbox: 1 project · test 8 · decide 1 · fix 1 phase · blocked 0
 
   labels closes after: test 8 (ph 01 02) · fix 1 (ph 02) · not built ph 03
 
