@@ -550,11 +550,22 @@ impl SettleConfirmScreen {
             ctx.status_message = Some((focus, std::time::Instant::now()));
             return ScreenAction::Pop;
         }
-        let lead = format!("{focus} \u{b7} paste the command there");
+        let lead = live_settle_lead(&focus, &fresh.draft.target.alias);
         match owner_actions::copy_led(ctx, lead, fresh.prompt(), 1) {
             ScreenAction::WriteOsc52(sequence) => ScreenAction::PopWriteOsc52(sequence),
             _ => ScreenAction::Pop,
         }
+    }
+}
+
+/// The status lead for a live-session settle. "paste the command there" only
+/// holds when the focus actually switched (the `v` path's `focus_status` rule);
+/// on a failed focus the reason stays and the owner is told where to paste.
+fn live_settle_lead(focus: &str, alias: &str) -> String {
+    if focus.starts_with(crate::multiplexer::FOCUS_OK_PREFIX) {
+        format!("{focus} \u{b7} paste the command there")
+    } else {
+        format!("{focus} \u{b7} paste the command into the Claude session in {alias}")
     }
 }
 
@@ -1703,6 +1714,20 @@ mod tests {
     }
 
     const FOCUSED: &str = "alder-api \u{b7} paste the command there";
+
+    #[test]
+    fn a_failed_focus_never_says_paste_there() {
+        let ok = format!("{} alder-api", crate::multiplexer::FOCUS_OK_PREFIX);
+        assert_eq!(
+            live_settle_lead(&ok, "alder-api"),
+            format!("{} {FOCUSED}", crate::multiplexer::FOCUS_OK_PREFIX)
+        );
+        let failed = "Tab-switching requires running inside tmux or herdr (none detected)";
+        let lead = live_settle_lead(failed, "alder-api");
+        assert!(lead.starts_with(failed), "{lead}");
+        assert!(!lead.contains("paste the command there"), "{lead}");
+        assert!(lead.ends_with("Claude session in alder-api"), "{lead}");
+    }
 
     #[test]
     fn a_live_session_gets_the_prompt_by_osc52() {
