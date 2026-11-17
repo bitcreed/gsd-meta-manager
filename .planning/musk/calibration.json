@@ -1,19 +1,19 @@
 {
   "version": 1,
-  "generated_at": "2026-11-15T07:37:55.562Z",
+  "generated_at": "2026-11-17T19:02:02.492Z",
   "runtime": "claude-code",
   "transcript_dir": "/home/blk/.claude/projects/-home-blk-projects-rust-gsd-meta-manager",
   "worktree_transcript_dirs": 0,
   "since": null,
   "min_samples": 5,
   "basis": "harness",
-  "sessions": 18,
-  "subagents": 636,
-  "messages": 23733,
+  "sessions": 17,
+  "subagents": 632,
+  "messages": 23517,
   "totals": {
-    "tokens": 119305166,
-    "cache_read": 3649574480,
-    "attributed_to_phase": 90120634
+    "tokens": 118254426,
+    "cache_read": 3619392892,
+    "attributed_to_phase": 89400191
   },
   "prices": {
     "per_task": {
@@ -79,10 +79,10 @@
       "p50_per_run": 236800
     },
     "general-purpose": {
-      "runs": 247,
-      "tokens_total": 8824874,
-      "cache_read_total": 73754079,
-      "p50_per_run": 25030
+      "runs": 244,
+      "tokens_total": 8645438,
+      "cache_read_total": 72610881,
+      "p50_per_run": 25022
     },
     "gsd-code-reviewer": {
       "runs": 38,
@@ -97,10 +97,10 @@
       "p50_per_run": 118155
     },
     "main": {
-      "runs": 15,
-      "tokens_total": 4708252,
-      "cache_read_total": 59634647,
-      "p50_per_run": 216354
+      "runs": 14,
+      "tokens_total": 4513248,
+      "cache_read_total": 56415553,
+      "p50_per_run": 219114
     },
     "gsd-verifier": {
       "runs": 51,
@@ -204,12 +204,6 @@
       "cache_read_total": 36020095,
       "p50_per_run": 111073
     },
-    "orchestrator:/gsd-spike": {
-      "runs": 2,
-      "tokens_total": 464103,
-      "cache_read_total": 19489968,
-      "p50_per_run": 232052
-    },
     "gsd-ui-researcher": {
       "runs": 1,
       "tokens_total": 321959,
@@ -221,12 +215,6 @@
       "tokens_total": 312937,
       "cache_read_total": 18236089,
       "p50_per_run": 156469
-    },
-    "orchestrator:/gsd-phase": {
-      "runs": 5,
-      "tokens_total": 302497,
-      "cache_read_total": 11666905,
-      "p50_per_run": 54503
     },
     "gsd-debug-session-manager": {
       "runs": 5,
@@ -252,6 +240,12 @@
       "cache_read_total": 6011311,
       "p50_per_run": 25115
     },
+    "orchestrator:/gsd-phase": {
+      "runs": 4,
+      "tokens_total": 200507,
+      "cache_read_total": 5782215,
+      "p50_per_run": 47742
+    },
     "orchestrator:/gsd-audit-milestone": {
       "runs": 2,
       "tokens_total": 194789,
@@ -275,12 +269,6 @@
       "tokens_total": 118013,
       "cache_read_total": 2733134,
       "p50_per_run": 118013
-    },
-    "claude-code-guide": {
-      "runs": 1,
-      "tokens_total": 110207,
-      "cache_read_total": 444638,
-      "p50_per_run": 110207
     },
     "orchestrator:/gsd-update": {
       "runs": 2,
@@ -335,18 +323,6 @@
           "tokens_total": 293739,
           "cache_read_total": 6619954,
           "p50_per_run": 293739
-        }
-      }
-    },
-    "2": {
-      "tokens_total": 337762,
-      "cache_read_total": 15812936,
-      "by_agent_type": {
-        "orchestrator:/gsd-spike": {
-          "runs": 1,
-          "tokens_total": 337762,
-          "cache_read_total": 15812936,
-          "p50_per_run": 337762
         }
       }
     },
@@ -459,8 +435,8 @@
       }
     },
     "20": {
-      "tokens_total": 689829,
-      "cache_read_total": 15825065,
+      "tokens_total": 530460,
+      "cache_read_total": 11987422,
       "by_agent_type": {
         "gsd-planner": {
           "runs": 1,
@@ -474,12 +450,6 @@
           "cache_read_total": 4063254,
           "p50_per_run": 187555
         },
-        "orchestrator:/gsd-spike": {
-          "runs": 1,
-          "tokens_total": 126341,
-          "cache_read_total": 3677032,
-          "p50_per_run": 126341
-        },
         "orchestrator:/gsd-quick": {
           "runs": 1,
           "tokens_total": 66764,
@@ -487,28 +457,10 @@
           "p50_per_run": 66764
         },
         "general-purpose": {
-          "runs": 2,
-          "tokens_total": 58272,
-          "cache_read_total": 179568,
-          "p50_per_run": 29136
-        }
-      }
-    },
-    "22": {
-      "tokens_total": 223312,
-      "cache_read_total": 6849240,
-      "by_agent_type": {
-        "general-purpose": {
           "runs": 1,
-          "tokens_total": 121322,
-          "cache_read_total": 964550,
-          "p50_per_run": 121322
-        },
-        "orchestrator:/gsd-phase": {
-          "runs": 1,
-          "tokens_total": 101990,
-          "cache_read_total": 5884690,
-          "p50_per_run": 101990
+          "tokens_total": 25244,
+          "cache_read_total": 18957,
+          "p50_per_run": 25244
         }
       }
     },
