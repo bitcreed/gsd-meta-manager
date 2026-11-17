@@ -602,6 +602,28 @@ fn fresh_copy(name: &str) -> TempDir {
     fresh_copy_of(&fixture(name))
 }
 
+/// Rewrite every `updated:` line of the markdown file `path` to `stamp`.
+fn stamp_file(path: &Path, stamp: &str) {
+    let text = std::fs::read_to_string(path).unwrap();
+    let fixed: Vec<String> = text
+        .lines()
+        .map(|l| {
+            if l.starts_with("updated:") {
+                format!("updated: {stamp}")
+            } else {
+                l.to_owned()
+            }
+        })
+        .collect();
+    write(path, &(fixed.join("\n") + "\n"));
+}
+
+/// Make the file `days` old: its `updated:` line moves that far into the past.
+fn age_file(path: &Path, days: i64) {
+    let old = chrono::Utc::now() - chrono::Duration::days(days);
+    stamp_file(path, &old.to_rfc3339());
+}
+
 /// [`fresh_copy`] of any tree.
 fn fresh_copy_of(root: &Path) -> TempDir {
     let dir = tempfile::tempdir().unwrap();
@@ -613,18 +635,7 @@ fn fresh_copy_of(root: &Path) -> TempDir {
             if path.is_dir() {
                 rewrite(&path, now);
             } else if path.extension().is_some_and(|e| e == "md") {
-                let text = std::fs::read_to_string(&path).unwrap();
-                let fixed: Vec<String> = text
-                    .lines()
-                    .map(|l| {
-                        if l.starts_with("updated:") {
-                            format!("updated: {now}")
-                        } else {
-                            l.to_owned()
-                        }
-                    })
-                    .collect();
-                std::fs::write(&path, fixed.join("\n") + "\n").unwrap();
+                stamp_file(&path, now);
             }
         }
     }
@@ -1432,20 +1443,7 @@ fn inbox_alias_merges_the_same_phase_pair_into_one_entry() {
 #[test]
 fn inbox_alias_lists_old_phases_in_a_trailing_stale_section() {
     let project = fresh_copy("stale-fold");
-    let old = chrono::Utc::now() - chrono::Duration::days(200);
-    let path = project.path().join(".planning/phases/01-ledger/01-UAT.md");
-    let text = std::fs::read_to_string(&path).unwrap();
-    let rewritten: Vec<String> = text
-        .lines()
-        .map(|l| {
-            if l.starts_with("updated:") {
-                format!("updated: {}", old.to_rfc3339())
-            } else {
-                l.to_owned()
-            }
-        })
-        .collect();
-    write(&path, &(rewritten.join("\n") + "\n"));
+    age_file(&project.path().join(".planning/phases/01-ledger/01-UAT.md"), 200);
     let (out, text) = alias_view(project.path(), "old-ledger", &[]);
     assert_eq!(out.status.code(), Some(0), "{out:?}");
     let lines: Vec<&str> = text.lines().collect();
@@ -1517,20 +1515,7 @@ fn a_decide_lane_view_lists_the_awaiting_session() {
 #[test]
 fn a_stale_entry_folds_out_of_the_lane_view() {
     let project = fresh_copy("stale-fold");
-    let old = chrono::Utc::now() - chrono::Duration::days(200);
-    let path = project.path().join(".planning/phases/01-ledger/01-UAT.md");
-    let text = std::fs::read_to_string(&path).unwrap();
-    let rewritten: Vec<String> = text
-        .lines()
-        .map(|l| {
-            if l.starts_with("updated:") {
-                format!("updated: {}", old.to_rfc3339())
-            } else {
-                l.to_owned()
-            }
-        })
-        .collect();
-    write(&path, &(rewritten.join("\n") + "\n"));
+    age_file(&project.path().join(".planning/phases/01-ledger/01-UAT.md"), 200);
     let text = text_of(&[("old-ledger", project.path())], &["--lane", "test"]);
     assert!(text.contains("ph 02"), "{text}");
     assert!(!text.contains("ph 01"), "{text}");
