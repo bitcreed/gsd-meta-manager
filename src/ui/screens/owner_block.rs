@@ -63,7 +63,9 @@ pub struct GroupKey {
 }
 
 impl GroupKey {
-    pub(crate) fn of(group: &OwnerGroup) -> Self {
+    /// The key of `group`; public so integration tests resolve a group's key
+    /// through the product (39-03).
+    pub fn of(group: &OwnerGroup) -> Self {
         Self {
             lane: group.lane.as_str(),
             kind: group.kind.as_str(),

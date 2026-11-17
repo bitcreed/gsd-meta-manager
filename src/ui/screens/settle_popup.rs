@@ -1800,4 +1800,92 @@ mod tests {
         assert!(status(&ctx).starts_with("Launched "), "{}", status(&ctx));
         assert_eq!(take_settle_launches().len(), 1);
     }
+
+    /// D-13b (SC5): every outcome x host x target, on a throwaway copy each, through
+    /// the real key path to Yes. Each cell launches exactly the prompt the product
+    /// builds from the resolved target and leaves its copy byte-identical.
+    #[test]
+    fn the_flow_matrix_launches_every_expected_prompt_and_writes_nothing() {
+        const PRICING: &str = "pricing-app";
+        let outcomes = [
+            ('w', Outcome::WontDo),
+            ('p', Outcome::DeferPermanently),
+            ('m', Outcome::Move),
+        ];
+        let mut cells = 0;
+        for (letter, outcome) in outcomes {
+            for host in ["inbox", "owner block"] {
+                for check in [false, true] {
+                    let label = format!(
+                        "{outcome:?} / {host} / {}",
+                        if check { "check" } else { "phase" }
+                    );
+                    take_settle_launches();
+                    let (_dir, root) = temp_fixture("heuristic-labels");
+                    let before = tree(&root);
+                    let mut ctx = fixture_ctx(&root, PRICING);
+                    let row = stop_rows(&ctx).remove(0);
+                    let item = check.then(|| {
+                        crate::ui::screens::owner_block::inbox_item_ids(&row.src).remove(0)
+                    });
+                    let mut stack = if host == "inbox" {
+                        Stack::inbox()
+                    } else {
+                        Stack::detail(&mut ctx, PRICING, &row.src.key)
+                    };
+                    if check {
+                        stack.key(&mut ctx, KeyCode::Enter);
+                        stack.key(&mut ctx, KeyCode::Char('j'));
+                    }
+                    assert!(stack.key(&mut ctx, KeyCode::Char('x')), "{label}: x");
+                    assert_eq!(stack.name(), "settle_chooser", "{label}");
+                    stack.key(&mut ctx, KeyCode::Char(letter));
+                    if outcome == Outcome::Move {
+                        assert_eq!(stack.name(), "settle_phase", "{label}");
+                        stack.key(&mut ctx, KeyCode::Enter);
+                    }
+                    assert_eq!(stack.name(), "settle_reason", "{label}");
+                    stack.keys(&mut ctx, "no device here");
+                    stack.key(&mut ctx, KeyCode::Enter);
+                    assert_eq!(stack.name(), "settle_confirm", "{label}");
+                    assert!(
+                        take_settle_launches().is_empty(),
+                        "{label}: nothing before Yes"
+                    );
+                    stack.key(&mut ctx, KeyCode::Char('y'));
+                    assert_eq!(stack.depth(), 1, "{label}: the popup closed");
+
+                    let draft =
+                        owner_settle::resolve_draft(&ctx, PRICING, &row.src.key, item.as_deref())
+                            .unwrap_or_else(|why| panic!("{label}: {why}"));
+                    let choice = SettleChoice {
+                        outcome,
+                        reason: "no device here".to_owned(),
+                        move_to: (outcome == Outcome::Move).then(|| owner_settle::MoveTarget {
+                            number: "02".to_owned(),
+                            name: Some("Sync".to_owned()),
+                            known: true,
+                        }),
+                    };
+                    let expected = owner_settle::prompt(&draft.target, &choice);
+                    assert_eq!(draft.target.scope == SettleScope::Phase, !check, "{label}");
+                    let launches = take_settle_launches();
+                    assert_eq!(launches.len(), 1, "{label}: exactly one launch");
+                    assert_eq!(launches[0].prompt(), expected, "{label}: the prompt");
+                    assert_eq!(
+                        launches[0].draft.cwd, root,
+                        "{label}: the project is the cwd"
+                    );
+                    assert!(
+                        status(&ctx).starts_with("Launched "),
+                        "{label}: {}",
+                        status(&ctx)
+                    );
+                    assert_eq!(tree(&root), before, "{label}: the copy is byte-identical");
+                    cells += 1;
+                }
+            }
+        }
+        assert_eq!(cells, 12);
+    }
 }
