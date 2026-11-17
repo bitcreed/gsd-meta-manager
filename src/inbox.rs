@@ -16,9 +16,9 @@ use serde_json::{json, Value};
 
 use crate::oneoff::todos::PendingTodo;
 use crate::state_reader::owner_items::{
-    is_owner_row, label_counts, labels_of, next_actions, outside_gate, stale_totals,
-    triage_entries, Category, ClosesAfter, Kind, Lane, LaneCounts, OwnerDigest, OwnerGroup,
-    OwnerItem, Scope, StaleTotals, TriageEntry, NEXT_LIMIT,
+    is_owner_row, label_counts, labels_of, next_actions, outside_gate, ranked_checks,
+    ranks_as_closing, stale_totals, triage_entries, Category, ClosesAfter, Kind, Lane, LaneCounts,
+    OwnerDigest, OwnerGroup, OwnerItem, Scope, StaleTotals, TriageEntry, NEXT_LIMIT,
 };
 use crate::text::terminal_capped;
 
@@ -101,7 +101,7 @@ pub fn closes_after_json(gate: &ClosesAfter) -> Value {
     })
 }
 
-fn item_json(item: &OwnerItem) -> Value {
+fn item_json(item: &OwnerItem, lane: Lane) -> Value {
     json!({
         "id": terminal_capped(&item.id),
         "test": opt_text(item.test.as_deref()),
@@ -117,10 +117,22 @@ fn item_json(item: &OwnerItem) -> Value {
             "result": terminal_capped(&gap.result),
             "reason": opt_text(gap.reason.as_deref()),
         })).collect::<Vec<_>>(),
+        "labels": labels_of(item, lane).iter().map(|label| label.as_str()).collect::<Vec<_>>(),
     })
 }
 
-fn group_json(group: &OwnerGroup) -> Value {
+/// The basenames of an entry's files, sorted, each escaped and capped.
+fn entry_files_json(entry: &TriageEntry) -> Vec<String> {
+    let mut names: Vec<String> = entry
+        .files()
+        .iter()
+        .map(|file| terminal_capped(file.rsplit('/').next().unwrap_or(file)))
+        .collect();
+    names.sort();
+    names
+}
+
+fn group_json(group: &OwnerGroup, entry: Option<&TriageEntry>) -> Value {
     let (scope, archived_milestone) = match &group.scope {
         Scope::Current => ("current", Value::Null),
         Scope::Archived { label, .. } => ("archived", json!(terminal_capped(label))),
@@ -141,6 +153,11 @@ fn group_json(group: &OwnerGroup) -> Value {
         "age_days": group.age_days,
         "stale": group.stale,
         "command": group.command,
+        "folded_stale": entry.is_some_and(|e| e.folded),
+        "entry_files": entry.map_or_else(
+            || vec![terminal_capped(group.file.rsplit('/').next().unwrap_or(&group.file))],
+            entry_files_json,
+        ),
         "supersedes": group.supersedes.iter().map(|id| terminal_capped(id)).collect::<Vec<_>>(),
         "counts": {
             "checks": group.counts.checks,
@@ -148,11 +165,11 @@ fn group_json(group: &OwnerGroup) -> Value {
             "gaps": group.counts.gaps,
             "unreadable": group.counts.unreadable,
         },
-        "items": group.items.iter().map(item_json).collect::<Vec<_>>(),
+        "items": group.items.iter().map(|item| item_json(item, group.lane)).collect::<Vec<_>>(),
     })
 }
 
-fn project_json(entry: &ProjectEntry, filters: &Filters) -> Value {
+fn project_json(entry: &ProjectEntry, filters: &Filters, triage: &[TriageEntry]) -> Value {
     let (error, milestone, groups, hidden, todos) = match &entry.error {
         Some(error) => (
             json!({"kind": error.kind, "message": error.message}),
@@ -179,8 +196,12 @@ fn project_json(entry: &ProjectEntry, filters: &Filters) -> Value {
                 .digest
                 .groups
                 .iter()
-                .filter(|group| filters.lists_group(group))
-                .map(group_json)
+                .enumerate()
+                .filter(|(_, group)| filters.lists_group(group))
+                .map(|(index, group)| {
+                    let owner = triage.iter().find(|t| t.indices.contains(&index));
+                    group_json(group, owner)
+                })
                 .collect(),
             json!({
                 "deferred": entry.digest.hidden.deferred,
@@ -216,7 +237,41 @@ fn project_json(entry: &ProjectEntry, filters: &Filters) -> Value {
 }
 
 /// The whole document: schema, summary over every entry, then the projects.
-pub fn build_document(entries: &[ProjectEntry], filters: &Filters) -> Value {
+pub fn build_document(entries: &[ProjectEntry], filters: &Filters, fold_days: u32) -> Value {
+    let triaged: Vec<Vec<TriageEntry>> = entries
+        .iter()
+        .map(|entry| {
+            if entry.error.is_some() {
+                Vec::new()
+            } else {
+                triage_entries(&entry.digest, fold_days)
+            }
+        })
+        .collect();
+    let aliases: Vec<String> = entries.iter().map(alias_of).collect();
+    let view: Vec<(&str, &[TriageEntry])> = entries
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| entry.error.is_none())
+        .map(|(i, _)| (aliases[i].as_str(), triaged[i].as_slice()))
+        .collect();
+    let next: Vec<Value> = next_actions(&view, NEXT_LIMIT)
+        .iter()
+        .map(|action| {
+            let group = &action.entry.group;
+            json!({
+                "alias": terminal_capped(action.alias),
+                "workstream": opt_text(group.workstream.as_deref()),
+                "phase": terminal_capped(&group.phase),
+                "lane": group.lane.as_str(),
+                "checks": ranked_checks(group),
+                "closes_phase": ranks_as_closing(group),
+                "command": group.command,
+                "age_days": group.age_days,
+            })
+        })
+        .collect();
+    let stale = stale_totals(triaged.iter().flatten());
     let read = || entries.iter().filter(|entry| entry.error.is_none());
     let sum =
         |count: fn(&OwnerDigest) -> usize| read().map(|entry| count(&entry.digest)).sum::<usize>();
@@ -242,8 +297,14 @@ pub fn build_document(entries: &[ProjectEntry], filters: &Filters) -> Value {
             "planned_questions": sum(|d| d.hidden.planned_questions),
             "superseded": sum(|d| d.superseded),
             "noise": sum(|d| d.hidden.noise),
+            "next_actions": next,
+            "stale_folded": {"entries": stale.entries, "items": stale.items},
         },
-        "projects": entries.iter().map(|entry| project_json(entry, filters)).collect::<Vec<_>>(),
+        "projects": entries
+            .iter()
+            .zip(&triaged)
+            .map(|(entry, triage)| project_json(entry, filters, triage))
+            .collect::<Vec<_>>(),
     })
 }
 
@@ -1606,6 +1667,7 @@ mod tests {
         let doc = build_document(
             &[entry(vec![group(Lane::Test)]), entry(Vec::new())],
             &Filters::default(),
+            90,
         );
         assert_eq!(doc["schema"], "gsd-meta-manager/inbox");
         assert_eq!(doc["schema_version"], 1);
@@ -1682,7 +1744,7 @@ mod tests {
 
     #[test]
     fn project_authored_strings_are_escaped() {
-        let doc = build_document(&[entry(vec![group(Lane::Test)])], &Filters::default());
+        let doc = build_document(&[entry(vec![group(Lane::Test)])], &Filters::default(), 90);
         let name = doc["projects"][0]["groups"][0]["phase_name"]
             .as_str()
             .unwrap();
@@ -1692,13 +1754,13 @@ mod tests {
     #[test]
     fn lane_filters_list_only_the_chosen_lanes_and_leave_the_summary_alone() {
         let entries = [entry(vec![group(Lane::Test), group(Lane::Blocked)])];
-        let all = build_document(&entries, &Filters::default());
+        let all = build_document(&entries, &Filters::default(), 90);
         assert_eq!(all["projects"][0]["groups"].as_array().unwrap().len(), 2);
         let only = Filters {
             lanes: vec![Lane::Blocked],
             ..Default::default()
         };
-        let doc = build_document(&entries, &only);
+        let doc = build_document(&entries, &only, 90);
         let groups = doc["projects"][0]["groups"].as_array().unwrap();
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0]["lane"], "blocked");
@@ -1715,7 +1777,7 @@ mod tests {
             }),
             ..Default::default()
         };
-        let doc = build_document(&[failed], &Filters::default());
+        let doc = build_document(&[failed], &Filters::default(), 90);
         let project = &doc["projects"][0];
         assert_eq!(project["error"]["kind"], "unresolved");
         assert!(project["milestone"].is_null());
@@ -2123,5 +2185,25 @@ mod tests {
         assert!(lines[0].contains("120 checks"), "{lines:?}");
         assert!(lines[1].contains("  3 checks"), "{lines:?}");
         assert_eq!(lines[0].find("checks"), lines[1].find("checks"));
+    }
+
+    #[test]
+    fn a_merged_pair_shares_entry_files_and_the_folded_flag() {
+        let mut uat = group(Lane::Test);
+        uat.age_days = Some(200);
+        let mut verification = group(Lane::Test);
+        verification.kind = Kind::Verification;
+        verification.file = ".planning/phases/01-alpha/01-VERIFICATION.md".into();
+        verification.age_days = Some(5);
+        let doc = build_document(&[entry(vec![uat, verification])], &Filters::default(), 90);
+        let groups = doc["projects"][0]["groups"].as_array().unwrap();
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0]["entry_files"], groups[1]["entry_files"]);
+        assert_eq!(
+            groups[0]["entry_files"],
+            serde_json::json!(["01-UAT.md", "01-VERIFICATION.md"])
+        );
+        assert_eq!(groups[0]["folded_stale"], groups[1]["folded_stale"]);
+        assert_eq!(groups[0]["items"][0]["labels"], serde_json::json!([]));
     }
 }

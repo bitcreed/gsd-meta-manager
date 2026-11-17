@@ -183,7 +183,7 @@ pub fn run(
         })
         .collect();
     let text = match view_of(json, all, targets, lanes, includes) {
-        View::Json => build_document(&entries, &filters).to_string(),
+        View::Json => build_document(&entries, &filters, fold_days).to_string(),
         View::Project => render_project(&entries[0], &filters, fold_days),
         View::Legacy => render_text(&entries, &filters),
         View::Lanes => render_lanes(&entries, &filters, fold_days),

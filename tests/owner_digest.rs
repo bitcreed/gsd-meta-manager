@@ -110,7 +110,7 @@ fn closes_after_counts_the_current_milestone() {
     assert_eq!(gate.lane_phases.fix, ["25"]);
     assert!(!gate.lane_phases.test.iter().any(|p| p == "19" || p == "27"));
     let (_g, entry) = entry_of("closes-after-milestone", "x");
-    let doc = build_document(&[entry], &Filters::default());
+    let doc = build_document(&[entry], &Filters::default(), FOLD_DAYS);
     assert_eq!(
         doc["projects"][0]["milestone"]["closes_after"],
         serde_json::json!({
@@ -172,7 +172,7 @@ fn supersede_six_phases_reports_eighteen_checks() {
 #[test]
 fn gaps_merge_reports_ten_failed_checks_and_fourteen_gaps() {
     let (_g, e) = entry_of("uat-gaps-merge", "gaps");
-    let doc = build_document(&[e], &Filters::default());
+    let doc = build_document(&[e], &Filters::default(), FOLD_DAYS);
     let groups = groups(&doc);
     assert_eq!(groups.len(), 1);
     assert_eq!(groups[0]["lane"], "fix");
@@ -192,14 +192,14 @@ fn gaps_merge_reports_ten_failed_checks_and_fourteen_gaps() {
 #[test]
 fn acknowledged_files_are_counted_and_listed_only_on_request() {
     let (_g, e) = entry_of("uat-ack-match", "ack");
-    let by_default = build_document(std::slice::from_ref(&e), &Filters::default());
+    let by_default = build_document(std::slice::from_ref(&e), &Filters::default(), FOLD_DAYS);
     assert!(groups(&by_default).is_empty());
     assert_eq!(by_default["projects"][0]["hidden"]["acknowledged_files"], 1);
     let asked = Filters {
         acknowledged: true,
         ..Default::default()
     };
-    let doc = build_document(&[e], &asked);
+    let doc = build_document(&[e], &asked, FOLD_DAYS);
     assert_eq!(groups(&doc).len(), 1);
     assert_eq!(groups(&doc)[0]["acknowledged"], true);
     for name in [
@@ -208,7 +208,7 @@ fn acknowledged_files_are_counted_and_listed_only_on_request() {
         "uat-ack-missing-at",
     ] {
         let (_g, e) = entry_of(name, "x");
-        let doc = build_document(&[e], &Filters::default());
+        let doc = build_document(&[e], &Filters::default(), FOLD_DAYS);
         assert!(!groups(&doc).is_empty(), "{name} is listed by default");
         assert_eq!(
             doc["projects"][0]["hidden"]["acknowledged_files"], 0,
@@ -227,7 +227,7 @@ fn archived_milestones_are_old_debt_only() {
     assert_eq!(e.digest.test, 0);
     assert_eq!(e.digest.archived.test, 10);
     assert_eq!(e.digest.archived.blocked, 4);
-    let plain = build_document(std::slice::from_ref(&e), &Filters::default());
+    let plain = build_document(std::slice::from_ref(&e), &Filters::default(), FOLD_DAYS);
     assert!(groups(&plain).iter().all(|g| g["scope"] == "current"));
     assert_eq!(plain["summary"]["archived"]["test"], 10);
     assert_eq!(plain["summary"]["archived"]["blocked"], 4);
@@ -235,7 +235,7 @@ fn archived_milestones_are_old_debt_only() {
         archived: true,
         ..Default::default()
     };
-    let doc = build_document(&[e], &asked);
+    let doc = build_document(&[e], &asked, FOLD_DAYS);
     let old: Vec<&Value> = groups(&doc)
         .iter()
         .filter(|g| g["scope"] == "archived")
@@ -251,7 +251,7 @@ fn archived_milestones_are_old_debt_only() {
 fn deferred_items_are_a_count_only() {
     let (_g, e) = entry_of("deferred-200", "deferred");
     assert_eq!(e.digest.hidden.deferred, 200);
-    let plain = build_document(std::slice::from_ref(&e), &Filters::default());
+    let plain = build_document(std::slice::from_ref(&e), &Filters::default(), FOLD_DAYS);
     assert_eq!(plain["summary"]["deferred"], 200);
     assert_eq!(plain["projects"][0]["hidden"]["deferred"], 200);
     assert!(groups(&plain).is_empty());
@@ -259,7 +259,7 @@ fn deferred_items_are_a_count_only() {
         deferred: true,
         ..Default::default()
     };
-    let doc = build_document(&[e], &asked);
+    let doc = build_document(&[e], &asked, FOLD_DAYS);
     assert_eq!(groups(&doc).len(), 1);
     assert_eq!(groups(&doc)[0]["lane"], "deferred");
     assert_eq!(groups(&doc)[0]["items"].as_array().unwrap().len(), 200);
@@ -291,7 +291,7 @@ fn gaps_found_is_never_superseded() {
 #[test]
 fn out_of_set_verification_is_unreadable_checks() {
     let (_g, e) = entry_of("verification-out-of-set", "oos");
-    let doc = build_document(&[e], &Filters::default());
+    let doc = build_document(&[e], &Filters::default(), FOLD_DAYS);
     let fix: Vec<&Value> = groups(&doc).iter().filter(|g| g["lane"] == "fix").collect();
     assert_eq!(fix.len(), 1);
     assert_eq!(fix[0]["items"], serde_json::json!([]));
@@ -305,7 +305,7 @@ fn out_of_set_verification_is_unreadable_checks() {
 #[test]
 fn no_phases_is_empty_not_an_error() {
     let (_g, e) = entry_of("no-phases", "none");
-    let doc = build_document(&[e], &Filters::default());
+    let doc = build_document(&[e], &Filters::default(), FOLD_DAYS);
     assert!(doc["projects"][0]["error"].is_null());
     assert!(groups(&doc).is_empty());
 }
@@ -313,7 +313,7 @@ fn no_phases_is_empty_not_an_error() {
 #[test]
 fn testing_uat_counts_as_owner_work() {
     let (_g, e) = entry_of("uat-testing-quoted", "q");
-    let doc = build_document(&[e], &Filters::default());
+    let doc = build_document(&[e], &Filters::default(), FOLD_DAYS);
     let test: Vec<&Value> = groups(&doc)
         .iter()
         .filter(|g| g["lane"] == "test")
@@ -330,7 +330,7 @@ fn workstreams_carry_their_workstream() {
         archived: true,
         ..Default::default()
     };
-    let doc = build_document(&[e], &asked);
+    let doc = build_document(&[e], &asked, FOLD_DAYS);
     let alpha = groups(&doc)
         .iter()
         .find(|g| g["workstream"] == "alpha" && g["scope"] == "current")
@@ -395,12 +395,12 @@ fn the_include_all_checklist_matches_the_golden() {
 fn lane_filters_narrow_both_modes_and_never_the_summary() {
     let held = golden_entries();
     let entries: Vec<ProjectEntry> = held.iter().map(|(_, e)| e.clone()).collect();
-    let all_doc = build_document(&entries, &Filters::default());
+    let all_doc = build_document(&entries, &Filters::default(), FOLD_DAYS);
     let test_only = Filters {
         lanes: vec![Lane::Test],
         ..Default::default()
     };
-    let doc = build_document(&entries, &test_only);
+    let doc = build_document(&entries, &test_only, FOLD_DAYS);
     assert_eq!(doc["summary"], all_doc["summary"]);
     for (project, all) in doc["projects"]
         .as_array()
@@ -511,9 +511,9 @@ fn debug_sessions_fill_decide_and_fix() {
     }
 
     // The default listing leaves the acknowledged session out; `include_all` lists it.
-    let doc = build_document(std::slice::from_ref(&e), &Filters::default());
+    let doc = build_document(std::slice::from_ref(&e), &Filters::default(), FOLD_DAYS);
     assert_eq!(groups(&doc).len(), 9);
-    let doc = build_document(std::slice::from_ref(&e), &include_all());
+    let doc = build_document(std::slice::from_ref(&e), &include_all(), FOLD_DAYS);
     let acked: Vec<&Value> = groups(&doc)
         .iter()
         .filter(|g| g["acknowledged"] == true)
@@ -534,7 +534,7 @@ fn context_questions_fill_decide() {
     assert_eq!(d.archived.decide, 1);
     assert_eq!(d.hidden.acknowledged_files, 1);
 
-    let doc = build_document(std::slice::from_ref(&e), &include_all());
+    let doc = build_document(std::slice::from_ref(&e), &include_all(), FOLD_DAYS);
     let listed: Vec<(String, usize, bool)> = groups(&doc)
         .iter()
         .filter(|g| g["kind"] == "context_questions")
@@ -612,7 +612,7 @@ fn a_planned_phase_hides_its_open_questions() {
     // Phase 02 is built, and its questions no longer gate the milestone.
     assert_eq!(d.closes_after.decide, 0);
 
-    let doc = build_document(std::slice::from_ref(&e), &include_all());
+    let doc = build_document(std::slice::from_ref(&e), &include_all(), FOLD_DAYS);
     let files: Vec<&str> = groups(&doc)
         .iter()
         .filter(|g| g["kind"] == "context_questions")
@@ -633,7 +633,7 @@ fn a_summary_only_phase_counts_as_planned() {
     let d = &e.digest;
     assert_eq!(d.hidden.planned_questions, 2);
     assert_eq!(d.decide, 0);
-    let doc = build_document(std::slice::from_ref(&e), &include_all());
+    let doc = build_document(std::slice::from_ref(&e), &include_all(), FOLD_DAYS);
     assert!(groups(&doc)
         .iter()
         .all(|g| g["kind"] != "context_questions"));
@@ -644,7 +644,7 @@ fn a_summary_only_phase_counts_as_planned() {
 fn open_questions_count_top_level_entries() {
     let (_g, e) = entry_of("context-entries", "ent");
     assert_eq!(e.digest.decide, 3);
-    let doc = build_document(std::slice::from_ref(&e), &include_all());
+    let doc = build_document(std::slice::from_ref(&e), &include_all(), FOLD_DAYS);
     let group = groups(&doc)
         .iter()
         .find(|g| g["kind"] == "context_questions")
@@ -682,7 +682,7 @@ fn handoff_paused_is_one_stale_decide_group() {
     assert!(state.stale_handoff.is_some());
     assert!(!state.paused);
     assert_eq!(entry.digest.decide, 1);
-    let doc = build_document(std::slice::from_ref(&entry), &include_all());
+    let doc = build_document(std::slice::from_ref(&entry), &include_all(), FOLD_DAYS);
     let found = handoff_groups_of(&doc);
     assert_eq!(found.len(), 1, "{found:?}");
     let group = found[0];
@@ -733,7 +733,7 @@ fn handoff_paused_is_one_stale_decide_group() {
 fn handoff_workstreams_carry_ws_commands() {
     let (_g, entry) = entry_of("handoff-workstreams", "ws");
     assert_eq!(entry.digest.decide, 3);
-    let doc = build_document(std::slice::from_ref(&entry), &include_all());
+    let doc = build_document(std::slice::from_ref(&entry), &include_all(), FOLD_DAYS);
     let found = handoff_groups_of(&doc);
     assert_eq!(found.len(), 3, "{found:?}");
     let by_file = |file: &str| {
@@ -764,7 +764,7 @@ fn handoff_workstreams_carry_ws_commands() {
 fn checkpoint_phase_lists_only_the_open_checkpoint() {
     let (_g, entry) = entry_of("checkpoint-phase", "cp");
     assert_eq!(entry.digest.decide, 1);
-    let doc = build_document(std::slice::from_ref(&entry), &include_all());
+    let doc = build_document(std::slice::from_ref(&entry), &include_all(), FOLD_DAYS);
     assert!(handoff_groups_of(&doc).is_empty());
     let found: Vec<&Value> = groups(&doc)
         .iter()
@@ -842,7 +842,7 @@ fn an_unreadable_pending_dir_is_flagged() {
         digest,
         ..Default::default()
     };
-    let doc = build_document(&[entry], &Filters::default());
+    let doc = build_document(&[entry], &Filters::default(), FOLD_DAYS);
     assert_eq!(doc["projects"][0]["hidden"]["todos"], 0);
     assert_eq!(doc["projects"][0]["hidden"]["todos_unreadable"], true);
 }
@@ -1105,4 +1105,154 @@ fn the_lane_stale_line_counts_only_the_selected_lanes() {
     };
     let text = render_lanes(&entries, &decide, FOLD_DAYS);
     assert!(!text.lines().any(|l| l.starts_with("TEST")), "{text}");
+}
+
+// --- The triage in the JSON (Phase 38, plan 03) --------------------------------
+
+fn groups_of<'a>(doc: &'a Value, phase: &str) -> Vec<&'a Value> {
+    doc["projects"][0]["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|g| g["phase"] == phase)
+        .collect()
+}
+
+#[test]
+fn the_merge_link_names_both_files() {
+    let (_guard, entry) = entry_of("same-phase-merge", "merge");
+    let doc = build_document(std::slice::from_ref(&entry), &Filters::default(), FOLD_DAYS);
+    let pair = groups_of(&doc, "43");
+    assert_eq!(pair.len(), 2, "both groups stay listed");
+    for group in &pair {
+        assert_eq!(
+            group["entry_files"],
+            serde_json::json!(["43-UAT.md", "43-VERIFICATION.md"])
+        );
+        assert_eq!(group["folded_stale"], false);
+    }
+    let alone: Vec<&Value> = doc["projects"][0]["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|g| g["phase"] != "43")
+        .collect();
+    for group in alone {
+        let files = group["entry_files"].as_array().unwrap();
+        assert_eq!(files.len(), 1, "{group}");
+        assert!(group["file"]
+            .as_str()
+            .unwrap()
+            .ends_with(files[0].as_str().unwrap()));
+    }
+}
+
+#[test]
+fn folded_stale_is_the_entry_flag_and_totals_stay() {
+    let (_guard, entry) = entry_of("stale-fold", "old-ledger");
+    let doc = build_document(std::slice::from_ref(&entry), &Filters::default(), FOLD_DAYS);
+    assert_eq!(groups_of(&doc, "01")[0]["folded_stale"], true);
+    assert_eq!(groups_of(&doc, "02")[0]["folded_stale"], false);
+    assert_eq!(
+        doc["summary"]["stale_folded"],
+        serde_json::json!({"entries": 1, "items": 2})
+    );
+    assert_eq!(doc["summary"]["test"], entry.digest.test);
+    let wide = build_document(std::slice::from_ref(&entry), &Filters::default(), 100_000);
+    assert_eq!(wide["summary"]["test"], doc["summary"]["test"]);
+    assert_eq!(
+        wide["summary"]["stale_folded"],
+        serde_json::json!({"entries": 0, "items": 0})
+    );
+}
+
+#[test]
+fn labels_appear_on_every_item() {
+    let (_guard, entry) = entry_of("heuristic-labels", "labels");
+    let doc = build_document(std::slice::from_ref(&entry), &Filters::default(), FOLD_DAYS);
+    let mut seen = 0;
+    let mut non_empty = 0;
+    for (group, owner) in doc["projects"][0]["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .zip(&entry.digest.groups)
+    {
+        for (item, source) in group["items"].as_array().unwrap().iter().zip(&owner.items) {
+            let expected: Vec<&str> = labels_of(source, owner.lane)
+                .iter()
+                .map(|l| l.as_str())
+                .collect();
+            assert_eq!(item["labels"], serde_json::json!(expected));
+            seen += 1;
+            non_empty += usize::from(!expected.is_empty());
+        }
+    }
+    assert!(seen > 0 && non_empty > 0);
+}
+
+#[test]
+fn next_actions_in_json_equal_the_digest_order() {
+    let (_held, entries) = fleet();
+    let doc = build_document(&entries, &Filters::default(), FOLD_DAYS);
+    let next = doc["summary"]["next_actions"].as_array().unwrap();
+    assert!(!next.is_empty() && next.len() <= 5);
+    for action in next {
+        assert_eq!(
+            keys_of(action),
+            [
+                "age_days",
+                "alias",
+                "checks",
+                "closes_phase",
+                "command",
+                "lane",
+                "phase",
+                "workstream"
+            ]
+        );
+    }
+    let digest = render_digest(&entries, FOLD_DAYS);
+    let digest_commands: Vec<&str> = digest
+        .lines()
+        .skip_while(|l| *l != "NEXT")
+        .skip(1)
+        .take_while(|l| !l.is_empty())
+        .map(|l| l.rsplit("  ").next().unwrap())
+        .collect();
+    let json_commands: Vec<&str> = next
+        .iter()
+        .map(|a| a["command"].as_str().unwrap())
+        .collect();
+    assert_eq!(digest_commands, json_commands);
+    let aliases: Vec<&str> = next.iter().map(|a| a["alias"].as_str().unwrap()).collect();
+    let digest_aliases: Vec<&str> = digest
+        .lines()
+        .skip_while(|l| *l != "NEXT")
+        .skip(1)
+        .take_while(|l| !l.is_empty())
+        .map(|l| l.split_whitespace().next().unwrap())
+        .collect();
+    assert_eq!(digest_aliases, aliases);
+    // The lane and include filters change neither list, the old totals stay.
+    let narrowed = build_document(&entries, &test_lane(), FOLD_DAYS);
+    assert_eq!(
+        narrowed["summary"]["next_actions"],
+        doc["summary"]["next_actions"]
+    );
+    assert_eq!(
+        narrowed["summary"]["stale_folded"],
+        doc["summary"]["stale_folded"]
+    );
+}
+
+fn keys_of(value: &Value) -> Vec<&str> {
+    let mut keys: Vec<&str> = value
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    keys
 }

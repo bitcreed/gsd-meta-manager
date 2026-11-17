@@ -22,6 +22,7 @@ gsd-meta-manager inbox --json [project...] [--lane test,decide,fix,blocked] [--i
 - `gsd-meta-manager status --json` prints ONE JSON document on one line describing every registered project. Name aliases or paths to restrict it; entries come back in the order named.
 - `gsd-meta-manager next <project> --json` prints the advisory next GSD command for one project. The same object is `projects[].next` in `status`, so `status` alone is usually enough.
 - `gsd-meta-manager inbox --json` prints ONE JSON line of owner work grouped by lane (`test`, `decide`, `fix`, `blocked`), one group per file, with the checks and the command that works on each group. Use it to find missing UATs or pending owner work; do not run audit-uat per project.
+- Plain `gsd-meta-manager inbox` (no `--json`) prints a short human digest, not a checklist: agents use `--json`, or `--all` for the full plain checklist. `summary.next_actions` holds the ranked next actions (the digest's `NEXT` list). `labels` on an item and `folded_stale` on a group are hints that never change a count.
 
 A `<project>` is a registered alias, a path inside a registered project, or a directory containing `.planning/`.
 

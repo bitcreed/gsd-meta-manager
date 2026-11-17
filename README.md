@@ -411,8 +411,9 @@ acknowledged files and pending todos are collapsed folds under the rows. On a gr
 
 **Inbox screen (`i` on the dashboard).** One list of everything that waits on you, across
 every registered project, grouped into `TEST — closes a phase`, `TEST — phase stays open`,
-`DECIDE` and `FIX — code needed` (`BLOCKED` with `a` or `4`), with Old debt, Acknowledged and
-Triage folded below. Inside Test, phases that close first, then projects closest to a
+`DECIDE` and `FIX — code needed` (`BLOCKED` with `a` or `4`), with Old debt, Acknowledged,
+Triage and Stale (phases older than `preferences.owner.fold_days`, default 90) folded below.
+A UAT and VERIFICATION pair of one phase is one row. Inside Test, phases that close first, then projects closest to a
 milestone close, then the oldest. Decide and Fix list the oldest first. The numbers in the
 header cover every project and match `gsd-meta-manager inbox --json`. The screen is
 keyboard-only.
@@ -426,7 +427,7 @@ keyboard-only.
 | `o` | Open the group's source file in a read-only viewer |
 | `v` | Run the group's command in its project through your multiplexer (tmux, herdr, ...), or switch to the project's live session and show the command to type |
 | `A` | Acknowledge the group's file (see below) |
-| `y` | Copy the group as the plain checklist `gsd-meta-manager inbox` prints (on the Old debt fold: that fold's checklist) |
+| `y` | Copy the checklist `gsd-meta-manager inbox ALIAS` prints for that row (on the Old debt fold: that fold's checklist) |
 | `Esc` / `q` | Back to the dashboard |
 
 `v` builds the command from the group's kind, phase and workstream
@@ -632,12 +633,29 @@ they belong to, and archived milestones, acknowledged files and deferred items a
 counted but left out of the lists unless you ask for them.
 
 ```bash
-gsd-meta-manager inbox                      # a plain checklist: lane sections, `- [ ]` items, folds
+gsd-meta-manager inbox                      # a short digest: totals, one `closes after` line per project, the 5 next actions, folds
+gsd-meta-manager inbox my-app               # that project's full checklist: merged entries, labels, a `STALE (> 90 d)` section
+gsd-meta-manager inbox --lane test,fix      # one line per phase across projects, stale phases folded
+gsd-meta-manager inbox --all                # the full plain checklist of every project, as before the digest
 gsd-meta-manager inbox --json               # the same data as ONE JSON line (schema below)
 gsd-meta-manager inbox --json my-app        # only this project (alias, path or directory)
-gsd-meta-manager inbox --lane test,fix      # list only these lanes: test, decide, fix, blocked
 gsd-meta-manager inbox --include archived,todos  # also list: archived, deferred, acknowledged, todos
 ```
+
+Plain `inbox` prints the digest: the totals, one `closes after` line per project, the five
+next actions ranked by payoff (phases that close first, then the fewest checks) and the
+fold lines, within 25 lines. `inbox ALIAS` prints that project's whole checklist.
+`--lane` over several projects prints one collapsed line per phase (a 51-step UAT is one
+line with `51 checks`). `--all` is the stable plain format: the full checklist exactly as
+it was before the digest, so scripts use it (or `--json`) rather than the digest, whose
+layout may change.
+
+A UAT and a VERIFICATION file of one phase are one entry (`2 files`): nothing is dropped, the
+checklist names each file. Work whose file is older than `preferences.owner.fold_days`
+(default 90, clamped 1-3650) folds into one `Stale: N checks in M phases older than 90 d`
+line; it is still counted in every total, and `inbox ALIAS` lists it under `STALE`.
+Checks whose text reads like a decision or a fix that already landed carry the hints
+`decision?` and `looks resolved`; they are hints only and never move, hide or re-rank a row.
 
 Exit codes are those of `status`: `0` the output was printed, including entries that
 carry an `error`; `1` the registry could not be loaded or parsed (nothing on stdout,
@@ -654,7 +672,9 @@ Schema version 1:
   "summary": {
     "projects": 2, "test": 3, "decide": 0, "fix_phases": 1, "fix_debug": 0, "blocked": 1, "closeable_phases": 1,
     "archived": {"test": 0, "blocked": 0, "fix": 0, "decide": 0},
-    "deferred": 0, "acknowledged_files": 0, "planned_questions": 0, "superseded": 0, "noise": 0
+    "deferred": 0, "acknowledged_files": 0, "planned_questions": 0, "superseded": 0, "noise": 0,
+    "next_actions": [{"alias": "my-app", "workstream": null, "phase": "04", "lane": "test", "checks": 1, "closes_phase": true, "command": "/gsd-verify-work 04", "age_days": 3}],
+    "stale_folded": {"entries": 0, "items": 0}
   },
   "projects": [
     {
@@ -679,6 +699,8 @@ Schema version 1:
           "acknowledged": false,
           "age_days": 3,
           "stale": false,
+          "folded_stale": false,
+          "entry_files": ["04-UAT.md", "04-VERIFICATION.md"],
           "command": "/gsd-verify-work 04",
           "supersedes": [],
           "counts": {"checks": 1, "failed": 0, "gaps": 0, "unreadable": 0},
@@ -693,9 +715,18 @@ Schema version 1:
               "category": "issue",
               "reason": "Nothing happens",
               "blocked_by": null,
-              "gaps": [{"name": "Narrowing works", "result": "failed", "reason": "No filter applied"}]
+              "gaps": [{"name": "Narrowing works", "result": "failed", "reason": "No filter applied"}],
+              "labels": ["decision?"]
             }
           ]
+        },
+        {
+          "lane": "test", "kind": "verification", "scope": "current", "archived_milestone": null, "workstream": null,
+          "phase": "04", "phase_name": "Index builder", "file": ".planning/phases/04-index-builder/04-VERIFICATION.md",
+          "file_status": "human_needed", "closes_phase": true, "bookkeeping_only": false, "acknowledged": false,
+          "age_days": 3, "stale": false, "folded_stale": false, "entry_files": ["04-UAT.md", "04-VERIFICATION.md"],
+          "command": "/gsd-verify-work 04", "supersedes": [],
+          "counts": {"checks": 0, "failed": 0, "gaps": 0, "unreadable": 0}, "items": []
         }
       ],
       "hidden": {"deferred": 0, "acknowledged_files": 0, "planned_questions": 0, "todos": 1, "noise": 0, "todos_oldest_days": 0, "todos_unreadable": false},
@@ -737,6 +768,18 @@ Schema version 1:
 | `summary.planned_questions` | integer | CONTEXT open questions of phases that already have plans; counted, never listed |
 | `summary.superseded` | integer | raw items dropped because a UAT replaces their VERIFICATION file |
 | `summary.noise` | integer | items with an unknown result in a finished file, dropped as not owner work |
+| `summary.next_actions` | array | the next actions the plain `inbox` digest prints under `NEXT`, same order, at most 5: current Test, Decide and Fix entries with a command, phases that close first, then the fewest checks, then the newest. Never narrowed by `--lane` or `--include` |
+| `summary.next_actions[].alias` | string | the project's alias (escaped) |
+| `summary.next_actions[].workstream` | string or null | workstream name, null for the project root |
+| `summary.next_actions[].phase` | string | phase number |
+| `summary.next_actions[].lane` | string | `test` / `decide` / `fix` |
+| `summary.next_actions[].checks` | integer | checks left to run for the entry; `0` when every check already passed and only the finishing command is left |
+| `summary.next_actions[].closes_phase` | bool | the entry closes its phase: true also for a bookkeeping-only entry, unlike `projects[].groups[].closes_phase` |
+| `summary.next_actions[].command` | string | the command that handles the entry |
+| `summary.next_actions[].age_days` | integer or null | days since the entry's file was updated |
+| `summary.stale_folded` | object | work the digest folds into its `Stale:` line because it is older than `preferences.owner.fold_days`; still counted in every other total |
+| `summary.stale_folded.entries` | integer | folded phases (a UAT and VERIFICATION pair of one phase is one) |
+| `summary.stale_folded.items` | integer | checks in the folded phases |
 | `projects` | array | registry order, or the order named |
 | `projects[].target` | string or null | the name you passed (escaped); null when listing the registry |
 | `projects[].alias` | string or null | registry alias (escaped) |
@@ -768,6 +811,8 @@ Schema version 1:
 | `projects[].groups[].acknowledged` | bool | the owner acknowledged this file (listed only with `--include acknowledged`) |
 | `projects[].groups[].age_days` | integer or null | days since the file's `updated:` value |
 | `projects[].groups[].stale` | bool | older than the staleness threshold |
+| `projects[].groups[].folded_stale` | bool | the group's entry is older than `preferences.owner.fold_days`, so the digest folds it; decided per entry, never per file, and it changes no count |
+| `projects[].groups[].entry_files` | array of strings | the file names of the entry the group belongs to, sorted: both names for a UAT and VERIFICATION pair of one phase (the two groups stay listed), only its own otherwise |
 | `projects[].groups[].command` | string or null | the advisory `/gsd-*` command (`/gsd-verify-work`, `/gsd-plan-phase`, `/gsd-debug`, `/gsd-resume-work [--ws <name>]`); null for blocked, deferred, archived and `context_questions` groups |
 | `projects[].groups[].supersedes` | array of strings | names of the VERIFICATION files whose open checks this UAT replaces |
 | `projects[].groups[].counts` | object | sizes of the group |
@@ -789,6 +834,7 @@ Schema version 1:
 | `projects[].groups[].items[].gaps[].name` | string | the gap |
 | `projects[].groups[].items[].gaps[].result` | string | the gap's result |
 | `projects[].groups[].items[].gaps[].reason` | string or null | the gap's reason |
+| `projects[].groups[].items[].labels` | array of strings | text hints: `decision?` (a check that reads as a decision), `looks resolved` (a failed check whose text says it was fixed), both in that order, `[]` when none. Hints only: they never move, hide or re-rank an item |
 | `projects[].hidden` | object | what the lists leave out, always the full counts |
 | `projects[].hidden.deferred` | integer | deferred items |
 | `projects[].hidden.acknowledged_files` | integer | acknowledged UAT and VERIFICATION files, debug sessions and CONTEXT files |

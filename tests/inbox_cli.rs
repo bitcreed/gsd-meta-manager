@@ -229,6 +229,8 @@ fn every_entry_group_and_item_carries_the_schema_v1_keys() {
             "planned_questions",
             "superseded",
             "noise",
+            "next_actions",
+            "stale_folded",
         ])
     );
     assert_eq!(
@@ -284,6 +286,8 @@ fn every_entry_group_and_item_carries_the_schema_v1_keys() {
         "supersedes",
         "counts",
         "items",
+        "folded_stale",
+        "entry_files",
     ]);
     let item_keys = set(&[
         "id",
@@ -296,6 +300,7 @@ fn every_entry_group_and_item_carries_the_schema_v1_keys() {
         "reason",
         "blocked_by",
         "gaps",
+        "labels",
     ]);
     for group in projects[0]["groups"].as_array().unwrap() {
         assert_eq!(keys(group), group_keys);
@@ -844,6 +849,21 @@ const INBOX_PATHS: &[&str] = &[
     "projects[].milestone.closes_after.blocked",
     "projects[].milestone.closes_after.phases_open",
     "projects[].milestone.closes_after.not_built",
+    "projects[].groups[].folded_stale",
+    "projects[].groups[].entry_files",
+    "projects[].groups[].items[].labels",
+    "summary.next_actions",
+    "summary.next_actions[].alias",
+    "summary.next_actions[].workstream",
+    "summary.next_actions[].phase",
+    "summary.next_actions[].lane",
+    "summary.next_actions[].checks",
+    "summary.next_actions[].closes_phase",
+    "summary.next_actions[].command",
+    "summary.next_actions[].age_days",
+    "summary.stale_folded",
+    "summary.stale_folded.entries",
+    "summary.stale_folded.items",
 ];
 
 fn inbox_set() -> BTreeSet<String> {
@@ -926,9 +946,15 @@ fn the_inbox_key_paths_are_exactly_schema_v1() {
     );
     let six = tempfile::tempdir().unwrap();
     copy_tree(&fixture("supersede-six-phases"), six.path());
+    // A fresh copy gives `summary.next_actions` an element whatever the wall clock says.
+    let fresh = fresh_copy("uat-pending");
     let reg = registry(
         scratch.path(),
-        &[("gaps", gaps.path()), ("six", six.path())],
+        &[
+            ("gaps", gaps.path()),
+            ("six", six.path()),
+            ("fresh", fresh.path()),
+        ],
     );
     let doc = json(&inbox_with(
         &reg,
@@ -936,6 +962,7 @@ fn the_inbox_key_paths_are_exactly_schema_v1() {
         &[
             "gaps",
             "six",
+            "fresh",
             "no-such-project",
             "--json",
             "--include",
@@ -1552,5 +1579,31 @@ fn hostile_strings_are_escaped_in_the_digest_and_lane_views() {
             }
             assert!(!text.lines().any(|l| l.starts_with("    - [ ] ")), "{text}");
         }
+    }
+}
+
+#[test]
+fn lane_and_include_never_change_next_actions() {
+    let fresh = fresh_copy("uat-pending");
+    let scratch = tempfile::tempdir().unwrap();
+    let reg = registry(scratch.path(), &[("fresh", fresh.path())]);
+    let plain = json(&inbox_with(&reg, scratch.path(), &["--json"]));
+    assert!(!plain["summary"]["next_actions"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    for args in [
+        &["--json", "--lane", "decide"][..],
+        &["--json", "--include", "archived,deferred"][..],
+    ] {
+        let doc = json(&inbox_with(&reg, scratch.path(), args));
+        assert_eq!(
+            doc["summary"]["next_actions"],
+            plain["summary"]["next_actions"]
+        );
+        assert_eq!(
+            doc["summary"]["stale_folded"],
+            plain["summary"]["stale_folded"]
+        );
     }
 }
