@@ -1910,4 +1910,40 @@ mod tests {
         );
         assert_eq!(collapsed_of("a", &plain[0]).phrase, "");
     }
+    #[test]
+    fn entry_checklist_equals_group_checklist_on_the_golden_fixtures() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/owner");
+        let now: chrono::DateTime<chrono::Utc> = "2026-11-14T00:00:00Z".parse().unwrap();
+        let mut compared = 0;
+        for name in [
+            "supersede-six-phases",
+            "uat-gaps-merge",
+            "archived-complete-skipped",
+            "deferred-200",
+            "uat-ack-match",
+            "workstreams",
+        ] {
+            let planning = root.join(name).join(".planning");
+            let state = crate::state_reader::parse_project_state(&planning);
+            let digest =
+                crate::state_reader::owner_items::read_owner_digest(&planning, &state, now, 30);
+            for entry in triage_entries(&digest, 90) {
+                let plain = !entry.is_merged()
+                    && entry
+                        .group
+                        .items
+                        .iter()
+                        .all(|item| labels_of(item, entry.group.lane).is_empty());
+                if plain {
+                    assert_eq!(
+                        entry_checklist("a", &entry),
+                        group_checklist("a", &entry.group),
+                        "{name}"
+                    );
+                    compared += 1;
+                }
+            }
+        }
+        assert!(compared >= 6, "{compared} entries compared");
+    }
 }

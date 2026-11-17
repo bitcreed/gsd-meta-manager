@@ -7,8 +7,10 @@
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
-use gsd_meta_manager::inbox::{build_document, render_text, Filters, ProjectEntry};
-use gsd_meta_manager::state_reader::owner_items::{read_owner_digest, Lane, OwnerDigest};
+use gsd_meta_manager::inbox::{build_document, render_project, render_text, Filters, ProjectEntry};
+use gsd_meta_manager::state_reader::owner_items::{
+    labels_of, read_owner_digest, triage_entries, Label, Lane, OwnerDigest,
+};
 use gsd_meta_manager::state_reader::parse_project_state;
 use serde_json::Value;
 use tempfile::TempDir;
@@ -882,4 +884,114 @@ fn run_command_matches_the_command_string_in_every_fixture() {
     ] {
         assert!(seen.contains(&verb), "no fixture yields {verb:?}");
     }
+}
+
+// --- The single-project view (Phase 38, plan 02) -------------------------------
+
+#[test]
+fn the_single_project_view_matches_the_golden() {
+    let views: Vec<String> = [
+        ("same-phase-merge", "merge"),
+        ("stale-fold", "old-ledger"),
+        ("heuristic-labels", "labels"),
+    ]
+    .into_iter()
+    .map(|(name, alias)| {
+        let (_guard, entry) = entry_of(name, alias);
+        render_project(&entry, &Filters::default(), 90)
+    })
+    .collect();
+    assert_golden("inbox-alias.txt", &views.join("\n"));
+}
+
+#[test]
+fn the_merge_fixture_is_one_entry() {
+    let (_guard, entry) = entry_of("same-phase-merge", "merge");
+    let phase_43: Vec<_> = entry
+        .digest
+        .groups
+        .iter()
+        .filter(|g| g.phase == "43")
+        .collect();
+    assert_eq!(
+        phase_43.len(),
+        2,
+        "the UAT and the VERIFICATION are two groups"
+    );
+    let entries = triage_entries(&entry.digest, 90);
+    let merged: Vec<_> = entries.iter().filter(|e| e.group.phase == "43").collect();
+    assert_eq!(merged.len(), 1);
+    assert!(merged[0].is_merged());
+    assert_eq!(merged[0].group.counts.checks, 3);
+    assert_eq!(merged[0].files().len(), 2);
+}
+
+#[test]
+fn the_stale_fixture_folds_phase_01_and_keeps_totals() {
+    let (_guard, entry) = entry_of("stale-fold", "old-ledger");
+    let entries = triage_entries(&entry.digest, 90);
+    let folded = |phase: &str| {
+        entries
+            .iter()
+            .find(|e| e.group.phase == phase)
+            .unwrap_or_else(|| panic!("phase {phase}"))
+            .folded
+    };
+    assert!(folded("01"));
+    assert!(!folded("02"));
+    let text = render_project(&entry, &Filters::default(), 90);
+    let lines: Vec<&str> = text.lines().collect();
+    let at = |needle: &str| lines.iter().position(|l| l.contains(needle)).unwrap();
+    assert!(
+        at("TEST \u{2014} ") < at("ph 02  Search") && at("ph 02  Search") < at("STALE (> 90 d)")
+    );
+    assert!(at("STALE (> 90 d)") < at("ph 01  Ledger"));
+    assert!(!lines.iter().any(|l| l.starts_with("Stale:")), "{text}");
+    let legacy = render_text(std::slice::from_ref(&entry), &Filters::default());
+    assert_eq!(lines[0], legacy.lines().next().unwrap());
+    assert!(lines[0].contains("test 3"), "{}", lines[0]);
+}
+
+#[test]
+fn the_labels_fixture_labels_exactly_the_d11_hits() {
+    let (_guard, entry) = entry_of("heuristic-labels", "labels");
+    let mut seen: Vec<(String, Vec<&str>)> = Vec::new();
+    for group in &entry.digest.groups {
+        for item in &group.items {
+            let labels: Vec<&str> = labels_of(item, group.lane)
+                .into_iter()
+                .map(Label::as_str)
+                .collect();
+            seen.push((item.name.clone(), labels));
+        }
+    }
+    let labels_of_name = |name: &str| {
+        seen.iter()
+            .find(|(n, _)| n.contains(name))
+            .unwrap_or_else(|| panic!("no item {name}: {seen:?}"))
+            .1
+            .clone()
+    };
+    for hit in [
+        "Owner decision: trial length",
+        "Approve the new icon",
+        "Review the export screen",
+        "Looks OK on a phone",
+    ] {
+        assert_eq!(labels_of_name(hit), vec!["decision?"], "{hit}");
+    }
+    assert_eq!(labels_of_name("Retry timing"), vec!["looks resolved"]);
+    for miss in [
+        "Preview the export",
+        "Okay button copy",
+        "Acceptance list renders",
+        "Unresolved sync banner",
+        "Should we decide the pricing tiers?",
+    ] {
+        assert!(labels_of_name(miss).is_empty(), "{miss}");
+    }
+    let text = render_project(&entry, &Filters::default(), 90);
+    let suffixed = |suffix: &str| text.lines().filter(|l| l.ends_with(suffix)).count();
+    assert_eq!(suffixed("  (decision?)"), 4, "{text}");
+    assert_eq!(suffixed("  (looks resolved)"), 1, "{text}");
 }

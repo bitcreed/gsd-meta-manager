@@ -1,0 +1,46 @@
+Owner inbox: 1 projects · test 3 · decide 0 · fix 0 phases · blocked 0
+
+TEST — closes a phase
+  merge  ph market/43  Trader mode  3 checks · 2 files  4 d  /gsd-verify-work 43 --ws market
+    file 43-UAT.md
+    - [ ] Order ticket
+    - [ ] Price alert banner
+    file 43-VERIFICATION.md
+    - [ ] check the order ticket on a phone
+
+Owner inbox: 1 projects · test 3 · decide 0 · fix 0 phases · blocked 0
+
+  old-ledger closes after: test 3 (ph 01 02)
+
+TEST — phase stays open
+  old-ledger  ph 02  Search  1 check  4 d  /gsd-verify-work 02
+    - [ ] Search box
+
+STALE (> 90 d)
+  old-ledger  ph 01  Ledger  2 checks  135 d stale  /gsd-verify-work 01
+    - [ ] Ledger export
+    - [ ] Balance column
+
+Owner inbox: 1 projects · test 8 · decide 1 · fix 1 phases · blocked 0
+
+  labels closes after: test 8 (ph 01 02) · fix 1 (ph 02) · not built ph 03
+
+TEST — phase stays open
+  labels  ph 01  Pricing  7 checks · 4 decision?  4 d  /gsd-verify-work 01
+    - [ ] Owner decision: trial length  (decision?)
+    - [ ] Approve the new icon  (decision?)
+    - [ ] Review the export screen  (decision?)
+    - [ ] Looks OK on a phone  (decision?)
+    - [ ] Preview the export
+    - [ ] Okay button copy
+    - [ ] Acceptance list renders
+  labels  ph 02  Sync  1 check  4 d  /gsd-verify-work 02
+    - [ ] Unresolved sync banner
+
+DECIDE
+  labels  ph 03  Plans  1 open question in 03-CONTEXT.md  5 d
+    - [ ] - **Q-01 [OPEN]** Should we decide the pricing tiers?
+
+FIX — code needed
+  labels  ph 02  Sync  1 failed check, 0 gaps · 1 looks resolved  4 d  /gsd-plan-phase 02 --gaps
+    - [ ] Retry timing  (looks resolved)
