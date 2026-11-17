@@ -437,12 +437,31 @@ mod tests {
             Stack(vec![Box::new(InboxScreen::new())])
         }
 
+        /// The detail view with the Owner block focused on the row `key`.
+        pub(crate) fn detail(
+            ctx: &mut AppContext,
+            alias: &str,
+            key: &crate::ui::screens::owner_block::GroupKey,
+        ) -> Self {
+            let screen = crate::ui::screens::detail::DetailScreen::opened_on_owner(
+                alias.to_owned(),
+                key,
+                ctx,
+            );
+            assert!(screen.owner_focused(), "the Owner block holds the keyboard");
+            let stack = Stack(vec![Box::new(screen)]);
+            stack.render(ctx, 100, 30);
+            stack
+        }
+
         pub(crate) fn key_with(
             &mut self,
             ctx: &mut AppContext,
             code: KeyCode,
             modifiers: KeyModifiers,
         ) -> bool {
+            // A draw first: the detail view learns its Owner block rows from it.
+            self.render(ctx, 100, 30);
             let action = self.0.last_mut().unwrap().handle_key(code, modifiers, ctx);
             match action {
                 ScreenAction::Push(screen) => self.0.push(screen),
@@ -569,6 +588,90 @@ mod tests {
         let after = stop_rows(&ctx);
         assert_eq!(after[0].src.key, first.src.key, "the row is still listed");
         assert_eq!(tree(&root), before, "the copy is byte-identical");
+    }
+
+    /// The row `x` settles on `uat-pending`, and the id of its first drawn item.
+    fn uat_row_and_first_item(
+        ctx: &AppContext,
+    ) -> (crate::ui::screens::owner_block::GroupKey, String) {
+        let row = stop_rows(ctx).remove(0);
+        let id = crate::ui::screens::owner_block::inbox_item_ids(&row.src).remove(0);
+        (row.src.key, id)
+    }
+
+    /// 39-02 SC1 tracer: in the detail Owner block `Enter`, `j`, `x`, `w`, a reason,
+    /// Enter and `y` settle ONE check, and the copy of the tree stays identical.
+    #[test]
+    fn the_owner_block_check_flow_launches_one_check_and_writes_nothing() {
+        take_settle_launches();
+        let (_dir, root) = temp_fixture("uat-pending");
+        let before = tree(&root);
+        let mut ctx = fixture_ctx(&root, ALIAS);
+        let (key, id) = uat_row_and_first_item(&ctx);
+        assert_eq!(id, "01-UAT.md#2");
+        let mut stack = Stack::detail(&mut ctx, ALIAS, &key);
+        stack.key(&mut ctx, KeyCode::Enter);
+        stack.key(&mut ctx, KeyCode::Char('j'));
+        let view = &ctx.view_cache[ALIAS].owner_block;
+        assert_eq!(view.item_cursor.as_deref(), Some("01-UAT.md#2"));
+        assert!(stack.key(&mut ctx, KeyCode::Char('x')));
+        assert_eq!(stack.name(), "settle_chooser");
+        stack.key(&mut ctx, KeyCode::Char('w'));
+        stack.keys(&mut ctx, "no device here");
+        stack.key(&mut ctx, KeyCode::Enter);
+        assert_eq!(stack.name(), "settle_confirm");
+        assert!(take_settle_launches().is_empty(), "nothing before Yes");
+        stack.key(&mut ctx, KeyCode::Char('y'));
+        let launches = take_settle_launches();
+        assert_eq!(launches.len(), 1);
+        assert_eq!(
+            launches[0].draft.target.scope,
+            SettleScope::Check("01-UAT.md#2".to_owned())
+        );
+        let prompt = launches[0].prompt();
+        assert!(
+            prompt.starts_with("/gsd-verify-work 01 The user will not perform test 2 (\u{201c}"),
+            "{prompt}"
+        );
+        assert!(
+            prompt.contains("in 01-UAT.md. Resume the UAT session of phase 01"),
+            "{prompt}"
+        );
+        assert!(
+            prompt.contains("record test 2 as result: skipped"),
+            "{prompt}"
+        );
+        assert_eq!(
+            status(&ctx),
+            "Launched /gsd-verify-work 01 in alder-api: won't do for test 2"
+        );
+        assert_eq!(tree(&root), before, "the copy is byte-identical");
+    }
+
+    #[test]
+    fn the_owner_block_row_flow_settles_the_phase() {
+        take_settle_launches();
+        let (_dir, root) = temp_fixture("uat-pending");
+        let mut ctx = fixture_ctx(&root, ALIAS);
+        let (key, _) = uat_row_and_first_item(&ctx);
+        let mut stack = Stack::detail(&mut ctx, ALIAS, &key);
+        stack.key(&mut ctx, KeyCode::Enter);
+        // On the row, no item selected: the phase target.
+        stack.key(&mut ctx, KeyCode::Char('x'));
+        stack.key(&mut ctx, KeyCode::Char('w'));
+        stack.keys(&mut ctx, "no device here");
+        stack.key(&mut ctx, KeyCode::Enter);
+        stack.key(&mut ctx, KeyCode::Char('y'));
+        let launches = take_settle_launches();
+        assert_eq!(launches.len(), 1);
+        assert_eq!(launches[0].draft.target.scope, SettleScope::Phase);
+        assert!(
+            launches[0]
+                .prompt()
+                .contains("The user will not perform tests 2, 3 in 01-UAT.md."),
+            "{}",
+            launches[0].prompt()
+        );
     }
 
     #[test]

@@ -2187,8 +2187,10 @@ impl DetailScreen {
     /// toggle view state; `v` runs and `o` opens the selected group's file
     /// through the same `owner_actions` functions the inbox uses (37-03, 37-05,
     /// D-21), `A` opens the acknowledge popup (37-06), `y` copies the group's
-    /// checklist (37-07), and `e` is swallowed so it never reaches Content (where
-    /// it would enqueue).
+    /// checklist (37-07), `x` opens the settle chooser for the selected group, or
+    /// for the one check under the item sub-cursor (39-02, D-04, D-05; `j`/`k`
+    /// walk the drawn items of an expanded row), and `e` is swallowed so it never
+    /// reaches Content (where it would enqueue).
     fn handle_owner_block_key(
         &mut self,
         code: KeyCode,
@@ -2239,18 +2241,20 @@ impl DetailScreen {
         let mut open = false;
         let mut acknowledge = false;
         let mut copy = false;
+        let mut settle = false;
         // The side-effecting letters act only unchorded (WR-01).
         let plain = owner_actions::is_plain_action_key(modifiers);
         match code {
             KeyCode::Char('y') if plain => copy = true,
+            KeyCode::Char('x') if plain => settle = true,
             KeyCode::Char('v') if plain => run = true,
             KeyCode::Char('o') if plain => open = true,
             KeyCode::Char('A') if plain => acknowledge = true,
             KeyCode::Char('j') | KeyCode::Down => {
-                moved = owner_block::move_cursor(view, &sk.stops, Move::Next)
+                moved = owner_block::step_with_items(view, digest, &sk.stops, true)
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                moved = owner_block::move_cursor(view, &sk.stops, Move::Prev)
+                moved = owner_block::step_with_items(view, digest, &sk.stops, false)
             }
             KeyCode::Char('g') => {
                 owner_block::move_cursor(view, &sk.stops, Move::First);
@@ -2292,8 +2296,53 @@ impl DetailScreen {
         if copy {
             return Some(self.owner_copy(ctx));
         }
+        if settle {
+            return Some(self.owner_settle(ctx));
+        }
         ctx.needs_redraw = true;
         Some(ScreenAction::None)
+    }
+
+    /// `x` on the Owner block (39-02, D-03, D-04, D-05): the settle chooser for the
+    /// one check under the item sub-cursor, or for the whole phase entry of the
+    /// row under the cursor, through [`owner_settle::settle_open`], the function
+    /// the inbox's `x` calls, drawn over this detail view. The fold line says what
+    /// to select; every other refusal comes from the target builder.
+    fn owner_settle(&mut self, ctx: &mut AppContext) -> ScreenAction {
+        let outcome = {
+            let Some(digest) = ctx.owner_digest(&self.alias) else {
+                return ScreenAction::None;
+            };
+            let view = ctx
+                .view_cache
+                .get(&self.alias)
+                .map(|cache| cache.owner_block.clone())
+                .unwrap_or_default();
+            let sk = owner_block::skeleton(digest, &view);
+            let Some(at) = owner_block::resolve_cursor(&view, &sk.stops) else {
+                return ScreenAction::None;
+            };
+            match &sk.stops[at] {
+                owner_block::Stop::FoldLine => {
+                    Err("Select a check or a group row to settle it".to_owned())
+                }
+                owner_block::Stop::Row(key) => super::owner_settle::settle_open(
+                    ctx,
+                    &self.alias,
+                    key,
+                    view.item_cursor.as_deref(),
+                    super::ack_confirm::AckHost::Detail(self.alias.clone()),
+                ),
+            }
+        };
+        ctx.needs_redraw = true;
+        match outcome {
+            Ok(action) => action,
+            Err(message) => {
+                ctx.status_message = Some((message, std::time::Instant::now()));
+                ScreenAction::None
+            }
+        }
     }
 
     /// `y` on the Owner block (37-07, D-09, D-21): copy the group under the cursor
@@ -8003,14 +8052,35 @@ impl DetailScreen {
                     .map(|stop| owner_block::Cursor {
                         stop,
                         fold: owner_block::resolved_fold(view, &model.folds),
+                        item_line: model
+                            .stops
+                            .get(stop)
+                            .zip(view.item_cursor.as_deref())
+                            .and_then(|(at, id)| match at {
+                                owner_block::Stop::Row(key) => model
+                                    .item_lines
+                                    .iter()
+                                    .find(|(k, i, _)| k == key && i == id)
+                                    .map(|(_, _, line)| *line),
+                                owner_block::Stop::FoldLine => None,
+                            }),
                     });
                 let window = owner_block::window_rows(&model, height);
-                let offset = owner_block::follow_offset(
+                let mut offset = owner_block::follow_offset(
                     &model,
                     cursor.map(|c| c.stop),
                     self.owner_offset.get(),
                     window,
                 );
+                // D-04: the selected item stays in view, by the least scroll.
+                if let Some(line) = cursor.and_then(|c| c.item_line).filter(|_| window > 0) {
+                    if line < offset {
+                        offset = line;
+                    } else if line >= offset + window {
+                        offset = line + 1 - window;
+                    }
+                    offset = offset.min(model.body.len().saturating_sub(window));
+                }
                 self.owner_offset.set(offset);
                 self.owner_viewport_rows
                     .set(u16::try_from(window).unwrap_or(u16::MAX));
@@ -37176,11 +37246,9 @@ mod tests {
         let mut screen = owner_screen(&ctx);
         key(&mut screen, &mut ctx, KeyCode::Up);
         let before = owner_view_of(&ctx);
-        for c in ['e', 'x'] {
-            let action = key(&mut screen, &mut ctx, KeyCode::Char(c));
-            assert!(matches!(action, ScreenAction::None), "{c}");
-            assert_eq!(screen.focus, DetailFocus::Owner, "{c}");
-        }
+        let action = key(&mut screen, &mut ctx, KeyCode::Char('e'));
+        assert!(matches!(action, ScreenAction::None));
+        assert_eq!(screen.focus, DetailFocus::Owner);
         for code in [KeyCode::Left, KeyCode::Right] {
             // Off the fold line `←`/`→` are swallowed too.
             key(&mut screen, &mut ctx, KeyCode::Char('k'));
@@ -37193,6 +37261,36 @@ mod tests {
         assert_eq!(before.cursor, after.cursor);
         assert!(after.expanded.is_empty() && after.open_folds.is_empty());
         assert!(ctx.status_message.is_none() && ctx.error_message.is_none());
+    }
+
+    /// 39-02, D-05: `x` on the fold line says what to select; Ctrl-x and Alt-x do
+    /// nothing at all (WR-01).
+    #[test]
+    fn owner_block_x_on_the_fold_line_says_what_to_select() {
+        let mut ctx = owner_ctx(Some(sample()));
+        let mut screen = owner_screen(&ctx);
+        key(&mut screen, &mut ctx, KeyCode::Up);
+        assert_eq!(owner_view_of(&ctx).cursor, Some(Stop::FoldLine));
+        let action = key(&mut screen, &mut ctx, KeyCode::Char('x'));
+        assert!(matches!(action, ScreenAction::None));
+        assert_eq!(
+            ctx.status_message.as_ref().map(|(m, _)| m.as_str()),
+            Some("Select a check or a group row to settle it")
+        );
+        assert_eq!(screen.focus, DetailFocus::Owner);
+    }
+
+    #[test]
+    fn owner_block_chorded_x_does_nothing() {
+        let mut ctx = owner_ctx(Some(sample()));
+        let mut screen = owner_screen(&ctx);
+        key(&mut screen, &mut ctx, KeyCode::Up);
+        for modifiers in [KeyModifiers::CONTROL, KeyModifiers::ALT] {
+            let action = screen.handle_key(KeyCode::Char('x'), modifiers, &mut ctx);
+            assert!(matches!(action, ScreenAction::None));
+        }
+        assert!(ctx.status_message.is_none());
+        assert_eq!(screen.focus, DetailFocus::Owner);
     }
 
     #[test]
@@ -37682,8 +37780,11 @@ mod tests {
         key(&mut screen, &mut ctx, KeyCode::Char('g'));
         key(&mut screen, &mut ctx, KeyCode::Char('j'));
         key(&mut screen, &mut ctx, KeyCode::Enter);
-        // Walk past the expansion so its tail (overflow, file) is in the window.
-        key(&mut screen, &mut ctx, KeyCode::Char('j'));
+        // Walk past the expansion (five items, then the next row; D-04) so its
+        // tail (overflow, file) is in the window.
+        for _ in 0..6 {
+            key(&mut screen, &mut ctx, KeyCode::Char('j'));
+        }
         let text = owner_draw(&screen, &ctx);
         assert!(text.contains("check 4"), "{text}");
         assert!(text.contains("\u{2026} 1 more"), "{text}");
@@ -37698,7 +37799,9 @@ mod tests {
         );
         assert!(text.contains("Phases"), "{text}");
         // Back at the group the detail line and the first items show.
-        key(&mut screen, &mut ctx, KeyCode::Char('k'));
+        for _ in 0..6 {
+            key(&mut screen, &mut ctx, KeyCode::Char('k'));
+        }
         let text = owner_draw(&screen, &ctx);
         assert!(
             text.contains("3 check 0") && text.contains("expected: the clock face"),
@@ -37867,10 +37970,14 @@ mod tests {
         key(&mut screen, &mut ctx, KeyCode::Char('g'));
         key(&mut screen, &mut ctx, KeyCode::Char('j'));
         key(&mut screen, &mut ctx, KeyCode::Enter);
-        // Another group expanded, then the cursor moved to the debug row.
-        key(&mut screen, &mut ctx, KeyCode::Char('j'));
-        key(&mut screen, &mut ctx, KeyCode::Char('j'));
-        key(&mut screen, &mut ctx, KeyCode::Char('j'));
+        // Another group expanded, then the cursor moved to the debug row (`j`
+        // walks the expanded row's item lines first, D-04).
+        for _ in 0..12 {
+            if matches!(owner_view_of(&ctx).cursor, Some(Stop::Row(ref k)) if k.kind == "debug") {
+                break;
+            }
+            key(&mut screen, &mut ctx, KeyCode::Char('j'));
+        }
         let on = owner_view_of(&ctx).cursor.clone();
         assert!(
             matches!(on, Some(Stop::Row(ref k)) if k.kind == "debug"),

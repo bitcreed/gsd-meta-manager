@@ -167,6 +167,10 @@ pub struct OwnerBlockState {
     pub cursor: Option<Stop>,
     /// The fold the fold line's sub-cursor rests on.
     pub fold_cursor: Option<Fold>,
+    /// The item sub-cursor inside the cursor row's expansion: an
+    /// `OwnerItem::id` (identity, never an index). `None` while the cursor rests
+    /// on the row itself (D-04).
+    pub item_cursor: Option<String>,
     /// The cursor's last index, so a vanished stop clamps to its neighbor.
     pub cursor_index: usize,
 }
@@ -177,6 +181,8 @@ pub struct OwnerBlockState {
 pub(crate) struct Cursor {
     pub stop: usize,
     pub fold: Option<Fold>,
+    /// The `body` index of the selected item's first line (D-04).
+    pub item_line: Option<usize>,
 }
 
 /// The block as lines for one width.
@@ -202,6 +208,9 @@ pub(crate) struct BlockModel {
     /// The fold line and its marks picked for two cells less, drawn when the
     /// cursor is on it: the `> ` gutter then fits without cutting the tail (IN-02).
     pub cursor_fold_line: Option<(Line<'static>, Vec<(Fold, usize)>)>,
+    /// Row key, item id and the `body` index of the first line of every drawn
+    /// item, in drawn order (the item sub-cursor's stops, D-04).
+    pub item_lines: Vec<(GroupKey, String, usize)>,
 }
 
 fn dim() -> Style {
@@ -1178,8 +1187,10 @@ fn item_lines(
     shift: usize,
     labeled: Option<Lane>,
     lines: &mut Vec<Line<'static>>,
+    ids: &mut Vec<(usize, String)>,
 ) {
     for item in items.iter().take(MAX_ITEMS) {
+        ids.push((lines.len(), item.id.clone()));
         let text = format!("{}{}", blanks(4 + shift), item_text(item));
         let labels: Vec<&str> = labeled
             .map(|lane| labels_of(item, lane))
@@ -1219,13 +1230,25 @@ fn item_lines(
 
 /// The lines under an expanded group row: up to five items, each with its detail
 /// and gap lines, then `... N more`, then one `file` line per distinct file.
+#[cfg(test)]
 pub(crate) fn expansion_lines(src: &RowSrc, width: usize, shift: usize) -> Vec<Line<'static>> {
+    expansion_lines_mapped(src, width, shift).0
+}
+
+/// [`expansion_lines`] plus the line index at which each drawn item starts (the
+/// item sub-cursor's stops; the `... N more` line is never one).
+pub(crate) fn expansion_lines_mapped(
+    src: &RowSrc,
+    width: usize,
+    shift: usize,
+) -> (Vec<Line<'static>>, Vec<(usize, String)>) {
     let mut lines: Vec<Line<'static>> = Vec::new();
-    item_lines(src.items(), width, shift, None, &mut lines);
+    let mut ids: Vec<(usize, String)> = Vec::new();
+    item_lines(src.items(), width, shift, None, &mut lines, &mut ids);
     for file in src.files.iter().filter(|f| !f.is_empty()) {
         lines.push(dim_line(4 + shift, &format!("file {}", shown(file)), width));
     }
-    lines
+    (lines, ids)
 }
 
 /// The lines under an expanded inbox row: a merged row (D-08) lists each file's
@@ -1236,25 +1259,102 @@ pub(crate) fn inbox_expansion_lines(
     width: usize,
     shift: usize,
 ) -> Vec<Line<'static>> {
+    inbox_expansion_lines_mapped(src, width, shift).0
+}
+
+/// [`inbox_expansion_lines`] plus the line index at which each drawn item starts
+/// (a merged row maps each part's items, in part order).
+pub(crate) fn inbox_expansion_lines_mapped(
+    src: &RowSrc,
+    width: usize,
+    shift: usize,
+) -> (Vec<Line<'static>>, Vec<(usize, String)>) {
     let lane = Some(src.group.lane);
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut ids: Vec<(usize, String)> = Vec::new();
     if src.parts.len() < 2 {
-        let mut lines: Vec<Line<'static>> = Vec::new();
-        item_lines(src.items(), width, shift, lane, &mut lines);
+        item_lines(src.items(), width, shift, lane, &mut lines, &mut ids);
         for file in src.files.iter().filter(|f| !f.is_empty()) {
             lines.push(dim_line(4 + shift, &format!("file {}", shown(file)), width));
         }
-        return lines;
+        return (lines, ids);
     }
-    let mut lines: Vec<Line<'static>> = Vec::new();
     for part in &src.parts {
         lines.push(dim_line(
             4 + shift,
             &format!("file {}", shown(&part.file)),
             width,
         ));
-        item_lines(&part.items, width, shift + 2, lane, &mut lines);
+        item_lines(&part.items, width, shift + 2, lane, &mut lines, &mut ids);
     }
-    lines
+    (lines, ids)
+}
+
+/// The ids of the first [`MAX_ITEMS`] items of `src`: exactly the ids
+/// [`expansion_lines_mapped`] draws.
+pub(crate) fn row_item_ids(src: &RowSrc) -> Vec<String> {
+    src.items()
+        .iter()
+        .take(MAX_ITEMS)
+        .map(|item| item.id.clone())
+        .collect()
+}
+
+/// The ids [`inbox_expansion_lines_mapped`] draws: a merged row lists each part's
+/// first [`MAX_ITEMS`] ids in part order, every other row is [`row_item_ids`].
+#[allow(dead_code)] // the inbox walk (39-02 task 2) is its caller
+pub(crate) fn inbox_item_ids(src: &RowSrc) -> Vec<String> {
+    if src.parts.len() < 2 {
+        return row_item_ids(src);
+    }
+    src.parts
+        .iter()
+        .flat_map(|part| part.items.iter().take(MAX_ITEMS))
+        .map(|item| item.id.clone())
+        .collect()
+}
+
+/// The line index of the item `id` in an `*_expansion_lines_mapped` map.
+#[allow(dead_code)] // the inbox highlight (39-02 task 2) is its caller
+pub(crate) fn item_line(map: &[(usize, String)], id: &str) -> Option<usize> {
+    map.iter().find(|(_, i)| i == id).map(|(line, _)| *line)
+}
+
+/// One step of the item walk inside an expanded row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ItemStep {
+    /// The sub-cursor lands on this item.
+    Item(String),
+    /// Backward from the first item: back onto the row itself.
+    Parent,
+    /// Past either end: the walk leaves the row for the next or previous one.
+    Leave,
+}
+
+/// Where the item sub-cursor goes from `current` (an id, or `None` on the row)
+/// within `ids`; an id not listed behaves as `None`.
+pub(crate) fn item_step(ids: &[String], current: Option<&str>, forward: bool) -> ItemStep {
+    let at = current.and_then(|id| ids.iter().position(|i| i == id));
+    match (at, forward) {
+        (None, true) => ids
+            .first()
+            .map_or(ItemStep::Leave, |id| ItemStep::Item(id.clone())),
+        (None, false) => ItemStep::Leave,
+        (Some(i), true) => ids
+            .get(i + 1)
+            .map_or(ItemStep::Leave, |id| ItemStep::Item(id.clone())),
+        (Some(0), false) => ItemStep::Parent,
+        (Some(i), false) => ItemStep::Item(ids[i - 1].clone()),
+    }
+}
+
+/// The source of the row with identity `key` (current, old debt or acknowledged).
+fn row_src_for(digest: &OwnerDigest, key: &GroupKey) -> Option<RowSrc> {
+    current_sources(digest)
+        .into_iter()
+        .chain(old_debt_sources(digest))
+        .chain(acknowledged_sources(digest))
+        .find(|src| src.key == *key)
 }
 
 // ---------------------------------------------------------------------------
@@ -1301,6 +1401,7 @@ pub(crate) fn block_model(
 
     let mut body: Vec<Line<'static>> = Vec::new();
     let mut stop_lines: Vec<Option<usize>> = Vec::new();
+    let mut item_lines: Vec<(GroupKey, String, usize)> = Vec::new();
     let mut push_rows = |srcs: &[RowSrc], cells: &[RowCells], sub_headers: bool, dimmed: bool| {
         let mut last_label: Option<Option<String>> = None;
         for (src, row) in srcs.iter().zip(cells) {
@@ -1319,7 +1420,12 @@ pub(crate) fn block_model(
             }
             body.push(line);
             if view.expanded.contains(&src.key) {
-                for mut extra in expansion_lines(src, width, 0) {
+                let base = body.len();
+                let (extras, ids) = expansion_lines_mapped(src, width, 0);
+                for (line, id) in ids {
+                    item_lines.push((src.key.clone(), id, base + line));
+                }
+                for mut extra in extras {
                     if dimmed {
                         patch_line(&mut extra, Style::default().add_modifier(Modifier::DIM));
                     }
@@ -1360,6 +1466,7 @@ pub(crate) fn block_model(
         folds: sk.folds,
         fold_marks,
         cursor_fold_line,
+        item_lines,
     }
 }
 
@@ -1460,6 +1567,8 @@ pub(crate) fn render_owner_block(
         _ => frame.render_widget(Paragraph::new(model.header.clone()), header_rect),
     }
     let cursor_line = cursor.and_then(|c| model.stop_lines.get(c.stop).copied().flatten());
+    // D-04: a selected item is highlighted in place (no gutter), its row is not.
+    let item_line = cursor.and_then(|c| c.item_line);
     if window > 0 {
         let rows: Vec<Line<'static>> = model
             .body
@@ -1469,7 +1578,9 @@ pub(crate) fn render_owner_block(
             .take(window)
             .map(|(index, line)| {
                 let mut line = line.clone();
-                if cursor_line == Some(index) {
+                if item_line == Some(index) {
+                    patch_line(&mut line, cursor_style());
+                } else if cursor_line == Some(index) && item_line.is_none() {
                     mark_cursor_row(&mut line);
                 }
                 line
@@ -1590,6 +1701,7 @@ pub(crate) fn resolve_cursor(view: &OwnerBlockState, stops: &[Stop]) -> Option<u
 }
 
 fn set_cursor(view: &mut OwnerBlockState, stops: &[Stop], index: usize) {
+    view.item_cursor = None;
     view.cursor_index = index;
     view.cursor = stops.get(index).cloned();
 }
@@ -1633,6 +1745,7 @@ pub(crate) fn resolved_fold(view: &OwnerBlockState, folds: &[Fold]) -> Option<Fo
 pub(crate) fn toggle(view: &mut OwnerBlockState, folds: &[Fold]) -> bool {
     match view.cursor.clone() {
         Some(Stop::Row(key)) => {
+            view.item_cursor = None;
             if !view.expanded.remove(&key) {
                 view.expanded.insert(key);
             }
@@ -1678,6 +1791,7 @@ pub(crate) fn clamp(view: &mut OwnerBlockState, digest: &OwnerDigest) {
     // Closing a fold changes the stops: take them again.
     let sk = skeleton(digest, view);
     view.fold_cursor = resolved_fold(view, &sk.folds).filter(|_| view.fold_cursor.is_some());
+    let item = view.item_cursor.take();
     match resolve_cursor(view, &sk.stops) {
         Some(index) => set_cursor(view, &sk.stops, index),
         None => {
@@ -1685,6 +1799,56 @@ pub(crate) fn clamp(view: &mut OwnerBlockState, digest: &OwnerDigest) {
             view.cursor_index = 0;
         }
     }
+    // The item survives while its row is still the cursor row, still expanded
+    // and still draws it (D-04, T-39-11).
+    view.item_cursor = item.filter(|id| match &view.cursor {
+        Some(Stop::Row(key)) if view.expanded.contains(key) => {
+            row_src_for(digest, key).is_some_and(|src| row_item_ids(&src).contains(id))
+        }
+        _ => false,
+    });
+}
+
+/// A cursor step that walks the item lines of an expanded row first (D-04):
+/// `forward` is `j`/Down. Leaving the row moves by [`move_cursor`]; a backward
+/// leave onto an expanded row lands on that row's last drawn item.
+pub(crate) fn step_with_items(
+    view: &mut OwnerBlockState,
+    digest: &OwnerDigest,
+    stops: &[Stop],
+    forward: bool,
+) -> Moved {
+    let mv = if forward { Move::Next } else { Move::Prev };
+    let at = resolve_cursor(view, stops);
+    if let Some(Stop::Row(key)) = at.and_then(|i| stops.get(i)) {
+        if view.expanded.contains(key) {
+            if let Some(src) = row_src_for(digest, key) {
+                let ids = row_item_ids(&src);
+                match item_step(&ids, view.item_cursor.as_deref(), forward) {
+                    ItemStep::Item(id) => {
+                        view.item_cursor = Some(id);
+                        return Moved::Within;
+                    }
+                    ItemStep::Parent => {
+                        view.item_cursor = None;
+                        return Moved::Within;
+                    }
+                    ItemStep::Leave => {}
+                }
+            }
+        }
+    }
+    view.item_cursor = None;
+    let moved = move_cursor(view, stops, mv);
+    if !forward && moved == Moved::Within {
+        if let Some(Stop::Row(key)) = view.cursor.clone() {
+            if view.expanded.contains(&key) {
+                view.item_cursor =
+                    row_src_for(digest, &key).and_then(|src| row_item_ids(&src).pop());
+            }
+        }
+    }
+    moved
 }
 
 // ---------------------------------------------------------------------------
@@ -2605,6 +2769,7 @@ mod tests {
                 Some(Cursor {
                     stop: 0,
                     fold: None,
+                    item_line: None,
                 }),
             ),
             (
@@ -2663,5 +2828,289 @@ mod tests {
                 "{name} line count"
             );
         }
+    }
+
+    // ── The item sub-cursor (39-02, D-04) ───────────────────────────────────
+
+    fn ids(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    #[test]
+    fn item_step_walks_the_drawn_ids() {
+        let ab = ids(&["a", "b"]);
+        let item = |id: &str| ItemStep::Item(id.to_owned());
+        assert_eq!(item_step(&ab, None, true), item("a"));
+        assert_eq!(item_step(&ab, Some("a"), true), item("b"));
+        assert_eq!(item_step(&ab, Some("b"), true), ItemStep::Leave);
+        assert_eq!(item_step(&ab, Some("b"), false), item("a"));
+        assert_eq!(item_step(&ab, Some("a"), false), ItemStep::Parent);
+        assert_eq!(item_step(&ab, None, false), ItemStep::Leave);
+        assert_eq!(item_step(&[], None, true), ItemStep::Leave);
+        // An id that is not listed behaves as the row.
+        assert_eq!(item_step(&ab, Some("zzz"), true), item("a"));
+        assert_eq!(item_step(&ab, Some("zzz"), false), ItemStep::Leave);
+    }
+
+    /// A merged inbox row over two copies of the sample's phase 24 group.
+    fn merged_src(digest: &OwnerDigest) -> RowSrc {
+        let first = digest
+            .groups
+            .iter()
+            .find(|g| g.phase == "24" && g.lane == Lane::Test)
+            .expect("phase 24");
+        let mut second = first.clone();
+        second.file = "phases/24/24-VERIFICATION.md".to_owned();
+        second.items.truncate(2);
+        for (i, item) in second.items.iter_mut().enumerate() {
+            item.id = format!("v{i}");
+        }
+        RowSrc {
+            group: first.clone(),
+            merged: None,
+            files: vec![first.file.clone(), second.file.clone()],
+            key: GroupKey::entry(first),
+            parts: vec![first.clone(), second],
+        }
+    }
+
+    #[test]
+    fn mapped_lines_match_the_drawn_ids() {
+        let digest = sample_owner_digest();
+        let mut sources: Vec<RowSrc> = current_sources(&digest);
+        sources.push(merged_src(&digest));
+        let mut checked = 0;
+        for src in &sources {
+            let (lines, map) = expansion_lines_mapped(src, 100, 0);
+            assert_eq!(
+                lines.iter().map(text).collect::<Vec<_>>(),
+                expansion_lines(src, 100, 0)
+                    .iter()
+                    .map(text)
+                    .collect::<Vec<_>>()
+            );
+            let mapped: Vec<String> = map.iter().map(|(_, id)| id.clone()).collect();
+            assert_eq!(mapped, row_item_ids(src), "{:?}", src.key);
+            let (lines, map) = inbox_expansion_lines_mapped(src, 100, 0);
+            let mapped: Vec<String> = map.iter().map(|(_, id)| id.clone()).collect();
+            assert_eq!(mapped, inbox_item_ids(src), "inbox {:?}", src.key);
+            // Each mapped line is where that item's text starts.
+            for (line, id) in &map {
+                let item = src
+                    .items()
+                    .iter()
+                    .chain(src.parts.iter().flat_map(|p| p.items.iter()))
+                    .find(|i| i.id == *id)
+                    .expect("the item");
+                assert!(
+                    text(&lines[*line]).contains(item.name.as_str()),
+                    "{id} at {line}: {}",
+                    text(&lines[*line])
+                );
+                checked += 1;
+            }
+        }
+        assert!(checked > 10, "the check ran over real items: {checked}");
+        // The merged row walks the first part's drawn items, then the second's.
+        let merged = merged_src(&digest);
+        assert_eq!(
+            inbox_item_ids(&merged),
+            ids(&["check 0", "check 1", "check 2", "check 3", "check 4", "v0", "v1"])
+        );
+        assert_eq!(
+            item_line(&inbox_expansion_lines_mapped(&merged, 100, 0).1, "v1"),
+            Some(9)
+        );
+    }
+
+    /// The walk state over the sample: phase 24 (six checks, two drawn after the
+    /// fifth is cut) and phase 21 are the first two TEST rows.
+    fn walk_view(digest: &OwnerDigest) -> (OwnerBlockState, Vec<Stop>, GroupKey, GroupKey) {
+        let mut view = OwnerBlockState::default();
+        let rows = current_sources(digest);
+        let (a, b) = (rows[0].key.clone(), rows[1].key.clone());
+        view.expanded.insert(a.clone());
+        view.expanded.insert(b.clone());
+        let stops = skeleton(digest, &view).stops;
+        view.cursor = Some(Stop::Row(a.clone()));
+        (view, stops, a, b)
+    }
+
+    #[test]
+    fn step_with_items_enters_and_leaves_rows() {
+        let digest = sample_owner_digest();
+        // Row a is phase 21 (two checks), row b phase 24 (six checks).
+        let (mut view, stops, a, b) = walk_view(&digest);
+        let fwd = |view: &mut OwnerBlockState| step_with_items(view, &digest, &stops, true);
+        let back = |view: &mut OwnerBlockState| step_with_items(view, &digest, &stops, false);
+        let at = |view: &OwnerBlockState| (view.cursor.clone(), view.item_cursor.clone());
+        let item =
+            |key: &GroupKey, n: usize| (Some(Stop::Row(key.clone())), Some(format!("check {n}")));
+        assert_eq!(fwd(&mut view), Moved::Within);
+        assert_eq!(at(&view), item(&a, 0));
+        fwd(&mut view);
+        assert_eq!(at(&view), item(&a, 1));
+        // Past the last item: the next row, item cleared.
+        fwd(&mut view);
+        assert_eq!(at(&view), (Some(Stop::Row(b.clone())), None));
+        // Backward from the row lands on the previous expanded row's LAST item.
+        back(&mut view);
+        assert_eq!(at(&view), item(&a, 1));
+        back(&mut view);
+        assert_eq!(at(&view), item(&a, 0));
+        // From the first item: its own row, item cleared.
+        back(&mut view);
+        assert_eq!(at(&view), (Some(Stop::Row(a.clone())), None));
+        assert_eq!(back(&mut view), Moved::PastFirst);
+        // Row b: five stops (the sixth check is only a `... 1 more` line).
+        view.cursor = Some(Stop::Row(b.clone()));
+        view.item_cursor = None;
+        for n in 0..5 {
+            fwd(&mut view);
+            assert_eq!(at(&view), item(&b, n));
+        }
+        fwd(&mut view);
+        let next = stops[stops
+            .iter()
+            .position(|s| *s == Stop::Row(b.clone()))
+            .unwrap()
+            + 1]
+        .clone();
+        assert_eq!(
+            at(&view),
+            (Some(next), None),
+            "the sixth check is not a stop"
+        );
+        back(&mut view);
+        assert_eq!(at(&view), item(&b, 4));
+    }
+
+    #[test]
+    fn rows_without_drawn_items_and_collapsed_rows_are_crossed_row_to_row() {
+        let digest = sample_owner_digest();
+        let rows = current_sources(&digest);
+        // Phase 22 has no items at all: expanded or not, `j` crosses it.
+        let empty = rows
+            .iter()
+            .position(|r| r.group.phase == "22")
+            .expect("phase 22");
+        let mut view = OwnerBlockState::default();
+        view.expanded.insert(rows[empty].key.clone());
+        let stops = skeleton(&digest, &view).stops;
+        view.cursor = Some(Stop::Row(rows[empty].key.clone()));
+        step_with_items(&mut view, &digest, &stops, true);
+        assert_eq!(view.cursor, Some(Stop::Row(rows[empty + 1].key.clone())));
+        assert_eq!(view.item_cursor, None);
+        // `k` back onto the empty expanded row: no item to land on.
+        step_with_items(&mut view, &digest, &stops, false);
+        assert_eq!(view.cursor, Some(Stop::Row(rows[empty].key.clone())));
+        assert_eq!(view.item_cursor, None);
+        // A collapsed row is crossed too.
+        let mut view = OwnerBlockState {
+            cursor: Some(Stop::Row(rows[0].key.clone())),
+            ..OwnerBlockState::default()
+        };
+        step_with_items(&mut view, &digest, &stops, true);
+        assert_eq!(view.cursor, Some(Stop::Row(rows[1].key.clone())));
+        assert_eq!(view.item_cursor, None);
+    }
+
+    #[test]
+    fn jumps_toggles_and_refreshes_clear_the_item() {
+        let digest = sample_owner_digest();
+        for mv in [Move::First, Move::Last, Move::By(2), Move::By(-1)] {
+            let (mut view, stops, a, _) = walk_view(&digest);
+            step_with_items(&mut view, &digest, &stops, true);
+            assert!(view.item_cursor.is_some());
+            move_cursor(&mut view, &stops, mv);
+            assert_eq!(view.item_cursor, None, "{mv:?}");
+            let _ = a;
+        }
+        let (mut view, stops, _, _) = walk_view(&digest);
+        step_with_items(&mut view, &digest, &stops, true);
+        let folds = selectable_folds(&digest);
+        assert!(toggle(&mut view, &folds));
+        assert_eq!(view.item_cursor, None, "Enter collapses and clears");
+        // A refresh that keeps the item keeps it.
+        let (mut view, stops, _, _) = walk_view(&digest);
+        step_with_items(&mut view, &digest, &stops, true);
+        step_with_items(&mut view, &digest, &stops, true);
+        clamp(&mut view, &digest);
+        assert_eq!(view.item_cursor.as_deref(), Some("check 1"));
+        // A refresh that drops it falls back to its row.
+        let mut changed = digest.clone();
+        for group in &mut changed.groups {
+            if group.phase == "21" && group.lane == Lane::Test {
+                group.items.retain(|i| i.id != "check 1");
+            }
+        }
+        clamp(&mut view, &changed);
+        assert_eq!(view.item_cursor, None);
+        assert!(matches!(view.cursor, Some(Stop::Row(_))));
+        // So does a refresh that removes the row, or one that collapses it.
+        let (mut view, stops, a, _) = walk_view(&digest);
+        step_with_items(&mut view, &digest, &stops, true);
+        view.expanded.remove(&a);
+        clamp(&mut view, &digest);
+        assert_eq!(view.item_cursor, None);
+    }
+
+    #[test]
+    fn the_item_highlight_changes_no_text() {
+        let digest = sample_owner_digest();
+        let (mut view, stops, a, _) = walk_view(&digest);
+        step_with_items(&mut view, &digest, &stops, true);
+        step_with_items(&mut view, &digest, &stops, true);
+        let model = block_model("sample", "v2.2", &digest, &view, 100);
+        let (row_line, item_at) = (
+            model.stop_lines[0].expect("row line"),
+            model
+                .item_lines
+                .iter()
+                .find(|(k, id, _)| *k == a && id == "check 1")
+                .map(|(_, _, line)| *line)
+                .expect("item line"),
+        );
+        let draw = |cursor: Cursor| {
+            use ratatui::backend::TestBackend;
+            use ratatui::Terminal;
+            let height = block_height(&model, 40);
+            let mut terminal = Terminal::new(TestBackend::new(100, height)).unwrap();
+            terminal
+                .draw(|f| render_owner_block(f, f.area(), &model, Some(cursor), 0))
+                .unwrap();
+            terminal.backend().buffer().clone()
+        };
+        let on_row = draw(Cursor {
+            stop: 0,
+            fold: None,
+            item_line: None,
+        });
+        let on_item = draw(Cursor {
+            stop: 0,
+            fold: None,
+            item_line: Some(item_at),
+        });
+        let line_of = |y: usize| usize::from(u16::try_from(y).unwrap());
+        // Every cell's text is the same, except the row's `> ` gutter.
+        for y in 1..on_row.area.height {
+            for x in 0..on_row.area.width {
+                let (a, b) = (on_row[(x, y)].clone(), on_item[(x, y)].clone());
+                if line_of(usize::from(y) - 1) == row_line && x < 2 {
+                    continue;
+                }
+                assert_eq!(a.symbol(), b.symbol(), "({x},{y})");
+            }
+        }
+        let item_y = u16::try_from(item_at + 1).unwrap();
+        let cell = &on_item[(6, item_y)];
+        assert_eq!(cell.fg, Color::Cyan);
+        assert!(cell.modifier.contains(Modifier::BOLD));
+        // The item line has no gutter change and the row line is not the cursor.
+        assert_eq!(on_item[(0, item_y)].symbol(), " ");
+        let row_y = u16::try_from(row_line + 1).unwrap();
+        assert_eq!(on_item[(0, row_y)].symbol(), " ", "no `> ` on the row");
+        assert_ne!(on_item[(6, row_y)].fg, Color::Cyan);
+        assert_eq!(on_row[(0, row_y)].symbol(), ">");
     }
 }
