@@ -540,6 +540,11 @@ const COMMAND_MIN_W: usize = 12;
 const COMMAND_MAX_W: usize = 44;
 /// Cursor, marker and the space after them.
 const GUTTER_W: usize = 3;
+/// The phrase column's floor and cap (UI-SPEC "Row grid").
+const PHRASE_MIN_W: usize = 12;
+const PHRASE_MAX_W: usize = 32;
+/// The cells a phrase keeps beside its extras before an extra gives way.
+const PHRASE_KEEP_W: usize = 8;
 
 /// One row's cells, escaped, for layout.
 struct Cells {
@@ -623,9 +628,11 @@ impl Grid {
 /// The widths over **every** current row, filtered or not, so a later filter or an
 /// expansion never reflows the columns. Natural widths, then the UI-SPEC narrowing
 /// order (D-04): the FIX Command column only when it fits without squeezing any
-/// other column, Age by width, then the phrase toward 12, the phase cell toward 5,
-/// the alias toward 8 and the name toward 8; whatever is still too wide is cut by
-/// `fit_spans` per row.
+/// other column, Age by width, then the phrase toward the room its extras need
+/// (38-UI-REVIEW fix 3: `2 files` and label counts stay whole), the alias toward
+/// 8, the name toward 8 and the phase cell toward its floor, the phrase toward 12,
+/// the phase cell toward 5; whatever is still too wide is cut by `fit_spans` per
+/// row.
 fn grid_for_inbox(all: &[Cells], width: usize) -> Grid {
     let widest = |f: &dyn Fn(&Cells) -> usize| all.iter().map(f).max().unwrap_or(0);
     let phrase_nat = widest(&|c| phrase_cell_w(c));
@@ -645,7 +652,7 @@ fn grid_for_inbox(all: &[Cells], width: usize) -> Grid {
         phrase_w: if phrase_nat == 0 {
             0
         } else {
-            phrase_nat.clamp(12, 32)
+            phrase_nat.max(PHRASE_MIN_W)
         },
         age_w: if width >= AGE_MIN_W { AGE_W } else { 0 },
         command_w: 0,
@@ -658,7 +665,13 @@ fn grid_for_inbox(all: &[Cells], width: usize) -> Grid {
         .unwrap_or(0);
     if command_natural > 0 && grid.age_w > 0 {
         let natural = command_natural.clamp(COMMAND_MIN_W, COMMAND_MAX_W);
-        if grid.total() + 2 + natural <= width {
+        // Measured with the phrase column at its pre-extras cap, so a row's labels
+        // never cost the FIX rows their command.
+        let capped = Grid {
+            phrase_w: grid.phrase_w.min(PHRASE_MAX_W),
+            ..grid
+        };
+        if capped.total() + 2 + natural <= width {
             grid.command_w = natural;
         }
     }
@@ -675,7 +688,10 @@ fn grid_for_inbox(all: &[Cells], width: usize) -> Grid {
     };
     // (alias floor, name floor, workstream-name cells the phase cell keeps)
     let steps: [(usize, usize, usize); 4] = [(10, 16, 12), (8, 12, 8), (8, 8, 4), (8, 8, 2)];
-    while grid.total() > width && grid.phrase_w > 12 {
+    // The extras (`2 files`, label counts) keep their room until the other
+    // columns have given way; only then does the phrase drop to its floor.
+    let extras_floor = widest(&|c| extras_floor_w(c)).clamp(PHRASE_MIN_W, PHRASE_MAX_W);
+    while grid.total() > width && grid.phrase_w > extras_floor {
         grid.phrase_w -= 1;
     }
     for (alias_min, name_min, keep) in steps {
@@ -690,6 +706,9 @@ fn grid_for_inbox(all: &[Cells], width: usize) -> Grid {
             grid.phase_w -= 1;
         }
     }
+    while grid.total() > width && grid.phrase_w > PHRASE_MIN_W {
+        grid.phrase_w -= 1;
+    }
     while grid.total() > width && grid.phase_w > 5 {
         grid.phase_w -= 1;
     }
@@ -700,17 +719,68 @@ fn dim() -> Style {
     Style::default().add_modifier(Modifier::DIM)
 }
 
-/// The phrase column's natural width: the phrase, then two cells and the extras
-/// (`2 files`, label counts) when the row has any.
+/// The phrase column's natural width: the phrase (capped at [`PHRASE_MAX_W`]),
+/// then two cells and the extras (`2 files`, label counts) when the row has any.
 fn phrase_cell_w(c: &Cells) -> usize {
     let extras = cells(&c.cells.extras);
+    let phrase = cells(&c.cells.phrase).min(PHRASE_MAX_W);
     if extras == 0 {
-        cells(&c.cells.phrase)
-    } else if c.cells.phrase.is_empty() {
+        phrase
+    } else if phrase == 0 {
         extras
     } else {
-        cells(&c.cells.phrase) + 2 + extras
+        phrase + 2 + extras
     }
+}
+
+/// The phrase column a row needs to keep all its extras whole beside the first
+/// [`PHRASE_KEEP_W`] cells of its phrase; 0 for a row without extras.
+fn extras_floor_w(c: &Cells) -> usize {
+    let extras = cells(&c.cells.extras);
+    let phrase = cells(&c.cells.phrase);
+    match (extras, phrase) {
+        (0, _) => 0,
+        (_, 0) => extras,
+        _ => phrase.min(PHRASE_KEEP_W) + 2 + extras,
+    }
+}
+
+/// A row's phrase cell in `w` cells: the phrase, then the extras that fit
+/// **whole** (`2 files` first, then each label count), the phrase cut to the
+/// rest. An extra that does not fit is dropped, never cut mid-label, and leaves
+/// ` · …` after the last whole one (Enter lists each item's label); the phrase
+/// keeps at least [`PHRASE_KEEP_W`] cells (or all of it) before an extra gives
+/// way. Returns `(phrase, extras)`.
+fn phrase_and_extras(c: &Cells, w: usize) -> (String, String) {
+    let phrase = &c.cells.phrase;
+    if c.cells.extras.is_empty() {
+        return (fit_cells(phrase, w), String::new());
+    }
+    let phrase_w = cells(phrase);
+    let (keep, gap) = if phrase_w == 0 {
+        (0, 0)
+    } else {
+        (phrase_w.min(PHRASE_KEEP_W), 2)
+    };
+    let parts: Vec<&str> = c.cells.extras.split(OWNER_SEP).collect();
+    // A dropped extra leaves a trace: ` · …` after the last whole one.
+    let extras = (1..=parts.len())
+        .rev()
+        .map(|n| {
+            let mut text = parts[..n].join(OWNER_SEP);
+            if n < parts.len() {
+                text.push_str(OWNER_SEP);
+                text.push('\u{2026}');
+            }
+            text
+        })
+        .find(|text| keep + gap + cells(text) <= w)
+        .unwrap_or_default();
+    if extras.is_empty() {
+        return (fit_cells(phrase, w), String::new());
+    }
+    let room = w.saturating_sub(gap + cells(&extras));
+    (fit_cells(phrase, room), extras)
 }
 
 /// One group row as spans, cut to `width`, the cursor row Cyan + BOLD throughout.
@@ -756,20 +826,16 @@ fn row_line(c: &Cells, grid: &Grid, width: usize, cursor: bool, expanded: bool) 
         spans.push(Span::styled(pad(&checks, grid.checks_w, true), plain));
         if grid.phrase_w > 0 {
             spans.push(Span::raw("  "));
-            // The phrase, then its extras (`2 files`, label counts) DIM, all cut
-            // to the column.
-            let phrase = fit_cells(&c.cells.phrase, grid.phrase_w);
+            // The phrase, then its extras (`2 files`, label counts) DIM; the
+            // extras are kept whole and the phrase gives way first.
+            let (phrase, extras) = phrase_and_extras(c, grid.phrase_w);
             let mut used = cells(&phrase);
             spans.push(Span::styled(phrase, plain));
-            if !c.cells.extras.is_empty() {
+            if !extras.is_empty() {
                 let gap = if used == 0 { 0 } else { 2 };
-                let room = grid.phrase_w.saturating_sub(used + gap);
-                let extras = fit_cells(&c.cells.extras, room);
-                if !extras.is_empty() {
-                    spans.push(Span::raw(blanks(gap)));
-                    used += gap + cells(&extras);
-                    spans.push(Span::styled(extras, plain.add_modifier(Modifier::DIM)));
-                }
+                spans.push(Span::raw(blanks(gap)));
+                used += gap + cells(&extras);
+                spans.push(Span::styled(extras, plain.add_modifier(Modifier::DIM)));
             }
             spans.push(Span::raw(blanks(grid.phrase_w.saturating_sub(used))));
         }
@@ -5081,6 +5147,85 @@ mod tests {
             .style()
             .add_modifier
             .contains(Modifier::DIM)
+    }
+
+    /// `inbox_triage_ctx` plus `fix-labels`, a FIX row whose phrase and two labels
+    /// compete for the phrase column, with the Stale fold open: the 38-UI-REVIEW
+    /// fix 3 fleet.
+    fn narrow_extras_ctx() -> AppContext {
+        let mut ctx = inbox_triage_ctx();
+        let mut fix = group(G {
+            lane: Lane::Fix,
+            kind: Kind::Verification,
+            phase: "21",
+            name: "settlement-ledger-export",
+            checks: 2,
+            closes: false,
+            age: Some(6),
+            stale: false,
+        });
+        fix.counts.failed = 1;
+        fix.counts.gaps = 1;
+        fix.items[0].name = "approve the layout".to_owned();
+        fix.items[1].name = "bug resolved in 41".to_owned();
+        ctx.config.projects.insert(
+            "fix-labels".to_owned(),
+            ctx.config.projects["ledger"].clone(),
+        );
+        owe(&mut ctx, "fix-labels", digest(vec![fix]));
+        ctx.inbox_view.open_folds.insert(Fold::Stale);
+        ctx
+    }
+
+    #[test]
+    fn extras_stay_whole_at_80_and_100_columns() {
+        // A cut label (`4 deci`, `1 looks res`) says nothing: every fragment of a
+        // label on a row is the whole label.
+        let no_cut_label = |row: &str| {
+            for label in ["decision?", "looks resolved", "files"] {
+                for n in 2..label.len() {
+                    let stub = format!("{}\u{2026}", &label[..n]);
+                    assert!(!row.contains(&stub), "{label:?} cut in {row:?}");
+                }
+            }
+        };
+        for (w, h) in [(80u16, 24u16), (100, 30)] {
+            let ctx = narrow_extras_ctx();
+            let text = render_inbox_text(&ctx, w, h);
+            let all = text.join("\n");
+            for line in &text {
+                assert!(line.chars().count() <= w as usize, "{w}: {line:?}");
+                no_cut_label(line);
+            }
+            // The merged row keeps `2 files` whole, its age on the age column.
+            let (_, merged) = line_of(&text, "market-");
+            assert!(merged.contains("3 checks  2 files"), "{w}: {merged:?}");
+            let age_x = |row: &str, age: &str| row[..row.find(age).unwrap()].chars().count();
+            let (_, fix) = line_of(&text, "fix-lab");
+            assert_eq!(age_x(merged, "4 d"), age_x(fix, "6 d"), "{w}:\n{all}");
+            assert!(fix.contains("1 failed check"), "{w}: {fix:?}");
+            // The open Stale fold lists its row and the fold line stays pinned.
+            assert!(
+                line_of(&text, "ph 11").1.contains("2 checks"),
+                "{w}:\n{all}"
+            );
+            assert!(all.contains("\u{25be} Stale"), "{w}:\n{all}");
+            if w >= 100 {
+                // One label whole, the dropped one traced by ` · …`.
+                assert!(fix.contains("1 decision? \u{b7} \u{2026}"), "{fix:?}");
+                let buffer = draw(&ctx, w, h);
+                let (y, _) = line_of(&text, "fix-lab");
+                let x = fix[..fix.find("1 decision?").unwrap()].chars().count();
+                assert!(dim_at(&buffer, x, y), "the label count is DIM");
+            }
+        }
+        // With room for both, both labels show and no trace is drawn.
+        let text = render_inbox_text(&narrow_extras_ctx(), 140, 30);
+        let (_, fix) = line_of(&text, "fix-lab");
+        assert!(
+            fix.contains("1 failed check, 1 gap  1 decision? \u{b7} 1 looks resolved"),
+            "{fix:?}"
+        );
     }
 
     #[test]
