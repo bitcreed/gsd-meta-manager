@@ -140,6 +140,10 @@ pub struct InboxViewState {
     pub open_folds: HashSet<Fold>,
     /// The fold the fold line's sub-cursor rests on.
     pub fold_cursor: Option<Fold>,
+    /// The item sub-cursor inside the cursor row's expansion (39-02, D-04): an
+    /// `OwnerItem::id`, identity and never an index. `None` while the cursor rests
+    /// on the row itself.
+    pub item_cursor: Option<String>,
 }
 
 /// The sections in D-02 order.
@@ -410,6 +414,7 @@ pub(crate) fn cursor_pos(ctx: &AppContext, rows: &[InboxRow]) -> Option<usize> {
 
 /// Put the cursor on stop `to` (clamped): the row's identity, or the fold line.
 fn set_cursor(ctx: &mut AppContext, rows: &[InboxRow], to: usize) {
+    ctx.inbox_view.item_cursor = None;
     let folds = fleet_folds(ctx);
     let count = rows.len() + usize::from(!folds.is_empty());
     if count == 0 {
@@ -463,6 +468,20 @@ fn prune_view(ctx: &mut AppContext) {
     {
         ctx.inbox_view.fold_cursor = None;
     }
+    // D-04, T-39-11: the item sub-cursor survives only while its row is the cursor
+    // row, still expanded, and still draws that item.
+    if let Some(id) = ctx.inbox_view.item_cursor.clone() {
+        let keep = match ctx.inbox_view.cursor.clone() {
+            Some(InboxStop::Row(key)) if ctx.inbox_view.expanded.contains(&key) => stop_rows(ctx)
+                .iter()
+                .find(|row| row.key() == key)
+                .is_some_and(|row| owner_block::inbox_item_ids(&row.src).contains(&id)),
+            _ => false,
+        };
+        if !keep {
+            ctx.inbox_view.item_cursor = None;
+        }
+    }
 }
 
 /// After a digest update (a watcher refresh, a first fill, a failure) move the
@@ -478,7 +497,18 @@ pub(crate) fn reanchor(ctx: &mut AppContext) {
     }
     let rows = stop_rows(ctx);
     match cursor_pos(ctx, &rows) {
-        Some(at) => set_cursor(ctx, &rows, at),
+        Some(at) => {
+            // `prune_view` kept the item only for a surviving cursor row; the
+            // re-anchor itself does not move off it.
+            let (before, item) = (
+                ctx.inbox_view.cursor.clone(),
+                ctx.inbox_view.item_cursor.clone(),
+            );
+            set_cursor(ctx, &rows, at);
+            if ctx.inbox_view.cursor == before {
+                ctx.inbox_view.item_cursor = item;
+            }
+        }
         None => {
             ctx.inbox_view.cursor = None;
             ctx.inbox_view.cursor_index = 0;
@@ -970,7 +1000,7 @@ fn row_group(ctx: &AppContext, row: &InboxRow) -> OwnerGroup {
 /// cell further right (the inbox gutter is three cells), then, inbox only, the
 /// exact command `v` would launch.
 fn expansion_for(ctx: &AppContext, row: &InboxRow, width: usize) -> Vec<Line<'static>> {
-    let mut lines = owner_block::inbox_expansion_lines(&row.src, width, 1);
+    let (mut lines, map) = owner_block::inbox_expansion_lines_mapped(&row.src, width, 1);
     let group = row_group(ctx, row);
     if let Ok(plan) = owner_actions::run_plan(ctx, &row.alias, &group) {
         lines.push(owner_block::dim_line(
@@ -986,7 +1016,57 @@ fn expansion_for(ctx: &AppContext, row: &InboxRow, width: usize) -> Vec<Line<'st
             }
         }
     }
+    // D-04: the selected item is highlighted in place, no gutter, no new line.
+    if let Some(at) = selected_item_line(ctx, row, &map) {
+        for span in &mut lines[at].spans {
+            span.style = span.style.patch(owner_block::cursor_style());
+        }
+    }
     lines
+}
+
+/// The expansion line of the item the sub-cursor rests on, when `row` is the
+/// cursor row and draws that item.
+fn selected_item_line(ctx: &AppContext, row: &InboxRow, map: &[(usize, String)]) -> Option<usize> {
+    let id = ctx.inbox_view.item_cursor.as_deref()?;
+    match &ctx.inbox_view.cursor {
+        Some(InboxStop::Row(key)) if *key == row.key() => owner_block::item_line(map, id),
+        _ => None,
+    }
+}
+
+/// Widen `offset` the least amount that shows the selected item's body line (D-04).
+fn scroll_to_item(
+    offset: usize,
+    ctx: &AppContext,
+    plan: &[BodyItem],
+    rows: &[InboxRow],
+    at: usize,
+    width: usize,
+    height: usize,
+) -> usize {
+    let Some(row) = rows.get(at).filter(|_| height > 0) else {
+        return offset;
+    };
+    let map = owner_block::inbox_expansion_lines_mapped(&row.src, width, 1).1;
+    let Some(line) = selected_item_line(ctx, row, &map) else {
+        return offset;
+    };
+    let Some(pos) = plan
+        .iter()
+        .position(|item| matches!(item, BodyItem::Row(index) if *index == at))
+        .map(|row_pos| row_pos + 1 + line)
+    else {
+        return offset;
+    };
+    let offset = if pos < offset {
+        pos
+    } else if pos >= offset + height {
+        pos + 1 - height
+    } else {
+        offset
+    };
+    offset.min(plan.len().saturating_sub(height))
 }
 
 /// [`build_plan`] with the expanded rows' lines at `width`.
@@ -1608,8 +1688,10 @@ impl InboxScreen {
             return;
         }
         let plan = full_plan(ctx, rows, self.width.get());
+        let height = self.viewport.get().max(1);
+        let offset = scroll_for(ctx.inbox_view.offset, &plan, at, height);
         ctx.inbox_view.offset =
-            scroll_for(ctx.inbox_view.offset, &plan, at, self.viewport.get().max(1));
+            scroll_to_item(offset, ctx, &plan, rows, at, self.width.get(), height);
     }
 
     /// Move the cursor to stop `to` (clamped) and keep it in view.
@@ -1634,6 +1716,58 @@ impl InboxScreen {
         reanchor(ctx);
         ctx.inbox_view.offset = 0;
         ctx.needs_redraw = true;
+    }
+
+    /// `j`/`k` (39-02, D-04): walk the drawn item lines of an expanded cursor row
+    /// first, then the rows. Leaving a row backward onto an expanded row lands on
+    /// that row's last drawn item.
+    fn step_items(&self, ctx: &mut AppContext, forward: bool) {
+        let rows = stop_rows(ctx);
+        let Some(at) = cursor_pos(ctx, &rows) else {
+            return;
+        };
+        if let Some(row) = rows
+            .get(at)
+            .filter(|row| ctx.inbox_view.expanded.contains(&row.key()))
+        {
+            // No key yet: the first stop is implicit, so make it the real cursor
+            // before an item hangs off it.
+            if ctx.inbox_view.cursor.is_none() {
+                set_cursor(ctx, &rows, at);
+            }
+            let ids = owner_block::inbox_item_ids(&row.src);
+            let current = ctx.inbox_view.item_cursor.as_deref();
+            match owner_block::item_step(&ids, current, forward) {
+                owner_block::ItemStep::Item(id) => {
+                    ctx.inbox_view.item_cursor = Some(id);
+                    self.follow(ctx, &rows, at);
+                    ctx.needs_redraw = true;
+                    return;
+                }
+                owner_block::ItemStep::Parent => {
+                    ctx.inbox_view.item_cursor = None;
+                    self.follow(ctx, &rows, at);
+                    ctx.needs_redraw = true;
+                    return;
+                }
+                owner_block::ItemStep::Leave => {}
+            }
+        }
+        self.step(ctx, if forward { 1 } else { -1 });
+        if !forward {
+            let rows = stop_rows(ctx);
+            let now = cursor_pos(ctx, &rows);
+            if let Some(row) = now
+                .filter(|now| *now != at)
+                .and_then(|now| rows.get(now))
+                .filter(|row| ctx.inbox_view.expanded.contains(&row.key()))
+            {
+                ctx.inbox_view.item_cursor = owner_block::inbox_item_ids(&row.src).pop();
+                if let Some(now) = now {
+                    self.follow(ctx, &rows, now);
+                }
+            }
+        }
     }
 
     fn step(&self, ctx: &mut AppContext, by: isize) {
@@ -1671,6 +1805,7 @@ impl InboxScreen {
         };
         if let Some(row) = rows.get(at) {
             let key = row.key();
+            ctx.inbox_view.item_cursor = None;
             if !ctx.inbox_view.expanded.remove(&key) {
                 ctx.inbox_view.expanded.insert(key);
             }
@@ -1806,7 +1941,9 @@ impl InboxScreen {
             }
             _ => {}
         }
-        match owner_settle::settle_open(ctx, &row.alias, &row.src.key, None, AckHost::Inbox) {
+        // D-04: on an item line `x` settles that one check; on the row, the phase.
+        let item = ctx.inbox_view.item_cursor.as_deref();
+        match owner_settle::settle_open(ctx, &row.alias, &row.src.key, item, AckHost::Inbox) {
             Ok(action) => {
                 ctx.needs_redraw = true;
                 action
@@ -1987,11 +2124,11 @@ impl Screen for InboxScreen {
                 ScreenAction::None
             }
             KeyCode::Char('j') | KeyCode::Down => {
-                self.step(ctx, 1);
+                self.step_items(ctx, true);
                 ScreenAction::None
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                self.step(ctx, -1);
+                self.step_items(ctx, false);
                 ScreenAction::None
             }
             KeyCode::Home => {
@@ -2077,7 +2214,10 @@ impl Screen for InboxScreen {
         let height = usize::from(body.height);
         self.viewport.set(height);
         let offset = match cursor.filter(|at| *at < rows.len()) {
-            Some(at) => scroll_for(ctx.inbox_view.offset, &plan, at, height),
+            Some(at) => {
+                let offset = scroll_for(ctx.inbox_view.offset, &plan, at, height);
+                scroll_to_item(offset, ctx, &plan, &rows, at, width, height)
+            }
             None => ctx
                 .inbox_view
                 .offset
@@ -2096,8 +2236,10 @@ impl Screen for InboxScreen {
                     match cells_of(ctx, row) {
                         Some(c) => {
                             let expanded = ctx.inbox_view.expanded.contains(&row.key());
-                            let mut line =
-                                row_line(&c, &grid, width, cursor == Some(*index), expanded);
+                            // D-04: a selected item takes the cursor from its row.
+                            let on_row =
+                                cursor == Some(*index) && ctx.inbox_view.item_cursor.is_none();
+                            let mut line = row_line(&c, &grid, width, on_row, expanded);
                             if row.fold == Some(Fold::Acknowledged) {
                                 for span in &mut line.spans {
                                     span.style = span.style.add_modifier(Modifier::DIM);
@@ -4191,8 +4333,12 @@ mod tests {
         };
         assert!(!dim_at(at + 1), "the item line is not DIM");
         assert!(dim_at(at + 6) && dim_at(at + 7) && dim_at(at + 8));
-        // The cursor stays on the row; `j` moves into the next group row.
+        // The cursor stays on the row; `j` walks the five item lines (D-04) and
+        // then moves into the next group row.
         keys_on(&mut *screen, &mut ctx, &[KeyCode::Char('j')], size);
+        assert_eq!(item_of(&ctx).as_deref(), Some("check 0"));
+        keys_on(&mut *screen, &mut ctx, &[KeyCode::Char('j'); 5], size);
+        assert_eq!(item_of(&ctx), None);
         let text = render_with(&*screen, &ctx, size.0, size.1);
         assert!(line_of(&text, "alder-api")
             .1
@@ -4276,6 +4422,12 @@ mod tests {
             &mut ctx,
             &[
                 KeyCode::Enter,
+                // Five item lines, then the next row (D-04).
+                KeyCode::Char('j'),
+                KeyCode::Char('j'),
+                KeyCode::Char('j'),
+                KeyCode::Char('j'),
+                KeyCode::Char('j'),
                 KeyCode::Char('j'),
                 KeyCode::Enter,
                 KeyCode::End,
@@ -4387,13 +4539,15 @@ mod tests {
         let last = stop_rows(&ctx).last().unwrap().key();
         assert_eq!(ctx.inbox_view.cursor, Some(InboxStop::Row(last)));
         assert_eq!(last_alias(&ctx), "holly-pics");
-        // Expanding a fold row shows its lines; `j` returns to the fold line.
-        keys_on(
-            &mut *screen,
-            &mut ctx,
-            &[KeyCode::Enter, KeyCode::Char('j')],
-            size,
-        );
+        // Expanding a fold row shows its lines; `j` walks them (D-04) and then
+        // returns to the fold line.
+        keys_on(&mut *screen, &mut ctx, &[KeyCode::Enter], size);
+        for _ in 0..8 {
+            if ctx.inbox_view.cursor == Some(InboxStop::FoldLine) {
+                break;
+            }
+            keys_on(&mut *screen, &mut ctx, &[KeyCode::Char('j')], size);
+        }
         assert_eq!(ctx.inbox_view.cursor, Some(InboxStop::FoldLine));
         // Enter again closes Old debt.
         keys_on(&mut *screen, &mut ctx, &[KeyCode::Enter], size);
@@ -5402,5 +5556,318 @@ mod tests {
             .1
             .trim_end()
             .ends_with("(looks resolved)"));
+    }
+
+    // ── The item sub-cursor (39-02, D-04) ───────────────────────────────────
+
+    use crate::ui::screens::owner_settle::test_support::{fixture_ctx, temp_fixture};
+
+    /// A context over a throwaway copy of fixture `name`, registered as `alias`.
+    fn walk_ctx(name: &str, alias: &str) -> (tempfile::TempDir, AppContext) {
+        let (dir, root) = temp_fixture(name);
+        let ctx = fixture_ctx(&root, alias);
+        (dir, ctx)
+    }
+
+    fn item_of(ctx: &AppContext) -> Option<String> {
+        ctx.inbox_view.item_cursor.clone()
+    }
+
+    fn describe(action: &ScreenAction) -> String {
+        match action {
+            ScreenAction::None => "none".to_owned(),
+            ScreenAction::Pop => "pop".to_owned(),
+            ScreenAction::Push(screen) => format!("push {}", screen.name()),
+            ScreenAction::Replace(screen) => format!("replace {}", screen.name()),
+            ScreenAction::WriteOsc52(sequence) => format!("osc52 {sequence}"),
+            _ => "other".to_owned(),
+        }
+    }
+
+    #[test]
+    fn item_walk_visits_the_drawn_items_in_order() {
+        let (_dir, mut ctx) = walk_ctx("heuristic-labels", "pricing-app");
+        let first = stop_rows(&ctx).remove(0);
+        assert_eq!(first.src.group.phase, "01");
+        let mut screen = InboxScreen::new();
+        let press = |screen: &mut InboxScreen, ctx: &mut AppContext, code| {
+            screen.handle_key(code, KeyModifiers::NONE, ctx);
+        };
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        for n in 1..=5 {
+            press(&mut screen, &mut ctx, KeyCode::Char('j'));
+            assert_eq!(item_of(&ctx), Some(format!("01-UAT.md#{n}")));
+            assert_eq!(ctx.inbox_view.cursor, Some(InboxStop::Row(first.key())));
+        }
+        // The sixth `j` leaves for the next row (the 6th and 7th checks are only
+        // reachable through the phase-level `x`).
+        press(&mut screen, &mut ctx, KeyCode::Char('j'));
+        assert_eq!(item_of(&ctx), None);
+        assert_ne!(ctx.inbox_view.cursor, Some(InboxStop::Row(first.key())));
+        // `k` from there lands on the last drawn item of the expanded row.
+        press(&mut screen, &mut ctx, KeyCode::Char('k'));
+        assert_eq!(item_of(&ctx), Some("01-UAT.md#5".to_owned()));
+        // From the first item `k` goes to its own row, and `k` again leaves up.
+        for _ in 0..4 {
+            press(&mut screen, &mut ctx, KeyCode::Up);
+        }
+        assert_eq!(item_of(&ctx), Some("01-UAT.md#1".to_owned()));
+        press(&mut screen, &mut ctx, KeyCode::Char('k'));
+        assert_eq!(item_of(&ctx), None);
+        assert_eq!(ctx.inbox_view.cursor, Some(InboxStop::Row(first.key())));
+        // Home, End, PgUp, PgDn clear an item; so does Enter on the item line.
+        for code in [
+            KeyCode::Home,
+            KeyCode::End,
+            KeyCode::PageUp,
+            KeyCode::PageDown,
+        ] {
+            ctx.inbox_view.cursor = Some(InboxStop::Row(first.key()));
+            ctx.inbox_view.item_cursor = Some("01-UAT.md#2".to_owned());
+            press(&mut screen, &mut ctx, code);
+            assert_eq!(item_of(&ctx), None, "{code:?}");
+        }
+        ctx.inbox_view.cursor = Some(InboxStop::Row(first.key()));
+        ctx.inbox_view.cursor_index = 0;
+        ctx.inbox_view.item_cursor = Some("01-UAT.md#2".to_owned());
+        press(&mut screen, &mut ctx, KeyCode::Enter);
+        assert_eq!(item_of(&ctx), None);
+        assert!(!ctx.inbox_view.expanded.contains(&first.key()));
+    }
+
+    #[test]
+    fn item_walk_crosses_empty_and_collapsed_rows() {
+        let (_dir, mut ctx) = walk_ctx("heuristic-labels", "pricing-app");
+        let rows = stop_rows(&ctx);
+        assert!(rows.len() >= 2);
+        let mut screen = InboxScreen::new();
+        // Collapsed: row to row, no item.
+        screen.handle_key(KeyCode::Char('j'), KeyModifiers::NONE, &mut ctx);
+        assert_eq!(ctx.inbox_view.cursor, Some(InboxStop::Row(rows[1].key())));
+        assert_eq!(item_of(&ctx), None);
+        // Expanded but without a drawn item: crossed row to row, both ways.
+        let digest = ctx.owner_digests.get_mut("pricing-app").unwrap();
+        for group in &mut digest.groups {
+            if group.phase == rows[1].src.group.phase && group.lane == rows[1].src.group.lane {
+                group.items.clear();
+            }
+        }
+        let rows = stop_rows(&ctx);
+        ctx.inbox_view.expanded.insert(rows[1].key());
+        assert!(owner_block::inbox_item_ids(&rows[1].src).is_empty());
+        ctx.inbox_view.cursor = Some(InboxStop::Row(rows[1].key()));
+        ctx.inbox_view.cursor_index = 1;
+        screen.handle_key(KeyCode::Char('j'), KeyModifiers::NONE, &mut ctx);
+        assert_eq!(ctx.inbox_view.cursor_index, 2.min(rows.len() - 1));
+        assert_eq!(item_of(&ctx), None);
+        screen.handle_key(KeyCode::Char('k'), KeyModifiers::NONE, &mut ctx);
+        assert_eq!(ctx.inbox_view.cursor, Some(InboxStop::Row(rows[1].key())));
+        assert_eq!(item_of(&ctx), None, "no item to land on");
+    }
+
+    #[test]
+    fn merged_rows_walk_parts_in_order() {
+        let (_dir, mut ctx) = walk_ctx("same-phase-merge", "market-app");
+        let merged = stop_rows(&ctx)
+            .into_iter()
+            .find(|row| row.src.parts.len() > 1)
+            .expect("a merged row");
+        let want = owner_block::inbox_item_ids(&merged.src);
+        assert!(want.len() >= 2, "{want:?}");
+        // The ids come part by part, each file's own.
+        let files: Vec<&str> = want
+            .iter()
+            .map(|id| id.split('#').next().unwrap())
+            .collect();
+        assert!(
+            files.iter().any(|f| f.contains("UAT"))
+                && files.iter().any(|f| f.contains("VERIFICATION"))
+        );
+        ctx.inbox_view.cursor = Some(InboxStop::Row(merged.key()));
+        ctx.inbox_view.expanded.insert(merged.key());
+        let mut screen = InboxScreen::new();
+        let mut seen = Vec::new();
+        for _ in 0..want.len() {
+            screen.handle_key(KeyCode::Char('j'), KeyModifiers::NONE, &mut ctx);
+            seen.push(item_of(&ctx).expect("an item"));
+        }
+        assert_eq!(seen, want);
+    }
+
+    /// D-04: on an item line `v`, `o`, `A`, `y` and `g` act on the parent group
+    /// exactly as on the row: same action, same status, same seam record.
+    #[test]
+    fn row_keys_on_an_item_act_on_the_parent() {
+        let probes = crate::clipboard::ClipboardProbes {
+            os: "linux",
+            wayland_display: true,
+            display: true,
+            on_path: vec!["wl-copy"],
+        };
+        let outcome = |code: char, on_item: bool| {
+            let (_dir, mut ctx) = walk_ctx("heuristic-labels", "pricing-app");
+            let row = stop_rows(&ctx).remove(0);
+            ctx.inbox_view.cursor = Some(InboxStop::Row(row.key()));
+            ctx.inbox_view.expanded.insert(row.key());
+            if on_item {
+                ctx.inbox_view.item_cursor = Some("01-UAT.md#2".to_owned());
+            }
+            owner_actions::force_clipboard(Some(probes.clone()));
+            let mut screen = InboxScreen::new();
+            let mut ran: Vec<String> = Vec::new();
+            let action = if code == 'v' {
+                screen.run_key(&mut ctx, &mut |run| {
+                    ran.push(format!("{} in {}", run.command, run.alias));
+                    "ran".to_owned()
+                })
+            } else {
+                screen.handle_key(KeyCode::Char(code), KeyModifiers::NONE, &mut ctx)
+            };
+            let seam = owner_actions::seam_ran();
+            owner_actions::force_clipboard(None);
+            (
+                describe(&action),
+                status(&ctx),
+                ran,
+                seam,
+                ctx.inbox_view.cursor.clone(),
+            )
+        };
+        for code in ['v', 'o', 'A', 'y', 'g'] {
+            let (on_row, on_item) = (outcome(code, false), outcome(code, true));
+            assert_eq!(on_row, on_item, "{code}");
+            let did_something = on_row.0 != "none"
+                || !on_row.1.is_empty()
+                || !on_row.2.is_empty()
+                || !on_row.3.is_empty();
+            assert!(did_something, "{code} did something");
+        }
+    }
+
+    #[test]
+    fn the_inbox_item_highlight_changes_no_text() {
+        let (_dir, mut ctx) = walk_ctx("heuristic-labels", "pricing-app");
+        let row = stop_rows(&ctx).remove(0);
+        ctx.inbox_view.cursor = Some(InboxStop::Row(row.key()));
+        ctx.inbox_view.expanded.insert(row.key());
+        let screen = InboxScreen::new();
+        let draw = |ctx: &AppContext| {
+            let mut terminal = Terminal::new(TestBackend::new(100, 30)).expect("backend");
+            terminal
+                .draw(|frame| screen.render(frame, frame.area(), ctx))
+                .expect("draw");
+            terminal.backend().buffer().clone()
+        };
+        let on_row = draw(&ctx);
+        ctx.inbox_view.item_cursor = Some("01-UAT.md#2".to_owned());
+        let on_item = draw(&ctx);
+        let rows = |buffer: &ratatui::buffer::Buffer, y: u16| -> String {
+            (0..100)
+                .map(|x| buffer[(x, y)].symbol().to_owned())
+                .collect()
+        };
+        let mut item_y = None;
+        let mut row_y = None;
+        for y in 0..30u16 {
+            let (a, b) = (rows(&on_row, y), rows(&on_item, y));
+            if a != b {
+                // Only the row's `> ` gutter differs.
+                assert_eq!(
+                    a.chars().skip(2).collect::<String>(),
+                    b.chars().skip(2).collect::<String>(),
+                    "line {y}"
+                );
+                row_y = Some(y);
+            }
+            if b.contains("Pricing")
+                && b.contains("2")
+                && item_y.is_none()
+                && b.contains("01-UAT.md")
+            {
+                item_y = Some(y);
+            }
+        }
+        let row_y = row_y.expect("the row line lost its gutter");
+        assert!(on_row[(0, row_y)].symbol() == ">" && on_item[(0, row_y)].symbol() == " ");
+        // The item line is the one whose cells are Cyan and BOLD.
+        let cyan: Vec<u16> = (0..30u16)
+            .filter(|y| {
+                *y != row_y
+                    && on_item[(8, *y)].fg == Color::Cyan
+                    && on_item[(8, *y)]
+                        .modifier
+                        .contains(ratatui::style::Modifier::BOLD)
+            })
+            .collect();
+        assert_eq!(
+            cyan.len(),
+            1,
+            "exactly one item line is highlighted: {cyan:?}"
+        );
+        let _ = item_y;
+        assert_ne!(on_item[(0, cyan[0])].symbol(), ">", "no gutter on an item");
+        assert_ne!(
+            on_item[(8, row_y)].fg,
+            Color::Cyan,
+            "the row is not highlighted"
+        );
+    }
+
+    #[test]
+    fn the_selected_item_stays_in_view() {
+        let (_dir, mut ctx) = walk_ctx("heuristic-labels", "pricing-app");
+        let row = stop_rows(&ctx).remove(0);
+        ctx.inbox_view.cursor = Some(InboxStop::Row(row.key()));
+        ctx.inbox_view.expanded.insert(row.key());
+        let mut screen = InboxScreen::new();
+        // A short terminal: the header, a few body rows and the pinned footer.
+        let (w, h) = (100, 12);
+        let mut last = String::new();
+        for n in 1..=5 {
+            let _ = render_with(&screen, &ctx, w, h);
+            screen.handle_key(KeyCode::Char('j'), KeyModifiers::NONE, &mut ctx);
+            let text = render_with(&screen, &ctx, w, h);
+            let name = format!("01-UAT.md#{n}");
+            assert_eq!(item_of(&ctx), Some(name));
+            let mut terminal = Terminal::new(TestBackend::new(w, h)).expect("backend");
+            terminal
+                .draw(|frame| screen.render(frame, frame.area(), &ctx))
+                .expect("draw");
+            let buffer = terminal.backend().buffer().clone();
+            let highlighted = (0..h).any(|y| {
+                buffer[(8, y)].fg == Color::Cyan && y != 0 && !text[usize::from(y)].starts_with('>')
+            });
+            assert!(highlighted, "item {n} is on screen:\n{}", text.join("\n"));
+            last = text.join("\n");
+        }
+        assert!(!last.is_empty());
+    }
+
+    #[test]
+    fn a_vanished_item_falls_back_to_its_row() {
+        let (_dir, mut ctx) = walk_ctx("heuristic-labels", "pricing-app");
+        let row = stop_rows(&ctx).remove(0);
+        ctx.inbox_view.cursor = Some(InboxStop::Row(row.key()));
+        ctx.inbox_view.expanded.insert(row.key());
+        let mut screen = InboxScreen::new();
+        for _ in 0..3 {
+            screen.handle_key(KeyCode::Char('j'), KeyModifiers::NONE, &mut ctx);
+        }
+        assert_eq!(item_of(&ctx), Some("01-UAT.md#3".to_owned()));
+        // A refresh that keeps the item keeps it.
+        reanchor(&mut ctx);
+        assert_eq!(item_of(&ctx), Some("01-UAT.md#3".to_owned()));
+        // A refresh that drops it: the cursor stays on the row and `x` settles it.
+        for group in &mut ctx.owner_digests.get_mut("pricing-app").unwrap().groups {
+            group.items.retain(|i| i.id != "01-UAT.md#3");
+        }
+        reanchor(&mut ctx);
+        assert_eq!(item_of(&ctx), None);
+        assert_eq!(ctx.inbox_view.cursor, Some(InboxStop::Row(row.key())));
+        // A collapse removes it as well.
+        ctx.inbox_view.item_cursor = Some("01-UAT.md#2".to_owned());
+        ctx.inbox_view.expanded.remove(&row.key());
+        reanchor(&mut ctx);
+        assert_eq!(item_of(&ctx), None);
     }
 }

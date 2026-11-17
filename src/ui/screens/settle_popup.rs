@@ -674,6 +674,105 @@ mod tests {
         );
     }
 
+    /// 39-02, D-04: in the inbox, `x` on an item line settles that ONE check, on
+    /// the row the whole phase; a merged row's second file's item is reachable.
+    #[test]
+    fn x_on_an_item_targets_one_check() {
+        take_settle_launches();
+        let (_dir, root) = temp_fixture("uat-pending");
+        let before = tree(&root);
+        let mut ctx = fixture_ctx(&root, ALIAS);
+        let mut stack = Stack::inbox();
+        stack.key(&mut ctx, KeyCode::Enter);
+        stack.key(&mut ctx, KeyCode::Char('j'));
+        stack.key(&mut ctx, KeyCode::Char('j'));
+        assert_eq!(ctx.inbox_view.item_cursor.as_deref(), Some("01-UAT.md#3"));
+        stack.key(&mut ctx, KeyCode::Char('x'));
+        stack.key(&mut ctx, KeyCode::Char('w'));
+        stack.keys(&mut ctx, "no device here");
+        stack.key(&mut ctx, KeyCode::Enter);
+        stack.key(&mut ctx, KeyCode::Char('y'));
+        let launches = take_settle_launches();
+        assert_eq!(launches.len(), 1);
+        assert_eq!(
+            launches[0].draft.target.scope,
+            SettleScope::Check("01-UAT.md#3".to_owned())
+        );
+        assert!(
+            launches[0]
+                .prompt()
+                .contains("record test 3 as result: skipped"),
+            "{}",
+            launches[0].prompt()
+        );
+        // `k` back to the row: `x` is the phase.
+        stack.key(&mut ctx, KeyCode::Char('k'));
+        stack.key(&mut ctx, KeyCode::Char('k'));
+        assert_eq!(ctx.inbox_view.item_cursor, None);
+        stack.key(&mut ctx, KeyCode::Char('x'));
+        stack.key(&mut ctx, KeyCode::Char('p'));
+        stack.key(&mut ctx, KeyCode::Enter);
+        stack.key(&mut ctx, KeyCode::Char('y'));
+        let launches = take_settle_launches();
+        assert_eq!(launches[0].draft.target.scope, SettleScope::Phase);
+        assert_eq!(tree(&root), before);
+    }
+
+    #[test]
+    fn x_on_a_merged_rows_second_file_names_that_file() {
+        take_settle_launches();
+        let (_dir, root) = temp_fixture("same-phase-merge");
+        let mut ctx = fixture_ctx(&root, "market-app");
+        let merged = stop_rows(&ctx)
+            .into_iter()
+            .find(|row| row.src.parts.len() > 1)
+            .expect("a merged row");
+        let ids = crate::ui::screens::owner_block::inbox_item_ids(&merged.src);
+        let last = ids.last().cloned().expect("an item");
+        assert!(last.contains("VERIFICATION"), "{ids:?}");
+        ctx.inbox_view.cursor = Some(crate::ui::screens::inbox::InboxStop::Row(merged.key()));
+        ctx.inbox_view.expanded.insert(merged.key());
+        let mut stack = Stack::inbox();
+        for _ in 0..ids.len() {
+            stack.key(&mut ctx, KeyCode::Char('j'));
+        }
+        assert_eq!(ctx.inbox_view.item_cursor.as_ref(), Some(&last));
+        stack.key(&mut ctx, KeyCode::Char('x'));
+        stack.key(&mut ctx, KeyCode::Char('w'));
+        stack.keys(&mut ctx, "r");
+        stack.key(&mut ctx, KeyCode::Enter);
+        stack.key(&mut ctx, KeyCode::Char('y'));
+        let launches = take_settle_launches();
+        assert_eq!(launches.len(), 1, "{}", status(&ctx));
+        let prompt = launches[0].prompt();
+        assert!(
+            prompt.contains("The user will not perform item 1 (\u{201c}")
+                && prompt.contains(") in 43-VERIFICATION.md."),
+            "{prompt}"
+        );
+    }
+
+    #[test]
+    fn a_vanished_check_is_not_launched() {
+        take_settle_launches();
+        let (_dir, root) = temp_fixture("uat-pending");
+        let mut ctx = fixture_ctx(&root, ALIAS);
+        let (key, id) = uat_row_and_first_item(&ctx);
+        let mut stack = Stack::detail(&mut ctx, ALIAS, &key);
+        stack.key(&mut ctx, KeyCode::Enter);
+        stack.key(&mut ctx, KeyCode::Char('j'));
+        stack.key(&mut ctx, KeyCode::Char('x'));
+        stack.key(&mut ctx, KeyCode::Char('w'));
+        stack.keys(&mut ctx, "r");
+        stack.key(&mut ctx, KeyCode::Enter);
+        for group in &mut ctx.owner_digests.get_mut(ALIAS).unwrap().groups {
+            group.items.retain(|i| i.id != id);
+        }
+        stack.key(&mut ctx, KeyCode::Char('y'));
+        assert_eq!(status(&ctx), "Check is no longer listed; nothing launched");
+        assert!(take_settle_launches().is_empty());
+    }
+
     #[test]
     fn every_cancel_launches_nothing() {
         take_settle_launches();

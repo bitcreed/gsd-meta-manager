@@ -1251,19 +1251,10 @@ pub(crate) fn expansion_lines_mapped(
     (lines, ids)
 }
 
-/// The lines under an expanded inbox row: a merged row (D-08) lists each file's
-/// items under its own `file PATH` sub-heading; every other row is exactly
-/// [`expansion_lines`].
-pub(crate) fn inbox_expansion_lines(
-    src: &RowSrc,
-    width: usize,
-    shift: usize,
-) -> Vec<Line<'static>> {
-    inbox_expansion_lines_mapped(src, width, shift).0
-}
-
-/// [`inbox_expansion_lines`] plus the line index at which each drawn item starts
-/// (a merged row maps each part's items, in part order).
+/// The lines under an expanded inbox row plus the line index at which each drawn
+/// item starts: a merged row (D-08) lists each file's items under its own
+/// `file PATH` sub-heading (each part's items in part order); every other row is
+/// [`expansion_lines_mapped`] with labels.
 pub(crate) fn inbox_expansion_lines_mapped(
     src: &RowSrc,
     width: usize,
@@ -1302,7 +1293,6 @@ pub(crate) fn row_item_ids(src: &RowSrc) -> Vec<String> {
 
 /// The ids [`inbox_expansion_lines_mapped`] draws: a merged row lists each part's
 /// first [`MAX_ITEMS`] ids in part order, every other row is [`row_item_ids`].
-#[allow(dead_code)] // the inbox walk (39-02 task 2) is its caller
 pub(crate) fn inbox_item_ids(src: &RowSrc) -> Vec<String> {
     if src.parts.len() < 2 {
         return row_item_ids(src);
@@ -1315,7 +1305,6 @@ pub(crate) fn inbox_item_ids(src: &RowSrc) -> Vec<String> {
 }
 
 /// The line index of the item `id` in an `*_expansion_lines_mapped` map.
-#[allow(dead_code)] // the inbox highlight (39-02 task 2) is its caller
 pub(crate) fn item_line(map: &[(usize, String)], id: &str) -> Option<usize> {
     map.iter().find(|(_, i)| i == id).map(|(line, _)| *line)
 }

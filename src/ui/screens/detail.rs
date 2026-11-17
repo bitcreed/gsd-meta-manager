@@ -37293,6 +37293,86 @@ mod tests {
         assert_eq!(screen.focus, DetailFocus::Owner);
     }
 
+    /// 39-02, D-04: with the cursor on an item line, `v`, `o`, `A` and `y` act on
+    /// the parent group exactly as on the row: same action, same status, same
+    /// recorded launch and copy.
+    #[test]
+    fn owner_block_row_keys_on_an_item_act_on_the_parent() {
+        use crate::config::RegisteredProject;
+        let probes = crate::clipboard::ClipboardProbes {
+            os: "linux",
+            wayland_display: true,
+            display: true,
+            on_path: vec!["wl-copy"],
+        };
+        let describe = |action: &ScreenAction| match action {
+            ScreenAction::None => "none".to_owned(),
+            ScreenAction::Pop => "pop".to_owned(),
+            ScreenAction::Push(screen) => format!("push {}", screen.name()),
+            ScreenAction::Replace(screen) => format!("replace {}", screen.name()),
+            ScreenAction::WriteOsc52(sequence) => format!("osc52 {sequence}"),
+            _ => "other".to_owned(),
+        };
+        let outcome = |code: char, on_item: bool| {
+            let mut ctx = owner_ctx(Some(sample()));
+            ctx.config.projects.insert(
+                TEST_ALIAS.to_string(),
+                RegisteredProject {
+                    path: std::path::PathBuf::from("/nonexistent/proj"),
+                    added: "2026-07-29".to_string(),
+                    driver_opt_in: None,
+                    extra: Default::default(),
+                },
+            );
+            owner_actions::force_launcher(Some(owner_actions::test_launcher()));
+            owner_actions::force_clipboard(Some(probes.clone()));
+            let mut screen = owner_screen(&ctx);
+            key(&mut screen, &mut ctx, KeyCode::Up);
+            {
+                let view = &mut ctx
+                    .view_cache
+                    .entry(TEST_ALIAS.to_string())
+                    .or_default()
+                    .owner_block;
+                view.cursor = Some(Stop::Row(key_24()));
+                view.expanded.insert(key_24());
+                if on_item {
+                    view.item_cursor = Some("check 0".to_owned());
+                }
+            }
+            let mut ran: Vec<String> = Vec::new();
+            let action = if code == 'v' {
+                screen.owner_run(&mut ctx, &mut |plan| {
+                    ran.push(plan.command.to_string());
+                    "ran".to_owned()
+                })
+            } else {
+                key(&mut screen, &mut ctx, KeyCode::Char(code))
+            };
+            let result = (
+                describe(&action),
+                ctx.status_message.as_ref().map(|(m, _)| m.clone()),
+                ran,
+                owner_actions::seam_ran(),
+                owner_view_of(&ctx).cursor,
+                screen.focus == DetailFocus::Owner,
+            );
+            owner_actions::force_clipboard(None);
+            result
+        };
+        for code in ['v', 'o', 'A', 'y'] {
+            let (on_row, on_item) = (outcome(code, false), outcome(code, true));
+            assert_eq!(on_row, on_item, "{code}");
+            assert!(
+                on_row.0 != "none"
+                    || on_row.1.is_some()
+                    || !on_row.2.is_empty()
+                    || !on_row.3.is_empty(),
+                "{code} did something"
+            );
+        }
+    }
+
     #[test]
     fn owner_block_v_runs_the_selected_group() {
         use crate::config::RegisteredProject;
