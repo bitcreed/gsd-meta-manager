@@ -10,10 +10,13 @@
 //!    `.planning/` trees (read by the one shared state reader and the owner-items
 //!    reader) and the registry file (read by plain `config::load_config`, which
 //!    never writes). No process table is read.
-//! 2. **One compact JSON document, one stdout line.** Built by
-//!    [`gsd_meta_manager::inbox::build_document`]; no timestamp, so the output is
-//!    deterministic. Without `--json`, the plain checklist of `inbox::render_text`
-//!    is printed instead (lane sections, `- [ ]` items, folds).
+//! 2. **Views (D-02).** `--json` prints one compact JSON document on one stdout
+//!    line, built by [`gsd_meta_manager::inbox::build_document`] (no timestamp, so
+//!    the output is deterministic). Without it, [`view_of`] picks the text: `--all`
+//!    prints the full checklist of `inbox::render_text` (lane sections, `- [ ]`
+//!    items, folds), exactly one project argument prints that project, any
+//!    `--lane` prints the lanes, `--include` alone prints the full checklist, and
+//!    everything else prints the digest of `inbox::render_digest`.
 //! 3. **Exit codes.** `0` the document was printed, including per-project error
 //!    entries; `1` the registry could not be loaded or parsed, or the working
 //!    directory is unreadable (nothing on stdout, exactly one stderr line starting
@@ -29,7 +32,9 @@ use std::path::PathBuf;
 use chrono::{DateTime, Utc};
 use gsd_meta_manager::cli::{InboxInclude, InboxLane};
 use gsd_meta_manager::config::{load_config, Config};
-use gsd_meta_manager::inbox::{build_document, render_text, EntryError, Filters, ProjectEntry};
+use gsd_meta_manager::inbox::{
+    build_document, render_digest, render_text, EntryError, Filters, ProjectEntry,
+};
 use gsd_meta_manager::oneoff::todos::list_pending;
 use gsd_meta_manager::state_reader::owner_items::{read_owner_digest, Lane};
 use gsd_meta_manager::state_reader::parse_project_state;
@@ -42,6 +47,42 @@ fn lane_of(lane: InboxLane) -> Lane {
         InboxLane::Decide => Lane::Decide,
         InboxLane::Fix => Lane::Fix,
         InboxLane::Blocked => Lane::Blocked,
+    }
+}
+
+/// Which output `inbox` prints (D-02).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum View {
+    Json,
+    /// The full checklist of the releases before the digest.
+    Legacy,
+    Project,
+    Lanes,
+    Digest,
+}
+
+/// The view for the arguments, in the D-02 order: `--json`, then `--all`, then
+/// exactly one project argument, then any `--lane`, then `--include` alone (the
+/// full checklist, as before the digest), else the digest.
+fn view_of(
+    json: bool,
+    all: bool,
+    targets: &[String],
+    lanes: &[InboxLane],
+    includes: &[InboxInclude],
+) -> View {
+    if json {
+        View::Json
+    } else if all {
+        View::Legacy
+    } else if targets.len() == 1 {
+        View::Project
+    } else if !lanes.is_empty() {
+        View::Lanes
+    } else if !includes.is_empty() {
+        View::Legacy
+    } else {
+        View::Digest
     }
 }
 
@@ -94,6 +135,7 @@ fn read_entry(
 pub fn run(
     targets: &[String],
     json: bool,
+    all: bool,
     lanes: &[InboxLane],
     includes: &[InboxInclude],
     config: Option<PathBuf>,
@@ -113,6 +155,7 @@ pub fn run(
         }
     };
     let filters = filters_of(lanes, includes);
+    let fold_days = config.preferences.owner_fold_days();
     // One clock reading per run, so every age in the document shares one instant.
     let now = Utc::now();
     let entries: Vec<ProjectEntry> = slots(&config, &cwd, targets)
@@ -138,12 +181,41 @@ pub fn run(
             },
         })
         .collect();
-    if json {
-        out_line(&build_document(&entries, &filters).to_string());
-    } else {
-        for line in render_text(&entries, &filters).lines() {
-            out_line(line);
-        }
+    let text = match view_of(json, all, targets, lanes, includes) {
+        View::Json => build_document(&entries, &filters).to_string(),
+        // The project and lane renderers arrive with plans 38-02 and 38-03; until
+        // then those invocations print what they printed before this phase.
+        View::Legacy | View::Project | View::Lanes => render_text(&entries, &filters),
+        View::Digest => render_digest(&entries, fold_days),
+    };
+    for line in text.lines() {
+        out_line(line);
     }
     0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn view_of_follows_the_d02_order() {
+        let none: Vec<String> = Vec::new();
+        let one = vec!["a".to_owned()];
+        let two = vec!["a".to_owned(), "b".to_owned()];
+        let lane = [InboxLane::Test];
+        let inc = [InboxInclude::Archived];
+        assert_eq!(view_of(true, true, &one, &lane, &inc), View::Json);
+        assert_eq!(view_of(false, true, &one, &lane, &inc), View::Legacy);
+        assert_eq!(view_of(false, true, &none, &[], &[]), View::Legacy);
+        assert_eq!(view_of(false, false, &one, &[], &[]), View::Project);
+        assert_eq!(view_of(false, false, &one, &[], &inc), View::Project);
+        assert_eq!(view_of(false, false, &one, &lane, &[]), View::Project);
+        assert_eq!(view_of(false, false, &none, &lane, &[]), View::Lanes);
+        assert_eq!(view_of(false, false, &two, &lane, &inc), View::Lanes);
+        assert_eq!(view_of(false, false, &none, &[], &inc), View::Legacy);
+        assert_eq!(view_of(false, false, &two, &[], &inc), View::Legacy);
+        assert_eq!(view_of(false, false, &none, &[], &[]), View::Digest);
+        assert_eq!(view_of(false, false, &two, &[], &[]), View::Digest);
+    }
 }

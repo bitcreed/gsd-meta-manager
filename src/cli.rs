@@ -262,7 +262,7 @@ pub enum Commands {
     // `status`: no registry write, no lock, no journal and no log file, so `main`
     // dispatches it before `init_tracing`. The positional is `projects`, not
     // `alias`, for the same `tests/spawn_seam_guard.rs` reason as `Status`.
-    /// The checks you have to run, across every registered project or the named ones (read-only)
+    /// What waits on you across every registered project or the named ones: a short digest by default (read-only)
     Inbox {
         /// Aliases of registered projects, or paths to directories containing .planning/
         /// (default: every registered project)
@@ -270,6 +270,9 @@ pub enum Commands {
         /// Print the inbox as one JSON document on stdout
         #[arg(long)]
         json: bool,
+        /// Print the full checklist (every lane section and item, the output before the digest)
+        #[arg(long)]
+        all: bool,
         /// List only these lanes (comma-separated; default: all four)
         #[arg(long, value_delimiter = ',')]
         lane: Vec<InboxLane>,
@@ -1188,11 +1191,13 @@ mod tests {
             Some(Commands::Inbox {
                 projects,
                 json,
+                all,
                 lane,
                 include,
             }) => {
                 assert!(projects.is_empty());
                 assert!(!json);
+                assert!(!all);
                 assert!(lane.is_empty());
                 assert!(include.is_empty());
             }
@@ -1207,6 +1212,7 @@ mod tests {
             "b",
             "a",
             "--json",
+            "--all",
             "--lane",
             "test,blocked",
             "--include",
@@ -1217,11 +1223,13 @@ mod tests {
             Some(Commands::Inbox {
                 projects,
                 json,
+                all,
                 lane,
                 include,
             }) => {
                 assert_eq!(projects, ["b", "a"]);
                 assert!(json);
+                assert!(all);
                 assert_eq!(lane, [InboxLane::Test, InboxLane::Blocked]);
                 assert_eq!(include, [InboxInclude::Archived, InboxInclude::Todos]);
             }

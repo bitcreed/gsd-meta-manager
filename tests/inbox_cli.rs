@@ -514,6 +514,22 @@ fn inbox_writes_nothing_anywhere() {
         .unwrap();
     assert_eq!(out.status.code(), Some(0), "{out:?}");
     assert_eq!(json(&out)["projects"].as_array().unwrap().len(), 1);
+    for extra in [&[][..], &["--all"][..]] {
+        let out = Command::new(env!("CARGO_BIN_EXE_gsd-meta-manager"))
+            .arg("--config")
+            .arg(&reg)
+            .arg("inbox")
+            .args(extra)
+            .env_clear()
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            .env("HOME", dir_of("home"))
+            .env("XDG_DATA_HOME", dir_of("data"))
+            .env("XDG_STATE_HOME", dir_of("state"))
+            .env("XDG_CONFIG_HOME", dir_of("config"))
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(0), "{out:?}");
+    }
 
     for (name, path) in &env_dirs {
         let entries: Vec<_> = std::fs::read_dir(path).unwrap().collect();
@@ -562,9 +578,9 @@ fn a_changed_acknowledgment_marker_resurfaces_the_file() {
 }
 
 #[test]
-fn plain_inbox_prints_the_checklist_and_exits_zero() {
+fn inbox_all_prints_the_checklist_and_exits_zero() {
     let (scratch, reg) = tracer();
-    let out = inbox_with(&reg, scratch.path(), &[]);
+    let out = inbox_with(&reg, scratch.path(), &["--all"]);
     assert_eq!(out.status.code(), Some(0), "{out:?}");
     assert!(out.stderr.is_empty(), "{out:?}");
     let text = String::from_utf8(out.stdout).unwrap();
@@ -573,6 +589,111 @@ fn plain_inbox_prints_the_checklist_and_exits_zero() {
     assert!(text.contains("    - [ ] "), "{text}");
     assert!(!text.contains('\u{1b}'), "no color: {text:?}");
     assert!(serde_json::from_str::<Value>(text.trim()).is_err());
+}
+
+/// A fixture copied into a temp dir, every `updated:` line rewritten to now, so its
+/// work is fresh whatever the wall clock says.
+fn fresh_copy(name: &str) -> TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    copy_tree(&fixture(name), dir.path());
+    let now = chrono::Utc::now().to_rfc3339();
+    fn rewrite(dir: &Path, now: &str) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                rewrite(&path, now);
+            } else if path.extension().is_some_and(|e| e == "md") {
+                let text = std::fs::read_to_string(&path).unwrap();
+                let fixed: Vec<String> = text
+                    .lines()
+                    .map(|l| {
+                        if l.starts_with("updated:") {
+                            format!("updated: {now}")
+                        } else {
+                            l.to_owned()
+                        }
+                    })
+                    .collect();
+                std::fs::write(&path, fixed.join("\n") + "\n").unwrap();
+            }
+        }
+    }
+    rewrite(dir.path(), &now);
+    dir
+}
+
+#[test]
+fn plain_inbox_prints_the_digest() {
+    let project = fresh_copy("uat-pending");
+    let scratch = tempfile::tempdir().unwrap();
+    let reg = registry(scratch.path(), &[("tracer", project.path())]);
+    let out = inbox_with(&reg, scratch.path(), &[]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert!(out.stderr.is_empty(), "{out:?}");
+    let text = String::from_utf8(out.stdout).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert!(lines[0].starts_with("Owner inbox: 1 projects"), "{text}");
+    assert!(lines.contains(&"NEXT"), "{text}");
+    assert!(
+        lines.iter().any(|l| l.contains("/gsd-verify-work 01")),
+        "{text}"
+    );
+    assert_eq!(
+        *lines.last().unwrap(),
+        "inbox <alias> · inbox --lane test|decide|fix|blocked · inbox --all"
+    );
+    assert!(lines.len() <= 25, "{text}");
+    assert!(!lines.iter().any(|l| l.starts_with("    - [ ] ")), "{text}");
+}
+
+fn normalize_ages(text: &str) -> String {
+    regex::Regex::new(r"\b\d+ d\b")
+        .unwrap()
+        .replace_all(text, "N d")
+        .into_owned()
+}
+
+#[test]
+fn inbox_all_reproduces_the_pre_phase_goldens() {
+    let fixtures = [
+        ("supersede-six-phases", "six"),
+        ("uat-gaps-merge", "gaps"),
+        ("archived-complete-skipped", "old"),
+        ("deferred-200", "deferred"),
+        ("uat-ack-match", "ack"),
+        ("workstreams", "ws"),
+    ];
+    let copies: Vec<(TempDir, &str)> = fixtures
+        .iter()
+        .map(|(name, alias)| {
+            let dir = tempfile::tempdir().unwrap();
+            copy_tree(&fixture(name), dir.path());
+            (dir, *alias)
+        })
+        .collect();
+    let scratch = tempfile::tempdir().unwrap();
+    let projects: Vec<(&str, &Path)> = copies.iter().map(|(d, a)| (*a, d.path())).collect();
+    let reg = registry(scratch.path(), &projects);
+    let names: Vec<&str> = copies.iter().map(|(_, a)| *a).collect();
+    let golden = |file: &str| {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/owner_golden")
+            .join(file);
+        normalize_ages(&std::fs::read_to_string(path).unwrap())
+    };
+    let run = |extra: &[&str]| {
+        let mut args = vec!["--all"];
+        args.extend(extra);
+        args.extend(&names);
+        let out = inbox_with(&reg, scratch.path(), &args);
+        assert_eq!(out.status.code(), Some(0), "{out:?}");
+        normalize_ages(&String::from_utf8(out.stdout).unwrap())
+    };
+    assert_eq!(run(&[]), golden("inbox.txt"));
+    assert_eq!(
+        run(&["--include", "archived,deferred,acknowledged,todos"]),
+        golden("inbox-include-all.txt")
+    );
 }
 
 #[test]
@@ -968,7 +1089,7 @@ fn hostile_strings_are_escaped_in_json_and_text() {
         );
     }
 
-    let text = String::from_utf8(inbox_with(&reg, scratch.path(), &[]).stdout).unwrap();
+    let text = String::from_utf8(inbox_with(&reg, scratch.path(), &["--all"]).stdout).unwrap();
     for bad in [ESC, RLO, BEL] {
         assert!(
             !text.contains(bad),
@@ -1161,7 +1282,7 @@ fn human_verification_names_are_the_test_text() {
         );
     }
 
-    let plain = inbox_with(&reg, scratch.path(), &[]);
+    let plain = inbox_with(&reg, scratch.path(), &["--all"]);
     let plain = String::from_utf8_lossy(&plain.stdout).into_owned();
     assert!(
         plain.lines().any(|l| l == "    - [ ] Weekly summary sends"),

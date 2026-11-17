@@ -115,11 +115,13 @@ fn main() -> anyhow::Result<()> {
         Some(Commands::Inbox {
             projects,
             json,
+            all,
             lane,
             include,
         }) => std::process::exit(inbox_cli::run(
             &projects,
             json,
+            all,
             &lane,
             &include,
             cli.config.clone(),

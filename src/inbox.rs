@@ -16,7 +16,9 @@ use serde_json::{json, Value};
 
 use crate::oneoff::todos::PendingTodo;
 use crate::state_reader::owner_items::{
-    Category, ClosesAfter, Kind, Lane, OwnerDigest, OwnerGroup, OwnerItem, Scope,
+    is_owner_row, label_counts, labels_of, next_actions, outside_gate, stale_totals,
+    triage_entries, Category, ClosesAfter, Kind, Lane, LaneCounts, OwnerDigest, OwnerGroup,
+    OwnerItem, Scope, StaleTotals, TriageEntry, NEXT_LIMIT,
 };
 use crate::text::terminal_capped;
 
@@ -383,7 +385,21 @@ pub(crate) fn detail(group: &OwnerGroup) -> String {
     }
 }
 
-fn group_line(alias: &str, group: &OwnerGroup) -> String {
+pub(crate) fn group_line(alias: &str, group: &OwnerGroup) -> String {
+    group_line_ext(alias, group, "")
+}
+
+/// [`group_line`] with `tail` appended to the detail part (the merged-entry file
+/// count and the label tally of [`entry_line`]).
+fn group_line_ext(alias: &str, group: &OwnerGroup, tail: &str) -> String {
+    let detail_text = {
+        let base = detail(group);
+        if base.is_empty() {
+            tail.trim_start_matches(" \u{b7} ").to_owned()
+        } else {
+            format!("{base}{tail}")
+        }
+    };
     let label = match (group.kind, &group.workstream) {
         (Kind::Debug, _) => Some("debug".to_owned()),
         (Kind::Handoff, None) => Some("handoff".to_owned()),
@@ -395,7 +411,7 @@ fn group_line(alias: &str, group: &OwnerGroup) -> String {
             terminal_capped(alias),
             label,
             terminal_capped(&group.phase_name),
-            detail(group),
+            detail_text.clone(),
         ];
         if let Some(days) = group.age_days {
             parts.push(format!(
@@ -421,7 +437,7 @@ fn group_line(alias: &str, group: &OwnerGroup) -> String {
         terminal_capped(alias),
         phase,
         terminal_capped(&group.phase_name),
-        detail(group),
+        detail_text,
     ];
     if let Scope::Archived { label, .. } = &group.scope {
         parts.push(format!("({})", terminal_capped(label)));
@@ -632,22 +648,7 @@ fn push_closes_after(out: &mut Vec<String>, read: &[&ProjectEntry]) {
 /// admits.
 pub fn render_text(entries: &[ProjectEntry], filters: &Filters) -> String {
     let read: Vec<&ProjectEntry> = entries.iter().filter(|e| e.error.is_none()).collect();
-    let sum =
-        |count: fn(&OwnerDigest) -> usize| read.iter().map(|e| count(&e.digest)).sum::<usize>();
-    let fix_debug = sum(|d| d.fix_debug);
-    let debug_tail = if fix_debug > 0 {
-        format!(" + {fix_debug} debug")
-    } else {
-        String::new()
-    };
-    let mut out = vec![format!(
-        "Owner inbox: {} projects · test {} · decide {} · fix {} phases{debug_tail} · blocked {}",
-        entries.len(),
-        sum(|d| d.test),
-        sum(|d| d.decide),
-        sum(|d| d.fix_phases),
-        sum(|d| d.blocked),
-    )];
+    let mut out = vec![totals_line(entries)];
 
     push_closes_after(&mut out, &read);
 
@@ -731,6 +732,66 @@ pub fn render_text(entries: &[ProjectEntry], filters: &Filters) -> String {
         }
     }
 
+    let folds = fold_lines(&read, filters, None);
+    if !folds.is_empty() {
+        out.push(String::new());
+        out.extend(folds);
+    }
+
+    let failed = failed_lines(entries);
+    if !failed.is_empty() {
+        out.push(String::new());
+        out.extend(failed);
+    }
+    let mut text = out.join("\n");
+    text.push('\n');
+    text
+}
+
+/// The totals line: the same numbers `summary` and `status --json` `owner` carry.
+fn totals_line(entries: &[ProjectEntry]) -> String {
+    let read: Vec<&ProjectEntry> = entries.iter().filter(|e| e.error.is_none()).collect();
+    let sum =
+        |count: fn(&OwnerDigest) -> usize| read.iter().map(|e| count(&e.digest)).sum::<usize>();
+    let fix_debug = sum(|d| d.fix_debug);
+    let debug_tail = if fix_debug > 0 {
+        format!(" + {fix_debug} debug")
+    } else {
+        String::new()
+    };
+    format!(
+        "Owner inbox: {} projects · test {} · decide {} · fix {} phases{debug_tail} · blocked {}",
+        entries.len(),
+        sum(|d| d.test),
+        sum(|d| d.decide),
+        sum(|d| d.fix_phases),
+        sum(|d| d.blocked),
+    )
+}
+
+/// `Stale: 3 checks in 2 phases older than 90 d`: what the fold hides (D-09). The
+/// unit reads `items` once a folded entry is not a check.
+pub(crate) fn stale_fold_text(totals: &StaleTotals, fold_days: u32) -> String {
+    let items = if totals.non_check {
+        plural(totals.items, "item", "items")
+    } else {
+        plural(totals.items, "check", "checks")
+    };
+    format!(
+        "Stale: {items} in {} older than {fold_days} d",
+        plural(totals.entries, "phase", "phases")
+    )
+}
+
+/// The fold lines below the sections: what is counted but not listed. `stale` adds
+/// the `Stale:` line right after `Old debt:` when its entries are non-zero.
+fn fold_lines(
+    read: &[&ProjectEntry],
+    filters: &Filters,
+    stale: Option<(&StaleTotals, u32)>,
+) -> Vec<String> {
+    let sum =
+        |count: fn(&OwnerDigest) -> usize| read.iter().map(|e| count(&e.digest)).sum::<usize>();
     let mut folds = Vec::new();
     let old_debt =
         |d: &OwnerDigest| d.archived.test + d.archived.blocked + d.archived.fix + d.archived.decide;
@@ -747,6 +808,11 @@ pub fn render_text(entries: &[ProjectEntry], filters: &Filters) -> String {
         folds.push(format!(
             "Old debt: {old_total} {unit} in {old_projects} projects (archived milestones)"
         ));
+    }
+    if let Some((totals, fold_days)) = stale {
+        if totals.entries > 0 {
+            folds.push(stale_fold_text(totals, fold_days));
+        }
     }
     let ack = sum(|d| d.hidden.acknowledged_files);
     if !filters.acknowledged && ack > 0 {
@@ -777,12 +843,12 @@ pub fn render_text(entries: &[ProjectEntry], filters: &Filters) -> String {
             "Triage: pending todos unreadable in {todos_unreadable} projects"
         ));
     }
-    if !folds.is_empty() {
-        out.push(String::new());
-        out.extend(folds);
-    }
+    folds
+}
 
-    let failed: Vec<String> = entries
+/// One `alias: message` line per project that could not be read.
+fn failed_lines(entries: &[ProjectEntry]) -> Vec<String> {
+    entries
         .iter()
         .filter_map(|e| {
             e.error.as_ref().map(|error| {
@@ -793,11 +859,383 @@ pub fn render_text(entries: &[ProjectEntry], filters: &Filters) -> String {
                 )
             })
         })
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// Entries, collapsed lines and the digest (Phase 38)
+// ---------------------------------------------------------------------------
+
+/// The width of `text` in terminal cells, the measure the TUI uses. Library code
+/// keeps its own copy instead of importing the TUI's helper.
+fn cell_width(text: &str) -> usize {
+    ratatui::text::Span::raw(text).width()
+}
+
+/// `text` cut to at most `w` cells (the cut marked with `…`, a wide character never
+/// split), then padded with blanks to exactly `w`, in front when `right`.
+fn pad_cells(text: &str, w: usize, right: bool) -> String {
+    let cut = if cell_width(text) <= w {
+        text.to_owned()
+    } else if w == 0 {
+        String::new()
+    } else {
+        let mut out = String::new();
+        let mut used = 0;
+        let mut buf = [0u8; 4];
+        for ch in text.chars() {
+            let width = cell_width(ch.encode_utf8(&mut buf));
+            if used + width > w - 1 {
+                break;
+            }
+            out.push(ch);
+            used += width;
+        }
+        out.push('\u{2026}');
+        out
+    };
+    let gap = " ".repeat(w.saturating_sub(cell_width(&cut)));
+    if right {
+        format!("{gap}{cut}")
+    } else {
+        format!("{cut}{gap}")
+    }
+}
+
+/// How many digits a count column needs: at least 2, more from 100 on.
+pub(crate) fn count_digits(max: usize) -> usize {
+    max.to_string().len().max(2)
+}
+
+/// A checks count as an aligned cell: the number right-aligned in `digits`
+/// columns, a space, the unit left-aligned in 6 (` 1 check `, ` 2 checks`).
+pub(crate) fn checks_cell(n: usize, digits: usize) -> String {
+    let unit = if n == 1 { "check " } else { "checks" };
+    format!("{n:>digits$} {unit}")
+}
+
+/// The cells of one collapsed line (D-06).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct Collapsed {
+    pub alias: String,
+    pub phase: String,
+    pub name: String,
+    pub count: Option<usize>,
+    pub phrase: String,
+    pub age: String,
+    pub command: String,
+}
+
+/// The phase cell of a group as [`group_line`] writes it.
+fn phase_cell(group: &OwnerGroup) -> String {
+    let mut cell = match (group.kind, &group.workstream) {
+        (Kind::Debug, _) => "debug".to_owned(),
+        (Kind::Handoff, None) => "handoff".to_owned(),
+        (Kind::Handoff, Some(ws)) => format!("handoff {}", terminal_capped(ws)),
+        (_, Some(ws)) => format!(
+            "ph {}/{}",
+            terminal_capped(ws),
+            terminal_capped(&group.phase)
+        ),
+        (_, None) => format!("ph {}", terminal_capped(&group.phase)),
+    };
+    if !matches!(group.kind, Kind::Debug | Kind::Handoff) {
+        if let Scope::Archived { label, .. } = &group.scope {
+            cell.push_str(&format!(" ({})", terminal_capped(label)));
+        }
+    }
+    cell
+}
+
+/// The collapsed cells of one entry: one line per phase (D-06).
+pub(crate) fn collapsed_of(alias: &str, entry: &TriageEntry) -> Collapsed {
+    let group = &entry.group;
+    let counted = matches!(group.kind, Kind::Uat | Kind::Verification)
+        && matches!(group.lane, Lane::Test | Lane::Fix)
+        && !group.bookkeeping_only
+        && group.counts.checks > 0;
+    let count = counted.then_some(group.counts.checks);
+    let mut phrase = Vec::new();
+    if count.is_none()
+        || (group.lane == Lane::Fix && (group.counts.failed > 0 || group.counts.unreadable > 0))
+    {
+        phrase.push(detail(group));
+    }
+    if group.closes_phase {
+        phrase.push("\u{2192} closes phase".to_owned());
+    }
+    if entry.is_merged() {
+        phrase.push(plural(entry.parts.len(), "file", "files"));
+    }
+    let labels = label_counts(&group.items, group.lane).text();
+    if !labels.is_empty() {
+        phrase.push(labels);
+    }
+    phrase.retain(|part| !part.is_empty());
+    Collapsed {
+        alias: terminal_capped(alias),
+        phase: phase_cell(group),
+        name: terminal_capped(&group.phase_name),
+        count,
+        phrase: phrase.join(" \u{b7} "),
+        age: group.age_days.map_or_else(String::new, |days| {
+            format!("{days} d{}", if group.stale { " stale" } else { "" })
+        }),
+        command: if group.bookkeeping_only {
+            String::new()
+        } else {
+            group
+                .command
+                .as_deref()
+                .map_or_else(String::new, terminal_capped)
+        },
+    }
+}
+
+/// Collapsed lines padded into columns: every column but the command takes the
+/// width of its widest cell (the name at most 32 cells), a column no row fills is
+/// left out, and the checks column right-aligns its number.
+pub(crate) fn collapsed_block(rows: &[Collapsed]) -> Vec<String> {
+    const NAME_CAP: usize = 32;
+    let widest = |cell: fn(&Collapsed) -> &str| {
+        rows.iter()
+            .map(|row| cell_width(cell(row)))
+            .max()
+            .unwrap_or(0)
+    };
+    let alias_w = widest(|r| &r.alias);
+    let phase_w = widest(|r| &r.phase);
+    let name_w = widest(|r| &r.name).min(NAME_CAP);
+    let phrase_w = widest(|r| &r.phrase);
+    let age_w = widest(|r| &r.age);
+    let digits = count_digits(rows.iter().filter_map(|r| r.count).max().unwrap_or(0));
+    let has_count = rows.iter().any(|r| r.count.is_some());
+    rows.iter()
+        .map(|row| {
+            let mut cols = vec![
+                pad_cells(&row.alias, alias_w, false),
+                pad_cells(&row.phase, phase_w, false),
+            ];
+            if name_w > 0 {
+                cols.push(pad_cells(&row.name, name_w, false));
+            }
+            if has_count {
+                cols.push(
+                    row.count
+                        .map_or_else(|| " ".repeat(digits + 1 + 6), |n| checks_cell(n, digits)),
+                );
+            }
+            if phrase_w > 0 {
+                cols.push(pad_cells(&row.phrase, phrase_w, false));
+            }
+            if age_w > 0 {
+                cols.push(pad_cells(&row.age, age_w, false));
+            }
+            if !row.command.is_empty() {
+                cols.push(row.command.clone());
+            }
+            format!("  {}", cols.join("  ")).trim_end().to_owned()
+        })
+        .collect()
+}
+
+/// The group line of one entry: a merged entry adds `N files`, and the label tally
+/// follows (D-08, D-11).
+#[cfg_attr(not(test), allow(dead_code))] // read by `inbox ALIAS` (plan 38-02) and the TUI (38-04)
+pub(crate) fn entry_line(alias: &str, entry: &TriageEntry) -> String {
+    let mut tail = String::new();
+    if entry.is_merged() {
+        tail.push_str(&format!(
+            " \u{b7} {}",
+            plural(entry.parts.len(), "file", "files")
+        ));
+    }
+    let labels = label_counts(&entry.group.items, entry.group.lane).text();
+    if !labels.is_empty() {
+        tail.push_str(&format!(" \u{b7} {labels}"));
+    }
+    group_line_ext(alias, &entry.group, &tail)
+}
+
+/// The lines `inbox` prints for one entry: the entry line, then each item and its
+/// gaps; a merged entry puts a `file NAME` line before each part's items, and an
+/// item the matcher labels ends in `  (decision?)` or `  (looks resolved)`. Shared
+/// with `inbox ALIAS` and the TUI's `y`, so the printed and the copied text cannot
+/// disagree (37 D-09). For one unlabeled group it equals [`group_checklist`].
+#[cfg_attr(not(test), allow(dead_code))] // read by `inbox ALIAS` (plan 38-02) and the TUI (38-04)
+pub(crate) fn entry_checklist(alias: &str, entry: &TriageEntry) -> Vec<String> {
+    let mut out = vec![format!("  {}", entry_line(alias, entry))];
+    for part in &entry.parts {
+        if entry.is_merged() {
+            let name = part.file.rsplit('/').next().unwrap_or(&part.file);
+            out.push(format!("    file {}", terminal_capped(name)));
+        }
+        for item in &part.items {
+            let labels = labels_of(item, part.lane);
+            let suffix = if labels.is_empty() {
+                String::new()
+            } else {
+                let names: Vec<&str> = labels.iter().map(|l| l.as_str()).collect();
+                format!("  ({})", names.join(" \u{b7} "))
+            };
+            out.push(format!("    - [ ] {}{suffix}", terminal_capped(&item.name)));
+            for gap in &item.gaps {
+                out.push(format!("        - {}", terminal_capped(&gap.name)));
+            }
+        }
+    }
+    out
+}
+
+/// The most lines the digest prints.
+const DIGEST_MAX_LINES: usize = 25;
+/// The most lines the project block holds.
+const DIGEST_MAX_PROJECT_LINES: usize = 10;
+/// The last line of the digest.
+const DIGEST_HINT: &str =
+    "inbox <alias> \u{b7} inbox --lane test|decide|fix|blocked \u{b7} inbox --all";
+
+/// ` · elsewhere: test 2, decide 1`: the owner work the gate does not count.
+fn lane_count_text(counts: &LaneCounts) -> String {
+    [
+        ("test", counts.test),
+        ("decide", counts.decide),
+        ("unblock", counts.blocked),
+        ("fix", counts.fix),
+    ]
+    .iter()
+    .filter(|(_, n)| *n > 0)
+    .map(|(label, n)| format!("{label} {n}"))
+    .collect::<Vec<_>>()
+    .join(", ")
+}
+
+/// One project line of the digest (D-03), or `None` for a project without owner
+/// work.
+fn project_line(entry: &ProjectEntry) -> Option<String> {
+    if !entry.digest.groups.iter().any(is_owner_row) {
+        return None;
+    }
+    let gate = &entry.digest.closes_after;
+    let clauses = closes_after_clauses(gate, ClauseForm::PhasesCapped(4));
+    let mut parts = clauses.lanes;
+    parts.extend(clauses.not_built);
+    let elsewhere = lane_count_text(&outside_gate(&entry.digest));
+    let version = entry
+        .milestone_version
+        .as_deref()
+        .filter(|v| !v.trim().is_empty())
+        .map(|v| format!(" \u{b7} {}", terminal_capped(v)))
+        .unwrap_or_default();
+    let head = format!("  {}{version}", terminal_capped(&alias_of(entry)));
+    let mut line = if parts.is_empty() {
+        head
+    } else {
+        format!("{head} closes after: {}", parts.join(" \u{b7} "))
+    };
+    if !elsewhere.is_empty() {
+        if parts.is_empty() {
+            line.push_str(&format!(" {elsewhere}"));
+        } else {
+            line.push_str(&format!(" \u{b7} elsewhere: {elsewhere}"));
+        }
+    }
+    Some(line)
+}
+
+/// The digest `inbox` prints by default (Phase 38, D-01, D-03): the totals line, one
+/// line per project with owner work, the top next actions, the fold lines and a hint,
+/// within [`DIGEST_MAX_LINES`] lines. Everything it leaves out is announced by a
+/// count line; every total still counts all work.
+pub fn render_digest(entries: &[ProjectEntry], fold_days: u32) -> String {
+    let read: Vec<&ProjectEntry> = entries.iter().filter(|e| e.error.is_none()).collect();
+    let triaged: Vec<(String, Vec<TriageEntry>)> = read
+        .iter()
+        .map(|entry| (alias_of(entry), triage_entries(&entry.digest, fold_days)))
+        .collect();
+
+    // The sections after the project block, each without its leading blank line.
+    let mut sections: Vec<Vec<String>> = Vec::new();
+    let view: Vec<(&str, &[TriageEntry])> = triaged
+        .iter()
+        .map(|(alias, list)| (alias.as_str(), list.as_slice()))
+        .collect();
+    let next = next_actions(&view, NEXT_LIMIT);
+    let next_block: Vec<String> = if next.is_empty() {
+        Vec::new()
+    } else {
+        let rows: Vec<Collapsed> = next
+            .iter()
+            .map(|action| collapsed_of(action.alias, action.entry))
+            .collect();
+        let mut block = vec!["NEXT".to_owned()];
+        block.extend(collapsed_block(&rows));
+        block
+    };
+    let stale = stale_totals(triaged.iter().flat_map(|(_, list)| list.iter()));
+    let mut folds = fold_lines(&read, &Filters::default(), Some((&stale, fold_days)));
+    let failed: Vec<String> = entries
+        .iter()
+        .filter(|e| e.error.is_some())
+        .map(|e| terminal_capped(&alias_of(e)))
         .collect();
     if !failed.is_empty() {
-        out.push(String::new());
-        out.extend(failed);
+        let shown: Vec<&str> = failed.iter().take(3).map(String::as_str).collect();
+        let more = if failed.len() > 3 { ", \u{2026}" } else { "" };
+        folds.push(format!(
+            "Unreadable: {} ({}{more}) \u{b7} inbox --all says why",
+            plural(failed.len(), "project", "projects"),
+            shown.join(", ")
+        ));
     }
+    if !next_block.is_empty() {
+        sections.push(next_block);
+    }
+    if !folds.is_empty() {
+        sections.push(folds);
+    }
+
+    // The project block: most closeable phases first, then alias.
+    let mut projects: Vec<(&ProjectEntry, String)> = read
+        .iter()
+        .filter_map(|entry| project_line(entry).map(|line| (*entry, line)))
+        .collect();
+    projects.sort_by(|a, b| {
+        b.0.digest
+            .closeable_phases
+            .cmp(&a.0.digest.closeable_phases)
+            .then_with(|| alias_of(a.0).cmp(&alias_of(b.0)))
+    });
+    // Totals, every section with its blank line, the blank line and the hint.
+    let others: usize = 1 + sections.iter().map(|s| 1 + s.len()).sum::<usize>() + 2;
+    let room = DIGEST_MAX_LINES
+        .saturating_sub(others + 1)
+        .min(DIGEST_MAX_PROJECT_LINES);
+    let mut block: Vec<String> = Vec::new();
+    if !projects.is_empty() && room > 0 {
+        if projects.len() <= room {
+            block.extend(projects.into_iter().map(|(_, line)| line));
+        } else {
+            let shown = room - 1;
+            let rest = projects.len() - shown;
+            block.extend(projects.into_iter().take(shown).map(|(_, line)| line));
+            block.push(format!("  +{rest} more projects (inbox --all)"));
+        }
+    }
+
+    let mut out = vec![totals_line(entries)];
+    if !block.is_empty() {
+        out.push(String::new());
+        out.extend(block);
+    }
+    for section in sections {
+        out.push(String::new());
+        out.extend(section);
+    }
+    if out.len() > 1 {
+        out.push(String::new());
+    }
+    out.push(DIGEST_HINT.to_owned());
     let mut text = out.join("\n");
     text.push('\n');
     text
@@ -1070,5 +1508,268 @@ mod tests {
             !line.contains('\u{1b}') && !line.contains('\u{7}'),
             "{line:?}"
         );
+    }
+
+    // --- Phase 38: cells, entries, digest -----------------------------------
+
+    fn fresh(mut g: OwnerGroup, phase: &str, age: Option<i64>) -> OwnerGroup {
+        g.phase = phase.into();
+        g.age_days = age;
+        g.file = format!(".planning/phases/{phase}/{phase}-UAT.md");
+        g.command = Some(format!("/gsd-verify-work {phase}"));
+        g
+    }
+
+    fn named(alias: &str, groups: Vec<OwnerGroup>) -> ProjectEntry {
+        let mut e = entry(groups);
+        e.alias = Some(alias.into());
+        e
+    }
+
+    #[test]
+    fn checks_cell_aligns_the_number_and_the_unit() {
+        assert_eq!(checks_cell(1, 2), " 1 check ");
+        assert_eq!(checks_cell(2, 2), " 2 checks");
+        assert_eq!(checks_cell(12, 2), "12 checks");
+        assert_eq!(checks_cell(120, 3), "120 checks");
+        assert_eq!(checks_cell(1, 3), "  1 check ");
+        assert_eq!(count_digits(0), 2);
+        assert_eq!(count_digits(99), 2);
+        assert_eq!(count_digits(100), 3);
+    }
+
+    #[test]
+    fn pad_cells_cuts_with_an_ellipsis_and_counts_wide_characters() {
+        assert_eq!(pad_cells("abcdef", 4, false), "abc\u{2026}");
+        assert_eq!(pad_cells("ab", 4, true), "  ab");
+        assert_eq!(pad_cells("ab", 4, false), "ab  ");
+        assert_eq!(cell_width("\u{4e2d}"), 2);
+        // A two-cell character is never split: 3 cells hold one of them and the cut.
+        assert_eq!(
+            pad_cells("\u{4e2d}\u{4e2d}\u{4e2d}", 3, false),
+            "\u{4e2d}\u{2026}"
+        );
+    }
+
+    #[test]
+    fn a_thin_digest_names_next_actions_folds_and_the_hint() {
+        let mut a = group(Lane::Test);
+        a = fresh(a, "01", Some(2));
+        a.closes_phase = true;
+        let b = fresh(group(Lane::Test), "02", Some(9));
+        let mut e = named("alpha", vec![a, b]);
+        e.digest.hidden.deferred = 3;
+        let text = render_digest(&[e], 90);
+        let lines: Vec<&str> = text.lines().collect();
+        assert!(lines[0].starts_with("Owner inbox: 1 projects"), "{text}");
+        let next = lines.iter().position(|l| *l == "NEXT").expect("NEXT");
+        assert!(lines[next + 1].contains("ph 01"), "{text}");
+        assert!(lines[next + 1].contains("\u{2192} closes phase"), "{text}");
+        assert!(lines[next + 1].contains("/gsd-verify-work 01"), "{text}");
+        assert!(lines[next + 2].contains("ph 02"), "{text}");
+        assert!(lines.contains(&"Deferred: 3 items"), "{text}");
+        assert!(lines.iter().all(|l| !l.starts_with("    - [ ] ")));
+        assert_eq!(
+            *lines.last().unwrap(),
+            "inbox <alias> \u{b7} inbox --lane test|decide|fix|blocked \u{b7} inbox --all"
+        );
+    }
+
+    #[test]
+    fn an_empty_fleet_renders_the_totals_and_the_hint_only() {
+        let text = render_digest(&[], 90);
+        assert_eq!(text.lines().count(), 2, "{text}");
+        assert!(text.starts_with("Owner inbox: 0 projects"));
+        let quiet = render_digest(&[named("q", Vec::new())], 90);
+        assert!(!quiet.contains("NEXT"), "{quiet}");
+        assert_eq!(quiet.lines().count(), 2, "{quiet}");
+        assert_eq!(
+            render_digest(&[entry(vec![group(Lane::Test)])], 90)
+                .lines()
+                .next(),
+            render_text(&[entry(vec![group(Lane::Test)])], &Filters::default())
+                .lines()
+                .next()
+        );
+    }
+
+    #[test]
+    fn stale_fold_text_counts_phases_and_picks_the_unit() {
+        let t = |entries, items, non_check| StaleTotals {
+            entries,
+            items,
+            non_check,
+        };
+        assert_eq!(
+            stale_fold_text(&t(2, 3, false), 90),
+            "Stale: 3 checks in 2 phases older than 90 d"
+        );
+        assert_eq!(
+            stale_fold_text(&t(1, 1, false), 90),
+            "Stale: 1 check in 1 phase older than 90 d"
+        );
+        assert_eq!(
+            stale_fold_text(&t(1, 2, true), 30),
+            "Stale: 2 items in 1 phase older than 30 d"
+        );
+    }
+
+    #[test]
+    fn a_folded_entry_leaves_next_but_the_totals_and_a_stale_line_stay() {
+        let old = fresh(group(Lane::Test), "01", Some(200));
+        let text = render_digest(&[named("alpha", vec![old])], 90);
+        assert!(!text.contains("NEXT"), "{text}");
+        assert!(
+            text.lines()
+                .any(|l| l == "Stale: 1 check in 1 phase older than 90 d"),
+            "{text}"
+        );
+        assert!(text.contains("test 1"), "{text}");
+    }
+
+    #[test]
+    fn project_lines_show_the_gate_and_the_work_elsewhere() {
+        use crate::state_reader::owner_items::LanePhases;
+        let mut with_gate = named("beta", vec![fresh(group(Lane::Test), "01", Some(1))]);
+        with_gate.milestone_version = Some("v2.0".into());
+        with_gate.digest.closeable_phases = 1;
+        with_gate.digest.closes_after = ClosesAfter {
+            test: 1,
+            phases_open: vec!["01".into()],
+            lane_phases: LanePhases {
+                test: vec!["01".into()],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut ws = fresh(group(Lane::Test), "43", Some(1));
+        ws.workstream = Some("market".into());
+        with_gate.digest.groups.push(ws);
+        let mut debug_only = named("alpha", vec![group(Lane::Fix)]);
+        debug_only.digest.groups[0].kind = Kind::Debug;
+        let quiet = named("gamma", Vec::new());
+        let text = render_digest(&[quiet, debug_only, with_gate], 90);
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(
+            lines[2], "  beta \u{b7} v2.0 closes after: test 1 (ph 01) \u{b7} elsewhere: test 1",
+            "{text}"
+        );
+        assert_eq!(lines[3], "  alpha fix 1", "{text}");
+        assert!(!text.contains("gamma"), "{text}");
+    }
+
+    #[test]
+    fn the_worst_case_digest_stays_within_the_line_budget() {
+        let mut fleet: Vec<ProjectEntry> = (0..20)
+            .map(|n| {
+                let mut live = fresh(group(Lane::Test), "01", Some(5));
+                live.closes_phase = n % 2 == 0;
+                let old = fresh(group(Lane::Test), "02", Some(200));
+                let mut e = named(&format!("proj{n:02}"), vec![live, old]);
+                e.digest.archived.test = 2;
+                e.digest.hidden.acknowledged_files = 1;
+                e.digest.hidden.deferred = 2;
+                e.digest.hidden.todos = 1;
+                e.digest.hidden.todos_unreadable = n < 2;
+                e.digest.closeable_phases = n % 3;
+                e
+            })
+            .collect();
+        for name in ["gone", "also-gone"] {
+            fleet.push(ProjectEntry {
+                alias: Some(name.into()),
+                error: Some(EntryError {
+                    kind: "unresolved",
+                    message: "m".into(),
+                }),
+                ..Default::default()
+            });
+        }
+        let text = render_digest(&fleet, 90);
+        let count = text.lines().count();
+        assert!(count <= 25, "{count} lines\n{text}");
+        assert_eq!(
+            text.lines()
+                .filter(|l| l.starts_with("Unreadable:"))
+                .count(),
+            1
+        );
+        assert!(text.contains("more projects (inbox --all)"), "{text}");
+        assert!(text.lines().any(|l| l.starts_with("Stale:")), "{text}");
+        eprintln!("worst-case digest lines: {count}");
+    }
+
+    #[test]
+    fn an_unlabeled_single_entry_checklist_equals_the_group_checklist() {
+        let g = group(Lane::Test);
+        let entries = triage_entries(
+            &OwnerDigest {
+                groups: vec![g.clone()],
+                ..Default::default()
+            },
+            90,
+        );
+        assert_eq!(entry_checklist("a", &entries[0]), group_checklist("a", &g));
+    }
+
+    #[test]
+    fn a_merged_entry_lists_its_files_and_labels_items() {
+        let mut uat = fresh(group(Lane::Test), "43", Some(4));
+        uat.workstream = Some("market".into());
+        uat.items = vec![uat.items[0].clone(), uat.items[0].clone()];
+        uat.items[0].name = "Approve the copy".into();
+        uat.items[1].name = "Fixed by 12\u{1b}[31m".into();
+        uat.counts.checks = 2;
+        uat.file = ".planning/phases/43/43-UAT.md".into();
+        let mut ver = uat.clone();
+        ver.kind = Kind::Verification;
+        ver.file = ".planning/phases/43/43-VERIFICATION\u{7}.md".into();
+        ver.items = vec![uat.items[0].clone()];
+        ver.items[0].name = "Plain".into();
+        ver.counts.checks = 1;
+        let entries = triage_entries(
+            &OwnerDigest {
+                groups: vec![uat, ver],
+                ..Default::default()
+            },
+            90,
+        );
+        assert_eq!(entries.len(), 1);
+        let lines = entry_checklist("a", &entries[0]);
+        assert!(lines[0].contains("3 checks \u{b7} 2 files"), "{lines:?}");
+        assert!(
+            lines[0].contains("1 decision? \u{b7} 1 looks resolved"),
+            "{lines:?}"
+        );
+        assert_eq!(lines[1], "    file 43-UAT.md");
+        assert_eq!(lines[2], "    - [ ] Approve the copy  (decision?)");
+        assert!(lines[3].ends_with("  (looks resolved)"), "{lines:?}");
+        assert!(
+            lines[4].starts_with("    file 43-VERIFICATION"),
+            "{lines:?}"
+        );
+        assert_eq!(lines[5], "    - [ ] Plain");
+        for line in &lines {
+            assert!(
+                !line.contains('\u{1b}') && !line.contains('\u{7}'),
+                "{line:?}"
+            );
+        }
+        let collapsed = collapsed_of("a", &entries[0]);
+        assert!(collapsed.phrase.contains("2 files"), "{collapsed:?}");
+        assert!(
+            collapsed
+                .phrase
+                .contains("1 decision? \u{b7} 1 looks resolved"),
+            "{collapsed:?}"
+        );
+        let plain = triage_entries(
+            &OwnerDigest {
+                groups: vec![group(Lane::Test)],
+                ..Default::default()
+            },
+            90,
+        );
+        assert_eq!(collapsed_of("a", &plain[0]).phrase, "");
     }
 }
