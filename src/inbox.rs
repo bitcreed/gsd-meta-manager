@@ -1004,19 +1004,20 @@ pub fn render_lanes(entries: &[ProjectEntry], filters: &Filters, fold_days: u32)
                 &b.entry.group.file,
             ))
     };
-    let push_rows = |out: &mut Vec<String>, heading: &str, rows: &[&LaneRow]| {
-        if rows.is_empty() {
-            return;
-        }
-        let closes_shown = !heading.ends_with("closes a phase");
-        let cells: Vec<Collapsed> = rows
-            .iter()
-            .map(|row| collapsed_of_in(&row.alias, &row.entry, closes_shown))
-            .collect();
-        out.push(String::new());
-        out.push(heading.to_string());
-        out.extend(collapsed_block(&cells));
-    };
+    // Every section is collected first, so the whole view shares one column grid.
+    let mut sections: Vec<(&str, Vec<Collapsed>)> = Vec::new();
+    let push_rows =
+        |sections: &mut Vec<(&str, Vec<Collapsed>)>, heading: &'static str, rows: &[&LaneRow]| {
+            if rows.is_empty() {
+                return;
+            }
+            let closes_shown = !heading.ends_with("closes a phase");
+            let cells: Vec<Collapsed> = rows
+                .iter()
+                .map(|row| collapsed_of_in(&row.alias, &row.entry, closes_shown))
+                .collect();
+            sections.push((heading, cells));
+        };
     let mut test: Vec<&LaneRow> = rows
         .iter()
         .filter(|r| r.entry.group.lane == Lane::Test)
@@ -1033,8 +1034,8 @@ pub fn render_lanes(entries: &[ProjectEntry], filters: &Filters, fold_days: u32)
     });
     let (closes, stays): (Vec<&LaneRow>, Vec<&LaneRow>) =
         test.into_iter().partition(|r| r.entry.group.closes_phase);
-    push_rows(&mut out, "TEST \u{2014} closes a phase", &closes);
-    push_rows(&mut out, "TEST \u{2014} phase stays open", &stays);
+    push_rows(&mut sections, "TEST \u{2014} closes a phase", &closes);
+    push_rows(&mut sections, "TEST \u{2014} phase stays open", &stays);
     for (heading, lane) in [
         ("DECIDE", Lane::Decide),
         ("FIX \u{2014} code needed", Lane::Fix),
@@ -1042,7 +1043,7 @@ pub fn render_lanes(entries: &[ProjectEntry], filters: &Filters, fold_days: u32)
     ] {
         let mut v: Vec<&LaneRow> = rows.iter().filter(|r| r.entry.group.lane == lane).collect();
         v.sort_by(|a, b| location(a, b));
-        push_rows(&mut out, heading, &v);
+        push_rows(&mut sections, heading, &v);
     }
 
     // The `--include` sections list single groups, as `render_text` selects them.
@@ -1067,20 +1068,27 @@ pub fn render_lanes(entries: &[ProjectEntry], filters: &Filters, fold_days: u32)
         v
     };
     push_rows(
-        &mut out,
+        &mut sections,
         "OLD DEBT",
         &pick(&|g| matches!(g.scope, Scope::Archived { .. })),
     );
     push_rows(
-        &mut out,
+        &mut sections,
         "DEFERRED",
         &pick(&|g| matches!(g.scope, Scope::Current) && g.lane == Lane::Deferred),
     );
     push_rows(
-        &mut out,
+        &mut sections,
         "ACKNOWLEDGED",
         &pick(&|g| matches!(g.scope, Scope::Current) && g.lane != Lane::Deferred && g.acknowledged),
     );
+
+    let grid = collapsed_grid(sections.iter().flat_map(|(_, cells)| cells));
+    for (heading, cells) in &sections {
+        out.push(String::new());
+        out.push((*heading).to_owned());
+        out.extend(collapsed_lines(cells, &grid));
+    }
 
     if filters.todos {
         let with_todos: Vec<&&ProjectEntry> = read.iter().filter(|e| !e.todos.is_empty()).collect();

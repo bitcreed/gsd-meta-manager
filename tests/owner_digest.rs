@@ -1096,6 +1096,28 @@ fn digest_and_lane_view_lines_fit_the_width_budget() {
     }
 }
 
+/// UI review 38: the lane view computes its column widths once over every section,
+/// so the checks column sits at one offset in all of them.
+#[test]
+fn every_lane_view_section_shares_one_column_grid() {
+    let (_held, entries) = fleet();
+    let filters = Filters {
+        lanes: vec![Lane::Test, Lane::Fix],
+        ..Filters::default()
+    };
+    let text = render_lanes(&entries, &filters, FOLD_DAYS);
+    let offsets: Vec<usize> = text
+        .lines()
+        .filter(|l| l.starts_with("  ") && (l.contains(" check ") || l.contains(" checks ")))
+        .map(|l| l.find(" check").unwrap())
+        .collect();
+    assert!(offsets.len() >= 5, "{text}");
+    assert!(
+        offsets.windows(2).all(|w| w[0] == w[1]),
+        "{offsets:?}\n{text}"
+    );
+}
+
 #[test]
 fn the_test_lane_view_matches_the_golden() {
     let (_held, entries) = fleet();
