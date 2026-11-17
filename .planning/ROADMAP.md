@@ -268,7 +268,7 @@ Plans:
 **Depends on:** Phase 37
 **Verification:** Automatic (fixtures, golden CLI output, buffer snapshots) plus one human readability check
 **UI hint**: yes
-**Plans:** 3/4 plans executed
+**Plans:** 4/4 plans executed
 
 Plans:
 **Wave 1**
@@ -279,7 +279,7 @@ Plans:
 - [x] 38-04-PLAN.md — Tracer: TUI inbox on the triage model: one row per same-phase pair, Stale fold row, `A`/`g`/`v`/`y` on merged rows; aligned checks column (inbox and Owner block), dimmed labels, help overlay, escape guard (D-06, D-08..D-11 TUI)
 
 **Wave 3** *(blocked on Wave 2 completion)*
-- [ ] 38-03-PLAN.md — Tracer: `inbox --lane` collapsed lane view, 51-step fixture, digest and lane goldens with the line budget; additive `--json` keys (`labels`, `folded_stale`, `entry_files`, `next_actions`, `stale_folded`), README, `status --skill`, D-14 evidence (D-05, D-12, D-13)
+- [x] 38-03-PLAN.md — Tracer: `inbox --lane` collapsed lane view, 51-step fixture, digest and lane goldens with the line budget; additive `--json` keys (`labels`, `folded_stale`, `entry_files`, `next_actions`, `stale_folded`), README, `status --skill`, D-14 evidence (D-05, D-12, D-13)
 
 **Success Criteria** (what must be TRUE):
 1. Plain `inbox` on the owner's machine prints a digest of about 15-25 lines: totals, the per-project `closes after` block and the top ~5 next actions ranked by payoff (fewest checks per phase closed first; older items rank lower), each naming project, phase and command.
