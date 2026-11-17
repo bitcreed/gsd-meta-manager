@@ -514,7 +514,7 @@ fn inbox_writes_nothing_anywhere() {
         .unwrap();
     assert_eq!(out.status.code(), Some(0), "{out:?}");
     assert_eq!(json(&out)["projects"].as_array().unwrap().len(), 1);
-    for extra in [&[][..], &["--all"][..]] {
+    for extra in [&[][..], &["--all"][..], &["tracer"][..]] {
         let out = Command::new(env!("CARGO_BIN_EXE_gsd-meta-manager"))
             .arg("--config")
             .arg(&reg)
@@ -594,8 +594,13 @@ fn inbox_all_prints_the_checklist_and_exits_zero() {
 /// A fixture copied into a temp dir, every `updated:` line rewritten to now, so its
 /// work is fresh whatever the wall clock says.
 fn fresh_copy(name: &str) -> TempDir {
+    fresh_copy_of(&fixture(name))
+}
+
+/// [`fresh_copy`] of any tree.
+fn fresh_copy_of(root: &Path) -> TempDir {
     let dir = tempfile::tempdir().unwrap();
-    copy_tree(&fixture(name), dir.path());
+    copy_tree(root, dir.path());
     let now = chrono::Utc::now().to_rfc3339();
     fn rewrite(dir: &Path, now: &str) {
         for entry in std::fs::read_dir(dir).unwrap() {
@@ -1100,6 +1105,23 @@ fn hostile_strings_are_escaped_in_json_and_text() {
         assert!(line.chars().count() <= 1000, "bounded line: {}", line.len());
     }
     assert!(text.contains("- [ ] "), "{text}");
+
+    // The single-project view prints the same hostile text, escaped and bounded, for
+    // the tree as written and for a copy whose dates are fresh.
+    let fresh = fresh_copy_of(project.path());
+    let reg_fresh = registry(scratch.path(), &[("evil", fresh.path())]);
+    for reg in [&reg, &reg_fresh] {
+        let out = inbox_with(reg, scratch.path(), &["evil"]);
+        assert_eq!(out.status.code(), Some(0), "{out:?}");
+        let text = String::from_utf8(out.stdout).unwrap();
+        for bad in [ESC, RLO, BEL] {
+            assert!(!text.contains(bad), "inbox evil carries {bad:?}: {text:?}");
+        }
+        for line in text.lines() {
+            assert!(line.chars().count() <= 1000, "bounded line: {}", line.len());
+        }
+        assert!(text.contains("- [ ] "), "{text}");
+    }
 }
 
 fn generate_project(root: &Path, index: usize) {
@@ -1340,4 +1362,84 @@ fn sc1_decide_lane_lists_the_awaiting_sessions_and_the_paused_handoff() {
             "{heading} in {text}"
         );
     }
+}
+
+// --- `inbox ALIAS` (Phase 38, plan 02) ----------------------------------------
+
+/// `inbox ARGS` over one registered project, as text.
+fn alias_view(project: &Path, alias: &str, args: &[&str]) -> (Output, String) {
+    let scratch = tempfile::tempdir().unwrap();
+    let reg = registry(scratch.path(), &[(alias, project)]);
+    let mut argv = vec![alias];
+    argv.extend_from_slice(args);
+    let out = inbox_with(&reg, scratch.path(), &argv);
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    (out, text)
+}
+
+#[test]
+fn inbox_alias_merges_the_same_phase_pair_into_one_entry() {
+    let project = fresh_copy("same-phase-merge");
+    let (out, text) = alias_view(project.path(), "merge", &[]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let holding: Vec<&str> = text
+        .lines()
+        .filter(|l| l.contains("ph market/43"))
+        .collect();
+    assert_eq!(holding.len(), 1, "{text}");
+    assert!(holding[0].contains("3 checks \u{b7} 2 files"), "{text}");
+    for file in ["    file 43-UAT.md", "    file 43-VERIFICATION.md"] {
+        assert!(text.lines().any(|l| l == file), "{file} in {text}");
+    }
+    let items = text.lines().filter(|l| l.starts_with("    - [ ] ")).count();
+    assert_eq!(items, 3, "{text}");
+}
+
+#[test]
+fn inbox_alias_lists_old_phases_in_a_trailing_stale_section() {
+    let project = fresh_copy("stale-fold");
+    let old = chrono::Utc::now() - chrono::Duration::days(200);
+    let path = project.path().join(".planning/phases/01-ledger/01-UAT.md");
+    let text = std::fs::read_to_string(&path).unwrap();
+    let rewritten: Vec<String> = text
+        .lines()
+        .map(|l| {
+            if l.starts_with("updated:") {
+                format!("updated: {}", old.to_rfc3339())
+            } else {
+                l.to_owned()
+            }
+        })
+        .collect();
+    write(&path, &(rewritten.join("\n") + "\n"));
+    let (out, text) = alias_view(project.path(), "old-ledger", &[]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let lines: Vec<&str> = text.lines().collect();
+    let at = |needle: &str| lines.iter().position(|l| l.contains(needle));
+    let test = at("TEST \u{2014} ").expect("a TEST heading");
+    let stale = at("STALE (> 90 d)").expect("a STALE heading");
+    let ph02 = at("ph 02").expect("phase 02");
+    let ph01 = at("ph 01  Ledger").expect("phase 01");
+    assert!(test < ph02 && ph02 < stale && stale < ph01, "{text}");
+    assert!(!lines.iter().any(|l| l.starts_with("Stale:")), "{text}");
+    assert!(
+        lines[0].contains("test 3"),
+        "both phases are counted: {text}"
+    );
+}
+
+#[test]
+fn inbox_alias_honors_lane_and_reports_an_unknown_name() {
+    let project = fresh_copy("same-phase-merge");
+    let (out, text) = alias_view(project.path(), "merge", &["--lane", "fix"]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert!(!text.contains("TEST \u{2014} "), "{text}");
+    let scratch = tempfile::tempdir().unwrap();
+    let reg = registry(scratch.path(), &[("merge", project.path())]);
+    let out = inbox_with(&reg, scratch.path(), &["nope"]);
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let lines: Vec<&str> = text.lines().collect();
+    assert!(lines[0].starts_with("Owner inbox: 1 projects"), "{text}");
+    assert!(lines.iter().any(|l| l.starts_with("nope: ")), "{text}");
 }

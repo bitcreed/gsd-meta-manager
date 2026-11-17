@@ -33,7 +33,7 @@ use chrono::{DateTime, Utc};
 use gsd_meta_manager::cli::{InboxInclude, InboxLane};
 use gsd_meta_manager::config::{load_config, Config};
 use gsd_meta_manager::inbox::{
-    build_document, render_digest, render_text, EntryError, Filters, ProjectEntry,
+    build_document, render_digest, render_project, render_text, EntryError, Filters, ProjectEntry,
 };
 use gsd_meta_manager::oneoff::todos::list_pending;
 use gsd_meta_manager::state_reader::owner_items::{read_owner_digest, Lane};
@@ -183,9 +183,10 @@ pub fn run(
         .collect();
     let text = match view_of(json, all, targets, lanes, includes) {
         View::Json => build_document(&entries, &filters).to_string(),
-        // The project and lane renderers arrive with plans 38-02 and 38-03; until
-        // then those invocations print what they printed before this phase.
-        View::Legacy | View::Project | View::Lanes => render_text(&entries, &filters),
+        View::Project => render_project(&entries[0], &filters, fold_days),
+        // The lane renderer arrives with plan 38-03; until then that invocation
+        // prints what it printed before this phase.
+        View::Legacy | View::Lanes => render_text(&entries, &filters),
         View::Digest => render_digest(&entries, fold_days),
     };
     for line in text.lines() {

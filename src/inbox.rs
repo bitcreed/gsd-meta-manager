@@ -748,6 +748,145 @@ pub fn render_text(entries: &[ProjectEntry], filters: &Filters) -> String {
     text
 }
 
+/// The lane sections of one project's owner entries, in `render_text` order: TEST
+/// that closes a phase, TEST that leaves it open, DECIDE, FIX, BLOCKED. Each list
+/// carries the same sort as the matching `render_text` section.
+fn entry_sections<'a>(entries: &[&'a TriageEntry]) -> Vec<(&'static str, Vec<&'a TriageEntry>)> {
+    let location = |a: &TriageEntry, b: &TriageEntry| {
+        (phase_key(&a.group.phase), &a.group.file).cmp(&(phase_key(&b.group.phase), &b.group.file))
+    };
+    let mut test: Vec<&TriageEntry> = entries
+        .iter()
+        .copied()
+        .filter(|e| e.group.lane == Lane::Test)
+        .collect();
+    test.sort_by(|a, b| {
+        b.group
+            .closes_phase
+            .cmp(&a.group.closes_phase)
+            .then(b.group.age_days.cmp(&a.group.age_days))
+            .then_with(|| location(a, b))
+    });
+    let (closes, stays): (Vec<&TriageEntry>, Vec<&TriageEntry>) =
+        test.into_iter().partition(|e| e.group.closes_phase);
+    let lane = |lane: Lane| {
+        let mut v: Vec<&TriageEntry> = entries
+            .iter()
+            .copied()
+            .filter(|e| e.group.lane == lane)
+            .collect();
+        v.sort_by(|a, b| location(a, b));
+        v
+    };
+    vec![
+        ("TEST \u{2014} closes a phase", closes),
+        ("TEST \u{2014} phase stays open", stays),
+        ("DECIDE", lane(Lane::Decide)),
+        ("FIX \u{2014} code needed", lane(Lane::Fix)),
+        ("BLOCKED", lane(Lane::Blocked)),
+    ]
+}
+
+/// `inbox ALIAS` (D-04): one project's full checklist. The totals line, its
+/// `closes after` line, the lane sections over its unfolded entries (a same-phase
+/// pair is one entry whose items sit under a `file NAME` line each), the entries
+/// folded for age in a trailing `STALE (> N d)` section in the same order, then the
+/// `--include` sections and fold lines. Nothing is hidden for a single project, so
+/// no `Stale:` fold line is printed: the STALE section lists the work itself.
+/// `--lane` narrows the sections as it does for [`render_text`]. An entry that could
+/// not be read prints its totals line and its error line.
+pub fn render_project(entry: &ProjectEntry, filters: &Filters, fold_days: u32) -> String {
+    let all = std::slice::from_ref(entry);
+    let mut out = vec![totals_line(all)];
+    if entry.error.is_some() {
+        out.push(String::new());
+        out.extend(failed_lines(all));
+        let mut text = out.join("\n");
+        text.push('\n');
+        return text;
+    }
+    let read = vec![entry];
+    push_closes_after(&mut out, &read);
+
+    let alias = alias_of(entry);
+    let triage = triage_entries(&entry.digest, fold_days);
+    let listed = |folded: bool| -> Vec<&TriageEntry> {
+        triage
+            .iter()
+            .filter(|e| {
+                e.folded == folded && is_owner_row(&e.group) && filters.lists_group(&e.group)
+            })
+            .collect()
+    };
+    let push_entries = |out: &mut Vec<String>, heading: &str, rows: &[&TriageEntry]| {
+        if rows.is_empty() {
+            return;
+        }
+        out.push(String::new());
+        out.push(heading.to_string());
+        for row in rows {
+            out.extend(entry_checklist(&alias, row));
+        }
+    };
+    for (heading, rows) in entry_sections(&listed(false)) {
+        push_entries(&mut out, heading, &rows);
+    }
+    let stale: Vec<&TriageEntry> = entry_sections(&listed(true))
+        .into_iter()
+        .flat_map(|(_, rows)| rows)
+        .collect();
+    push_entries(&mut out, &format!("STALE (> {fold_days} d)"), &stale);
+
+    let push_groups = |out: &mut Vec<String>, heading: &str, keep: &dyn Fn(&OwnerGroup) -> bool| {
+        let mut groups: Vec<&OwnerGroup> = entry
+            .digest
+            .groups
+            .iter()
+            .filter(|g| filters.lists_group(g) && keep(g))
+            .collect();
+        groups.sort_by(|a, b| (phase_key(&a.phase), &a.file).cmp(&(phase_key(&b.phase), &b.file)));
+        if groups.is_empty() {
+            return;
+        }
+        out.push(String::new());
+        out.push(heading.to_string());
+        for group in groups {
+            out.extend(group_checklist(&alias, group));
+        }
+    };
+    push_groups(&mut out, "OLD DEBT", &|g| {
+        matches!(g.scope, Scope::Archived { .. })
+    });
+    push_groups(&mut out, "DEFERRED", &|g| {
+        matches!(g.scope, Scope::Current) && g.lane == Lane::Deferred
+    });
+    push_groups(&mut out, "ACKNOWLEDGED", &|g| {
+        matches!(g.scope, Scope::Current) && g.lane != Lane::Deferred && g.acknowledged
+    });
+
+    if filters.todos && !entry.todos.is_empty() {
+        out.push(String::new());
+        out.push("TODOS".to_string());
+        out.push(format!(
+            "  {}  {}",
+            terminal_capped(&alias),
+            plural(entry.todos.len(), "pending todo", "pending todos")
+        ));
+        for todo in &entry.todos {
+            out.push(format!("    - [ ] {}", terminal_capped(&todo.title)));
+        }
+    }
+
+    let folds = fold_lines(&read, filters, None);
+    if !folds.is_empty() {
+        out.push(String::new());
+        out.extend(folds);
+    }
+    let mut text = out.join("\n");
+    text.push('\n');
+    text
+}
+
 /// The totals line: the same numbers `summary` and `status --json` `owner` carry.
 fn totals_line(entries: &[ProjectEntry]) -> String {
     let read: Vec<&ProjectEntry> = entries.iter().filter(|e| e.error.is_none()).collect();
@@ -1041,7 +1180,7 @@ pub(crate) fn collapsed_block(rows: &[Collapsed]) -> Vec<String> {
 
 /// The group line of one entry: a merged entry adds `N files`, and the label tally
 /// follows (D-08, D-11).
-#[cfg_attr(not(test), allow(dead_code))] // read by `inbox ALIAS` (plan 38-02) and the TUI (38-04)
+#[cfg_attr(not(test), allow(dead_code))] // read by the TUI (plan 38-04)
 pub(crate) fn entry_line(alias: &str, entry: &TriageEntry) -> String {
     let mut tail = String::new();
     if entry.is_merged() {
@@ -1062,7 +1201,6 @@ pub(crate) fn entry_line(alias: &str, entry: &TriageEntry) -> String {
 /// item the matcher labels ends in `  (decision?)` or `  (looks resolved)`. Shared
 /// with `inbox ALIAS` and the TUI's `y`, so the printed and the copied text cannot
 /// disagree (37 D-09). For one unlabeled group it equals [`group_checklist`].
-#[cfg_attr(not(test), allow(dead_code))] // read by `inbox ALIAS` (plan 38-02) and the TUI (38-04)
 pub(crate) fn entry_checklist(alias: &str, entry: &TriageEntry) -> Vec<String> {
     let mut out = vec![format!("  {}", entry_line(alias, entry))];
     for part in &entry.parts {
