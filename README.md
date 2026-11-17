@@ -337,7 +337,7 @@ Tab-specific keys:
 | Docs › Milestones | `Esc` | Back up one level |
 | Docs › Milestones | `e` | Archived files are read-only, so this only shows a status message; a workstream's active-milestone docs (`ws …` rows) open in `$EDITOR` |
 | Any other tab | `e` | Enqueue the suggested next GSD command |
-| Owner inbox | `1`-`4` `a` `j` `k` `Enter` `g` `o` `v` `A` `y` `Esc` | See Owner inbox |
+| Owner inbox | `1`-`4` `a` `j` `k` `Enter` `g` `o` `v` `A` `y` `x` `Esc` | See Owner inbox |
 
 #### Mouse
 
@@ -375,9 +375,11 @@ To start with mouse capture off, set `"mouse": false` under `preferences` in
 The dashboard shows what is waiting on you, read from each project's `.planning/`
 files: checks only you can run, rulings you have to make, and code that needs an agent.
 Reading is free: the dashboard, the project detail and the inbox screen only read each
-project's `.planning/` files. Three actions go further, each on your key press: `v`
+project's `.planning/` files. Four actions go further, each on your key press: `v`
 launches the command in the project, `A` runs gsd-core's acknowledge writer after a
-confirmation, `y` copies a checklist. The app itself writes nothing into any project.
+confirmation, `x` settles a check or a phase through `/gsd-verify-work N` (a prepared
+instruction, launched after a confirmation), `y` copies a checklist. The app itself
+writes nothing into any project.
 The same data is available to scripts and agents through
 [`gsd-meta-manager inbox`](#owner-work-inbox).
 
@@ -407,7 +409,8 @@ lists one row per group: `TEST`, `DECIDE`, `FIX`, `BLOCKED`, each with its phase
 age and the command that handles it. `↑` from the first phase enters the block; `Enter`
 expands a group to its checks and source file; `Esc` returns to the phase list. Old debt,
 acknowledged files and pending todos are collapsed folds under the rows. On a group row
-`v`, `o`, `A` and `y` work as in the inbox screen below.
+`v`, `o`, `A`, `y` and `x` work as in the inbox screen below, and `j` walks into an
+expanded group's checks (the first five), so `x` can settle one check.
 
 **Inbox screen (`i` on the dashboard).** One list of everything that waits on you, across
 every registered project, grouped into `TEST — closes a phase`, `TEST — phase stays open`,
@@ -427,6 +430,7 @@ keyboard-only.
 | `o` | Open the group's source file in a read-only viewer |
 | `v` | Run the group's command in its project through your multiplexer (tmux, herdr, ...), or switch to the project's live session and show the command to type |
 | `A` | Acknowledge the group's file (see below) |
+| `x` | Settle the selected check or phase: won't do (with a reason), deferred permanently, or move to phase M; asks first, then launches `/gsd-verify-work N` |
 | `y` | Copy the checklist `gsd-meta-manager inbox ALIAS` prints for that row (on the Old debt fold: that fold's checklist) |
 | `Esc` / `q` | Back to the dashboard |
 
@@ -442,6 +446,20 @@ node <gsd-tools.cjs> audit-open acknowledge --category <uat_gaps|verification_ga
 in the project directory. `<gsd-tools.cjs>` comes from your own install only (`${CLAUDE_CONFIG_DIR:-~/.claude}/gsd-core`, then `${CODEX_HOME:-~/.codex}/gsd-core`, then an absolute `PATH` entry named `gsd-tools`); a `gsd-tools.cjs` the project itself ships is never run by `A`. gsd-core writes `audit_acknowledged` into that one file's
 frontmatter and does not commit; the marker is file-level (it hides every item of the file
 in every lane) and lapses by itself when the file changes. This app never writes the file.
+`x` settles what you could not or will not test. On a TEST or BLOCKED row it settles the
+whole phase; after `Enter` and `j` onto one check it settles that check. A one-row chooser
+offers three outcomes: `w` won't do, `p` deferred permanently, `m` move to another phase
+(you pick phase M; an optional reason follows). A default-No popup then shows the exact
+argv, and only `y` launches `/gsd-verify-work N <instruction>` in the project (`--ws NAME`
+for a workstream), in a new session through your multiplexer. The instruction asks GSD
+to resume the UAT session, record each check as `result: skipped` with a
+`Deferred follow-up:` reason (which gsd-core counts as non-blocking), and not to promote
+it to the 999.x backlog. Move also asks for one todo naming phase M, so the check comes up again
+when phase M runs. If the project already has a live Claude session, `y` switches to it
+and copies the command (instruction included) for you to paste, by the same clipboard
+route as `y` on a row; nothing is typed into that session and no second one starts. The
+app writes nothing: every change comes from the command GSD runs.
+
 `y` uses `wl-copy`, `xclip`/`xsel`, `pbcopy` or `clip.exe` when present, otherwise an OSC 52
 escape sequence your terminal must allow (inside tmux: `set -g set-clipboard on`).
 

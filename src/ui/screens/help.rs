@@ -372,7 +372,7 @@ pub(super) fn help_lines(experimental: bool) -> Vec<Line<'static>> {
         row("PgUp / PgDn", "Owner block: page the rows (detail view)"),
         row("Enter / Space", "Owner block: expand or collapse the selected group or fold (detail view)"),
         row("Left / Right", "Owner block: move between the folds on the fold line (detail view)"),
-        row("v o A y", "Owner block: run, open, acknowledge or copy the selected group, as in the inbox (detail view)"),
+        row("v o A y x", "Owner block: run, open, acknowledge, copy or settle the selected group or check, as in the inbox (detail view)"),
         row("Esc", "Owner block: back to the phase list (detail view)"),
         Line::from(""),
         // ── The mouse (quick 260926-dyf, D-07). Every description is unique
@@ -540,6 +540,7 @@ pub(super) fn help_lines(experimental: bool) -> Vec<Line<'static>> {
         row("o", "Open the group's source file, read-only (never your editor)"),
         row("v", "Run the group's command in its project through your multiplexer; a live session is focused instead and you type the command there"),
         row("A", "Acknowledge the group's file via gsd-core: file-level, uncommitted, asks first"),
+        row("x", "Settle the selected check or phase: won't do, deferred permanently or move to phase M; launches /gsd-verify-work after a confirm"),
         row("y", "Copy the group as a plain checklist (wl-copy, xclip, xsel, pbcopy, clip.exe, else OSC 52)"),
         row("Stale", "Fold of entries idle for longer than preferences.owner.fold_days (default 90); still counted, Enter lists them"),
         // One row per label, the label as its pseudo-key under `Labels` (the
@@ -958,8 +959,8 @@ mod tests {
                 "Back to the dashboard (the dashboard selection is unchanged)",
             ),
             (
-                "v o A y",
-                "Owner block: run, open, acknowledge or copy the selected group, as in the inbox (detail view)",
+                "v o A y x",
+                "Owner block: run, open, acknowledge, copy or settle the selected group or check, as in the inbox (detail view)",
             ),
         ] {
             let lines: Vec<&str> = text.lines().collect();
@@ -1034,8 +1035,8 @@ mod tests {
                 "Owner block: move between the folds on the fold line (detail view)",
             ),
             (
-                "v o A y",
-                "Owner block: run, open, acknowledge or copy the selected group, as in the inbox (detail view)",
+                "v o A y x",
+                "Owner block: run, open, acknowledge, copy or settle the selected group or check, as in the inbox (detail view)",
             ),
             ("Esc", "Owner block: back to the phase list (detail view)"),
         ];

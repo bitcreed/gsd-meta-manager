@@ -1271,6 +1271,8 @@ struct FooterKey {
     key: &'static str,
     /// Rung 1 (long), rung 2 (short), rung 3 and 4 (shortest) labels.
     labels: [&'static str; 3],
+    /// Kept on rung 2.
+    rung2: bool,
     /// Kept from rung 3 on.
     rung3: bool,
     /// Kept at the minimal rung 4.
@@ -1279,58 +1281,77 @@ struct FooterKey {
 
 /// The hints in the UI-SPEC footer order, **only for keys that work**: later
 /// plans insert their key at its UI-SPEC position (`A`, `y`) when it works.
-const FOOTER_KEYS: [FooterKey; 9] = [
+const FOOTER_KEYS: [FooterKey; 10] = [
     FooterKey {
         key: "[j/k]",
         labels: ["move", "move", "move"],
+        rung2: true,
         rung3: true,
         rung4: false,
     },
     FooterKey {
         key: "[Enter]",
         labels: ["expand", "expand", "expand"],
+        rung2: true,
         rung3: true,
         rung4: false,
     },
     FooterKey {
         key: "[g]",
         labels: ["o to project", "oto", "oto"],
+        rung2: true,
         rung3: true,
         rung4: false,
     },
     FooterKey {
         key: "[v]",
         labels: ["run command", "run", "run"],
+        rung2: true,
         rung3: true,
         rung4: true,
     },
     FooterKey {
         key: "[o]",
         labels: ["pen file", "pen", "pen"],
+        rung2: true,
         rung3: true,
         rung4: false,
     },
     FooterKey {
         key: "[A]",
         labels: ["cknowledge", "cknowledge", "ck"],
+        rung2: true,
         rung3: true,
         rung4: true,
+    },
+    // 39-03 D-05: shown on the widest rung only. A second rung with `[x]settle`
+    // would be 105 cells wide and push the 100x30 footer (the UI-SPEC golden) down
+    // to the `[A]ck` rung; the 80-column rung that the 38 UAT bounds is unchanged.
+    FooterKey {
+        key: "[x]",
+        labels: ["settle", "settle", "settle"],
+        rung2: false,
+        rung3: false,
+        rung4: false,
     },
     FooterKey {
         key: "[y]",
         labels: ["copy checklist", "copy", "copy"],
+        rung2: true,
         rung3: true,
         rung4: true,
     },
     FooterKey {
         key: "[Esc]",
         labels: ["back", "back", "back"],
+        rung2: true,
         rung3: false,
         rung4: false,
     },
     FooterKey {
         key: "[?]",
         labels: ["help", "help", "help"],
+        rung2: true,
         rung3: true,
         rung4: true,
     },
@@ -1380,7 +1401,8 @@ fn footer_rung(rung: usize, has_stops: bool) -> Vec<Span<'static>> {
             _ => has_stops,
         };
         let kept = match rung {
-            0 | 1 => true,
+            0 => true,
+            1 => hint.rung2,
             2 => hint.rung3,
             _ => hint.rung4,
         };
@@ -3234,8 +3256,8 @@ mod tests {
         // asserted by `footer_ladder_matches_the_ui_spec`).
         let ctx = inbox_fleet_ctx();
         let footer = |w: usize| line_text(&footer_line(&ctx, w, true, false));
-        assert!(footer(126).ends_with("[y]copy checklist  [Esc]back  [?]help"));
-        assert!(footer(125).ends_with("[y]copy  [Esc]back  [?]help"));
+        assert!(footer(137).ends_with("[y]copy checklist  [Esc]back  [?]help"));
+        assert!(footer(136).ends_with("[y]copy  [Esc]back  [?]help"));
         assert!(footer(93).ends_with("[A]ck  [y]copy  [?]help"));
         assert_eq!(footer(65), "  [v]run  [A]ck  [y]copy  [?]help");
         assert_eq!(
@@ -3266,17 +3288,17 @@ mod tests {
         let ctx = inbox_fleet_ctx();
         let footer =
             |w: usize, stops: bool, fold: bool| line_text(&footer_line(&ctx, w, stops, fold));
-        let rung1 = "  [j/k]move  [Enter]expand  [g]o to project  [v]run command  [o]pen file  [A]cknowledge  [y]copy checklist  [Esc]back  [?]help";
+        let rung1 = "  [j/k]move  [Enter]expand  [g]o to project  [v]run command  [o]pen file  [A]cknowledge  [x]settle  [y]copy checklist  [Esc]back  [?]help";
         let rung2 = "  [j/k]move  [Enter]expand  [g]oto  [v]run  [o]pen  [A]cknowledge  [y]copy  [Esc]back  [?]help";
         let rung3 = "  [j/k]move  [Enter]expand  [g]oto  [v]run  [o]pen  [A]ck  [y]copy  [?]help";
-        assert_eq!(rung1.chars().count(), 126);
+        assert_eq!(rung1.chars().count(), 137);
         assert_eq!(rung2.chars().count(), 94);
         assert_eq!(rung3.chars().count(), 75);
         assert_eq!(footer(140, true, false), rung1);
         assert_eq!(footer(100, true, false), rung2);
         assert_eq!(footer(80, true, false), rung3);
-        assert_eq!(footer(126, true, false), rung1);
-        assert_eq!(footer(125, true, false), rung2);
+        assert_eq!(footer(137, true, false), rung1);
+        assert_eq!(footer(136, true, false), rung2);
         assert_eq!(footer(94, true, false), rung2);
         assert_eq!(footer(93, true, false), rung3);
         assert_eq!(footer(75, true, false), rung3);
