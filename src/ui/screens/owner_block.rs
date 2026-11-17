@@ -774,6 +774,8 @@ struct Grid {
     phrase_w: usize,
     show_age: bool,
     command_w: usize,
+    /// The checks column: `CHECKS_W`, or wider for a `100+ checks` row.
+    checks_w: usize,
 }
 
 /// The least the command column may shrink to where the width shows it.
@@ -792,6 +794,7 @@ fn grid_for(rows: &[RowCells], width: usize) -> Grid {
         .max()
         .unwrap_or(0)
         .max(NAME_MIN_W);
+    let checks_w = longest(|r| cells(&r.checks)).max(CHECKS_W);
     let mut phrase_w = rows
         .iter()
         .filter(|r| !r.bookkeeping)
@@ -808,7 +811,7 @@ fn grid_for(rows: &[RowCells], width: usize) -> Grid {
     // gutter + tag + 1, the phase cell and its gap, the name's gap, the checks
     // column, the phrase column with its gap, and the age.
     let fixed = |phase_w: usize, phrase_w: usize| {
-        2 + TAG_W + 1 + phase_w + 2 + 2 + CHECKS_W + 2 + phrase_w + age_part
+        2 + TAG_W + 1 + phase_w + 2 + 2 + checks_w + 2 + phrase_w + age_part
     };
     // The command column keeps a floor wherever it is shown, so a long phrase
     // cannot starve it to nothing.
@@ -839,6 +842,7 @@ fn grid_for(rows: &[RowCells], width: usize) -> Grid {
         phrase_w,
         show_age,
         command_w,
+        checks_w,
     }
 }
 
@@ -925,7 +929,7 @@ fn row_line(row: &RowCells, grid: &Grid, width: usize) -> Line<'static> {
     if row.lane != Lane::Blocked {
         spans.push(Span::raw("  "));
         spans.push(Span::styled(
-            pad(&row.checks, CHECKS_W.max(cells(&row.checks)), true),
+            pad(&row.checks, grid.checks_w, true),
             plain,
         ));
         spans.push(Span::raw("  "));
@@ -1844,6 +1848,27 @@ pub(crate) fn sample_owner_digest() -> OwnerDigest {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_three_digit_checks_cell_widens_the_planned_grid() {
+        let row = |checks: &str| RowCells {
+            lane: Lane::Test,
+            ws_prefix: String::new(),
+            phase: "1".to_owned(),
+            name: "n".to_owned(),
+            checks: checks.to_owned(),
+            phrase: "p".to_owned(),
+            green_phrase: false,
+            bookkeeping: false,
+            age: None,
+            command: String::new(),
+            extras: String::new(),
+        };
+        let narrow = grid_for(&[row("3 checks")], 120);
+        assert_eq!(narrow.checks_w, CHECKS_W);
+        let wide = grid_for(&[row("3 checks"), row("120 checks")], 120);
+        assert_eq!(wide.checks_w, CHECKS_W + 1);
+    }
 
     fn text(line: &Line<'_>) -> String {
         line.spans.iter().map(|s| s.content.as_ref()).collect()
