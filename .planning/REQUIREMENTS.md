@@ -133,13 +133,13 @@ continues OWN-xx; grouped into Phase 38]**.
 
 ### Check actions through GSD (OWN-29..31)
 
-- [ ] **OWN-29**: TUI actions on a check or a phase in the inbox and the detail Owner block: "won't
+- [x] **OWN-29**: TUI actions on a check or a phase in the inbox and the detail Owner block: "won't
   do" (with a reason) and "defer/move to phase M"; the existing `A` acknowledge stays as is.
-- [ ] **OWN-30**: Each action launches a GSD command in the project (for example
+- [x] **OWN-30**: Each action launches a GSD command in the project (for example
   `/gsd-verify-work N`) with a prepared plain-language instruction stating the owner's intent ("the
   user will not perform test K: <reason>", "defer test K as a follow-up to phase M"); a confirm popup
   shows the exact command and instruction before launching.
-- [ ] **OWN-31**: A defer/move also files a todo for the target phase through gsd-core
+- [x] **OWN-31**: A defer/move also files a todo for the target phase through gsd-core
   (`gsd-tools todo …` or `/gsd-capture`) so the moved check comes up again; the app never edits a
   GSD file itself (CLAUDE.md "GSD files are read-only"). *Test: source scan plus a round trip on a
   throwaway project.*
@@ -231,9 +231,9 @@ Deferred (report section 6):
 | OWN-26 | Phase 38 | Complete |
 | OWN-27 | Phase 38 | Complete |
 | OWN-28 | Phase 38 | Complete |
-| OWN-29 | Phase 39 | Pending |
-| OWN-30 | Phase 39 | Pending |
-| OWN-31 | Phase 39 | Pending |
+| OWN-29 | Phase 39 | Complete |
+| OWN-30 | Phase 39 | Complete |
+| OWN-31 | Phase 39 | Complete |
 
 **Coverage:**
 - v2.5.0 requirements: 31 total

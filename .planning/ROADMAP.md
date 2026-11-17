@@ -298,7 +298,7 @@ Plans:
 **Depends on:** Phase 38
 **Verification:** Automatic (argv/instruction unit tests, oracle round trip on a throwaway project) plus human UAT
 **UI hint**: yes
-**Plans:** 2/3 plans executed
+**Plans:** 3/3 plans executed
 
 Plans:
 **Wave 1**
@@ -308,7 +308,7 @@ Plans:
 - [x] 39-02-PLAN.md — Item-level cursor in the inbox and Owner block, Owner block `x`, and Move to phase M with the phase picker and a todo requested by instruction (D-04, D-06, D-09)
 
 **Wave 3** *(blocked on Wave 2 completion)*
-- [ ] 39-03-PLAN.md — Live-session clipboard copy (OSC 52), read-only proof (source scan, gsd-core oracle on temp copies, 12-cell flow matrix with tree snapshots), help/footer/README for `x` (D-11, D-13)
+- [x] 39-03-PLAN.md — Live-session clipboard copy (OSC 52), read-only proof (source scan, gsd-core oracle on temp copies, 12-cell flow matrix with tree snapshots), help/footer/README for `x` (D-11, D-13)
 
 **Success Criteria** (what must be TRUE):
 1. On a check row or a phase row in the TUI inbox and the detail Owner block, the owner can pick "won't do" (with a reason) or "defer/move to phase M"; the existing `A` acknowledge keeps working unchanged.
