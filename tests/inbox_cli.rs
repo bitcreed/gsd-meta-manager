@@ -1551,7 +1551,7 @@ fn twenty_projects_fit_the_digest_budget() {
         .collect();
     let text = text_of(&pairs, &[]);
     let lines = text.lines().count();
-    assert!((15..=25).contains(&lines), "{lines} lines:\n{text}");
+    assert!((15..=22).contains(&lines), "{lines} lines:\n{text}");
     assert!(text.contains("more projects (inbox --all)"), "{text}");
 }
 

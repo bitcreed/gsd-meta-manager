@@ -1035,9 +1035,65 @@ fn the_digest_matches_the_golden() {
     let text = render_digest(&entries, FOLD_DAYS);
     assert_golden("inbox-digest.txt", &text);
     let lines = text.lines().count();
-    assert!((15..=25).contains(&lines), "{lines} lines:\n{text}");
+    assert!((15..=22).contains(&lines), "{lines} lines:\n{text}");
     assert!(!text.lines().any(|l| l.starts_with("    - [ ] ")));
     assert!(text.lines().last().unwrap().starts_with("inbox <alias>"));
+}
+
+/// The width of `line` in terminal cells.
+fn cells(line: &str) -> usize {
+    ratatui::text::Span::raw(line).width()
+}
+
+/// UI review 38, fix 1: the digest fits one screen. Its project, fold and hint lines
+/// fit 80 columns; collapsed lines (NEXT rows, the lane view) fit 100, because a row
+/// with a workstream command needs 94 cells before its phrase (see
+/// `COLLAPSED_MAX_CELLS`). The lane view and the digest share that bound.
+#[test]
+fn digest_and_lane_view_lines_fit_the_width_budget() {
+    let (_held, entries) = fleet();
+    let digest = render_digest(&entries, FOLD_DAYS);
+    let mut in_next = false;
+    for line in digest.lines() {
+        if line == "NEXT" {
+            in_next = true;
+        } else if line.is_empty() {
+            in_next = false;
+        }
+        let max = if in_next && line != "NEXT" { 100 } else { 80 };
+        assert!(
+            cells(line) <= max,
+            "{} cells > {max}: {line:?}",
+            cells(line)
+        );
+    }
+    for lanes in [
+        test_lane(),
+        Filters {
+            lanes: vec![Lane::Test, Lane::Decide, Lane::Fix, Lane::Blocked],
+            ..Filters::default()
+        },
+    ] {
+        let text = render_lanes(&entries, &lanes, FOLD_DAYS);
+        for line in text.lines() {
+            assert!(cells(line) <= 100, "{} cells: {line:?}", cells(line));
+        }
+    }
+    for name in ["inbox-digest.txt", "inbox-lane-test.txt"] {
+        let golden = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/owner_golden")
+                .join(name),
+        )
+        .unwrap();
+        for line in golden.lines() {
+            assert!(
+                cells(line) <= 100,
+                "{name}: {} cells: {line:?}",
+                cells(line)
+            );
+        }
+    }
 }
 
 #[test]
@@ -1213,18 +1269,23 @@ fn next_actions_in_json_equal_the_digest_order() {
         );
     }
     let digest = render_digest(&entries, FOLD_DAYS);
-    let digest_commands: Vec<&str> = digest
+    let next_lines: Vec<&str> = digest
         .lines()
         .skip_while(|l| *l != "NEXT")
         .skip(1)
         .take_while(|l| !l.is_empty())
-        .map(|l| l.rsplit("  ").next().unwrap())
         .collect();
     let json_commands: Vec<&str> = next
         .iter()
         .map(|a| a["command"].as_str().unwrap())
         .collect();
-    assert_eq!(digest_commands, json_commands);
+    assert_eq!(next_lines.len(), json_commands.len(), "{digest}");
+    for (line, command) in next_lines.iter().zip(&json_commands) {
+        assert!(
+            line.contains(&format!("  {command}")),
+            "{line:?} lacks {command:?}"
+        );
+    }
     let aliases: Vec<&str> = next.iter().map(|a| a["alias"].as_str().unwrap()).collect();
     let digest_aliases: Vec<&str> = digest
         .lines()

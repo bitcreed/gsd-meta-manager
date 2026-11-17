@@ -1008,9 +1008,10 @@ pub fn render_lanes(entries: &[ProjectEntry], filters: &Filters, fold_days: u32)
         if rows.is_empty() {
             return;
         }
+        let closes_shown = !heading.ends_with("closes a phase");
         let cells: Vec<Collapsed> = rows
             .iter()
-            .map(|row| collapsed_of(&row.alias, &row.entry))
+            .map(|row| collapsed_of_in(&row.alias, &row.entry, closes_shown))
             .collect();
         out.push(String::new());
         out.push(heading.to_string());
@@ -1321,6 +1322,12 @@ fn phase_cell(group: &OwnerGroup) -> String {
 
 /// The collapsed cells of one entry: one line per phase (D-06).
 pub(crate) fn collapsed_of(alias: &str, entry: &TriageEntry) -> Collapsed {
+    collapsed_of_in(alias, entry, true)
+}
+
+/// [`collapsed_of`], leaving `→ closes phase` out of the phrase unless `closes_shown`
+/// (the lane view's `TEST — closes a phase` heading already says it).
+fn collapsed_of_in(alias: &str, entry: &TriageEntry, closes_shown: bool) -> Collapsed {
     let group = &entry.group;
     let counted = matches!(group.kind, Kind::Uat | Kind::Verification)
         && matches!(group.lane, Lane::Test | Lane::Fix)
@@ -1333,7 +1340,7 @@ pub(crate) fn collapsed_of(alias: &str, entry: &TriageEntry) -> Collapsed {
     {
         phrase.push(detail(group));
     }
-    if group.closes_phase {
+    if group.closes_phase && closes_shown {
         phrase.push("\u{2192} closes phase".to_owned());
     }
     if entry.is_merged() {
@@ -1364,51 +1371,85 @@ pub(crate) fn collapsed_of(alias: &str, entry: &TriageEntry) -> Collapsed {
     }
 }
 
-/// Collapsed lines padded into columns: every column but the command takes the
-/// width of its widest cell (the name at most 32 cells), a column no row fills is
-/// left out, and the checks column right-aligns its number.
-pub(crate) fn collapsed_block(rows: &[Collapsed]) -> Vec<String> {
-    const NAME_CAP: usize = 32;
-    let widest = |cell: fn(&Collapsed) -> &str| {
-        rows.iter()
-            .map(|row| cell_width(cell(row)))
-            .max()
-            .unwrap_or(0)
-    };
-    let alias_w = widest(|r| &r.alias);
-    let phase_w = widest(|r| &r.phase);
-    let name_w = widest(|r| &r.name).min(NAME_CAP);
-    let phrase_w = widest(|r| &r.phrase);
-    let age_w = widest(|r| &r.age);
-    let digits = count_digits(rows.iter().filter_map(|r| r.count).max().unwrap_or(0));
-    let has_count = rows.iter().any(|r| r.count.is_some());
+/// The widest collapsed line (digest NEXT rows and the lane view) the layout aims
+/// for: the trailing phrase is cut to stay within it. 80 cells cannot hold a row's
+/// required cells (alias, phase, name, checks, age and the whole, copyable command)
+/// once a workstream command such as `/gsd-verify-work 43 --ws market` is in the
+/// block, so the target is 100 (UI review 38, fix 1).
+pub(crate) const COLLAPSED_MAX_CELLS: usize = 100;
+
+/// The column widths of a block of collapsed lines, computed once per view so every
+/// section of it shares one grid.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct CollapsedGrid {
+    alias: usize,
+    phase: usize,
+    name: usize,
+    digits: usize,
+    has_count: bool,
+    age: usize,
+}
+
+/// The grid of `rows`: every column takes the width of its widest cell (the name at
+/// most 20 cells); a column no row fills is left out.
+pub(crate) fn collapsed_grid<'a>(rows: impl IntoIterator<Item = &'a Collapsed>) -> CollapsedGrid {
+    const NAME_CAP: usize = 20;
+    let mut grid = CollapsedGrid::default();
+    let mut max_count = 0;
+    for row in rows {
+        grid.alias = grid.alias.max(cell_width(&row.alias));
+        grid.phase = grid.phase.max(cell_width(&row.phase));
+        grid.name = grid.name.max(cell_width(&row.name).min(NAME_CAP));
+        grid.age = grid.age.max(cell_width(&row.age));
+        if let Some(n) = row.count {
+            grid.has_count = true;
+            max_count = max_count.max(n);
+        }
+    }
+    grid.digits = count_digits(max_count);
+    grid
+}
+
+/// Collapsed lines on `grid`: alias, phase, name, checks (the number right-aligned)
+/// and age as padded columns, then the command, then the phrase as an unpadded
+/// trailing cell, cut with `…` so the line stays within [`COLLAPSED_MAX_CELLS`].
+pub(crate) fn collapsed_lines(rows: &[Collapsed], grid: &CollapsedGrid) -> Vec<String> {
     rows.iter()
         .map(|row| {
             let mut cols = vec![
-                pad_cells(&row.alias, alias_w, false),
-                pad_cells(&row.phase, phase_w, false),
+                pad_cells(&row.alias, grid.alias, false),
+                pad_cells(&row.phase, grid.phase, false),
             ];
-            if name_w > 0 {
-                cols.push(pad_cells(&row.name, name_w, false));
+            if grid.name > 0 {
+                cols.push(pad_cells(&row.name, grid.name, false));
             }
-            if has_count {
-                cols.push(
-                    row.count
-                        .map_or_else(|| " ".repeat(digits + 1 + 6), |n| checks_cell(n, digits)),
-                );
+            if grid.has_count {
+                cols.push(row.count.map_or_else(
+                    || " ".repeat(grid.digits + 1 + 6),
+                    |n| checks_cell(n, grid.digits),
+                ));
             }
-            if phrase_w > 0 {
-                cols.push(pad_cells(&row.phrase, phrase_w, false));
-            }
-            if age_w > 0 {
-                cols.push(pad_cells(&row.age, age_w, false));
+            if grid.age > 0 {
+                cols.push(pad_cells(&row.age, grid.age, false));
             }
             if !row.command.is_empty() {
                 cols.push(row.command.clone());
             }
-            format!("  {}", cols.join("  ")).trim_end().to_owned()
+            let mut line = format!("  {}", cols.join("  ")).trim_end().to_owned();
+            if !row.phrase.is_empty() {
+                let room = COLLAPSED_MAX_CELLS.saturating_sub(cell_width(&line) + 2);
+                let phrase = pad_cells(&row.phrase, room.max(1), false);
+                line.push_str("  ");
+                line.push_str(phrase.trim_end());
+            }
+            line
         })
         .collect()
+}
+
+/// Collapsed lines on the grid of their own rows.
+pub(crate) fn collapsed_block(rows: &[Collapsed]) -> Vec<String> {
+    collapsed_lines(rows, &collapsed_grid(rows))
 }
 
 /// The group line of one entry: a merged entry adds `N files`, and the label tally
@@ -1457,8 +1498,11 @@ pub(crate) fn entry_checklist(alias: &str, entry: &TriageEntry) -> Vec<String> {
     out
 }
 
-/// The most lines the digest prints.
-const DIGEST_MAX_LINES: usize = 25;
+/// The most lines the digest prints:
+/// 22, so the digest fits an 80x24 terminal with a prompt line (UI review 38, fix 1).
+const DIGEST_MAX_LINES: usize = 22;
+/// The widest project line of the digest: it fits an 80-column terminal.
+const DIGEST_PROJECT_MAX_CELLS: usize = 80;
 /// The most lines the project block holds.
 const DIGEST_MAX_PROJECT_LINES: usize = 10;
 /// The last line of the digest.
@@ -1481,15 +1525,13 @@ fn lane_count_text(counts: &LaneCounts) -> String {
 }
 
 /// One project line of the digest (D-03), or `None` for a project without owner
-/// work.
+/// work. A line wider than [`DIGEST_PROJECT_MAX_CELLS`] drops phase lists (four
+/// phases per lane, then two, then counts only) and is cut with `…` as a last resort.
 fn project_line(entry: &ProjectEntry) -> Option<String> {
     if !entry.digest.groups.iter().any(is_owner_row) {
         return None;
     }
     let gate = &entry.digest.closes_after;
-    let clauses = closes_after_clauses(gate, ClauseForm::PhasesCapped(4));
-    let mut parts = clauses.lanes;
-    parts.extend(clauses.not_built);
     let elsewhere = lane_count_text(&outside_gate(&entry.digest));
     let version = entry
         .milestone_version
@@ -1498,19 +1540,40 @@ fn project_line(entry: &ProjectEntry) -> Option<String> {
         .map(|v| format!(" \u{b7} {}", terminal_capped(v)))
         .unwrap_or_default();
     let head = format!("  {}{version}", terminal_capped(&alias_of(entry)));
-    let mut line = if parts.is_empty() {
-        head
-    } else {
-        format!("{head} closes after: {}", parts.join(" \u{b7} "))
-    };
-    if !elsewhere.is_empty() {
-        if parts.is_empty() {
-            line.push_str(&format!(" {elsewhere}"));
+    let line_of = |form: ClauseForm| {
+        let clauses = closes_after_clauses(gate, form);
+        let mut parts = clauses.lanes;
+        parts.extend(clauses.not_built);
+        let mut line = if parts.is_empty() {
+            head.clone()
         } else {
-            line.push_str(&format!(" \u{b7} elsewhere: {elsewhere}"));
+            format!("{head} closes after: {}", parts.join(" \u{b7} "))
+        };
+        if !elsewhere.is_empty() {
+            if parts.is_empty() {
+                line.push_str(&format!(" {elsewhere}"));
+            } else {
+                line.push_str(&format!(" \u{b7} elsewhere: {elsewhere}"));
+            }
+        }
+        line
+    };
+    let mut line = String::new();
+    for form in [
+        ClauseForm::PhasesCapped(4),
+        ClauseForm::PhasesCapped(2),
+        ClauseForm::CountsOnly,
+    ] {
+        line = line_of(form);
+        if cell_width(&line) <= DIGEST_PROJECT_MAX_CELLS {
+            return Some(line);
         }
     }
-    Some(line)
+    Some(
+        pad_cells(&line, DIGEST_PROJECT_MAX_CELLS, false)
+            .trim_end()
+            .to_owned(),
+    )
 }
 
 /// The digest `inbox` prints by default (Phase 38, D-01, D-03): the totals line, one

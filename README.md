@@ -644,7 +644,7 @@ gsd-meta-manager inbox --include archived,todos  # also list: archived, deferred
 
 Plain `inbox` prints the digest: the totals, one `closes after` line per project, the five
 next actions ranked by payoff (phases that close first, then the fewest checks) and the
-fold lines, within 25 lines. `inbox ALIAS` prints that project's whole checklist.
+fold lines, within 22 lines (one 80x24 screen). `inbox ALIAS` prints that project's whole checklist.
 `--lane` over several projects prints one collapsed line per phase (a 51-step UAT is one
 line with `51 checks`). `--all` is the stable plain format: the full checklist exactly as
 it was before the digest, so scripts use it (or `--json`) rather than the digest, whose
