@@ -268,14 +268,14 @@ Plans:
 **Depends on:** Phase 37
 **Verification:** Automatic (fixtures, golden CLI output, buffer snapshots) plus one human readability check
 **UI hint**: yes
-**Plans:** 1/4 plans executed
+**Plans:** 2/4 plans executed
 
 Plans:
 **Wave 1**
 - [x] 38-01-PLAN.md — Tracer: plain `inbox` prints the digest (triage model: same-phase merge, 90-day fold, D-07 ranking; `fold_days`; `--all` byte-identical; D-02 view dispatch), then the full D-03 layout and 25-line budget, the labels matcher and the shared `entry_checklist` (D-01..D-03, D-06..D-11)
 
 **Wave 2** *(blocked on Wave 1 completion)*
-- [ ] 38-02-PLAN.md — Tracer: `inbox ALIAS` prints one project's full checklist with merged entries, label suffixes and the STALE section; three D-13 fixtures and the `inbox-alias.txt` golden (D-04, D-08, D-09, D-11, D-13)
+- [x] 38-02-PLAN.md — Tracer: `inbox ALIAS` prints one project's full checklist with merged entries, label suffixes and the STALE section; three D-13 fixtures and the `inbox-alias.txt` golden (D-04, D-08, D-09, D-11, D-13)
 - [ ] 38-04-PLAN.md — Tracer: TUI inbox on the triage model: one row per same-phase pair, Stale fold row, `A`/`g`/`v`/`y` on merged rows; aligned checks column (inbox and Owner block), dimmed labels, help overlay, escape guard (D-06, D-08..D-11 TUI)
 
 **Wave 3** *(blocked on Wave 2 completion)*

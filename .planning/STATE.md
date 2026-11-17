@@ -5,16 +5,16 @@ milestone_name: Owner Inbox
 current_phase: 38
 current_phase_name: Inbox digest and triage hygiene
 status: executing
-stopped_at: Completed 38-01-PLAN.md
-last_updated: "2026-11-17T16:41:23.432Z"
+stopped_at: Completed 38-02-PLAN.md
+last_updated: "2026-11-17T16:54:29.915Z"
 last_activity: 2026-11-16
 last_activity_desc: Phase 38 execution started
-state_head: 19ab392931eb9dd9ca899d124499e76b301a4638
+state_head: 9eceb991d21eb0b64949099350d24a9f36abd63d
 progress:
   total_phases: 6
   completed_phases: 1
   total_plans: 25
-  completed_plans: 22
+  completed_plans: 23
   percent: 17
 ---
 
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-11-14)
 ## Current Position
 
 Phase: 38 (Inbox digest and triage hygiene) — EXECUTING
-Plan: 2 of 4
+Plan: 3 of 4
 Status: Ready to execute
 Last activity: 2026-11-16 — Phase 38 execution started
 
@@ -192,6 +192,7 @@ None. Phase 19's deferred human verification was closed by supersession on 2026-
 | Phase 37 P06 | 150min | 2 tasks | 16 files |
 | Phase 37 P07 | 110 min | 2 tasks | 14 files |
 | Phase 38 P01 | n/a | 3 tasks | 10 files |
+| Phase 38 P02 | 35min | 2 tasks | 30 files |
 
 ## Accumulated Context
 
@@ -369,6 +370,7 @@ Recent decisions affecting current work:
 - [Phase 37]: 37-06: failure copy uses the last non-empty stderr line; root groups are refused while .planning/active-workstream is non-empty; Yes re-derives the acknowledge target before running
 - [Phase 37]: 37-07 D-09: y copies the CLI's checklist lines (shared group_checklist) via a bounded native clipboard child, else OSC 52 written by the main loop after the frame; target OS is data, not cfg
 - [Phase 38]: Plain inbox prints the digest; --all keeps the full checklist (D-01, D-02)
+- [Phase 38]: 38-02: inbox ALIAS prints no Stale: fold line; its STALE section lists the folded entries
 
 ### Roadmap Evolution
 
@@ -633,8 +635,8 @@ non-unique bullets in these narrative logs). Disclosed per file instead [inferre
 
 ## Session Continuity
 
-Last session: 2026-11-17T16:41:22.861Z
-Stopped at: Completed 38-01-PLAN.md
+Last session: 2026-11-17T16:54:29.152Z
+Stopped at: Completed 38-02-PLAN.md
 Resume file: None
 
 Next: push master + tag v2.4.0 (tag push publishes to crates.io); then `/gsd-new-milestone`.
