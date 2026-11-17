@@ -132,3 +132,32 @@ Not applicable: ratatui widgets only, no `components.json`, no third-party regis
 - `src/ui/screens/help.rs` (new `Stale` and `decision?` rows, `wrapped_row`, `wrap_owner_sections`)
 - Goldens: `tests/fixtures/owner_golden/inbox-digest.txt`, `inbox-lane-test.txt`, `inbox-alias.txt`, `inbox.txt`, `owner_block_80x24.txt`, `owner_block_120x30.txt`
 - Tests: `tests/inbox_cli.rs` (plural asserts at 592, 656, 762, 1475)
+
+---
+
+## Fixes applied
+
+CLI side, 2026-11-17 (src/inbox.rs and tests; src/ui/ untouched apart from a formatting-only commit).
+
+| Finding | Status | Commit |
+|---------|--------|--------|
+| 1. Digest not one screen | Fixed, partly (see the note below) | `ed77b450` |
+| 2. `1 projects` | Fixed. `fix 1 phases` is fixed in the same commit. The `--all` goldens `inbox.txt` and `inbox-include-all.txt` are byte-identical | `4eb2e60a` |
+| 3. TUI extras at 100 columns | Deferred to the TUI pass (src/ui) | n/a |
+| 4. NEXT rows hide their lane | Fixed: a `test`/`decide`/`fix` cell follows the alias | `9489af74` |
+| 5. Project-line wording | Deferred, not trivial: `no owner work (ph N)` comes from the shared `closes_after_clauses` | n/a |
+| 6. Narrow fold rung units | Deferred to the TUI pass. The rung lives in `src/ui/screens/inbox.rs:1404`: `Stale ({})` should count `t.stale.items` | n/a |
+| 7, 8 | TUI, out of scope for this pass | n/a |
+| Pillar 5: lane-view widths per section | Fixed: one `CollapsedGrid` covers every section | `878c633b` |
+| (gate) `cargo fmt --check` failed on HEAD | Formatting only | `f84a8a3c` |
+
+Note on fix 1:
+- Collapsed lines now print the phrase last, after the command, with no padding. Phrases are cut on whole ` · ` parts with `…`.
+- The NEXT name column is capped at 20 cells.
+- Project lines fit 80 cells. When a line is too wide, its phase lists step down from 4 per lane to 2, then to counts only.
+- `DIGEST_MAX_LINES` went from 25 to 22.
+- A new test bounds the width: project, fold and hint lines must be at most 80 cells, and NEXT and lane-view rows at most 100.
+- 80 cells cannot fit a NEXT row: the fixture's workstream row takes 94 cells before its phrase (alias, lane, phase, name, checks, age and the whole command).
+- In the golden digest that row's phrase shrinks to `…`.
+- The golden digest is 22 lines and 100 cells at its widest. It fits a 100x24 terminal. At 80 columns, 5 NEXT rows wrap, so it needs 27 rows.
+- To fit 80 columns, NEXT would have to drop a D-03 cell (age or name) or move the command to a second line. That needs a decision from the owner.
