@@ -7,7 +7,9 @@
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
-use gsd_meta_manager::inbox::{build_document, render_project, render_text, Filters, ProjectEntry};
+use gsd_meta_manager::inbox::{
+    build_document, render_digest, render_lanes, render_project, render_text, Filters, ProjectEntry,
+};
 use gsd_meta_manager::state_reader::owner_items::{
     labels_of, read_owner_digest, triage_entries, Label, Lane, OwnerDigest,
 };
@@ -994,4 +996,113 @@ fn the_labels_fixture_labels_exactly_the_d11_hits() {
     let suffixed = |suffix: &str| text.lines().filter(|l| l.ends_with(suffix)).count();
     assert_eq!(suffixed("  (decision?)"), 4, "{text}");
     assert_eq!(suffixed("  (looks resolved)"), 1, "{text}");
+}
+
+// --- The multi-project views (Phase 38, plan 03) -------------------------------
+
+const FOLD_DAYS: u32 = 90;
+
+/// The six golden fixtures plus the four of Phase 38 (D-13).
+fn fleet_entries() -> Vec<(TempDir, ProjectEntry)> {
+    let mut held = golden_entries();
+    for (name, alias) in [
+        ("same-phase-merge", "merge"),
+        ("stale-fold", "old-ledger"),
+        ("heuristic-labels", "labels"),
+        ("scripted-checklist", "script"),
+    ] {
+        held.push(entry_of(name, alias));
+    }
+    held
+}
+
+fn fleet() -> (Vec<(TempDir, ProjectEntry)>, Vec<ProjectEntry>) {
+    let held = fleet_entries();
+    let entries = held.iter().map(|(_, e)| e.clone()).collect();
+    (held, entries)
+}
+
+fn test_lane() -> Filters {
+    Filters {
+        lanes: vec![Lane::Test],
+        ..Filters::default()
+    }
+}
+
+#[test]
+fn the_digest_matches_the_golden() {
+    let (_held, entries) = fleet();
+    let text = render_digest(&entries, FOLD_DAYS);
+    assert_golden("inbox-digest.txt", &text);
+    let lines = text.lines().count();
+    assert!((15..=25).contains(&lines), "{lines} lines:\n{text}");
+    assert!(!text.lines().any(|l| l.starts_with("    - [ ] ")));
+    assert!(text.lines().last().unwrap().starts_with("inbox <alias>"));
+}
+
+#[test]
+fn the_test_lane_view_matches_the_golden() {
+    let (_held, entries) = fleet();
+    assert_golden(
+        "inbox-lane-test.txt",
+        &render_lanes(&entries, &test_lane(), FOLD_DAYS),
+    );
+}
+
+#[test]
+fn a_scripted_checklist_is_one_entry_in_every_multi_project_view() {
+    let (_held, entries) = fleet();
+    let lanes = render_lanes(&entries, &test_lane(), FOLD_DAYS);
+    let scripted: Vec<&str> = lanes.lines().filter(|l| l.contains("51 checks")).collect();
+    assert_eq!(scripted.len(), 1, "{lanes}");
+    assert!(scripted[0].contains("ph 04"));
+    assert!(!lanes.lines().any(|l| l.starts_with("    - [ ] ")));
+    assert!(lanes.lines().any(|l| l.contains("2 files")));
+    let digest = render_digest(&entries, FOLD_DAYS);
+    assert!(!digest.lines().any(|l| l.starts_with("    - [ ] ")));
+    let script = entries
+        .iter()
+        .find(|e| e.alias.as_deref() == Some("script"))
+        .unwrap();
+    let project = render_project(script, &Filters::default(), FOLD_DAYS);
+    assert_eq!(
+        project
+            .lines()
+            .filter(|l| l.starts_with("    - [ ] "))
+            .count(),
+        51
+    );
+}
+
+#[test]
+fn lane_sections_keep_the_legacy_order() {
+    let (_held, entries) = fleet();
+    let filters = Filters {
+        lanes: vec![Lane::Blocked, Lane::Test],
+        ..Filters::default()
+    };
+    let text = render_lanes(&entries, &filters, FOLD_DAYS);
+    let at = |needle: &str| text.lines().position(|l| l.starts_with(needle));
+    let last_test = text
+        .lines()
+        .enumerate()
+        .filter(|(_, l)| l.starts_with("TEST \u{2014} "))
+        .map(|(i, _)| i)
+        .last()
+        .expect("a TEST section");
+    if let Some(blocked) = at("BLOCKED") {
+        assert!(last_test < blocked, "{text}");
+    }
+    assert!(text.contains("TEST \u{2014} "));
+}
+
+#[test]
+fn the_lane_stale_line_counts_only_the_selected_lanes() {
+    let (_held, entries) = fleet();
+    let decide = Filters {
+        lanes: vec![Lane::Decide],
+        ..Filters::default()
+    };
+    let text = render_lanes(&entries, &decide, FOLD_DAYS);
+    assert!(!text.lines().any(|l| l.starts_with("TEST")), "{text}");
 }

@@ -887,6 +887,170 @@ pub fn render_project(entry: &ProjectEntry, filters: &Filters, fold_days: u32) -
     text
 }
 
+/// One entry of the lane view with the project it belongs to.
+struct LaneRow<'a> {
+    project: &'a ProjectEntry,
+    alias: String,
+    entry: TriageEntry,
+}
+
+/// A single group as an entry of its own, for the sections that are not merged.
+fn lone_entry(group: &OwnerGroup) -> TriageEntry {
+    TriageEntry {
+        group: group.clone(),
+        parts: vec![group.clone()],
+        indices: Vec::new(),
+        folded: false,
+    }
+}
+
+/// `inbox --lane L` over several projects (Phase 38, D-05, D-06): the totals line,
+/// the legacy sections of the selected lanes with one collapsed line per phase, the
+/// `--include` sections as collapsed lines, then the fold lines (`Stale:` counting
+/// the selected lanes only) and the failed projects. No checklist item and no
+/// `closes after` block is printed.
+pub fn render_lanes(entries: &[ProjectEntry], filters: &Filters, fold_days: u32) -> String {
+    let read: Vec<&ProjectEntry> = entries.iter().filter(|e| e.error.is_none()).collect();
+    let mut out = vec![totals_line(entries)];
+
+    let mut rows: Vec<LaneRow> = Vec::new();
+    let mut folded: Vec<TriageEntry> = Vec::new();
+    for project in &read {
+        for entry in triage_entries(&project.digest, fold_days) {
+            if !is_owner_row(&entry.group) || !filters.lists_group(&entry.group) {
+                continue;
+            }
+            if entry.folded {
+                folded.push(entry);
+            } else {
+                rows.push(LaneRow {
+                    project,
+                    alias: alias_of(project),
+                    entry,
+                });
+            }
+        }
+    }
+    let location = |a: &LaneRow, b: &LaneRow| {
+        (
+            &a.alias,
+            phase_key(&a.entry.group.phase),
+            &a.entry.group.file,
+        )
+            .cmp(&(
+                &b.alias,
+                phase_key(&b.entry.group.phase),
+                &b.entry.group.file,
+            ))
+    };
+    let push_rows = |out: &mut Vec<String>, heading: &str, rows: &[&LaneRow]| {
+        if rows.is_empty() {
+            return;
+        }
+        let cells: Vec<Collapsed> = rows
+            .iter()
+            .map(|row| collapsed_of(&row.alias, &row.entry))
+            .collect();
+        out.push(String::new());
+        out.push(heading.to_string());
+        out.extend(collapsed_block(&cells));
+    };
+    let mut test: Vec<&LaneRow> = rows
+        .iter()
+        .filter(|r| r.entry.group.lane == Lane::Test)
+        .collect();
+    test.sort_by(|a, b| {
+        let remaining = |r: &LaneRow| r.project.phases_total.saturating_sub(r.project.phases_done);
+        b.entry
+            .group
+            .closes_phase
+            .cmp(&a.entry.group.closes_phase)
+            .then(remaining(a).cmp(&remaining(b)))
+            .then(b.entry.group.age_days.cmp(&a.entry.group.age_days))
+            .then_with(|| location(a, b))
+    });
+    let (closes, stays): (Vec<&LaneRow>, Vec<&LaneRow>) =
+        test.into_iter().partition(|r| r.entry.group.closes_phase);
+    push_rows(&mut out, "TEST \u{2014} closes a phase", &closes);
+    push_rows(&mut out, "TEST \u{2014} phase stays open", &stays);
+    for (heading, lane) in [
+        ("DECIDE", Lane::Decide),
+        ("FIX \u{2014} code needed", Lane::Fix),
+        ("BLOCKED", Lane::Blocked),
+    ] {
+        let mut v: Vec<&LaneRow> = rows.iter().filter(|r| r.entry.group.lane == lane).collect();
+        v.sort_by(|a, b| location(a, b));
+        push_rows(&mut out, heading, &v);
+    }
+
+    // The `--include` sections list single groups, as `render_text` selects them.
+    let mut extra: Vec<LaneRow> = Vec::new();
+    for project in &read {
+        for group in project
+            .digest
+            .groups
+            .iter()
+            .filter(|g| filters.lists_group(g) && !is_owner_row(g))
+        {
+            extra.push(LaneRow {
+                project,
+                alias: alias_of(project),
+                entry: lone_entry(group),
+            });
+        }
+    }
+    let pick = |keep: &dyn Fn(&OwnerGroup) -> bool| {
+        let mut v: Vec<&LaneRow> = extra.iter().filter(|r| keep(&r.entry.group)).collect();
+        v.sort_by(|a, b| location(a, b));
+        v
+    };
+    push_rows(
+        &mut out,
+        "OLD DEBT",
+        &pick(&|g| matches!(g.scope, Scope::Archived { .. })),
+    );
+    push_rows(
+        &mut out,
+        "DEFERRED",
+        &pick(&|g| matches!(g.scope, Scope::Current) && g.lane == Lane::Deferred),
+    );
+    push_rows(
+        &mut out,
+        "ACKNOWLEDGED",
+        &pick(&|g| matches!(g.scope, Scope::Current) && g.lane != Lane::Deferred && g.acknowledged),
+    );
+
+    if filters.todos {
+        let with_todos: Vec<&&ProjectEntry> = read.iter().filter(|e| !e.todos.is_empty()).collect();
+        if !with_todos.is_empty() {
+            out.push(String::new());
+            out.push("TODOS".to_string());
+            for entry in with_todos {
+                out.push(format!(
+                    "  {}  {}",
+                    terminal_capped(&alias_of(entry)),
+                    plural(entry.todos.len(), "pending todo", "pending todos")
+                ));
+            }
+        }
+    }
+
+    let stale = stale_totals(folded.iter());
+    let folds = fold_lines(&read, filters, Some((&stale, fold_days)));
+    if !folds.is_empty() {
+        out.push(String::new());
+        out.extend(folds);
+    }
+    let failed = failed_lines(entries);
+    if !failed.is_empty() {
+        out.push(String::new());
+        out.extend(failed);
+    }
+    let mut text = out.join("\n");
+    text.push('\n');
+    text
+}
+
 /// The totals line: the same numbers `summary` and `status --json` `owner` carry.
 fn totals_line(entries: &[ProjectEntry]) -> String {
     let read: Vec<&ProjectEntry> = entries.iter().filter(|e| e.error.is_none()).collect();
@@ -1944,5 +2108,20 @@ mod tests {
             }
         }
         assert!(compared >= 6, "{compared} entries compared");
+    }
+
+    #[test]
+    fn a_three_digit_count_prints_uncut_and_aligns_the_units() {
+        let row = |count: usize| Collapsed {
+            alias: "a".into(),
+            phase: "ph 01".into(),
+            name: "Name".into(),
+            count: Some(count),
+            ..Collapsed::default()
+        };
+        let lines = collapsed_block(&[row(120), row(3)]);
+        assert!(lines[0].contains("120 checks"), "{lines:?}");
+        assert!(lines[1].contains("  3 checks"), "{lines:?}");
+        assert_eq!(lines[0].find("checks"), lines[1].find("checks"));
     }
 }

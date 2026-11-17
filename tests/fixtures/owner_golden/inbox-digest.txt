@@ -1,0 +1,24 @@
+Owner inbox: 10 projects · test 80 · decide 1 · fix 3 phases · blocked 5
+
+  six closes after: test 12 (ph 20 21 22 23 …) · unblock 5 (ph 20 23) · fix 1 (ph 25)
+  merge test 3
+  gaps closes after: not built ph 01 · elsewhere: fix 10
+  labels closes after: test 8 (ph 01 02) · fix 1 (ph 02) · not built ph 03 · elsewhere: decide 1
+  old closes after: no owner work (ph 24)
+  old-ledger closes after: test 3 (ph 01 02)
+  script closes after: test 51 (ph 04)
+  ws closes after: test 1 (ph 1) · elsewhere: test 2
+
+NEXT
+  merge       ph market/43  Trader mode   3 checks  → closes phase · 2 files                   4 d  /gsd-verify-work 43 --ws market
+  labels      ph 02         Sync          1 check                                              4 d  /gsd-verify-work 02
+  labels      ph 02         Sync          1 check   1 failed check, 0 gaps · 1 looks resolved  4 d  /gsd-plan-phase 02 --gaps
+  old-ledger  ph 02         Search        1 check                                              4 d  /gsd-verify-work 02
+  labels      ph 01         Pricing       7 checks  4 decision?                                4 d  /gsd-verify-work 01
+
+Old debt: 16 checks in 2 projects (archived milestones)
+Stale: 33 checks in 14 phases older than 90 d
+Acknowledged: 1 file
+Deferred: 200 items
+
+inbox <alias> · inbox --lane test|decide|fix|blocked · inbox --all

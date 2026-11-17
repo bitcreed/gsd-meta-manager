@@ -185,7 +185,7 @@ fn a_debug_session_awaiting_confirmation_is_a_decide_row() {
     assert_eq!(fix[0]["command"], "/gsd-debug");
     assert_eq!(all["summary"]["fix_phases"], 0);
 
-    let text = inbox_with(&reg, scratch.path(), &["--lane", "decide"]);
+    let text = inbox_with(&reg, scratch.path(), &["--all", "--lane", "decide"]);
     let text = String::from_utf8_lossy(&text.stdout).into_owned();
     let row = text
         .lines()
@@ -713,7 +713,8 @@ fn a_lane_filter_lists_only_that_lane_in_both_modes() {
     assert!(!groups.is_empty());
     assert!(groups.iter().all(|g| g["lane"] == "test"), "{groups:?}");
     let text =
-        String::from_utf8(inbox_with(&reg, scratch.path(), &["--lane", "test"]).stdout).unwrap();
+        String::from_utf8(inbox_with(&reg, scratch.path(), &["--all", "--lane", "test"]).stdout)
+            .unwrap();
     assert!(text.contains("TEST — "), "{text}");
     assert!(!text.contains("BLOCKED\n"), "{text}");
 }
@@ -993,8 +994,8 @@ fn strings_of(value: &Value, out: &mut Vec<(String, String)>, key: &str) {
     }
 }
 
-#[test]
-fn hostile_strings_are_escaped_in_json_and_text() {
+/// The hostile tree: control characters and over-long text in every kind of entry.
+fn hostile_tree() -> TempDir {
     let project = tempfile::tempdir().unwrap();
     let long = "A".repeat(500);
     write(
@@ -1043,6 +1044,12 @@ fn hostile_strings_are_escaped_in_json_and_text() {
             q = serde_json::json!(nasty)
         ),
     );
+    project
+}
+
+#[test]
+fn hostile_strings_are_escaped_in_json_and_text() {
+    let project = hostile_tree();
     let scratch = tempfile::tempdir().unwrap();
     let reg = registry(scratch.path(), &[("evil", project.path())]);
 
@@ -1353,7 +1360,7 @@ fn sc1_decide_lane_lists_the_awaiting_sessions_and_the_paused_handoff() {
     assert_eq!(ids, ["HANDOFF.json#a1", "HANDOFF.json#b1"]);
     assert_eq!(doc["summary"]["decide"], 6);
 
-    let text = inbox_with(&reg, scratch.path(), &["--lane", "decide"]);
+    let text = inbox_with(&reg, scratch.path(), &["--all", "--lane", "decide"]);
     let text = String::from_utf8_lossy(&text.stdout).into_owned();
     assert!(text.contains("DECIDE"), "{text}");
     for heading in ["TEST", "FIX", "BLOCKED"] {
@@ -1442,4 +1449,108 @@ fn inbox_alias_honors_lane_and_reports_an_unknown_name() {
     let lines: Vec<&str> = text.lines().collect();
     assert!(lines[0].starts_with("Owner inbox: 1 projects"), "{text}");
     assert!(lines.iter().any(|l| l.starts_with("nope: ")), "{text}");
+}
+
+// --- The multi-project views (Phase 38, plan 03) -------------------------------
+
+/// `inbox ARGS` over `(alias, root)` pairs, as text.
+fn text_of(projects: &[(&str, &Path)], args: &[&str]) -> String {
+    let scratch = tempfile::tempdir().unwrap();
+    let reg = registry(scratch.path(), projects);
+    let out = inbox_with(&reg, scratch.path(), args);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    String::from_utf8(out.stdout).unwrap()
+}
+
+#[test]
+fn a_lane_view_lists_one_line_per_phase() {
+    let project = fresh_copy("uat-pending");
+    let text = text_of(&[("up", project.path())], &["--lane", "test"]);
+    assert!(
+        text.lines().any(|l| l.starts_with("TEST \u{2014} ")),
+        "{text}"
+    );
+    assert!(text.contains("/gsd-verify-work 01"), "{text}");
+    assert!(!text.lines().any(|l| l.starts_with("    - [ ] ")), "{text}");
+    assert!(!text.lines().any(|l| l.starts_with("BLOCKED")), "{text}");
+}
+
+#[test]
+fn a_decide_lane_view_lists_the_awaiting_session() {
+    let project = fresh_copy("debug-awaiting");
+    let text = text_of(&[("dbg", project.path())], &["--lane", "decide"]);
+    assert!(text.lines().any(|l| l.starts_with("DECIDE")), "{text}");
+    let row = text
+        .lines()
+        .find(|l| l.contains("awaiting your confirmation"))
+        .unwrap_or_else(|| panic!("{text}"));
+    assert!(row.contains("/gsd-debug"), "{row}");
+}
+
+#[test]
+fn a_stale_entry_folds_out_of_the_lane_view() {
+    let project = fresh_copy("stale-fold");
+    let old = chrono::Utc::now() - chrono::Duration::days(200);
+    let path = project.path().join(".planning/phases/01-ledger/01-UAT.md");
+    let text = std::fs::read_to_string(&path).unwrap();
+    let rewritten: Vec<String> = text
+        .lines()
+        .map(|l| {
+            if l.starts_with("updated:") {
+                format!("updated: {}", old.to_rfc3339())
+            } else {
+                l.to_owned()
+            }
+        })
+        .collect();
+    write(&path, &(rewritten.join("\n") + "\n"));
+    let text = text_of(&[("old-ledger", project.path())], &["--lane", "test"]);
+    assert!(text.contains("ph 02"), "{text}");
+    assert!(!text.contains("ph 01"), "{text}");
+    assert!(
+        text.contains("Stale: 2 checks in 1 phase older than 90 d"),
+        "{text}"
+    );
+}
+
+#[test]
+fn twenty_projects_fit_the_digest_budget() {
+    let roots: Vec<TempDir> = (0..20)
+        .map(|index| {
+            let dir = tempfile::tempdir().unwrap();
+            generate_project(dir.path(), index);
+            dir
+        })
+        .collect();
+    let named: Vec<(String, PathBuf)> = roots
+        .iter()
+        .enumerate()
+        .map(|(i, dir)| (format!("p{i:02}"), dir.path().to_path_buf()))
+        .collect();
+    let pairs: Vec<(&str, &Path)> = named
+        .iter()
+        .map(|(a, p)| (a.as_str(), p.as_path()))
+        .collect();
+    let text = text_of(&pairs, &[]);
+    let lines = text.lines().count();
+    assert!((15..=25).contains(&lines), "{lines} lines:\n{text}");
+    assert!(text.contains("more projects (inbox --all)"), "{text}");
+}
+
+#[test]
+fn hostile_strings_are_escaped_in_the_digest_and_lane_views() {
+    let project = hostile_tree();
+    let fresh = fresh_copy_of(project.path());
+    for root in [project.path(), fresh.path()] {
+        for args in [&[][..], &["--lane", "test,decide,fix"][..]] {
+            let text = text_of(&[("evil", root)], args);
+            for bad in [ESC, RLO, BEL] {
+                assert!(!text.contains(bad), "{args:?} carries {bad:?}: {text:?}");
+            }
+            for line in text.lines() {
+                assert!(line.chars().count() <= 1000, "bounded line: {}", line.len());
+            }
+            assert!(!text.lines().any(|l| l.starts_with("    - [ ] ")), "{text}");
+        }
+    }
 }
