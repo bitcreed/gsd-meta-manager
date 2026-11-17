@@ -15,6 +15,7 @@ use super::detail::fit_cells;
 use super::detail::{fit_spans, settle_mux_argv, shown};
 use super::driver_steer::tail_cells;
 use super::inbox::InboxScreen;
+use super::owner_actions;
 use super::owner_settle::{
     self, clean, MoveTarget, Outcome, SettleChoice, SettleDraft, SettlePlan, SettleScope,
     REASON_MAX_CHARS,
@@ -532,13 +533,28 @@ impl SettleConfirmScreen {
         }
     }
 
-    /// Yes: the status line says why nothing launched, or what launched.
-    fn confirm(&self, ctx: &mut AppContext) {
-        let message = match owner_settle::settle_recheck(ctx, &self.plan) {
-            Ok(fresh) => owner_settle::launch_settle(&fresh),
-            Err(message) => message,
+    /// Yes: the status line says why nothing launched, or what launched. With a
+    /// live session in the project it is focused (never typed into) and the
+    /// prompt goes to the clipboard for the owner to paste there (D-11); the
+    /// OSC 52 branch closes the popup and hands over the sequence in one action.
+    fn confirm(&self, ctx: &mut AppContext) -> ScreenAction {
+        let fresh = match owner_settle::settle_recheck(ctx, &self.plan) {
+            Ok(fresh) => fresh,
+            Err(message) => {
+                ctx.status_message = Some((message, std::time::Instant::now()));
+                return ScreenAction::Pop;
+            }
         };
-        ctx.status_message = Some((message, std::time::Instant::now()));
+        let focus = owner_settle::launch_settle(&fresh);
+        if fresh.draft.live_session.is_none() {
+            ctx.status_message = Some((focus, std::time::Instant::now()));
+            return ScreenAction::Pop;
+        }
+        let lead = format!("{focus} \u{b7} paste the command there");
+        match owner_actions::copy_led(ctx, lead, fresh.prompt(), 1) {
+            ScreenAction::WriteOsc52(sequence) => ScreenAction::PopWriteOsc52(sequence),
+            _ => ScreenAction::Pop,
+        }
     }
 }
 
@@ -626,11 +642,14 @@ pub(crate) fn settle_body(plan: &SettlePlan, inner_w: u16) -> Vec<Line<'static>>
         }
         body.push(Line::raw(""));
     }
-    body.push(Line::raw(if plan.draft.live_session.is_some() {
-        "Claude already runs here: Yes switches to it, no second session."
+    let consequence = if plan.draft.live_session.is_some() {
+        "Claude already runs here: Yes switches to it and copies the command to paste; no second session."
     } else {
         "Yes starts a new session; GSD records it. This app writes nothing."
-    }));
+    };
+    for part in wrap_at_separators(consequence, inner_w) {
+        body.push(Line::raw(part));
+    }
     body
 }
 
@@ -653,10 +672,7 @@ impl Screen for SettleConfirmScreen {
     ) -> ScreenAction {
         ctx.needs_redraw = true;
         match self.popup.on_key(code) {
-            ConfirmOutcome::Confirm => {
-                self.confirm(ctx);
-                ScreenAction::Pop
-            }
+            ConfirmOutcome::Confirm => self.confirm(ctx),
             ConfirmOutcome::Cancel => ScreenAction::Pop,
             ConfirmOutcome::Pending => ScreenAction::None,
         }
@@ -701,11 +717,11 @@ mod tests {
     const TRACER_PROMPT: &str = "/gsd-verify-work 01 The user will not perform tests 2, 3 in 01-UAT.md. Resume the UAT session of phase 01 without restarting it and record each of them as result: skipped, reason: Deferred follow-up: will not do. no device here. They must not block phase 01 or be asked again. Keep them in the UAT file and do not promote them to the 999.x backlog.";
 
     /// A small screen stack: `Push`, `Replace` and `Pop` as the App applies them.
-    pub(crate) struct Stack(Vec<Box<dyn Screen>>);
+    pub(crate) struct Stack(Vec<Box<dyn Screen>>, Option<String>);
 
     impl Stack {
         pub(crate) fn inbox() -> Self {
-            Stack(vec![Box::new(InboxScreen::new())])
+            Stack(vec![Box::new(InboxScreen::new())], None)
         }
 
         /// The detail view with the Owner block focused on the row `key`.
@@ -720,7 +736,7 @@ mod tests {
                 ctx,
             );
             assert!(screen.owner_focused(), "the Owner block holds the keyboard");
-            let stack = Stack(vec![Box::new(screen)]);
+            let stack = Stack(vec![Box::new(screen)], None);
             stack.render(ctx, 100, 30);
             stack
         }
@@ -743,6 +759,11 @@ mod tests {
                 ScreenAction::Pop => {
                     self.0.pop();
                 }
+                // As `App` applies it: pop and hold the sequence.
+                ScreenAction::PopWriteOsc52(sequence) => {
+                    self.0.pop();
+                    self.1 = Some(sequence);
+                }
                 ScreenAction::None => return false,
                 _ => {}
             }
@@ -757,6 +778,11 @@ mod tests {
             for ch in text.chars() {
                 self.key(ctx, KeyCode::Char(ch));
             }
+        }
+
+        /// The OSC 52 sequence a `PopWriteOsc52` handed over, drained.
+        pub(crate) fn take_osc52(&mut self) -> Option<String> {
+            self.1.take()
         }
 
         pub(crate) fn depth(&self) -> usize {
@@ -1600,7 +1626,8 @@ mod tests {
         stack.key(&mut ctx, KeyCode::Enter);
         let text = stack.render(&ctx, 100, 30);
         assert!(
-            text.contains("Claude already runs here: Yes switches to it, no second session."),
+            text.contains("Claude already runs here: Yes switches to it and copies the command to")
+                && text.contains("paste; no second session."),
             "{text}"
         );
         stack.key(&mut ctx, KeyCode::Char('y'));
@@ -1663,5 +1690,114 @@ mod tests {
                 ScreenAction::Pop
             ));
         }
+    }
+
+    /// The popup flow with a live session in the project: `x w <reason> Enter y`.
+    fn live_flow(root: &std::path::Path) -> (AppContext, Stack) {
+        take_settle_launches();
+        let mut ctx = fixture_ctx(root, ALIAS);
+        ctx.active_sessions.push(session_in(root));
+        let mut stack = Stack::inbox();
+        to_popup(&mut stack, &mut ctx);
+        (ctx, stack)
+    }
+
+    const FOCUSED: &str = "alder-api \u{b7} paste the command there";
+
+    #[test]
+    fn a_live_session_gets_the_prompt_by_osc52() {
+        crate::ui::screens::owner_actions::force_clipboard(None);
+        let (_dir, root) = temp_fixture("uat-pending");
+        let before = tree(&root);
+        let (mut ctx, mut stack) = live_flow(&root);
+        stack.key(&mut ctx, KeyCode::Char('y'));
+        assert_eq!(stack.depth(), 1, "the popup closed in the same transition");
+        let launches = take_settle_launches();
+        assert_eq!(launches.len(), 1, "one focus, no second session");
+        let prompt = launches[0].prompt();
+        assert_eq!(prompt, TRACER_PROMPT);
+        let sequence = stack.take_osc52().expect("the sequence reached the stack");
+        assert_eq!(sequence, crate::clipboard::osc52(&prompt));
+        assert!(sequence.starts_with("\u{1b}]52;c;") && sequence.ends_with('\u{7}'));
+        assert!(!sequence.contains("claude"), "never the argv");
+        assert_eq!(
+            status(&ctx),
+            format!(
+                "{} {FOCUSED}; Sent 1 line to the terminal clipboard (OSC 52; the terminal must allow it)",
+                crate::multiplexer::FOCUS_OK_PREFIX
+            )
+        );
+        assert!(owner_actions::seam_ran().is_empty());
+        assert_eq!(tree(&root), before);
+    }
+
+    #[test]
+    fn a_live_session_gets_the_prompt_by_a_native_tool() {
+        use crate::clipboard::{ClipboardProbes, Tool};
+        crate::ui::screens::owner_actions::force_clipboard(Some(ClipboardProbes {
+            os: "linux",
+            wayland_display: true,
+            display: false,
+            on_path: vec!["wl-copy"],
+        }));
+        let (_dir, root) = temp_fixture("uat-pending");
+        let (mut ctx, mut stack) = live_flow(&root);
+        stack.key(&mut ctx, KeyCode::Char('y'));
+        assert_eq!(stack.depth(), 1);
+        assert!(stack.take_osc52().is_none(), "the native tool is used");
+        assert_eq!(
+            owner_actions::seam_ran(),
+            vec![(Tool::WlCopy, TRACER_PROMPT.to_owned(), 1)]
+        );
+        assert_eq!(
+            status(&ctx),
+            format!("{} {FOCUSED}", crate::multiplexer::FOCUS_OK_PREFIX)
+        );
+        assert_eq!(take_settle_launches().len(), 1);
+        crate::ui::screens::owner_actions::force_clipboard(None);
+    }
+
+    #[test]
+    fn an_owner_block_live_session_copies_the_check_prompt() {
+        crate::ui::screens::owner_actions::force_clipboard(None);
+        take_settle_launches();
+        let (_dir, root) = temp_fixture("uat-pending");
+        let mut ctx = fixture_ctx(&root, ALIAS);
+        ctx.active_sessions.push(session_in(&root));
+        let (key, _) = uat_row_and_first_item(&ctx);
+        let mut stack = Stack::detail(&mut ctx, ALIAS, &key);
+        stack.key(&mut ctx, KeyCode::Enter);
+        stack.key(&mut ctx, KeyCode::Char('j'));
+        stack.key(&mut ctx, KeyCode::Char('x'));
+        stack.key(&mut ctx, KeyCode::Char('w'));
+        stack.keys(&mut ctx, "no device here");
+        stack.key(&mut ctx, KeyCode::Enter);
+        stack.key(&mut ctx, KeyCode::Char('y'));
+        let launches = take_settle_launches();
+        assert_eq!(launches.len(), 1);
+        assert_eq!(
+            launches[0].draft.target.scope,
+            SettleScope::Check("01-UAT.md#2".to_owned())
+        );
+        assert_eq!(
+            stack.take_osc52(),
+            Some(crate::clipboard::osc52(&launches[0].prompt()))
+        );
+    }
+
+    #[test]
+    fn no_live_session_copies_nothing() {
+        crate::ui::screens::owner_actions::force_clipboard(None);
+        take_settle_launches();
+        let (_dir, root) = temp_fixture("uat-pending");
+        let mut ctx = fixture_ctx(&root, ALIAS);
+        let mut stack = Stack::inbox();
+        to_popup(&mut stack, &mut ctx);
+        stack.key(&mut ctx, KeyCode::Char('y'));
+        assert_eq!(stack.depth(), 1);
+        assert!(stack.take_osc52().is_none());
+        assert!(owner_actions::seam_ran().is_empty());
+        assert!(status(&ctx).starts_with("Launched "), "{}", status(&ctx));
+        assert_eq!(take_settle_launches().len(), 1);
     }
 }

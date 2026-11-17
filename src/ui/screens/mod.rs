@@ -375,6 +375,11 @@ pub enum ScreenAction {
     /// (`App::pending_osc52`); the binary's main loop writes it to the terminal
     /// after the frame, never from `render` or a key handler.
     WriteOsc52(String),
+    /// [`ScreenAction::Pop`] and [`ScreenAction::WriteOsc52`] in one transition,
+    /// for a confirm popup that closes and hands the terminal a clipboard
+    /// sequence (the live-session settle, 39-03 D-11). `App` holds the sequence
+    /// like `WriteOsc52` does.
+    PopWriteOsc52(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -1987,9 +1992,45 @@ impl AppContext {
     ) where
         F: FnOnce(crate::clipboard::Tool, &str) -> Result<(), String> + Send + 'static,
     {
+        self.start_copy_led_with(tool, text, lines, None, run);
+    }
+
+    /// [`Self::start_copy`] with every message led by `lead` (39-03, D-11): the
+    /// live-session settle says what was focused before it says what was copied.
+    // The unit tests go through the `owner_actions` seam instead of this wrapper.
+    #[cfg_attr(test, allow(dead_code))]
+    pub(crate) fn start_copy_led(
+        &mut self,
+        tool: crate::clipboard::Tool,
+        text: String,
+        lines: usize,
+        lead: String,
+    ) {
+        self.start_copy_led_with(tool, text, lines, Some(lead), |tool, text| {
+            crate::clipboard::copy_with_tool(tool, text, std::time::Duration::from_secs(2))
+        });
+    }
+
+    /// The body of [`Self::start_copy_with`]: with `Some(lead)` every message it
+    /// sets or sends (the busy status, the no-channel status, the outcome) reads
+    /// `{lead}; {message}`.
+    pub(crate) fn start_copy_led_with<F>(
+        &mut self,
+        tool: crate::clipboard::Tool,
+        text: String,
+        lines: usize,
+        lead: Option<String>,
+        run: F,
+    ) where
+        F: FnOnce(crate::clipboard::Tool, &str) -> Result<(), String> + Send + 'static,
+    {
+        let led = move |message: String| match &lead {
+            Some(lead) => format!("{lead}; {message}"),
+            None => message,
+        };
         let Some(tx) = self.event_tx.clone() else {
             self.status_message = Some((
-                "Copy failed: this session has no event channel".to_owned(),
+                led("Copy failed: this session has no event channel".to_owned()),
                 std::time::Instant::now(),
             ));
             self.needs_redraw = true;
@@ -1997,7 +2038,7 @@ impl AppContext {
         };
         if std::mem::replace(&mut self.owner_copy_busy, true) {
             self.status_message = Some((
-                "Already copying; wait for it to finish".to_owned(),
+                led("Already copying; wait for it to finish".to_owned()),
                 std::time::Instant::now(),
             ));
             self.needs_redraw = true;
@@ -2008,12 +2049,12 @@ impl AppContext {
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(tool, &text)))
                     .unwrap_or_else(|_| Err("stopped unexpectedly".to_owned()));
             let outcome = match result {
-                Ok(()) => format!(
+                Ok(()) => led(format!(
                     "Copied {} via {}",
                     owner_actions::line_count(lines),
                     tool.name()
-                ),
-                Err(why) => format!("Copy failed: {} {why}", tool.name()),
+                )),
+                Err(why) => led(format!("Copy failed: {} {why}", tool.name())),
             };
             let _ = tx.send(crate::action::Action::ClipboardCopied { outcome });
         });

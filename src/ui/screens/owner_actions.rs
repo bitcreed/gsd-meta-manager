@@ -598,9 +598,56 @@ pub(crate) fn copy(ctx: &mut AppContext, text: String, lines: usize) -> ScreenAc
     ScreenAction::WriteOsc52(crate::clipboard::osc52(&text))
 }
 
+/// [`copy`] with the status led by `lead` (39-03, D-11): the live-session settle
+/// says what it focused, then what it copied. The status is `lead` until a
+/// native tool answers; the OSC 52 branch appends what was sent.
+pub(crate) fn copy_led(
+    ctx: &mut AppContext,
+    lead: String,
+    text: String,
+    lines: usize,
+) -> ScreenAction {
+    ctx.needs_redraw = true;
+    if let Some(tool) = crate::clipboard::pick_tool(&clipboard_probes()) {
+        ctx.status_message = Some((lead.clone(), std::time::Instant::now()));
+        start_native_copy_led(ctx, tool, text, lines, lead);
+        return ScreenAction::None;
+    }
+    ctx.status_message = Some((
+        format!(
+            "{lead}; Sent {} to the terminal clipboard (OSC 52; the terminal must allow it)",
+            line_count(lines)
+        ),
+        std::time::Instant::now(),
+    ));
+    ScreenAction::WriteOsc52(crate::clipboard::osc52(&text))
+}
+
 #[cfg(not(test))]
 fn clipboard_probes() -> crate::clipboard::ClipboardProbes {
     crate::clipboard::probe()
+}
+
+#[cfg(not(test))]
+fn start_native_copy_led(
+    ctx: &mut AppContext,
+    tool: crate::clipboard::Tool,
+    text: String,
+    lines: usize,
+    lead: String,
+) {
+    ctx.start_copy_led(tool, text, lines, lead);
+}
+
+#[cfg(test)]
+fn start_native_copy_led(
+    _ctx: &mut AppContext,
+    tool: crate::clipboard::Tool,
+    text: String,
+    lines: usize,
+    _lead: String,
+) {
+    SEAM_RAN.with(|r| r.borrow_mut().push((tool, text, lines)));
 }
 
 #[cfg(not(test))]
@@ -1817,5 +1864,84 @@ mod tests {
             ctx.status_message.as_ref().map(|(m, _)| m.as_str()),
             Some("Copy failed: this session has no event channel")
         );
+    }
+
+    /// 39-03 D-11: every outcome of the native copy is led by the focus message,
+    /// and `start_copy_with` (no lead) keeps its texts.
+    #[tokio::test]
+    async fn start_copy_led_with_leads_every_outcome() {
+        use crate::clipboard::Tool;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut ctx = ctx_with_aliases(&["p"]);
+        ctx.event_tx = Some(tx);
+        let lead = || Some("Focused p \u{b7} paste the command there".to_owned());
+        ctx.start_copy_led_with(Tool::WlCopy, "a\n".to_owned(), 1, lead(), |_, _| Ok(()));
+        let Some(crate::action::Action::ClipboardCopied { outcome }) = rx.recv().await else {
+            panic!("the task answers");
+        };
+        assert_eq!(
+            outcome,
+            "Focused p \u{b7} paste the command there; Copied 1 line via wl-copy"
+        );
+        ctx.owner_copy_busy = false;
+        ctx.start_copy_led_with(Tool::Xclip, "a\n".to_owned(), 1, lead(), |_, _| {
+            Err("exited 3".to_owned())
+        });
+        let Some(crate::action::Action::ClipboardCopied { outcome }) = rx.recv().await else {
+            panic!("the task answers");
+        };
+        assert_eq!(
+            outcome,
+            "Focused p \u{b7} paste the command there; Copy failed: xclip exited 3"
+        );
+        ctx.owner_copy_busy = false;
+        ctx.start_copy_led_with(Tool::Pbcopy, "a\n".to_owned(), 1, lead(), |_, _| {
+            panic!("boom")
+        });
+        let Some(crate::action::Action::ClipboardCopied { outcome }) = rx.recv().await else {
+            panic!("the task answers even when the runner panics");
+        };
+        assert!(
+            outcome.starts_with("Focused p \u{b7} paste the command there; Copy failed: pbcopy"),
+            "{outcome}"
+        );
+        // Busy: the status is led too, and nothing starts.
+        ctx.owner_copy_busy = false;
+        ctx.start_copy_led_with(Tool::WlCopy, "a\n".to_owned(), 1, lead(), |_, _| Ok(()));
+        ctx.start_copy_led_with(Tool::WlCopy, "a\n".to_owned(), 1, lead(), |_, _| {
+            panic!("not run")
+        });
+        assert_eq!(
+            ctx.status_message.as_ref().map(|(m, _)| m.as_str()),
+            Some(
+                "Focused p \u{b7} paste the command there; Already copying; wait for it to finish"
+            )
+        );
+        let _ = rx.recv().await;
+        // No channel: led as well.
+        ctx.owner_copy_busy = false;
+        ctx.event_tx = None;
+        ctx.start_copy_led_with(Tool::WlCopy, "a\n".to_owned(), 1, lead(), |_, _| {
+            panic!("not run")
+        });
+        assert_eq!(
+            ctx.status_message.as_ref().map(|(m, _)| m.as_str()),
+            Some("Focused p \u{b7} paste the command there; Copy failed: this session has no event channel")
+        );
+    }
+
+    #[test]
+    fn copy_led_osc52_leads_the_status() {
+        force_clipboard(None);
+        let mut ctx = ctx_with_aliases(&["p"]);
+        let action = copy_led(&mut ctx, "Focused p".to_owned(), "hello".to_owned(), 1);
+        assert!(
+            matches!(&action, ScreenAction::WriteOsc52(s) if *s == crate::clipboard::osc52("hello"))
+        );
+        assert_eq!(
+            ctx.status_message.as_ref().map(|(m, _)| m.as_str()),
+            Some("Focused p; Sent 1 line to the terminal clipboard (OSC 52; the terminal must allow it)")
+        );
+        assert!(seam_ran().is_empty());
     }
 }

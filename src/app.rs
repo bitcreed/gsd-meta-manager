@@ -3972,6 +3972,14 @@ impl App {
                 self.pending_osc52 = Some(sequence);
                 self.needs_redraw = true;
             }
+            // 39-03 D-11: `Pop` (same root guard) and `WriteOsc52` as one transition.
+            ScreenAction::PopWriteOsc52(sequence) => {
+                if self.screen_stack.len() > 1 {
+                    self.screen_stack.pop();
+                }
+                self.pending_osc52 = Some(sequence);
+                self.needs_redraw = true;
+            }
             // Runtime only: nothing is written to `config.json` (D-06, I-2).
             ScreenAction::ToggleMouseCapture => {
                 self.mouse_capture = !self.mouse_capture;
@@ -6750,6 +6758,26 @@ mod tests {
         assert!(app.needs_redraw);
         assert_eq!(app.pending_osc52.take(), Some(sequence));
         assert!(app.pending_osc52.is_none());
+    }
+
+    /// 39-03 D-11: `PopWriteOsc52` closes the popup and holds the sequence in one
+    /// transition; the root screen is never popped.
+    #[test]
+    fn pop_write_osc52_pops_and_holds_the_sequence() {
+        let mut app = App::new_for_test();
+        let sequence = crate::clipboard::osc52("/gsd-verify-work 01 x");
+        let root = app.screen_stack.len();
+        app.screen_stack
+            .push(Box::new(crate::ui::screens::help::HelpScreen::new()));
+        app.needs_redraw = false;
+        app.process_screen_action(ScreenAction::PopWriteOsc52(sequence.clone()));
+        assert_eq!(app.screen_stack.len(), root);
+        assert_eq!(app.pending_osc52.as_deref(), Some(sequence.as_str()));
+        assert!(app.needs_redraw);
+        app.pending_osc52 = None;
+        app.process_screen_action(ScreenAction::PopWriteOsc52(sequence.clone()));
+        assert_eq!(app.screen_stack.len(), root, "the root is never popped");
+        assert_eq!(app.pending_osc52, Some(sequence));
     }
 
     /// 37-07 D-09: the clipboard tool's answer sets the (escaped) status line.
