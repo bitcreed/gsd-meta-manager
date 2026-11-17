@@ -1134,17 +1134,21 @@ fn totals_line(entries: &[ProjectEntry]) -> String {
 }
 
 /// `Stale: 3 checks in 2 phases older than 90 d`: what the fold hides (D-09). The
-/// unit reads `items` once a folded entry is not a check.
+/// unit reads `items` and the noun `entries` once a folded entry is not a check
+/// (a debug session, handoff or checkpoint is not a phase).
 pub(crate) fn stale_fold_text(totals: &StaleTotals, fold_days: u32) -> String {
-    let items = if totals.non_check {
-        plural(totals.items, "item", "items")
+    let (items, entries) = if totals.non_check {
+        (
+            plural(totals.items, "item", "items"),
+            plural(totals.entries, "entry", "entries"),
+        )
     } else {
-        plural(totals.items, "check", "checks")
+        (
+            plural(totals.items, "check", "checks"),
+            plural(totals.entries, "phase", "phases"),
+        )
     };
-    format!(
-        "Stale: {items} in {} older than {fold_days} d",
-        plural(totals.entries, "phase", "phases")
-    )
+    format!("Stale: {items} in {entries} older than {fold_days} d")
 }
 
 /// The fold lines below the sections: what is counted but not listed. `stale` adds
@@ -1973,7 +1977,7 @@ mod tests {
         );
         assert_eq!(
             stale_fold_text(&t(1, 2, true), 30),
-            "Stale: 2 items in 1 phase older than 30 d"
+            "Stale: 2 items in 1 entry older than 30 d"
         );
     }
 

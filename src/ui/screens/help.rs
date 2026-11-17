@@ -541,7 +541,7 @@ pub(super) fn help_lines(experimental: bool) -> Vec<Line<'static>> {
         row("v", "Run the group's command in its project through your multiplexer; a live session is focused instead and you type the command there"),
         row("A", "Acknowledge the group's file via gsd-core: file-level, uncommitted, asks first"),
         row("y", "Copy the group as a plain checklist (wl-copy, xclip, xsel, pbcopy, clip.exe, else OSC 52)"),
-        row("Stale", "Fold of phases idle for more than 90 days (preferences.owner.fold_days); still counted, Enter lists them"),
+        row("Stale", "Fold of entries idle for longer than preferences.owner.fold_days (default 90); still counted, Enter lists them"),
         row("decision?", "Label only: the text reads like a ruling; looks resolved: it says fixed; a label never moves or hides a row"),
         row("Esc / q", "Back to the dashboard (the dashboard selection is unchanged)"),
         Line::from(""),
@@ -944,7 +944,7 @@ mod tests {
             ),
             (
                 "Stale",
-                "Fold of phases idle for more than 90 days (preferences.owner.fold_days); still counted, Enter lists them",
+                "Fold of entries idle for longer than preferences.owner.fold_days (default 90); still counted, Enter lists them",
             ),
             (
                 "decision?",
