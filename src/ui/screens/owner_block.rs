@@ -605,8 +605,10 @@ pub(crate) fn inbox_sources(digest: &OwnerDigest, fold_days: u32) -> (Vec<RowSrc
                 if blocked_entries.iter().all(|e| e.folded) != folded {
                     continue;
                 }
-                let siblings: Vec<&OwnerGroup> =
-                    blocked_entries.iter().flat_map(|e| e.parts.iter()).collect();
+                let siblings: Vec<&OwnerGroup> = blocked_entries
+                    .iter()
+                    .flat_map(|e| e.parts.iter())
+                    .collect();
                 let mut merged = group.clone();
                 merged.items = siblings
                     .iter()
@@ -928,10 +930,7 @@ fn row_line(row: &RowCells, grid: &Grid, width: usize) -> Line<'static> {
     }
     if row.lane != Lane::Blocked {
         spans.push(Span::raw("  "));
-        spans.push(Span::styled(
-            pad(&row.checks, grid.checks_w, true),
-            plain,
-        ));
+        spans.push(Span::styled(pad(&row.checks, grid.checks_w, true), plain));
         spans.push(Span::raw("  "));
         // The phase column, which a bookkeeping phrase may spill out of across
         // the age and command columns (their cells are blank on that row).
