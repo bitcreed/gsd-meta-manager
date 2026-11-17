@@ -1755,7 +1755,7 @@ impl InboxScreen {
             Self::say(
                 ctx,
                 format!(
-                    "{n} files behind this row: press g and acknowledge one file in the Owner block"
+                    "{n} files behind this row: press g to pick a file in the Owner block, then A"
                 ),
             );
             return ScreenAction::None;
@@ -4560,7 +4560,7 @@ mod tests {
     }
 
     #[test]
-    fn o_on_a_blocked_row_over_two_files_points_at_expand() {
+    fn o_on_a_blocked_row_over_two_files_points_at_g() {
         let mut ctx = inbox_fleet_ctx();
         let mut second = ctx.owner_digests["iris-gate"].groups[0].clone();
         second.file = "phases/23/23-VERIFICATION.md".to_owned();
@@ -4581,7 +4581,7 @@ mod tests {
         assert!(matches!(action, ScreenAction::None));
         assert_eq!(
             ctx.status_message.as_ref().map(|(m, _)| m.as_str()),
-            Some("2 files behind this row: expand it with Enter, or press g")
+            Some("2 files behind this row: press g to pick a file in the Owner block")
         );
     }
 
@@ -4910,7 +4910,7 @@ mod tests {
         assert!(matches!(action, ScreenAction::None), "no popup");
         assert_eq!(
             status(&ctx),
-            "2 files behind this row: press g and acknowledge one file in the Owner block"
+            "2 files behind this row: press g to pick a file in the Owner block, then A"
         );
         assert!(ctx.owner_ack_busy.is_empty());
     }
@@ -4975,7 +4975,7 @@ mod tests {
         assert!(matches!(action, ScreenAction::None));
         assert_eq!(
             status(&ctx),
-            "2 files behind this row: expand it with Enter, or press g"
+            "2 files behind this row: press g to pick a file in the Owner block"
         );
     }
 
