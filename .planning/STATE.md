@@ -575,6 +575,7 @@ Older entries (Phase 19 T-19-* rows, Phase 21 round-13 gaps, Phase 26 risks, 31-
 | 261113-dcl | Conformance oracle and provisioning script follow CLAUDE_CONFIG_DIR | 2026-11-13 | e4897c2 | .planning/quick/261113-dcl-conformance-oracle-follows-claude-config-dir-tests-driver-ro |
 | 261113-epo | Sandbox binds of `.gsd` and `.gsd-capabilities.json` honour `GSD_HOME` | 2026-11-13 | 3eb643a | [261113-epo-sandbox-binds-of-gsd-and-gsd-capabilitie](./quick/261113-epo-sandbox-binds-of-gsd-and-gsd-capabilitie/) |
 | 261113-fi0 | Sync against gsd-core v1.21.0 | 2026-11-13 | 1ac9832 | [261113-fi0-sync-against-gsd-core-v1-21-0](./quick/261113-fi0-sync-against-gsd-core-v1-21-0/) |
+| 261116-kft | Route Config-tab config.json saves through gsd-tools config-set; drop the .planning/.lock replica (defaults.json still direct: no gsd-core writer) | 2026-11-16 | c924939 | [261116-kft-route-config-json-writes-through-gsd-too](./quick/261116-kft-route-config-json-writes-through-gsd-too/) |
 
 ## Deferred Items
 
