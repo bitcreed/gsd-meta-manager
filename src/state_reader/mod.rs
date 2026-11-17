@@ -1,6 +1,7 @@
 pub mod backlog;
 pub mod config_json;
 pub mod config_secrets;
+pub mod config_set;
 pub mod config_write;
 pub mod disk_status;
 pub mod driver_frontmatter;

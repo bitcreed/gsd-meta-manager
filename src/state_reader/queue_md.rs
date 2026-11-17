@@ -176,7 +176,11 @@ fn resolve_gsd_tools_from(project_root: &Path, roots: &InstallRoots) -> Option<G
 /// otherwise get its code run, with the TUI's full environment, once the owner
 /// presses `A` and `y` (Phase 37 review WR-05). The order is
 /// `${CLAUDE_CONFIG_DIR:-~/.claude}`, then `${CODEX_HOME:-~/.codex}`, then an
-/// executable `gsd-tools` found through an absolute `PATH` entry.
+/// executable `gsd-tools` found through an absolute `PATH` entry. The Config
+/// tab's `config-set` saves resolve through here too (quick 261116-kft).
+///
+/// Unit tests never call it (they force a launcher instead, I-kft-11).
+#[cfg_attr(test, allow(dead_code))]
 pub(crate) fn resolve_user_gsd_tools() -> Option<GsdToolsCmd> {
     resolve_user_gsd_tools_from(
         &InstallRoots::from_env(),

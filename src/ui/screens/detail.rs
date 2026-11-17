@@ -13998,13 +13998,15 @@ enum PersistOutcome {
 }
 
 /// Apply one edit to the active config, persist it, and surface a status
-/// message (quick 261019-guw).
+/// message (quick 261019-guw, 261116-kft).
 ///
-/// The edit arrives as a closure and is applied to a FRESH read of the file
-/// inside gsd-core's lock ([`crate::state_reader::config_write`]), never to the
-/// cached snapshot, so a `gsd config-set` that landed since the tab loaded is
-/// not lost. The cache is replaced only after a successful write: a failed save
-/// leaves the display equal to disk.
+/// Project scope: the edit is saved by the user's own gsd-tools
+/// (`config-set`), never written here ([`save_project_config`]); the cache is
+/// then refreshed from disk. Global scope: gsd-core has no writer for
+/// `defaults.json`, so the edit is applied to a FRESH read inside the
+/// installer lock and written atomically
+/// ([`crate::state_reader::config_write`], 261116-kft D-02). Either way a failed
+/// save leaves the display equal to disk.
 ///
 /// The destination comes from [`config_write_path`]; the global path is the
 /// one resolved into the cache, never re-read from `$HOME` here (I-7). With no
@@ -14016,7 +14018,7 @@ fn persist_active_config(
     mutate: impl FnOnce(&mut crate::state_reader::config_json::GsdConfig) -> bool,
 ) -> PersistOutcome {
     use super::DefaultsEditTarget;
-    use crate::state_reader::config_write::{update_gsd_config, ConfigWriteTarget, LockPolicy};
+    use crate::state_reader::config_write::{update_global_defaults, LockPolicy};
     let target = cache.defaults_edit_target;
     let user_path = cache.defaults_user_path.clone();
     let Some(active) = active_config_mut(cache) else {
@@ -14029,29 +14031,256 @@ fn persist_active_config(
             PersistOutcome::NotApplied
         };
     };
-    let write_target = match (target, project_path) {
-        (DefaultsEditTarget::Project, Some(root)) => ConfigWriteTarget::Project {
-            config_path: path,
-            project_root: root.to_path_buf(),
-        },
-        _ => ConfigWriteTarget::GlobalDefaults { path },
-    };
-    let flavor = write_target.flavor();
-    match update_gsd_config(&write_target, LockPolicy::tui(flavor), active, mutate) {
+    let now = std::time::Instant::now;
+    if let (DefaultsEditTarget::Project, Some(root)) = (target, project_path) {
+        return match save_project_config(root, active, mutate) {
+            ProjectSave::Saved { fresh, changed } => {
+                if let Some(fresh) = fresh {
+                    *active = fresh;
+                }
+                let label = if changed {
+                    "Config saved"
+                } else {
+                    "Config unchanged"
+                };
+                *status_message = Some((label.to_string(), now()));
+                PersistOutcome::Applied
+            }
+            ProjectSave::NotApplied => PersistOutcome::NotApplied,
+            ProjectSave::Failed { status, fresh } => {
+                if let Some(fresh) = fresh {
+                    *active = fresh;
+                }
+                *status_message = Some((status, now()));
+                PersistOutcome::Failed
+            }
+        };
+    }
+    match update_global_defaults(&path, LockPolicy::tui(), active, mutate) {
         Ok(Some(fresh)) => {
             *active = fresh;
-            let label = match target {
-                DefaultsEditTarget::Project => "Config saved",
-                DefaultsEditTarget::Global => "Defaults saved",
-            };
-            *status_message = Some((label.to_string(), std::time::Instant::now()));
+            *status_message = Some(("Defaults saved".to_string(), now()));
             PersistOutcome::Applied
         }
         Ok(None) => PersistOutcome::NotApplied,
         Err(err) => {
-            *status_message = Some((err.status_text(flavor), std::time::Instant::now()));
+            *status_message = Some((err.status_text(), now()));
             PersistOutcome::Failed
         }
+    }
+}
+
+/// The whole-edit budget for a project save's gsd-tools children (D-07,
+/// [INFERRED I-kft-3]): one `config-set` takes about 150 ms (node startup).
+const CONFIG_SET_BUDGET: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// What [`save_project_config`] did. Off Linux/macOS only `Failed` is built.
+#[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
+enum ProjectSave {
+    /// Every planned call succeeded (or there was none: `changed` is false).
+    /// `fresh` is the config re-read from disk, when it parsed.
+    Saved {
+        fresh: Option<crate::state_reader::config_json::GsdConfig>,
+        changed: bool,
+    },
+    /// The edit closure changed nothing it recognised; nothing ran.
+    NotApplied,
+    /// Refused or failed; `status` is the status line, `fresh` the config on
+    /// disk afterwards when it parsed.
+    Failed {
+        status: String,
+        fresh: Option<crate::state_reader::config_json::GsdConfig>,
+    },
+}
+
+/// Save one project-scope Config-tab edit through gsd-tools (quick 261116-kft).
+/// Synchronous on purpose: it runs in the key handler, bounded by
+/// [`CONFIG_SET_BUDGET`].
+fn save_project_config(
+    root: &std::path::Path,
+    cached: &crate::state_reader::config_json::GsdConfig,
+    mutate: impl FnOnce(&mut crate::state_reader::config_json::GsdConfig) -> bool,
+) -> ProjectSave {
+    save_project_config_within(root, cached, CONFIG_SET_BUDGET, mutate)
+}
+
+/// Off Linux/macOS the bounded runner does not exist: refuse before any I/O.
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn save_project_config_within(
+    _root: &std::path::Path,
+    _cached: &crate::state_reader::config_json::GsdConfig,
+    _budget: std::time::Duration,
+    _mutate: impl FnOnce(&mut crate::state_reader::config_json::GsdConfig) -> bool,
+) -> ProjectSave {
+    ProjectSave::Failed {
+        status: "Config NOT saved: running gsd-tools is not supported on this platform".to_string(),
+        fresh: None,
+    }
+}
+
+/// Read and parse `<root>/.planning/config.json` with the bounded reader.
+/// `Ok(None)` when the file is absent; `Err` carries the refusal status.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn read_project_config(
+    path: &std::path::Path,
+) -> Result<Option<crate::state_reader::config_json::GsdConfig>, String> {
+    use crate::state_reader::config_json::parse_gsd_config;
+    use crate::state_reader::config_write::{read_bounded, CONFIG_READ_CAP};
+    const UNPARSEABLE: &str =
+        "Config NOT saved: the file on disk no longer parses — press r to reload";
+    match read_bounded(path, CONFIG_READ_CAP, true) {
+        Ok(bytes) => String::from_utf8(bytes)
+            .ok()
+            .and_then(|text| parse_gsd_config(&text))
+            .map(Some)
+            .ok_or_else(|| UNPARSEABLE.to_string()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("Config NOT saved: {}", e.kind())),
+    }
+}
+
+/// The reason a gsd-tools child gave: its last stderr line, else its first
+/// stdout line. A secret value is replaced by `<redacted>` BEFORE the cap and
+/// the escape (D-06: gsd-core echoes some keys in plaintext).
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn gsd_tools_reason(stderr_line: &str, stdout: &[u8], secret: Option<&str>) -> String {
+    const REASON_CAP: usize = 120;
+    let stdout = String::from_utf8_lossy(stdout);
+    let raw = Some(stderr_line.trim())
+        .filter(|l| !l.is_empty())
+        .or_else(|| stdout.lines().map(str::trim).find(|l| !l.is_empty()))
+        .unwrap_or("gsd-tools failed without a message");
+    let redacted = match secret {
+        Some(value) if !value.is_empty() => raw.replace(value, "<redacted>"),
+        _ => raw.to_string(),
+    };
+    let capped: String = redacted.chars().take(REASON_CAP).collect();
+    shown(&capped)
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn save_project_config_within(
+    root: &std::path::Path,
+    cached: &crate::state_reader::config_json::GsdConfig,
+    budget: std::time::Duration,
+    mutate: impl FnOnce(&mut crate::state_reader::config_json::GsdConfig) -> bool,
+) -> ProjectSave {
+    use crate::bounded_output::BoundedFailure as F;
+    use crate::state_reader::config_secrets::is_secret_key;
+    use crate::state_reader::config_set::plan_config_set;
+    let fail = |status: String, fresh| ProjectSave::Failed { status, fresh };
+    if owner_actions::active_workstream_is_set(root) {
+        return fail(
+            "Config NOT saved: an active workstream is set (.planning/active-workstream), so gsd-tools would write that workstream's config, not this one"
+                .to_string(),
+            None,
+        );
+    }
+    let path = root.join(".planning").join("config.json");
+    let (base, from_disk) = match read_project_config(&path) {
+        Ok(Some(c)) => (c, true),
+        Ok(None) => (cached.clone(), false),
+        Err(status) => return fail(status, None),
+    };
+    let disk = || from_disk.then(|| base.clone());
+    let mut edited = base.clone();
+    if !mutate(&mut edited) {
+        return ProjectSave::NotApplied;
+    }
+    let plan = match plan_config_set(&base, &edited) {
+        Ok(plan) => plan,
+        Err(refusal) => {
+            return fail(
+                format!(
+                    "Config NOT saved: {}: {}",
+                    shown(&refusal.key),
+                    refusal.reason_text()
+                ),
+                disk(),
+            )
+        }
+    };
+    if plan.is_empty() {
+        return ProjectSave::Saved {
+            fresh: disk(),
+            changed: false,
+        };
+    }
+    let Some(launcher) = owner_actions::resolve_launcher() else {
+        return fail(
+            "Config NOT saved: gsd-tools.cjs not found. Install: npx -y @opengsd/gsd-core@latest --claude --local"
+                .to_string(),
+            disk(),
+        );
+    };
+    if launcher.program == "node"
+        && !owner_actions::on_path(std::env::var_os("PATH").as_deref(), "node")
+    {
+        return fail(
+            "Config NOT saved: node not found on PATH".to_string(),
+            disk(),
+        );
+    }
+
+    let deadline = std::time::Instant::now() + budget;
+    let total = plan.len();
+    let mut failure: Option<(usize, String)> = None;
+    for (done, call) in plan.iter().enumerate() {
+        let secret = if is_secret_key(call.key()) {
+            call.value()
+        } else {
+            None
+        };
+        let timed_out = || {
+            format!(
+                "gsd-tools timed out after {} s; nothing is confirmed — press r to reload",
+                budget.as_secs()
+            )
+        };
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            failure = Some((done, timed_out()));
+            break;
+        }
+        let mut argv = launcher.prefix_args.clone();
+        argv.extend(call.args());
+        match owner_actions::run_gsd_tools(&launcher.program, &argv, root, left) {
+            Ok((true, _, _)) => {
+                tracing::info!(key = %call.key(), "config-set done");
+            }
+            Ok((false, stdout, stderr_line)) => {
+                let reason = gsd_tools_reason(&stderr_line, &stdout, secret);
+                tracing::warn!(key = %call.key(), %reason, "config-set failed");
+                failure = Some((done, reason));
+                break;
+            }
+            Err(f) => {
+                let reason = match f {
+                    F::TimedOut => timed_out(),
+                    F::Spawn(kind) | F::Sink(kind) => {
+                        format!("could not start gsd-tools ({kind}); nothing was run")
+                    }
+                    F::Io(kind) => format!(
+                        "lost gsd-tools while it ran ({kind}); nothing is confirmed — press r to reload"
+                    ),
+                };
+                tracing::warn!(key = %call.key(), ?f, "config-set did not finish");
+                failure = Some((done, reason));
+                break;
+            }
+        }
+    }
+    let fresh = read_project_config(&path).ok().flatten();
+    match failure {
+        None => ProjectSave::Saved {
+            fresh,
+            changed: true,
+        },
+        Some((0, reason)) => fail(format!("Config NOT saved: {reason}"), fresh),
+        Some((done, reason)) => fail(
+            format!("Config partly saved ({done} of {total} changes): {reason}"),
+            fresh,
+        ),
     }
 }
 
@@ -25759,71 +25988,258 @@ mod tests {
             .unwrap_or_default()
     }
 
-    #[test]
-    fn config_save_takes_and_releases_the_planning_lock() {
-        use crate::state_reader::config_json::parse_gsd_config;
-        let (mut ctx, mut screen, proj_td, _home_td) = config_save_fixture();
-        flip_commit_docs(&mut screen, &mut ctx);
-        let planning = proj_td.path().join(".planning");
-        let on_disk =
-            parse_gsd_config(&std::fs::read_to_string(planning.join("config.json")).unwrap())
-                .expect("the file parses");
-        assert_eq!(on_disk.commit_docs, Some(false), "the edit reached disk");
-        assert!(!planning.join(".lock").exists(), "the lock is released");
-        let leftovers: Vec<_> = std::fs::read_dir(&planning)
-            .unwrap()
-            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-            .filter(|n| n.contains(".tmp-") || n.contains(".stale-"))
-            .collect();
-        assert!(leftovers.is_empty(), "no temp or stale file: {leftovers:?}");
-        assert_eq!(status_text(&ctx), "Config saved");
+    /// A fake gsd-tools: `sh -c <script> gsd-tools <args>`, forced as this
+    /// thread's launcher. No test runs this machine's gsd-core (I-kft-11).
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn force_fake_gsd_tools(script: &str) {
+        owner_actions::force_launcher(Some(crate::state_reader::queue_md::GsdToolsCmd {
+            program: "sh".to_string(),
+            prefix_args: vec![
+                "-c".to_string(),
+                script.to_string(),
+                "gsd-tools".to_string(),
+            ],
+        }));
     }
 
+    /// The `argv.log` a fake gsd-tools wrote in the project root, if any.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn argv_log(root: &std::path::Path) -> Option<String> {
+        std::fs::read_to_string(root.join("argv.log")).ok()
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn cached_config(ctx: &AppContext) -> crate::state_reader::config_json::GsdConfig {
+        ctx.view_cache[TEST_ALIAS].defaults_config.clone().unwrap()
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn disk_config(root: &std::path::Path) -> crate::state_reader::config_json::GsdConfig {
+        crate::state_reader::config_json::parse_gsd_config(
+            &std::fs::read_to_string(root.join(".planning/config.json")).unwrap(),
+        )
+        .unwrap()
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn same_config(
+        a: &crate::state_reader::config_json::GsdConfig,
+        b: &crate::state_reader::config_json::GsdConfig,
+    ) -> bool {
+        serde_json::to_value(a).unwrap() == serde_json::to_value(b).unwrap()
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
-    fn config_save_refuses_while_a_live_gsd_holds_the_planning_lock() {
+    fn config_save_runs_gsd_tools_config_set_and_reloads_from_disk() {
         let (mut ctx, mut screen, proj_td, _home_td) = config_save_fixture();
-        let planning = proj_td.path().join(".planning");
-        let lock = planning.join(".lock");
-        let body = format!(
-            r#"{{"pid":1,"cwd":"{}","acquired":"2026-10-19T00:00:00.000Z"}}"#,
-            proj_td.path().display()
+        force_fake_gsd_tools(
+            r#"echo "$*" >> argv.log; printf '{"mode":"yolo","commit_docs":false}' > .planning/config.json"#,
         );
-        std::fs::write(&lock, &body).unwrap();
-        let config_before = std::fs::read(planning.join("config.json")).unwrap();
-        let cached_before = ctx.view_cache[TEST_ALIAS]
-            .defaults_config
-            .as_ref()
-            .unwrap()
-            .commit_docs;
-
-        let started = std::time::Instant::now();
         flip_commit_docs(&mut screen, &mut ctx);
-        assert!(
-            started.elapsed() >= std::time::Duration::from_millis(1900),
-            "the save waits out the TUI budget"
+        let root = proj_td.path();
+        assert_eq!(
+            argv_log(root).as_deref(),
+            Some("config-set commit_docs false\n")
         );
+        assert!(same_config(&cached_config(&ctx), &disk_config(root)));
+        assert_eq!(cached_config(&ctx).commit_docs, Some(false));
+        assert_eq!(status_text(&ctx), "Config saved");
+        let names: Vec<_> = std::fs::read_dir(root.join(".planning"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["config.json".to_string()],
+            "the TUI creates nothing in .planning/"
+        );
+    }
 
-        assert_eq!(
-            std::fs::read(planning.join("config.json")).unwrap(),
-            config_before
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn config_save_reports_the_gsd_tools_refusal_and_keeps_the_cache_equal_to_disk() {
+        let (mut ctx, mut screen, proj_td, _home_td) = config_save_fixture();
+        let root = proj_td.path();
+        let before = std::fs::read(root.join(".planning/config.json")).unwrap();
+        force_fake_gsd_tools(
+            r#"echo "$*" >> argv.log; echo 'warning: defaults.json ignored' >&2; echo 'Error: Invalid value' >&2; exit 1"#,
         );
+        flip_commit_docs(&mut screen, &mut ctx);
+        assert_eq!(status_text(&ctx), "Config NOT saved: Error: Invalid value");
         assert_eq!(
-            std::fs::read_to_string(&lock).unwrap(),
-            body,
-            "the lock is untouched"
+            std::fs::read(root.join(".planning/config.json")).unwrap(),
+            before
         );
-        assert_eq!(
-            ctx.view_cache[TEST_ALIAS]
-                .defaults_config
-                .as_ref()
-                .unwrap()
-                .commit_docs,
-            cached_before,
-            "the cache still equals disk"
-        );
+        assert!(same_config(&cached_config(&ctx), &disk_config(root)));
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn config_save_without_gsd_tools_refuses_and_writes_nothing() {
+        let (mut ctx, mut screen, proj_td, _home_td) = config_save_fixture();
+        let root = proj_td.path();
+        let before = std::fs::read(root.join(".planning/config.json")).unwrap();
+        owner_actions::force_launcher(None);
+        flip_commit_docs(&mut screen, &mut ctx);
         let status = status_text(&ctx);
-        assert!(status.contains("Config NOT saved"), "{status}");
-        assert!(status.contains("pid 1"), "{status}");
+        assert!(
+            status.starts_with("Config NOT saved: gsd-tools.cjs not found"),
+            "{status}"
+        );
+        assert_eq!(
+            std::fs::read(root.join(".planning/config.json")).unwrap(),
+            before
+        );
+        assert_eq!(cached_config(&ctx).commit_docs, Some(true));
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn config_save_sets_model_profile_through_its_own_command() {
+        let (_ctx, _screen, proj_td, _home_td) = config_save_fixture();
+        let root = proj_td.path();
+        force_fake_gsd_tools(r#"echo "$*" >> argv.log"#);
+        let cached = disk_config(root);
+        let out = save_project_config(root, &cached, |c| {
+            c.model_profile = "quality".into();
+            true
+        });
+        assert!(matches!(out, ProjectSave::Saved { changed: true, .. }));
+        assert_eq!(
+            argv_log(root).as_deref(),
+            Some("config-set-model-profile quality\n")
+        );
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn config_save_of_a_secret_never_shows_the_value() {
+        use crate::state_reader::config_json::ApiKeySetting;
+        let (_ctx, _screen, proj_td, _home_td) = config_save_fixture();
+        let root = proj_td.path();
+        let cached = disk_config(root);
+        let secret = "sk-very-secret-value";
+        let set = |c: &mut crate::state_reader::config_json::GsdConfig| {
+            c.brave_search = Some(ApiKeySetting::Key(secret.into()));
+            true
+        };
+        force_fake_gsd_tools(r#"echo "$*" >> argv.log; echo "{\"value\":\"$3\"}""#);
+        let mut status_message = None;
+        let mut cache = ctx_cache_for(root);
+        let outcome = persist_active_config(Some(root), &mut cache, &mut status_message, set);
+        assert_eq!(outcome, PersistOutcome::Applied);
+        let status = status_message.unwrap().0;
+        assert_eq!(status, "Config saved");
+
+        // A failing child that echoes the value: the status is redacted.
+        force_fake_gsd_tools(r#"echo "Error: bad key $3 for $2" >&2; exit 1"#);
+        match save_project_config(root, &cached, set) {
+            ProjectSave::Failed { status, .. } => {
+                assert!(status.contains("<redacted>"), "{status}");
+                assert!(!status.contains(secret), "{status}");
+            }
+            _ => panic!("expected a failure"),
+        }
+    }
+
+    /// A Project-scope view cache over `root`'s config.json.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn ctx_cache_for(root: &std::path::Path) -> super::super::ProjectViewCache {
+        super::super::ProjectViewCache {
+            defaults_config: Some(disk_config(root)),
+            ..Default::default()
+        }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn config_save_refuses_an_active_workstream_and_an_unparseable_file() {
+        let (_ctx, _screen, proj_td, _home_td) = config_save_fixture();
+        let root = proj_td.path();
+        let cached = disk_config(root);
+        force_fake_gsd_tools(r#"echo "$*" >> argv.log"#);
+        let flip = |c: &mut crate::state_reader::config_json::GsdConfig| {
+            c.commit_docs = Some(false);
+            true
+        };
+        std::fs::write(root.join(".planning/active-workstream"), "ws1\n").unwrap();
+        match save_project_config(root, &cached, flip) {
+            ProjectSave::Failed { status, .. } => {
+                assert!(status.contains("an active workstream is set"), "{status}")
+            }
+            _ => panic!("expected the workstream refusal"),
+        }
+        std::fs::remove_file(root.join(".planning/active-workstream")).unwrap();
+        std::fs::write(root.join(".planning/config.json"), "{not json").unwrap();
+        match save_project_config(root, &cached, flip) {
+            ProjectSave::Failed { status, .. } => {
+                assert!(status.contains("no longer parses"), "{status}")
+            }
+            _ => panic!("expected the parse refusal"),
+        }
+        assert_eq!(argv_log(root), None, "no child ran");
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn config_save_refuses_a_value_gsd_tools_would_retype() {
+        let (_ctx, _screen, proj_td, _home_td) = config_save_fixture();
+        let root = proj_td.path();
+        let cached = disk_config(root);
+        force_fake_gsd_tools(r#"echo "$*" >> argv.log"#);
+        match save_project_config(root, &cached, |c| {
+            c.phase_naming = Some("12".into());
+            true
+        }) {
+            ProjectSave::Failed { status, .. } => {
+                assert!(
+                    status.starts_with("Config NOT saved: phase_naming: "),
+                    "{status}"
+                );
+                assert!(!status.contains("12"), "{status}");
+            }
+            _ => panic!("expected the coercion refusal"),
+        }
+        assert_eq!(argv_log(root), None);
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn config_save_reports_a_partial_save_and_a_timeout() {
+        let (_ctx, _screen, proj_td, _home_td) = config_save_fixture();
+        let root = proj_td.path();
+        let cached = disk_config(root);
+        let two = |c: &mut crate::state_reader::config_json::GsdConfig| {
+            c.commit_docs = Some(false);
+            c.response_language = Some("Deutsch".into());
+            true
+        };
+        // commit_docs sorts first; fail on the second key.
+        force_fake_gsd_tools(
+            r#"echo "$*" >> argv.log; if [ "$2" = response_language ]; then echo 'Error: nope' >&2; exit 1; fi; printf '{"mode":"yolo","commit_docs":false}' > .planning/config.json"#,
+        );
+        match save_project_config(root, &cached, two) {
+            ProjectSave::Failed { status, fresh } => {
+                assert_eq!(status, "Config partly saved (1 of 2 changes): Error: nope");
+                assert!(same_config(&fresh.unwrap(), &disk_config(root)));
+            }
+            _ => panic!("expected a partial save"),
+        }
+
+        force_fake_gsd_tools("exec sleep 30");
+        let started = std::time::Instant::now();
+        match save_project_config_within(root, &cached, std::time::Duration::from_secs(1), |c| {
+            c.commit_docs = Some(true);
+            c.parallelization = Some(false);
+            true
+        }) {
+            ProjectSave::Failed { status, .. } => {
+                assert!(status.contains("timed out after 1 s"), "{status}")
+            }
+            _ => panic!("expected a timeout"),
+        }
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
     }
 
     #[test]
@@ -25916,7 +26332,12 @@ mod tests {
                 .expect("a commit_docs row")
         };
 
-        // A project-scope edit: commit_docs -> false.
+        // A project-scope edit: commit_docs -> false, saved by a fake
+        // gsd-tools (quick 261116-kft).
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        force_fake_gsd_tools(
+            r#"printf '{"mode":"yolo","commit_docs":false}' > .planning/config.json"#,
+        );
         let idx = commit_docs_idx(&ctx);
         ctx.view_cache
             .get_mut(TEST_ALIAS)

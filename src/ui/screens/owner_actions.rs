@@ -28,7 +28,7 @@ use crate::state_reader::owner_items::{
     is_command_token, is_workstream_name, Kind, Lane, OwnerDigest, OwnerGroup, RunCommand, RunVerb,
     Scope,
 };
-use crate::state_reader::queue_md::{resolve_user_gsd_tools, GsdToolsCmd};
+use crate::state_reader::queue_md::GsdToolsCmd;
 use crate::state_reader::ProjectState;
 use crate::ui::screens::{AppContext, ScreenAction};
 use std::path::{Path, PathBuf};
@@ -241,6 +241,10 @@ const ACK_LINE_CAP: usize = 120;
 /// is set (`active-workstream-store.cjs`, `SESSION_KEY_ENV_VARS`). An inherited
 /// value would send a root-scoped write into a workstream's file. `GSD_PROJECT`
 /// is removed as well: the child's cwd is the project, never an inherited path.
+///
+/// The Config tab's `config-set` children (quick 261116-kft) run with the same
+/// removals, through [`run_gsd_tools`]: a project save must land in the root
+/// `.planning/config.json`, never in a workstream's.
 pub const ACK_ENV_REMOVE: &[&str] = &[
     "GSD_WORKSTREAM",
     "GSD_PROJECT",
@@ -468,7 +472,7 @@ impl AckRequest {
 
 /// Whether the active-workstream pointer file names a workstream. An unreadable
 /// file counts as set: the safe answer is the refusal.
-fn active_workstream_is_set(project: &Path) -> bool {
+pub(crate) fn active_workstream_is_set(project: &Path) -> bool {
     match std::fs::read_to_string(project.join(".planning").join("active-workstream")) {
         Ok(text) => !text.trim().is_empty(),
         Err(err) => err.kind() != std::io::ErrorKind::NotFound,
@@ -476,7 +480,7 @@ fn active_workstream_is_set(project: &Path) -> bool {
 }
 
 /// Whether a program called `name` is a file in one of the `path` directories.
-fn on_path(path: Option<&std::ffi::OsStr>, name: &str) -> bool {
+pub(crate) fn on_path(path: Option<&std::ffi::OsStr>, name: &str) -> bool {
     let Some(path) = path else {
         return false;
     };
@@ -670,13 +674,20 @@ pub(crate) fn test_launcher() -> GsdToolsCmd {
 
 /// The launcher the acknowledge writer runs: the user's own gsd-core install
 /// only, never one the registered project ships (WR-05: the project is untrusted
-/// input, and the child runs with the TUI's environment).
-fn resolve_launcher() -> Option<GsdToolsCmd> {
+/// input, and the child runs with the TUI's environment). The Config tab's
+/// project saves resolve through here too (quick 261116-kft).
+///
+/// Under `cfg(test)` an unforced call resolves nothing, so no unit test can run
+/// this machine's gsd-core ([INFERRED I-kft-11]).
+pub(crate) fn resolve_launcher() -> Option<GsdToolsCmd> {
     #[cfg(test)]
-    if let Some(forced) = FORCED_LAUNCHER.with(|cell| cell.borrow().clone()) {
-        return forced;
+    {
+        FORCED_LAUNCHER.with(|cell| cell.borrow().clone()).flatten()
     }
-    resolve_user_gsd_tools()
+    #[cfg(not(test))]
+    {
+        crate::state_reader::queue_md::resolve_user_gsd_tools()
+    }
 }
 
 /// Everything `A` needs before it may open the popup, or the status line that
@@ -803,22 +814,27 @@ pub(crate) fn ack_outcome(name: &str, success: bool, stdout: &[u8], stderr_line:
     format!("Acknowledge failed: {line}")
 }
 
-/// What a finished child left: whether it succeeded, its stdout, and the last
-/// non-empty stderr line.
-type AckExit = (bool, Vec<u8>, String);
+/// What a finished gsd-tools child left: whether it succeeded, its stdout, and
+/// the last non-empty stderr line.
+pub(crate) type GsdToolsExit = (bool, Vec<u8>, String);
 
-/// The bounded child's result, or why there is none: it could not start, it did
+/// Run `program argv` as a bounded direct child in `cwd`, with every
+/// [`ACK_ENV_REMOVE`] variable removed (37 D-15). Shared by the acknowledge
+/// writer and the Config tab's `config-set` saves (quick 261116-kft, D-10).
+/// Returns the child's result, or why there is none: it could not start, it did
 /// not finish within `budget` (it was killed), or waiting for it failed.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn spawn_ack(
-    req: &AckRequest,
+pub(crate) fn run_gsd_tools(
+    program: &str,
+    argv: &[String],
+    cwd: &Path,
     budget: std::time::Duration,
-) -> Result<AckExit, crate::bounded_output::BoundedFailure> {
-    let args: Vec<std::ffi::OsString> = req.argv.iter().map(std::ffi::OsString::from).collect();
+) -> Result<GsdToolsExit, crate::bounded_output::BoundedFailure> {
+    let args: Vec<std::ffi::OsString> = argv.iter().map(std::ffi::OsString::from).collect();
     let (output, stderr_line) = crate::launcher::process::try_run_bounded_with_stderr_env(
-        &req.program,
+        program,
         &args,
-        Some(&req.cwd),
+        Some(cwd),
         ACK_ENV_REMOVE,
         &[],
         budget,
@@ -827,18 +843,28 @@ fn spawn_ack(
 }
 
 /// The bounded runner is Linux and macOS only, like the launcher module it lives
-/// in: elsewhere the acknowledge fails visibly and runs nothing.
+/// in: elsewhere a gsd-tools child fails visibly and nothing runs.
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-fn spawn_ack(
-    req: &AckRequest,
+pub(crate) fn run_gsd_tools(
+    _program: &str,
+    _argv: &[String],
+    cwd: &Path,
     _budget: std::time::Duration,
-) -> Result<AckExit, crate::bounded_output::BoundedFailure> {
-    tracing::warn!(cwd = %req.cwd.display(), "owner acknowledge is not supported here");
+) -> Result<GsdToolsExit, crate::bounded_output::BoundedFailure> {
+    tracing::warn!(cwd = %cwd.display(), "running gsd-tools is not supported here");
     Ok((
         false,
         Vec::new(),
         "running gsd-core is not supported on this platform".to_owned(),
     ))
+}
+
+/// The acknowledge child for `req`, through [`run_gsd_tools`].
+fn spawn_ack(
+    req: &AckRequest,
+    budget: std::time::Duration,
+) -> Result<GsdToolsExit, crate::bounded_output::BoundedFailure> {
+    run_gsd_tools(&req.program, &req.argv, &req.cwd, budget)
 }
 
 /// The status line for an acknowledge that produced no exit status (WR-02): a
