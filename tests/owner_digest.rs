@@ -1317,6 +1317,13 @@ fn next_actions_in_json_equal_the_digest_order() {
         .map(|l| l.split_whitespace().next().unwrap())
         .collect();
     assert_eq!(digest_aliases, aliases);
+    // UI review 38, fix 4: every NEXT row names its lane in the cell after the alias.
+    let digest_lanes: Vec<&str> = next_lines
+        .iter()
+        .map(|l| l.split_whitespace().nth(1).unwrap())
+        .collect();
+    let json_lanes: Vec<&str> = next.iter().map(|a| a["lane"].as_str().unwrap()).collect();
+    assert_eq!(digest_lanes, json_lanes, "{digest}");
     // The lane and include filters change neither list, the old totals stay.
     let narrowed = build_document(&entries, &test_lane(), FOLD_DAYS);
     assert_eq!(

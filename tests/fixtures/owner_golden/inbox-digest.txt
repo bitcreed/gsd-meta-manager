@@ -8,11 +8,11 @@ Owner inbox: 10 projects · test 80 · decide 1 · fix 3 phases · blocked 5
   +3 more projects (inbox --all)
 
 NEXT
-  merge       ph market/43  Trader mode   3 checks  4 d  /gsd-verify-work 43 --ws market  → closes …
-  labels      ph 02         Sync          1 check   4 d  /gsd-verify-work 02
-  labels      ph 02         Sync          1 check   4 d  /gsd-plan-phase 02 --gaps  1 failed check,…
-  old-ledger  ph 02         Search        1 check   4 d  /gsd-verify-work 02
-  labels      ph 01         Pricing       7 checks  4 d  /gsd-verify-work 01  4 decision?
+  merge       test  ph market/43  Trader mode   3 checks  4 d  /gsd-verify-work 43 --ws market  …
+  labels      test  ph 02         Sync          1 check   4 d  /gsd-verify-work 02
+  labels      fix   ph 02         Sync          1 check   4 d  /gsd-plan-phase 02 --gaps  1 failed …
+  old-ledger  test  ph 02         Search        1 check   4 d  /gsd-verify-work 02
+  labels      test  ph 01         Pricing       7 checks  4 d  /gsd-verify-work 01  4 decision?
 
 Old debt: 16 checks in 2 projects (archived milestones)
 Stale: 33 checks in 14 phases older than 90 d

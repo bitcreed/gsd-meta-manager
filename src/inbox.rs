@@ -1299,6 +1299,9 @@ pub(crate) fn checks_cell(n: usize, digits: usize) -> String {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct Collapsed {
     pub alias: String,
+    /// The short lane name (`test`, `decide`, `fix`), set only where rows of
+    /// several lanes share a block (the digest's NEXT rows).
+    pub lane: String,
     pub phase: String,
     pub name: String,
     pub count: Option<usize>,
@@ -1361,6 +1364,7 @@ fn collapsed_of_in(alias: &str, entry: &TriageEntry, closes_shown: bool) -> Coll
     phrase.retain(|part| !part.is_empty());
     Collapsed {
         alias: terminal_capped(alias),
+        lane: String::new(),
         phase: phase_cell(group),
         name: terminal_capped(&group.phase_name),
         count,
@@ -1391,6 +1395,7 @@ pub(crate) const COLLAPSED_MAX_CELLS: usize = 100;
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct CollapsedGrid {
     alias: usize,
+    lane: usize,
     phase: usize,
     name: usize,
     digits: usize,
@@ -1406,6 +1411,7 @@ pub(crate) fn collapsed_grid<'a>(rows: impl IntoIterator<Item = &'a Collapsed>) 
     let mut max_count = 0;
     for row in rows {
         grid.alias = grid.alias.max(cell_width(&row.alias));
+        grid.lane = grid.lane.max(cell_width(&row.lane));
         grid.phase = grid.phase.max(cell_width(&row.phase));
         grid.name = grid.name.max(cell_width(&row.name).min(NAME_CAP));
         grid.age = grid.age.max(cell_width(&row.age));
@@ -1418,16 +1424,17 @@ pub(crate) fn collapsed_grid<'a>(rows: impl IntoIterator<Item = &'a Collapsed>) 
     grid
 }
 
-/// Collapsed lines on `grid`: alias, phase, name, checks (the number right-aligned)
+/// Collapsed lines on `grid`: alias, lane (when any row has one), phase, name, checks (the number right-aligned)
 /// and age as padded columns, then the command, then the phrase as an unpadded
 /// trailing cell, cut with `…` so the line stays within [`COLLAPSED_MAX_CELLS`].
 pub(crate) fn collapsed_lines(rows: &[Collapsed], grid: &CollapsedGrid) -> Vec<String> {
     rows.iter()
         .map(|row| {
-            let mut cols = vec![
-                pad_cells(&row.alias, grid.alias, false),
-                pad_cells(&row.phase, grid.phase, false),
-            ];
+            let mut cols = vec![pad_cells(&row.alias, grid.alias, false)];
+            if grid.lane > 0 {
+                cols.push(pad_cells(&row.lane, grid.lane, false));
+            }
+            cols.push(pad_cells(&row.phase, grid.phase, false));
             if grid.name > 0 {
                 cols.push(pad_cells(&row.name, grid.name, false));
             }
@@ -1446,13 +1453,41 @@ pub(crate) fn collapsed_lines(rows: &[Collapsed], grid: &CollapsedGrid) -> Vec<S
             let mut line = format!("  {}", cols.join("  ")).trim_end().to_owned();
             if !row.phrase.is_empty() {
                 let room = COLLAPSED_MAX_CELLS.saturating_sub(cell_width(&line) + 2);
-                let phrase = pad_cells(&row.phrase, room.max(1), false);
                 line.push_str("  ");
-                line.push_str(phrase.trim_end());
+                line.push_str(&fit_phrase(&row.phrase, room));
             }
             line
         })
         .collect()
+}
+
+/// `phrase` within `room` cells: whole ` · ` parts while they fit, then ` · …`; a
+/// first part that does not fit is cut with `…` when at least 8 cells are left,
+/// else the phrase is a lone `…` (the full text is in `inbox ALIAS`).
+fn fit_phrase(phrase: &str, room: usize) -> String {
+    if cell_width(phrase) <= room {
+        return phrase.to_owned();
+    }
+    let mut kept = String::new();
+    for part in phrase.split(" \u{b7} ") {
+        let next = if kept.is_empty() {
+            part.to_owned()
+        } else {
+            format!("{kept} \u{b7} {part}")
+        };
+        // 4 cells: the ` · …` that marks the parts left out.
+        if cell_width(&next) + 4 > room {
+            break;
+        }
+        kept = next;
+    }
+    if !kept.is_empty() {
+        format!("{kept} \u{b7} \u{2026}")
+    } else if room >= 8 {
+        pad_cells(phrase, room, false).trim_end().to_owned()
+    } else {
+        "\u{2026}".to_owned()
+    }
 }
 
 /// Collapsed lines on the grid of their own rows.
@@ -1607,7 +1642,10 @@ pub fn render_digest(entries: &[ProjectEntry], fold_days: u32) -> String {
     } else {
         let rows: Vec<Collapsed> = next
             .iter()
-            .map(|action| collapsed_of(action.alias, action.entry))
+            .map(|action| Collapsed {
+                lane: action.entry.group.lane.as_str().to_owned(),
+                ..collapsed_of(action.alias, action.entry)
+            })
             .collect();
         let mut block = vec!["NEXT".to_owned()];
         block.extend(collapsed_block(&rows));
@@ -2249,6 +2287,18 @@ mod tests {
             }
         }
         assert!(compared >= 6, "{compared} entries compared");
+    }
+
+    #[test]
+    fn fit_phrase_keeps_whole_parts_then_cuts_then_marks() {
+        let phrase = "1 failed check, 0 gaps \u{b7} 1 looks resolved";
+        assert_eq!(fit_phrase(phrase, 60), phrase);
+        assert_eq!(
+            fit_phrase(phrase, 26),
+            "1 failed check, 0 gaps \u{b7} \u{2026}"
+        );
+        assert_eq!(fit_phrase(phrase, 10), "1 failed \u{2026}");
+        assert_eq!(fit_phrase(phrase, 4), "\u{2026}");
     }
 
     #[test]
