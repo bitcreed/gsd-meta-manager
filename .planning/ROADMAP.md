@@ -298,10 +298,17 @@ Plans:
 **Depends on:** Phase 38
 **Verification:** Automatic (argv/instruction unit tests, oracle round trip on a throwaway project) plus human UAT
 **UI hint**: yes
-**Plans:** 0 plans
+**Plans:** 3 plans
 
 Plans:
-- [ ] TBD (run /gsd-plan-phase 39 to break down)
+**Wave 1**
+- [ ] 39-01-PLAN.md — Tracer: inbox `x` on a TEST/BLOCKED phase row → chooser (won't do / deferred permanently) → reason → default-No confirm popup with the exact argv → `/gsd-verify-work N <instruction>` via `multiplexer::launch`; refusals, recheck on Yes, live-session focus (D-01..D-03, D-05, D-07, D-08, D-10, D-12)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+- [ ] 39-02-PLAN.md — Item-level cursor in the inbox and Owner block, Owner block `x`, and Move to phase M with the phase picker and a todo requested by instruction (D-04, D-06, D-09)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+- [ ] 39-03-PLAN.md — Live-session clipboard copy (OSC 52), read-only proof (source scan, gsd-core oracle on temp copies, 12-cell flow matrix with tree snapshots), help/footer/README for `x` (D-11, D-13)
 
 **Success Criteria** (what must be TRUE):
 1. On a check row or a phase row in the TUI inbox and the detail Owner block, the owner can pick "won't do" (with a reason) or "defer/move to phase M"; the existing `A` acknowledge keeps working unchanged.

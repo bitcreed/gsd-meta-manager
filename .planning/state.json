@@ -111,18 +111,18 @@
     {
       "number": "38",
       "name": "Inbox digest and triage hygiene",
-      "status": "in_progress"
+      "status": "pending"
     },
     {
       "number": "39",
       "name": "Check actions through GSD",
-      "status": "pending"
+      "status": "in_progress"
     }
   ],
   "next": {
     "command": "/gsd-progress --next",
-    "label": "Advance to the next step (verify)",
-    "reason": "Phase 5 of 6 · 17% · ready to verify"
+    "label": "Advance to the next step",
+    "reason": "Phase 6 of 6 · 17% · executing"
   },
-  "updated_at": "2026-11-17T17:32:44.530Z"
+  "updated_at": "2026-11-17T20:25:48.513Z"
 }
