@@ -24,6 +24,27 @@ fn sorted(mut phases: Vec<String>) -> Vec<String> {
     phases
 }
 
+/// The items one group adds to its lane's gate total. A checkpoint is one decision
+/// whatever it lists, as in the digest total. An unreadable file is work in Decide
+/// as in Fix, never clean (a checkpoint's unreadable record is already its one
+/// decision). Shared with [`super::triage::outside_gate`], so the two cannot drift.
+pub(super) fn lane_items(group: &OwnerGroup) -> usize {
+    let items = if group.kind == Kind::Checkpoint {
+        1
+    } else {
+        group.items.len()
+    };
+    let unreadable = if group.kind == Kind::Checkpoint {
+        0
+    } else {
+        group.counts.unreadable
+    };
+    match group.lane {
+        Lane::Decide | Lane::Fix => items + unreadable,
+        _ => items,
+    }
+}
+
 /// The gate of the root scope (workstream scopes are not exposed, [INFERRED] D-12).
 pub(super) fn closes_after(groups: &[OwnerGroup], state: &ProjectState) -> ClosesAfter {
     let mut gate = ClosesAfter::default();
@@ -53,23 +74,11 @@ pub(super) fn closes_after(groups: &[OwnerGroup], state: &ProjectState) -> Close
                 && !matches!(group.kind, Kind::Debug | Kind::Handoff)
                 && same_phase(&group.phase, &phase.number)
         }) {
-            // A checkpoint is one decision whatever it lists, as in the digest total.
-            let items = if group.kind == Kind::Checkpoint {
-                1
-            } else {
-                group.items.len()
-            };
-            // An unreadable file is work in Decide as in Fix, never clean (a
-            // checkpoint's unreadable record is already its one decision).
-            let unreadable = if group.kind == Kind::Checkpoint {
-                0
-            } else {
-                group.counts.unreadable
-            };
+            let items = lane_items(group);
             match group.lane {
                 Lane::Test => counts[0] += items,
-                Lane::Decide => counts[1] += items + unreadable,
-                Lane::Fix => counts[2] += items + unreadable,
+                Lane::Decide => counts[1] += items,
+                Lane::Fix => counts[2] += items,
                 Lane::Blocked => counts[3] += items,
                 Lane::Deferred => {}
             }

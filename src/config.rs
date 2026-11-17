@@ -551,6 +551,21 @@ impl Preferences {
             .and_then(Value::as_i64)
             .map_or(DEFAULT, |days| days.clamp(1, 3650) as u32)
     }
+
+    /// How many days old the newest part of an owner entry may be before the inbox
+    /// folds it into the `Stale:` line (`preferences.owner.fold_days`, Phase 38
+    /// D-09). Folded work stays in every total.
+    ///
+    /// Read like [`Preferences::owner_stale_days`]: an absent key or a non-integer
+    /// reads the default of 90, any integer is clamped to `1..=3650`.
+    pub fn owner_fold_days(&self) -> u32 {
+        const DEFAULT: u32 = 90;
+        self.extra
+            .get("owner")
+            .and_then(|owner| owner.get("fold_days"))
+            .and_then(Value::as_i64)
+            .map_or(DEFAULT, |days| days.clamp(1, 3650) as u32)
+    }
 }
 
 impl Default for Preferences {
@@ -1358,5 +1373,25 @@ mod tests {
             "a string is not a number"
         );
         assert_eq!(prefs(r#"{"owner": "x"}"#).owner_stale_days(), 30);
+    }
+
+    #[test]
+    fn owner_fold_days_defaults_to_ninety_and_clamps() {
+        assert_eq!(Preferences::default().owner_fold_days(), 90, "absent");
+        assert_eq!(
+            prefs(r#"{"owner": {"fold_days": 45}}"#).owner_fold_days(),
+            45
+        );
+        assert_eq!(prefs(r#"{"owner": {"fold_days": 0}}"#).owner_fold_days(), 1);
+        assert_eq!(
+            prefs(r#"{"owner": {"fold_days": 99999}}"#).owner_fold_days(),
+            3650
+        );
+        assert_eq!(
+            prefs(r#"{"owner": {"fold_days": "45"}}"#).owner_fold_days(),
+            90,
+            "a string is not a number"
+        );
+        assert_eq!(prefs(r#"{"owner": "x"}"#).owner_fold_days(), 90);
     }
 }

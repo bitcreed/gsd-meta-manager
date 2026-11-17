@@ -28,10 +28,12 @@ mod deferred;
 mod frontmatter;
 mod gate;
 mod handoff;
+mod labels;
 mod markdown;
 mod rules;
 mod scan;
 mod todos;
+mod triage;
 mod uat;
 mod verification;
 
@@ -46,6 +48,12 @@ use super::ProjectState;
 
 // The launch path re-validates the tokens it builds an argv from (D-11).
 pub(crate) use rules::{is_command_token, is_workstream_name};
+
+pub use labels::{label_counts, labels_of, Label, LabelCounts};
+pub use triage::{
+    is_owner_row, next_actions, outside_gate, ranked_checks, ranks_as_closing, stale_totals,
+    triage_entries, LaneCounts, NextAction, StaleTotals, TriageEntry, NEXT_LIMIT,
+};
 
 /// What kind of document an [`AuditFile`] was read from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
