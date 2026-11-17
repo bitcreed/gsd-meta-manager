@@ -1467,7 +1467,8 @@ fn fold_line_at(
                             if t.stale.non_check { "items" } else { "checks" }
                         )
                     ),
-                    _ => format!("Stale ({})", t.stale.entries),
+                    // Items, as Old debt counts checks (38-UI-REVIEW fix 6).
+                    _ => format!("Stale ({})", t.stale.items),
                 },
                 false,
                 Fold::Stale,
@@ -4866,6 +4867,9 @@ mod tests {
             line.contains("Stale: 2 checks in 1 phase older than 90 d"),
             "{line:?}"
         );
+        // The narrow rung counts checks like Old debt, not phases.
+        let narrow = line_text(&fold_line(&ctx, 12).expect("a fold line"));
+        assert_eq!(narrow, " \u{25b8} Stale (2)");
         ctx.inbox_view.open_folds.insert(Fold::Stale);
         let rows = rows_of(&ctx, "ledger");
         assert_eq!(rows.len(), 2, "the open fold lists the 120-day row");
