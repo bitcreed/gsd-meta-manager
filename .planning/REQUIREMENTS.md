@@ -112,21 +112,21 @@ checks the owner can run today (report section 1).
 Added 2026-11-16 after the first real use of the inbox (owner feedback) **[inferred — numbering
 continues OWN-xx; grouped into Phase 38]**.
 
-- [ ] **OWN-24**: Plain `gsd-meta-manager inbox` defaults to a short digest (~15-25 lines): totals,
+- [x] **OWN-24**: Plain `gsd-meta-manager inbox` defaults to a short digest (~15-25 lines): totals,
   the per-project `closes after` block, and the top ~5 next actions ranked by payoff (fewest checks
   per phase closed first; older items rank lower). *Test: golden output on the fixtures; line budget
   asserted.*
-- [ ] **OWN-25**: `inbox <alias>` prints the full checklist for one project; `inbox --lane
+- [x] **OWN-25**: `inbox <alias>` prints the full checklist for one project; `inbox --lane
   test|decide|fix|blocked` prints one lane across projects; `inbox --all` prints the pre-Phase-38
   full output. `--json` keeps carrying everything; changes are additive only (existing key paths in
   `tests/inbox_cli.rs` unchanged).
-- [ ] **OWN-26**: Multi-project views (CLI digest and lane views, TUI inbox on `i`) show each phase
+- [x] **OWN-26**: Multi-project views (CLI digest and lane views, TUI inbox on `i`) show each phase
   collapsed by default as one entry (count + action), never its individual checks; a scripted
   checklist UAT (for example 51 numbered steps) reads as one entry.
-- [ ] **OWN-27**: Parsing hygiene: items older than ~90 days fold into one stale line; duplicate UAT
+- [x] **OWN-27**: Parsing hygiene: items older than ~90 days fold into one stale line; duplicate UAT
   files for the same phase merge into one entry (live example: sentriq phase 43 listed twice); the
   `1 check`/`2 checks` column aligns in the TUI.
-- [ ] **OWN-28**: Heuristic labels, label only (never hide or move a row): rows whose text matches
+- [x] **OWN-28**: Heuristic labels, label only (never hide or move a row): rows whose text matches
   decision keywords (`Owner decision`, ratify, approve, accept, review, OK, ...) are tagged
   `decision?`; rows whose text says resolved/fixed-by are tagged `looks resolved`. Both are exposed
   as additive `--json` fields. Promotes OWN-F02 as a label-only heuristic **[inferred]**.
@@ -226,11 +226,11 @@ Deferred (report section 6):
 | OWN-21 | Phase 37 | Complete |
 | OWN-22 | Phase 37 | Complete |
 | OWN-23 | Phase 37 | Complete |
-| OWN-24 | Phase 38 | Pending |
-| OWN-25 | Phase 38 | Pending |
-| OWN-26 | Phase 38 | Pending |
-| OWN-27 | Phase 38 | Pending |
-| OWN-28 | Phase 38 | Pending |
+| OWN-24 | Phase 38 | Complete |
+| OWN-25 | Phase 38 | Complete |
+| OWN-26 | Phase 38 | Complete |
+| OWN-27 | Phase 38 | Complete |
+| OWN-28 | Phase 38 | Complete |
 | OWN-29 | Phase 39 | Pending |
 | OWN-30 | Phase 39 | Pending |
 | OWN-31 | Phase 39 | Pending |
