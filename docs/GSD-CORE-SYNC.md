@@ -1118,6 +1118,12 @@ Then, in priority order:
    goes into `NON_SECRET_CONFIG_KEYS`.
    **Decide `context`'s type** once upstream's docs and `config-set` agree,
    then promote it.
+   **Re-run `cargo test --test config_set_roundtrip`** against the new oracle
+   (quick task 261116-kft). If `parseConfigArgValue`, `DECIMAL_LITERAL`, the
+   `project_code` exception or `GLOBAL_FLAGS` changed, update the replica in
+   `src/state_reader/config_set.rs`. Check whether gsd-core now has a writer
+   for `defaults.json`; if so, route the Global scope through it and retire
+   `config_write.rs`.
 2. **Promote `parallelization.*` (6 keys).** The highest-value pass-through
    family: this tab already edits a top-level `parallelization` boolean, so a
    project carrying the namespaced block sees a row that disagrees with the file.

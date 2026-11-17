@@ -704,8 +704,13 @@ The mask is always exactly eight bullets. Unlike gsd-core's own `****<last-4>`, 
 - `Enter` again stores what you typed (surrounding whitespace is trimmed). Typing exactly `true` or `false` stores that override as a boolean; anything else is stored as the key.
 - An empty `Enter` keeps the current value and says `<key> unchanged`. It never clears a key.
 - `x` clears the value back to `(unset)`, as on any other row.
+- A project save refuses, naming the key and never the value, a key gsd-tools would store as another type: all digits (a number), `null`, a leading `[`/`{` that is valid JSON, or a leading `-` (gsd-tools would read it as a flag). `true`/`false` stay the override, as above.
 
 **Storage.** The key is still written in plaintext to `.planning/config.json` (or `$GSD_HOME/.gsd/defaults.json` in the `d` view) — masking is a display rule. As gsd-core itself states, that file is the security boundary, so its permissions are yours to set.
+
+A project save hands the key to `gsd-tools config-set` as a command-line argument, because gsd-tools has no stdin form. While that child runs (about 150 ms), other local processes of any user can read it from `/proc/<pid>/cmdline` on Linux unless `/proc` is mounted with `hidepid`. GSD's own /gsd-settings flow passes keys the same way. gsd-tools' output, which echoes some keys in plaintext, is redacted before it reaches the status line or the log.
+
+**How a project save works.** The Config tab never writes `.planning/config.json` itself. It applies your edit to a fresh read of the file, diffs the two, and runs your own gsd-tools (`${CLAUDE_CONFIG_DIR:-~/.claude}/gsd-core`, then `${CODEX_HOME:-~/.codex}/gsd-core`, then an absolute `PATH` entry; never one the project ships) once per changed key: `config-set <key.path> <value>`, `config-set <key.path> null` for a clear, `config-set-model-profile <profile>` for `model_profile`. The children run in the project root with the GSD workstream/session variables removed, under one 3 s budget per edit; afterwards the tab re-reads the file. A save is refused before anything runs when no gsd-tools is installed, `node` is not on `PATH`, `.planning/active-workstream` names a workstream, a value would be retyped (above), or the file no longer parses. A gsd-tools error is shown as `Config NOT saved: <its last stderr line>`, or `Config partly saved (k of n changes): …` when earlier keys already landed. Keys gsd-core does not know (at 1.21.0, for example `context_profile`) fail this way. Global (`d`/`g`) saves still write `$GSD_HOME/.gsd/defaults.json` directly, because gsd-core has no command for that file.
 
 **Logs.** When a `config.json` fails to parse, the log line names only the error category and its line and column, never the offending value.
 

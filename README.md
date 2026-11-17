@@ -60,14 +60,18 @@ leaves on disk and writes only the few files listed below.
 | `/gsd-progress`, `/gsd-manager` | One project, from inside a Claude session. This app covers every registered project from outside any session |
 | `claude-orchestration` backend | Runs one project's phase waves in parallel inside a single Claude session, leaving the same commits and `SUMMARY.md` files as normal execution -- complementary, and read like any other run |
 | Runtimes | Claude Code and Codex: live sessions are detected (Linux). The experimental driver launcher runs Claude in a sandbox ([docs/DRIVER-SANDBOX.md](docs/DRIVER-SANDBOX.md)); Codex is detected, never driven. Resume is Claude-only |
-| gsd-tools | Called read-only, as `gsd-tools smart-entry --json`, for next-command suggestions |
+| gsd-tools | Your own gsd-core install, never one a project ships: `smart-entry --json` for next-command suggestions, `audit-open … acknowledge` for the owner inbox (`A`), and `config-set` / `config-set-model-profile` for Config-tab project saves |
 | Capabilities | Their `capabilities.*` config keys are on the Config tab; keys this build does not model round-trip losslessly as read-only rows. Installed packs are not read |
 | gsd-pi | Not supported: it keeps project state in its own `.gsd/` directory and database, not `.planning/` |
 
 What it writes:
 
-- `.planning/config.json` and `$GSD_HOME/.gsd/defaults.json`, on a Config-tab
-  save -- under GSD's own lock, replaced atomically.
+- `.planning/config.json`, on a Config-tab project save -- never directly: the
+  app runs your gsd-tools `config-set` (GSD's own writer and lock) once per
+  changed key, then re-reads the file.
+- `$GSD_HOME/.gsd/defaults.json`, on a Config-tab Global save -- written
+  directly, under GSD's installer lock and replaced atomically, because
+  gsd-core has no command that writes it.
 - `.planning/meta-manager/QUEUE.md` (Queue tab), its own config and log, and a
   new project's directory with `git init` (`c`).
 - The experimental driver launcher: run directories under
