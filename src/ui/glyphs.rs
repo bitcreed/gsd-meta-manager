@@ -31,9 +31,10 @@
 //!   rules, graph lanes, the cap-bar fill, the text cursor). ratatui's own
 //!   `Block` borders and `Gauge` use this range; every terminal font carries it
 //!   and many draw it natively. No Narrow or Neutral equivalent exists.
-//! * TYPOGRAPHY: the eight code points listed in the source-scan test, used
+//! * TYPOGRAPHY: the eleven code points listed in the source-scan test, used
 //!   inside composed text (separators, truncation, ranges, key hints, scroll
-//!   indicators). Replacing them means an ASCII fallback mode, which is new
+//!   indicators, and the typographic quotes the settle instruction puts around
+//!   a check name and in place of an ASCII quote). Replacing them means an ASCII fallback mode, which is new
 //!   config and so a follow-up (see the pending todo).
 //! * Known limitation: a dozen registry glyphs and the four TYPOGRAPHY arrows
 //!   fall back to a proportional font on some setups and overflow their cell.
@@ -318,8 +319,8 @@ mod tests {
     /// Typography inside composed text: separators, truncation, ranges, key
     /// hints, scroll indicators. Replacing them needs an ASCII fallback mode (a
     /// follow-up todo).
-    const TYPOGRAPHY: [u32; 8] = [
-        0x00B7, 0x2013, 0x2014, 0x2026, 0x2190, 0x2191, 0x2192, 0x2193,
+    const TYPOGRAPHY: [u32; 11] = [
+        0x00B7, 0x2013, 0x2014, 0x2019, 0x201C, 0x201D, 0x2026, 0x2190, 0x2191, 0x2192, 0x2193,
     ];
 
     fn is_cfg_test_mod_decl(attr: &str, next: &str) -> bool {

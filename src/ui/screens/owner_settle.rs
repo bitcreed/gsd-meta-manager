@@ -20,8 +20,8 @@
 
 use crate::session_detector::ClaudeSession;
 use crate::state_reader::owner_items::{
-    is_command_token, is_workstream_name, Kind, Lane, OwnerDigest, OwnerGroup, OwnerItem,
-    RunCommand, RunVerb, Scope,
+    command_phase, is_command_token, is_workstream_name, Kind, Lane, OwnerDigest, OwnerGroup,
+    OwnerItem, RunCommand, RunVerb, Scope,
 };
 use crate::state_reader::ProjectState;
 use crate::ui::screens::{AppContext, ScreenAction};
@@ -230,39 +230,68 @@ fn groups_behind(digest: &OwnerDigest, key: &GroupKey, fold_days: u32) -> Vec<Ow
 /// its arguments, so the refusal table is testable without a screen.
 pub fn settle_target_for(
     alias: &str,
-    _state: &ProjectState,
+    state: &ProjectState,
     digest: &OwnerDigest,
     key: &GroupKey,
     item: Option<&str>,
     fold_days: u32,
-    _active_workstream_set: bool,
+    active_workstream_set: bool,
 ) -> Result<SettleTarget, String> {
     let groups = groups_behind(digest, key, fold_days);
     let first = groups
         .first()
         .ok_or_else(|| "Row is no longer listed; nothing started".to_owned())?;
-    if first.lane != Lane::Test || !matches!(first.scope, Scope::Current) {
-        return Err("Cannot settle this row".to_owned());
-    }
-    let command = first
-        .run
-        .clone()
-        .filter(|run| run.verb == RunVerb::VerifyWork)
-        .ok_or_else(|| "Cannot settle this row".to_owned())?;
-    if let Some(token) = command.phase.as_deref() {
-        if !is_command_token(token) {
-            return Err(format!(
-                "Refused: {token} is not a safe phase token; nothing started"
-            ));
+    // D-03: only TEST and BLOCKED checks of the current milestone can be settled.
+    for group in &groups {
+        match group.lane {
+            Lane::Fix => {
+                return Err("Cannot settle a FIX row: it needs code; v plans the fix".to_owned())
+            }
+            Lane::Decide => return Err("Cannot settle a DECIDE row: it is not a check".to_owned()),
+            Lane::Deferred => {
+                return Err("Cannot settle a deferred row: it is already deferred".to_owned())
+            }
+            Lane::Test | Lane::Blocked => {}
+        }
+        if matches!(group.scope, Scope::Archived { .. }) {
+            return Err(
+                "Cannot settle old debt: an archived phase is not reachable by /gsd-verify-work"
+                    .to_owned(),
+            );
+        }
+        if group.acknowledged {
+            return Err("Cannot settle an acknowledged file: it is already handled".to_owned());
+        }
+        if group.counts.unreadable > 0 {
+            return Err("Cannot settle: the source file is unreadable".to_owned());
         }
     }
-    if let Some(name) = command.workstream.as_deref() {
-        if !is_workstream_name(name) {
+    let workstream = match first.workstream.as_deref() {
+        Some(name) if !is_workstream_name(name) => {
             return Err(format!(
                 "Refused: {name} is not a safe workstream name; nothing started"
             ));
         }
+        other => other.map(str::to_owned),
+    };
+    let token = command_phase(state, workstream.as_deref(), &first.phase);
+    if !is_command_token(&token) {
+        return Err(format!(
+            "Refused: {token} is not a safe phase token; nothing started"
+        ));
     }
+    // T-37-18 analog: a root-scoped command while the pointer names a workstream
+    // would record into that workstream.
+    if workstream.is_none() && active_workstream_set {
+        return Err(format!(
+            "Cannot settle phase {token}: {alias} has an active workstream set; run it in the project"
+        ));
+    }
+    let command = RunCommand {
+        verb: RunVerb::VerifyWork,
+        phase: Some(token),
+        workstream,
+    };
     let mut checks = Vec::new();
     let mut scope = SettleScope::Phase;
     for group in &groups {
@@ -537,4 +566,619 @@ thread_local! {
 #[cfg(test)]
 pub(crate) fn take_settle_launches() -> Vec<SettlePlan> {
     SETTLE_LAUNCHES.with(|launches| std::mem::take(&mut *launches.borrow_mut()))
+}
+
+/// Helpers the settle tests share: a throwaway copy of a fixture project, a byte
+/// map of a tree and a context over it.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use crate::state_reader::gsd_install::InstallRoots;
+    use crate::state_reader::owner_items::read_owner_digest;
+    use crate::state_reader::parse_project_state_with;
+    use crate::ui::screens::tests::ctx_with_aliases;
+    use crate::ui::screens::AppContext;
+    use std::collections::BTreeMap;
+    use std::path::{Path, PathBuf};
+
+    fn copy_dir(from: &Path, to: &Path) {
+        std::fs::create_dir_all(to).unwrap();
+        for entry in std::fs::read_dir(from).unwrap() {
+            let entry = entry.unwrap();
+            let target = to.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                copy_dir(&entry.path(), &target);
+            } else {
+                std::fs::copy(entry.path(), &target).unwrap();
+            }
+        }
+    }
+
+    /// A throwaway copy of `tests/fixtures/owner/{name}/.planning`.
+    pub(crate) fn temp_fixture(name: &str) -> (tempfile::TempDir, PathBuf) {
+        let src = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/owner")
+            .join(name)
+            .join(".planning");
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        copy_dir(&src, &root.join(".planning"));
+        (dir, root)
+    }
+
+    /// Every file and directory under `root`, relative path to bytes (directories
+    /// as empty vectors).
+    pub(crate) fn tree(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+        fn walk(root: &Path, dir: &Path, out: &mut BTreeMap<PathBuf, Vec<u8>>) {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                let rel = path.strip_prefix(root).unwrap().to_path_buf();
+                if path.is_dir() {
+                    out.insert(rel, Vec::new());
+                    walk(root, &path, out);
+                } else {
+                    out.insert(rel, std::fs::read(&path).unwrap());
+                }
+            }
+        }
+        let mut out = BTreeMap::new();
+        walk(root, root, &mut out);
+        out
+    }
+
+    /// A context with `alias` registered at `root`, its state and owner digest read
+    /// from the copy at a fixed `now`.
+    pub(crate) fn fixture_ctx(root: &Path, alias: &str) -> AppContext {
+        let mut ctx = ctx_with_aliases(&[alias]);
+        ctx.config.projects.get_mut(alias).unwrap().path = root.to_path_buf();
+        let planning = root.join(".planning");
+        let state = parse_project_state_with(&planning, &InstallRoots::default());
+        let now = chrono::DateTime::parse_from_rfc3339("2026-01-12T00:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let digest = read_owner_digest(&planning, &state, now, 30);
+        ctx.project_states.insert(alias.to_owned(), state);
+        ctx.owner_digests.insert(alias.to_owned(), digest);
+        ctx
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::test_support::{fixture_ctx, temp_fixture};
+    use super::*;
+    use crate::state_reader::owner_items::{GroupCounts, OwnerDigest};
+    use crate::ui::screens::detail::shown;
+    use crate::ui::screens::inbox::stop_rows;
+    use crate::ui::screens::owner_block::sample_owner_digest;
+
+    const ALIAS: &str = "alder-api";
+
+    /// A refusal row: a label, how to break a group, the status line expected.
+    type Case = (&'static str, Box<dyn Fn(&mut OwnerGroup)>, &'static str);
+
+    /// The skeleton every template follows, so a table row names only what varies.
+    fn expect(
+        cmd: &str,
+        lead: &str,
+        each: &str,
+        outcome: &str,
+        clause: &str,
+        pronoun: (&str, &str),
+    ) -> String {
+        let n = cmd.split(' ').nth(1).unwrap();
+        let (up, lc) = pronoun;
+        format!(
+            "{cmd} {lead} Resume the UAT session of phase {n} without restarting it and record {each} as result: skipped, reason: Deferred follow-up: {outcome}.{clause} {up} must not block phase {n} or be asked again. Keep {lc} in the UAT file and do not promote {lc} to the 999.x backlog."
+        )
+    }
+
+    fn target(
+        ctx: &AppContext,
+        key: &GroupKey,
+        item: Option<&str>,
+        pointer: bool,
+    ) -> Result<SettleTarget, String> {
+        settle_target_for(
+            ALIAS,
+            &ctx.project_states[ALIAS],
+            ctx.owner_digest(ALIAS).unwrap(),
+            key,
+            item,
+            90,
+            pointer,
+        )
+    }
+
+    fn choice(outcome: Outcome, reason: &str) -> SettleChoice {
+        SettleChoice {
+            outcome,
+            reason: clean(reason, REASON_MAX_CHARS),
+        }
+    }
+
+    fn group_key(ctx: &AppContext, lane: Lane, workstream: Option<&str>) -> GroupKey {
+        let group = ctx
+            .owner_digest(ALIAS)
+            .unwrap()
+            .groups
+            .iter()
+            .find(|g| g.lane == lane && g.workstream.as_deref() == workstream)
+            .expect("a group");
+        if lane == Lane::Blocked {
+            GroupKey::aggregate(group)
+        } else {
+            GroupKey::of(group)
+        }
+    }
+
+    #[test]
+    fn settle_prompts_for_every_outcome_scope_and_workstream() {
+        // Root: uat-pending, tests 2 and 3 are TEST, test 4 is BLOCKED.
+        let (_d1, root) = temp_fixture("uat-pending");
+        let ctx = fixture_ctx(&root, ALIAS);
+        let key = group_key(&ctx, Lane::Test, None);
+        let check_id = target(&ctx, &key, None, false).unwrap().checks.len();
+        assert_eq!(check_id, 2);
+        let item_id = ctx.owner_digest(ALIAS).unwrap().groups[0]
+            .items
+            .iter()
+            .find(|i| i.test.as_deref() == Some("2"))
+            .unwrap()
+            .id
+            .clone();
+        let phase = |o, r| prompt(&target(&ctx, &key, None, false).unwrap(), &choice(o, r));
+        let check = |o, r| {
+            prompt(
+                &target(&ctx, &key, Some(&item_id), false).unwrap(),
+                &choice(o, r),
+            )
+        };
+        let each = "each of them";
+        assert_eq!(
+            phase(Outcome::WontDo, "no device here"),
+            expect(
+                "/gsd-verify-work 01",
+                "The user will not perform tests 2, 3 in 01-UAT.md.",
+                each,
+                "will not do",
+                " no device here.",
+                ("They", "them")
+            )
+        );
+        assert_eq!(
+            phase(Outcome::DeferPermanently, "later"),
+            expect(
+                "/gsd-verify-work 01",
+                "The user defers tests 2, 3 in 01-UAT.md permanently.",
+                each,
+                "deferred permanently",
+                " later.",
+                ("They", "them")
+            )
+        );
+        let named = "test 2 (\u{201c}Saving a note\u{201d}) in 01-UAT.md";
+        assert_eq!(
+            check(Outcome::WontDo, "no device here"),
+            expect(
+                "/gsd-verify-work 01",
+                &format!("The user will not perform {named}."),
+                "test 2",
+                "will not do",
+                " no device here.",
+                ("It", "it")
+            )
+        );
+        assert_eq!(
+            check(Outcome::DeferPermanently, ""),
+            expect(
+                "/gsd-verify-work 01",
+                &format!("The user defers {named} permanently."),
+                "test 2",
+                "deferred permanently",
+                "",
+                ("It", "it")
+            )
+        );
+
+        // Workstream: alpha phase 03 has tests 1 and 2.
+        let (_d2, root) = temp_fixture("workstreams");
+        let ctx = fixture_ctx(&root, ALIAS);
+        let key = group_key(&ctx, Lane::Test, Some("alpha"));
+        let phase = target(&ctx, &key, None, false).unwrap();
+        assert_eq!(
+            prompt(&phase, &choice(Outcome::WontDo, "r")),
+            expect(
+                "/gsd-verify-work 03 --ws alpha",
+                "The user will not perform tests 1, 2 in 03-UAT.md.",
+                each,
+                "will not do",
+                " r.",
+                ("They", "them")
+            )
+        );
+        let id = ctx
+            .owner_digest(ALIAS)
+            .unwrap()
+            .groups
+            .iter()
+            .find(|g| g.workstream.is_some())
+            .unwrap()
+            .items[1]
+            .id
+            .clone();
+        let one = target(&ctx, &key, Some(&id), false).unwrap();
+        assert_eq!(
+            prompt(&one, &choice(Outcome::DeferPermanently, "r")),
+            expect(
+                "/gsd-verify-work 03 --ws alpha",
+                "The user defers test 2 (\u{201c}Stream check two\u{201d}) in 03-UAT.md permanently.",
+                "test 2",
+                "deferred permanently",
+                " r.",
+                ("It", "it")
+            )
+        );
+        // The same digest twice gives the same text (the Yes recheck compares it).
+        let again = target(&ctx, &key, None, false).unwrap();
+        assert_eq!(
+            prompt(&phase, &choice(Outcome::WontDo, "r")),
+            prompt(&again, &choice(Outcome::WontDo, "r"))
+        );
+        // The root group of the same project, with no workstream, has no `--ws`.
+        let root_key = group_key(&ctx, Lane::Test, None);
+        let root_target = target(&ctx, &root_key, None, false).unwrap();
+        assert!(!prompt(&root_target, &choice(Outcome::WontDo, "r")).contains("--ws"));
+    }
+
+    #[test]
+    fn blocked_rows_use_command_phase_and_test_rows_match_their_run() {
+        let (_d, root) = temp_fixture("uat-pending");
+        let ctx = fixture_ctx(&root, ALIAS);
+        let digest = ctx.owner_digest(ALIAS).unwrap();
+        let blocked = group_key(&ctx, Lane::Blocked, None);
+        let t = target(&ctx, &blocked, None, false).unwrap();
+        assert_eq!(t.command.to_string(), "/gsd-verify-work 01");
+        assert_eq!(
+            (t.checks.len(), t.checks[0].number.as_str()),
+            (1, "4"),
+            "{t:?}"
+        );
+        for fixture in ["uat-pending", "workstreams"] {
+            let (_d, root) = temp_fixture(fixture);
+            let ctx = fixture_ctx(&root, ALIAS);
+            let digest = ctx.owner_digest(ALIAS).unwrap();
+            let mut seen = 0;
+            for group in digest
+                .groups
+                .iter()
+                .filter(|g| g.lane == Lane::Test && matches!(g.scope, Scope::Current))
+            {
+                let t = target(&ctx, &GroupKey::of(group), None, false).unwrap();
+                assert_eq!(Some(t.command), group.run.clone(), "{fixture}");
+                seen += 1;
+            }
+            assert!(seen > 0, "{fixture} has TEST groups");
+        }
+        assert!(digest.groups.iter().any(|g| g.lane == Lane::Blocked));
+    }
+
+    /// A TEST UAT group of phase 24 with six checks, and a digest holding only it.
+    fn base() -> OwnerGroup {
+        sample_owner_digest()
+            .groups
+            .into_iter()
+            .find(|g| g.kind == Kind::Uat && g.lane == Lane::Test && g.phase == "24")
+            .unwrap()
+    }
+
+    fn lone(group: &OwnerGroup, item: Option<&str>, pointer: bool) -> Result<SettleTarget, String> {
+        let digest = OwnerDigest {
+            groups: vec![group.clone()],
+            ..OwnerDigest::default()
+        };
+        settle_target_for(
+            ALIAS,
+            &ProjectState::default(),
+            &digest,
+            &GroupKey::of(group),
+            item,
+            90,
+            pointer,
+        )
+    }
+
+    #[test]
+    fn settle_refusals() {
+        assert!(lone(&base(), None, false).is_ok());
+        let cases: Vec<Case> = vec![
+            (
+                "FIX",
+                Box::new(|g| g.lane = Lane::Fix),
+                "Cannot settle a FIX row: it needs code; v plans the fix",
+            ),
+            (
+                "DECIDE",
+                Box::new(|g| g.lane = Lane::Decide),
+                "Cannot settle a DECIDE row: it is not a check",
+            ),
+            (
+                "deferred",
+                Box::new(|g| g.lane = Lane::Deferred),
+                "Cannot settle a deferred row: it is already deferred",
+            ),
+            (
+                "archived",
+                Box::new(|g| {
+                    g.scope = Scope::Archived {
+                        label: "v1.0".to_owned(),
+                        rank: 0,
+                    }
+                }),
+                "Cannot settle old debt: an archived phase is not reachable by /gsd-verify-work",
+            ),
+            (
+                "acknowledged",
+                Box::new(|g| g.acknowledged = true),
+                "Cannot settle an acknowledged file: it is already handled",
+            ),
+            (
+                "unreadable",
+                Box::new(|g| {
+                    g.counts = GroupCounts {
+                        unreadable: 1,
+                        ..g.counts
+                    }
+                }),
+                "Cannot settle: the source file is unreadable",
+            ),
+            (
+                "phase token",
+                Box::new(|g| g.phase = "1;rm".to_owned()),
+                "Refused: 1;rm is not a safe phase token; nothing started",
+            ),
+            (
+                "fullwidth digits",
+                Box::new(|g| g.phase = "\u{ff11}\u{ff12}".to_owned()),
+                "Refused: \u{ff11}\u{ff12} is not a safe phase token; nothing started",
+            ),
+        ];
+        for (label, mutate, want) in cases {
+            let mut group = base();
+            mutate(&mut group);
+            assert_eq!(
+                lone(&group, None, false).err().as_deref(),
+                Some(want),
+                "{label}"
+            );
+        }
+        for name in ["a b", "../x", "-h", "."] {
+            let mut group = base();
+            group.workstream = Some(name.to_owned());
+            assert_eq!(
+                lone(&group, None, false).err(),
+                Some(format!(
+                    "Refused: {name} is not a safe workstream name; nothing started"
+                )),
+                "{name}"
+            );
+        }
+        // A vanished row and a vanished check.
+        let group = base();
+        let digest = OwnerDigest::default();
+        let gone = settle_target_for(
+            ALIAS,
+            &ProjectState::default(),
+            &digest,
+            &GroupKey::of(&group),
+            None,
+            90,
+            false,
+        );
+        assert_eq!(
+            gone.err().as_deref(),
+            Some("Row is no longer listed; nothing started")
+        );
+        assert_eq!(
+            lone(&group, Some("no such id"), false).err().as_deref(),
+            Some("Check is no longer listed; nothing started")
+        );
+    }
+
+    #[test]
+    fn the_pointer_refuses_only_root_groups() {
+        let (_d, root) = temp_fixture("workstreams");
+        let ctx = fixture_ctx(&root, ALIAS);
+        let root_key = group_key(&ctx, Lane::Test, None);
+        let ws_key = group_key(&ctx, Lane::Test, Some("alpha"));
+        assert!(target(&ctx, &root_key, None, false).is_ok());
+        assert_eq!(
+            target(&ctx, &root_key, None, true).err().as_deref(),
+            Some("Cannot settle phase 1: alder-api has an active workstream set; run it in the project")
+        );
+        assert!(target(&ctx, &ws_key, None, true).is_ok());
+    }
+
+    #[test]
+    fn hostile_text_cannot_break_the_argument_parse_or_the_popup() {
+        let hostile = [
+            "x\u{1b}[2J\u{7}\u{202e}y\u{200b}z\u{85}",
+            "won't",
+            "a \"b\"",
+            "c\\d",
+            "x --ws evil",
+            "-\u{200b}-ws evil",
+            "tab\there\nnewline",
+            "\u{201c}curly\u{201d} and \u{2019}",
+        ];
+        for ws in [None, Some("alpha")] {
+            for text in hostile {
+                let mut group = base();
+                group.workstream = ws.map(str::to_owned);
+                group.file = format!("phases/24/{text}-UAT.md");
+                for item in &mut group.items {
+                    item.name = text.to_owned();
+                    item.test = Some(text.to_owned());
+                }
+                let t = lone(&group, None, false).unwrap();
+                let c = lone(&group, Some(&group.items[0].id), false).unwrap();
+                for target in [t, c] {
+                    for outcome in [Outcome::WontDo, Outcome::DeferPermanently] {
+                        let p = prompt(&target, &choice(outcome, text));
+                        for bad in ['\'', '"', '\\'] {
+                            assert!(!p.contains(bad), "{bad:?} in {p:?} for {text:?}");
+                        }
+                        let count = p.matches("--ws").count();
+                        assert_eq!(count, usize::from(ws.is_some()), "{p:?} for {text:?}");
+                        assert!(!p.chars().any(|c| c.is_control()), "{p:?}");
+                        assert_eq!(shown(&p), p, "the popup would differ from the argv");
+                        assert!(p.starts_with("/gsd-verify-work 24"));
+                        if ws.is_some() {
+                            assert!(p.starts_with("/gsd-verify-work 24 --ws alpha "));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn caps_count_characters_at_each_boundary() {
+        let a = |n: usize| "a".repeat(n);
+        assert_eq!(clean(&a(200), REASON_MAX_CHARS), a(200));
+        assert_eq!(
+            clean(&a(201), REASON_MAX_CHARS),
+            format!("{}\u{2026}", a(200))
+        );
+        assert_eq!(clean(&a(80), NAME_MAX_CHARS), a(80));
+        assert_eq!(clean(&a(81), NAME_MAX_CHARS), format!("{}\u{2026}", a(80)));
+        // Characters, never bytes: 201 two-byte characters are cut at 200.
+        let e = "\u{e9}".repeat(201);
+        let cut = clean(&e, REASON_MAX_CHARS);
+        assert_eq!(cut.chars().count(), 201);
+        assert!(cut.starts_with(&"\u{e9}".repeat(200)) && cut.ends_with('\u{2026}'));
+        assert_eq!(
+            clean(&"\u{e9}".repeat(200), REASON_MAX_CHARS)
+                .chars()
+                .count(),
+            200
+        );
+
+        // 20 numbers are listed, 21 become `all 21 open tests`.
+        for (n, want) in [(20usize, false), (21, true)] {
+            let mut group = base();
+            group.items = (0..n)
+                .map(|i| {
+                    let mut item = base().items[0].clone();
+                    item.id = format!("id{i}");
+                    item.test = Some((i + 1).to_string());
+                    item
+                })
+                .collect();
+            let t = lone(&group, None, false).unwrap();
+            let text = target_text(&t);
+            if want {
+                assert_eq!(text, "all 21 open tests in 24-UAT.md");
+            } else {
+                assert!(
+                    text.starts_with("tests 1, 2, 3") && text.contains(", 20 in 24-UAT.md"),
+                    "{text}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn phase_targets_list_files_in_part_order() {
+        let uat = base();
+        let mut verification = base();
+        verification.kind = Kind::Verification;
+        verification.file = "phases/24/24-VERIFICATION.md".to_owned();
+        verification.items.truncate(1);
+        for order in [[0usize, 1], [1, 0]] {
+            let both = [uat.clone(), verification.clone()];
+            let digest = OwnerDigest {
+                groups: order.iter().map(|&i| both[i].clone()).collect(),
+                ..OwnerDigest::default()
+            };
+            let key = GroupKey::entry(&digest.groups[0]);
+            let t = settle_target_for(
+                ALIAS,
+                &ProjectState::default(),
+                &digest,
+                &key,
+                None,
+                90,
+                false,
+            )
+            .unwrap();
+            let again = settle_target_for(
+                ALIAS,
+                &ProjectState::default(),
+                &digest,
+                &key,
+                None,
+                90,
+                false,
+            )
+            .unwrap();
+            assert_eq!(t, again);
+            let text = target_text(&t);
+            let uat_at = text.find("24-UAT.md").expect("the UAT file");
+            let ver_at = text
+                .find("24-VERIFICATION.md")
+                .expect("the VERIFICATION file");
+            assert_eq!(
+                uat_at < ver_at,
+                order[0] == 0,
+                "files follow the row's part order: {text}"
+            );
+            assert!(
+                text.contains("tests 1, 2, 3, 4, 5, 6 in 24-UAT.md"),
+                "{text}"
+            );
+            assert!(text.contains("item 1 in 24-VERIFICATION.md"), "{text}");
+            assert_eq!(
+                text.matches(" and ").count(),
+                1,
+                "one target, not two: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn one_check_reads_singular() {
+        let (_d, root) = temp_fixture("uat-pending");
+        let ctx = fixture_ctx(&root, ALIAS);
+        let key = group_key(&ctx, Lane::Blocked, None);
+        let t = target(&ctx, &key, None, false).unwrap();
+        let p = prompt(&t, &choice(Outcome::WontDo, "no handset"));
+        assert!(p.contains("will not perform test 4 in 01-UAT.md."), "{p}");
+        assert!(p.contains("record test 4 as result: skipped"), "{p}");
+        assert!(p.contains(" It must not block phase 01"), "{p}");
+        assert!(
+            p.contains("Keep it in the UAT file and do not promote it to"),
+            "{p}"
+        );
+        assert!(!p.contains("They") && !p.contains("them"), "{p}");
+    }
+
+    #[test]
+    fn deferred_without_a_reason_has_no_empty_clause() {
+        let (_d, root) = temp_fixture("uat-pending");
+        let ctx = fixture_ctx(&root, ALIAS);
+        let key = group_key(&ctx, Lane::Test, None);
+        let t = target(&ctx, &key, None, false).unwrap();
+        let p = prompt(&t, &choice(Outcome::DeferPermanently, ""));
+        assert!(
+            p.contains("deferred permanently. They must not block"),
+            "{p}"
+        );
+        assert!(!p.contains(". ."), "{p}");
+        assert!(!p.contains("  "), "{p}");
+        // A reason that ends in punctuation is not given a second full stop.
+        let p = prompt(&t, &choice(Outcome::WontDo, "no device?"));
+        assert!(p.contains("will not do. no device? They must not"), "{p}");
+        // Every phase row of the fixture is a real row.
+        assert!(!stop_rows(&ctx).is_empty());
+    }
 }

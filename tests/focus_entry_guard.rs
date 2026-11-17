@@ -34,6 +34,7 @@ const FOCUS_CALLERS: &[&str] = &[
     "src/ui/screens/detail.rs",
     "src/ui/screens/normal.rs",
     "src/ui/screens/owner_actions.rs",
+    "src/ui/screens/owner_settle.rs",
 ];
 
 /// Seam internals no code outside `src/multiplexer/` may call: reaching a

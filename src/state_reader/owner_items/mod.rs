@@ -47,7 +47,7 @@ use chrono::{DateTime, Utc};
 use super::ProjectState;
 
 // The launch path re-validates the tokens it builds an argv from (D-11).
-pub(crate) use rules::{is_command_token, is_workstream_name};
+pub(crate) use rules::{command_phase, is_command_token, is_workstream_name};
 
 pub use labels::{label_counts, labels_of, Label, LabelCounts};
 pub use triage::{

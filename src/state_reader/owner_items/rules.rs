@@ -114,6 +114,18 @@ fn scope_state<'a>(state: &'a ProjectState, workstream: Option<&str>) -> &'a Pro
         .map_or(state, |ws| &ws.state)
 }
 
+/// The phase token a group's command carries: the roadmap number of the phase the
+/// directory token `phase` names (looked up in the workstream's own roadmap when
+/// there is one), else the directory token itself. It is what `phase_labels` gives
+/// `run_for`, shared so TEST and BLOCKED settles spell the same token (39,
+/// RESEARCH Pitfall 6). The caller still checks the result with
+/// [`is_command_token`].
+pub(crate) fn command_phase(state: &ProjectState, workstream: Option<&str>, phase: &str) -> String {
+    scope_state(state, workstream)
+        .roadmap_phase(phase)
+        .map_or_else(|| phase.to_owned(), |roadmap| roadmap.number.clone())
+}
+
 /// R10: the command that works on a group, if any.
 fn run_for(
     lane: Lane,

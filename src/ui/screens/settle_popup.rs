@@ -46,8 +46,8 @@ fn render_host(host: &AckHost, frame: &mut Frame, area: Rect, ctx: &AppContext) 
 
 // ── The chooser ─────────────────────────────────────────────────────────────
 
-/// `x`: the one-row chooser `Settle {target}: [w] won't do  [Esc] cancel`. A key
-/// replaces it with the reason field; Esc cancels.
+/// `x`: the one-row chooser `Settle {target}: [w] won't do  [p] defer permanently
+/// [Esc] cancel`. A key replaces it with the reason field; Esc cancels.
 pub struct SettleChooserScreen {
     host: AckHost,
     draft: SettleDraft,
@@ -88,6 +88,7 @@ impl Screen for SettleChooserScreen {
     ) -> ScreenAction {
         match code {
             KeyCode::Char('w') => self.choose(Outcome::WontDo, ctx),
+            KeyCode::Char('p') => self.choose(Outcome::DeferPermanently, ctx),
             KeyCode::Esc => {
                 ctx.needs_redraw = true;
                 ScreenAction::Pop
@@ -107,6 +108,7 @@ impl Screen for SettleChooserScreen {
             shown(&self.draft.target.short())
         ))];
         spans.extend(key("[w]", " won't do  "));
+        spans.extend(key("[p]", " defer permanently  "));
         spans.extend(key("[Esc]", " cancel"));
         let line = fit_spans(spans, usize::from(chunks[1].width));
         frame.render_widget(Paragraph::new(line), chunks[1]);
@@ -416,82 +418,16 @@ impl Screen for SettleConfirmScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state_reader::gsd_install::InstallRoots;
-    use crate::state_reader::owner_items::read_owner_digest;
-    use crate::state_reader::parse_project_state_with;
     use crate::ui::screens::inbox::stop_rows;
     use crate::ui::screens::owner_settle::take_settle_launches;
-    use crate::ui::screens::tests::ctx_with_aliases;
+    use crate::ui::screens::owner_settle::test_support::{fixture_ctx, temp_fixture, tree};
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
-    use std::collections::BTreeMap;
-    use std::path::{Path, PathBuf};
 
     const ALIAS: &str = "alder-api";
 
     /// The prompt of the Won't do tracer flow on `uat-pending` (D-08).
     const TRACER_PROMPT: &str = "/gsd-verify-work 01 The user will not perform tests 2, 3 in 01-UAT.md. Resume the UAT session of phase 01 without restarting it and record each of them as result: skipped, reason: Deferred follow-up: will not do. no device here. They must not block phase 01 or be asked again. Keep them in the UAT file and do not promote them to the 999.x backlog.";
-
-    fn copy_dir(from: &Path, to: &Path) {
-        std::fs::create_dir_all(to).unwrap();
-        for entry in std::fs::read_dir(from).unwrap() {
-            let entry = entry.unwrap();
-            let target = to.join(entry.file_name());
-            if entry.file_type().unwrap().is_dir() {
-                copy_dir(&entry.path(), &target);
-            } else {
-                std::fs::copy(entry.path(), &target).unwrap();
-            }
-        }
-    }
-
-    /// A throwaway copy of `tests/fixtures/owner/{name}/.planning`.
-    pub(crate) fn temp_fixture(name: &str) -> (tempfile::TempDir, PathBuf) {
-        let src = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/owner")
-            .join(name)
-            .join(".planning");
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().to_path_buf();
-        copy_dir(&src, &root.join(".planning"));
-        (dir, root)
-    }
-
-    /// Every file and directory under `root`, relative path to bytes (directories
-    /// as empty vectors).
-    pub(crate) fn tree(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
-        fn walk(root: &Path, dir: &Path, out: &mut BTreeMap<PathBuf, Vec<u8>>) {
-            for entry in std::fs::read_dir(dir).unwrap() {
-                let path = entry.unwrap().path();
-                let rel = path.strip_prefix(root).unwrap().to_path_buf();
-                if path.is_dir() {
-                    out.insert(rel, Vec::new());
-                    walk(root, &path, out);
-                } else {
-                    out.insert(rel, std::fs::read(&path).unwrap());
-                }
-            }
-        }
-        let mut out = BTreeMap::new();
-        walk(root, root, &mut out);
-        out
-    }
-
-    /// A context with `alias` registered at `root`, its state and owner digest read
-    /// from the copy at a fixed `now`.
-    pub(crate) fn fixture_ctx(root: &Path, alias: &str) -> AppContext {
-        let mut ctx = ctx_with_aliases(&[alias]);
-        ctx.config.projects.get_mut(alias).unwrap().path = root.to_path_buf();
-        let planning = root.join(".planning");
-        let state = parse_project_state_with(&planning, &InstallRoots::default());
-        let now = chrono::DateTime::parse_from_rfc3339("2026-01-12T00:00:00Z")
-            .unwrap()
-            .with_timezone(&chrono::Utc);
-        let digest = read_owner_digest(&planning, &state, now, 30);
-        ctx.project_states.insert(alias.to_owned(), state);
-        ctx.owner_digests.insert(alias.to_owned(), digest);
-        ctx
-    }
 
     /// A small screen stack: `Push`, `Replace` and `Pop` as the App applies them.
     pub(crate) struct Stack(Vec<Box<dyn Screen>>);
@@ -796,6 +732,172 @@ mod tests {
             let rows = confirm_popup::wrapped_rows(&body, inner_w);
             assert!(rows <= room, "{outcome:?}: {rows} rows > {room}");
         }
+    }
+
+    /// A live Claude session whose cwd is exactly `root`.
+    fn session_in(root: &std::path::Path) -> crate::session_detector::ClaudeSession {
+        crate::session_detector::ClaudeSession {
+            pid: 4242,
+            kind: crate::session_detector::SessionKind::Claude,
+            session_id: None,
+            working_dir: root.to_path_buf(),
+            start_time: None,
+            tty: None,
+        }
+    }
+
+    #[test]
+    fn p_opens_an_optional_reason() {
+        take_settle_launches();
+        let (_dir, root) = temp_fixture("uat-pending");
+        let mut ctx = fixture_ctx(&root, ALIAS);
+        let mut stack = Stack::inbox();
+        stack.key(&mut ctx, KeyCode::Char('x'));
+        let chooser = stack.render(&ctx, 100, 24);
+        assert!(
+            chooser.contains("Settle phase 01: [w] won't do  [p] defer permanently  [Esc] cancel"),
+            "{chooser}"
+        );
+        stack.key(&mut ctx, KeyCode::Char('p'));
+        assert_eq!(stack.name(), "settle_reason");
+        let field = stack.render(&ctx, 100, 24);
+        assert!(
+            field.contains("Deferred permanently phase 01: reason (optional)>"),
+            "{field}"
+        );
+        assert!(
+            stack.key(&mut ctx, KeyCode::Enter),
+            "an empty reason is allowed"
+        );
+        assert_eq!(stack.name(), "settle_confirm");
+        assert!(stack.key(&mut ctx, KeyCode::Char('y')));
+        let launches = take_settle_launches();
+        assert_eq!(launches.len(), 1);
+        let prompt = launches[0].prompt();
+        assert!(
+            prompt.contains(
+                "reason: Deferred follow-up: deferred permanently. They must not block phase 01"
+            ),
+            "{prompt}"
+        );
+        assert_eq!(
+            status(&ctx),
+            "Launched /gsd-verify-work 01 in alder-api: deferred permanently for phase 01 (2 checks)"
+        );
+    }
+
+    #[test]
+    fn yes_rechecks_a_vanished_row() {
+        take_settle_launches();
+        let (_dir, root) = temp_fixture("uat-pending");
+        let mut ctx = fixture_ctx(&root, ALIAS);
+        let mut stack = Stack::inbox();
+        to_popup(&mut stack, &mut ctx);
+        // The refresh between `x` and Yes dropped the row.
+        ctx.owner_digests.insert(
+            ALIAS.to_owned(),
+            crate::state_reader::owner_items::OwnerDigest::default(),
+        );
+        stack.key(&mut ctx, KeyCode::Char('y'));
+        assert_eq!(status(&ctx), "Row is no longer listed; nothing launched");
+        assert!(take_settle_launches().is_empty());
+    }
+
+    #[test]
+    fn yes_rechecks_a_changed_row() {
+        take_settle_launches();
+        let (_dir, root) = temp_fixture("uat-pending");
+        let mut ctx = fixture_ctx(&root, ALIAS);
+        let mut stack = Stack::inbox();
+        to_popup(&mut stack, &mut ctx);
+        // A check was added to the group while the popup was open.
+        let group = ctx
+            .owner_digests
+            .get_mut(ALIAS)
+            .unwrap()
+            .groups
+            .iter_mut()
+            .find(|g| g.lane == crate::state_reader::owner_items::Lane::Test)
+            .unwrap();
+        let mut extra = group.items[0].clone();
+        extra.id = "added".to_owned();
+        extra.test = Some("9".to_owned());
+        group.items.push(extra);
+        stack.key(&mut ctx, KeyCode::Char('y'));
+        assert_eq!(
+            status(&ctx),
+            "The row changed since the popup opened; nothing launched"
+        );
+        assert!(take_settle_launches().is_empty());
+    }
+
+    #[test]
+    fn yes_rechecks_a_new_live_session() {
+        take_settle_launches();
+        let (_dir, root) = temp_fixture("uat-pending");
+        let mut ctx = fixture_ctx(&root, ALIAS);
+        let mut stack = Stack::inbox();
+        to_popup(&mut stack, &mut ctx);
+        ctx.active_sessions.push(session_in(&root));
+        stack.key(&mut ctx, KeyCode::Char('y'));
+        assert_eq!(
+            status(&ctx),
+            "A session started or ended in alder-api since the popup opened; nothing launched"
+        );
+        assert!(take_settle_launches().is_empty());
+        // And the other direction: a session that vanished.
+        let mut stack = Stack::inbox();
+        to_popup(&mut stack, &mut ctx);
+        ctx.active_sessions.clear();
+        stack.key(&mut ctx, KeyCode::Char('y'));
+        assert_eq!(
+            status(&ctx),
+            "A session started or ended in alder-api since the popup opened; nothing launched"
+        );
+        assert!(take_settle_launches().is_empty());
+    }
+
+    #[test]
+    fn a_live_session_is_focused_not_relaunched() {
+        take_settle_launches();
+        let (_dir, root) = temp_fixture("uat-pending");
+        let mut ctx = fixture_ctx(&root, ALIAS);
+        ctx.active_sessions.push(session_in(&root));
+        let mut stack = Stack::inbox();
+        stack.key(&mut ctx, KeyCode::Char('x'));
+        stack.key(&mut ctx, KeyCode::Char('w'));
+        stack.keys(&mut ctx, "no device here");
+        stack.key(&mut ctx, KeyCode::Enter);
+        let text = stack.render(&ctx, 100, 30);
+        assert!(
+            text.contains("Claude already runs here: Yes switches to it, no second session."),
+            "{text}"
+        );
+        stack.key(&mut ctx, KeyCode::Char('y'));
+        let launches = take_settle_launches();
+        assert_eq!(launches.len(), 1);
+        assert!(
+            launches[0].draft.live_session.is_some(),
+            "the real path focuses it"
+        );
+        assert!(
+            status(&ctx).starts_with(crate::multiplexer::FOCUS_OK_PREFIX),
+            "{}",
+            status(&ctx)
+        );
+        // A prefix-sharing sibling directory is a different project.
+        let mut ctx = fixture_ctx(&root, ALIAS);
+        let sibling = root.with_file_name(format!(
+            "{}-sibling",
+            root.file_name().unwrap().to_string_lossy()
+        ));
+        ctx.active_sessions.push(session_in(&sibling));
+        let mut stack = Stack::inbox();
+        to_popup(&mut stack, &mut ctx);
+        stack.key(&mut ctx, KeyCode::Char('y'));
+        let launches = take_settle_launches();
+        assert_eq!(launches.len(), 1);
+        assert!(launches[0].draft.live_session.is_none());
     }
 
     #[test]

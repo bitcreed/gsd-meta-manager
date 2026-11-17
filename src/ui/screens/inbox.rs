@@ -4090,6 +4090,74 @@ mod tests {
         ctx.inbox_view.cursor_index = at;
     }
 
+    fn press_key(ctx: &mut AppContext, code: KeyCode) -> ScreenAction {
+        InboxScreen::new().handle_key(code, KeyModifiers::NONE, ctx)
+    }
+
+    /// `x` on the fold line, an Old debt row and an Acknowledged row says why not
+    /// and pushes nothing (39 D-03).
+    #[test]
+    fn x_refuses_the_fold_line_and_the_folds_rows() {
+        let mut ctx = fleet_with_folds();
+        // The fold line.
+        ctx.inbox_view.cursor = Some(InboxStop::FoldLine);
+        let action = press_key(&mut ctx, KeyCode::Char('x'));
+        assert!(matches!(action, ScreenAction::None));
+        assert_eq!(status(&ctx), "Select a check or a phase row to settle it");
+        // An Old debt row and an Acknowledged row, with their folds open.
+        for (fold, want) in [
+            (
+                Fold::OldDebt,
+                "Cannot settle old debt: an archived phase is not reachable by /gsd-verify-work",
+            ),
+            (
+                Fold::Acknowledged,
+                "Cannot settle an acknowledged file: it is already handled",
+            ),
+        ] {
+            ctx.status_message = None;
+            ctx.inbox_view.open_folds.insert(fold);
+            let rows = stop_rows(&ctx);
+            let at = rows
+                .iter()
+                .position(|row| row.fold == Some(fold))
+                .expect("a fold row");
+            ctx.inbox_view.cursor = Some(InboxStop::Row(rows[at].key()));
+            ctx.inbox_view.cursor_index = at;
+            let action = press_key(&mut ctx, KeyCode::Char('x'));
+            assert!(matches!(action, ScreenAction::None), "{fold:?}");
+            assert_eq!(status(&ctx), want);
+        }
+    }
+
+    /// A current row opens the chooser; `v`, `o`, `A`, `y` and `g` keep their
+    /// own behavior on it and never reach settle.
+    #[test]
+    fn x_opens_the_chooser_and_leaves_the_other_keys_alone() {
+        let mut ctx = inbox_fleet_ctx();
+        put_cursor_on(&mut ctx, "dune-app", "24");
+        let action = press_key(&mut ctx, KeyCode::Char('x'));
+        let ScreenAction::Push(chooser) = action else {
+            panic!("`x` on a TEST row pushes the chooser");
+        };
+        assert_eq!(chooser.name(), "settle_chooser");
+        for key in ['o', 'y', 'A'] {
+            ctx.status_message = None;
+            let action = press_key(&mut ctx, KeyCode::Char(key));
+            let said = status(&ctx);
+            assert!(
+                !said.contains("settle")
+                    && !matches!(&action, ScreenAction::Push(s) if s.name().starts_with("settle")),
+                "{key}: {said}"
+            );
+        }
+        // Ctrl-x and Alt-x do nothing.
+        for modifiers in [KeyModifiers::CONTROL, KeyModifiers::ALT] {
+            let action = InboxScreen::new().handle_key(KeyCode::Char('x'), modifiers, &mut ctx);
+            assert!(matches!(action, ScreenAction::None));
+        }
+    }
+
     #[test]
     fn enter_expands_a_group_with_its_run_line() {
         let mut ctx = inbox_fleet_ctx();
