@@ -25,6 +25,7 @@ use super::driver::DRY_RUN_LOADING;
 use super::owner::{owner_numbers, OWNER_SEP};
 use super::owner_actions;
 use super::owner_block::{self, blanks, cells, pad, Fold, GroupKey, RowCells, RowSrc};
+use super::owner_settle;
 use super::{AppContext, Screen, ScreenAction};
 use crate::inbox::phase_key;
 use crate::state_reader::owner_items::{
@@ -1775,6 +1776,48 @@ impl InboxScreen {
         }
     }
 
+    /// `x` (39, D-05): the settle chooser for the selected row, or the status line
+    /// that says why not. Nothing starts until Yes in the popup. Merged rows are
+    /// accepted (D-03): the phase target names every file's checks.
+    fn settle_key(&self, ctx: &mut AppContext) -> ScreenAction {
+        let row = match Self::selected(ctx) {
+            Err(()) => return ScreenAction::None,
+            Ok(None) => {
+                Self::say(ctx, "Select a check or a phase row to settle it".to_owned());
+                return ScreenAction::None;
+            }
+            Ok(Some(row)) => row,
+        };
+        match row.fold {
+            Some(Fold::OldDebt) => {
+                Self::say(
+                    ctx,
+                    "Cannot settle old debt: an archived phase is not reachable by /gsd-verify-work"
+                        .to_owned(),
+                );
+                return ScreenAction::None;
+            }
+            Some(Fold::Acknowledged) => {
+                Self::say(
+                    ctx,
+                    "Cannot settle an acknowledged file: it is already handled".to_owned(),
+                );
+                return ScreenAction::None;
+            }
+            _ => {}
+        }
+        match owner_settle::settle_open(ctx, &row.alias, &row.src.key, None, AckHost::Inbox) {
+            Ok(action) => {
+                ctx.needs_redraw = true;
+                action
+            }
+            Err(message) => {
+                Self::say(ctx, message);
+                ScreenAction::None
+            }
+        }
+    }
+
     /// The 37 copy path (D-09): the checklist of the groups behind `row`, looked up
     /// by identity as the key is pressed; a BLOCKED aggregate covers every group of
     /// its (workstream, phase).
@@ -1925,6 +1968,7 @@ impl Screen for InboxScreen {
             KeyCode::Char('o') if plain => self.open_key(ctx),
             KeyCode::Char('A') if plain => self.ack_key(ctx),
             KeyCode::Char('y') if plain => self.copy_key(ctx),
+            KeyCode::Char('x') if plain => self.settle_key(ctx),
             KeyCode::Char('g') if plain => self.goto_key(ctx),
             KeyCode::Enter | KeyCode::Char(' ') => {
                 self.toggle_key(ctx);

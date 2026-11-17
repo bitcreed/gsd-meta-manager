@@ -386,6 +386,9 @@ const SCREEN_IDENTITY_DISPOSITIONS: &[FixtureRow] = &[
         "QueueDeleteConfirmScreen",
         "src/ui/screens/queue_delete_confirm.rs",
     ),
+    ("SettleChooserScreen", "src/ui/screens/settle_popup.rs"),
+    ("SettleConfirmScreen", "src/ui/screens/settle_popup.rs"),
+    ("SettleReasonScreen", "src/ui/screens/settle_popup.rs"),
     ("SlugInputScreen", "src/ui/screens/driver_launch.rs"),
     (
         "UnsandboxedConfirmScreen",
@@ -1122,6 +1125,41 @@ fn hostile_owner_digest(identity: &str) -> crate::state_reader::owner_items::Own
             },
         },
         ..OwnerDigest::default()
+    }
+}
+
+/// A settle draft whose every text field carries `identity` (39-01): the alias,
+/// the phase token, the workstream, the check file, number and name.
+fn hostile_settle_draft(identity: &str) -> super::owner_settle::SettleDraft {
+    use super::owner_block::GroupKey;
+    use super::owner_settle::{CheckRef, SettleDraft, SettleScope, SettleTarget};
+    use crate::state_reader::owner_items::{RunCommand, RunVerb};
+    SettleDraft {
+        target: SettleTarget {
+            alias: identity.to_string(),
+            key: GroupKey {
+                lane: "test",
+                kind: "uat",
+                scope_label: None,
+                workstream: Some(identity.to_string()),
+                phase: identity.to_string(),
+                file: identity.to_string(),
+            },
+            command: RunCommand {
+                verb: RunVerb::VerifyWork,
+                phase: Some(identity.to_string()),
+                workstream: Some(identity.to_string()),
+            },
+            scope: SettleScope::Phase,
+            checks: vec![CheckRef {
+                file: identity.to_string(),
+                noun: "test",
+                number: identity.to_string(),
+                name: identity.to_string(),
+            }],
+        },
+        cwd: std::path::PathBuf::from("/nonexistent").join(identity),
+        live_session: None,
     }
 }
 
@@ -2350,6 +2388,129 @@ fn fixture_for(type_name: &str) -> Option<Fixture> {
                     Box::new(AckConfirmScreen::new(
                         AckHost::Detail(identity.to_string()),
                         request(),
+                    )),
+                ),
+            ]
+        }),
+
+        // The settle screens (39-01): the hostile identity is the alias, the phase
+        // token, the workstream, the check file and name, the check number and (on
+        // the reason field) the buffer. Each is drawn over the inbox and over the
+        // detail view.
+        "SettleChooserScreen" => Some(|identity| {
+            use super::ack_confirm::AckHost;
+            use super::settle_popup::SettleChooserScreen;
+            let mut over_inbox = probe_ctx(identity);
+            over_inbox
+                .owner_digests
+                .insert(identity.to_string(), hostile_owner_digest(identity));
+            vec![
+                one_state(
+                    "chooser over the inbox",
+                    over_inbox,
+                    Box::new(SettleChooserScreen::new(
+                        AckHost::Inbox,
+                        hostile_settle_draft(identity),
+                    )),
+                ),
+                one_state(
+                    "chooser over the detail view",
+                    probe_ctx(identity),
+                    Box::new(SettleChooserScreen::new(
+                        AckHost::Detail(identity.to_string()),
+                        hostile_settle_draft(identity),
+                    )),
+                ),
+            ]
+        }),
+
+        "SettleReasonScreen" => Some(|identity| {
+            use super::ack_confirm::AckHost;
+            use super::owner_settle::Outcome;
+            use super::settle_popup::SettleReasonScreen;
+            use crossterm::event::{KeyCode, KeyModifiers};
+            let build = |identity: &str,
+                         ctx: &mut AppContext,
+                         host: AckHost,
+                         outcome: Outcome,
+                         refuse: bool|
+             -> Box<dyn Screen> {
+                let mut screen =
+                    SettleReasonScreen::new(host, hostile_settle_draft(identity), outcome);
+                if !refuse {
+                    for ch in identity.chars() {
+                        screen.handle_key(KeyCode::Char(ch), KeyModifiers::NONE, ctx);
+                    }
+                } else {
+                    screen.handle_key(KeyCode::Enter, KeyModifiers::NONE, ctx);
+                }
+                Box::new(screen)
+            };
+            let mut over_inbox = probe_ctx(identity);
+            over_inbox
+                .owner_digests
+                .insert(identity.to_string(), hostile_owner_digest(identity));
+            let inbox = build(
+                identity,
+                &mut over_inbox,
+                AckHost::Inbox,
+                Outcome::WontDo,
+                false,
+            );
+            let mut over_detail = probe_ctx(identity);
+            let detail = build(
+                identity,
+                &mut over_detail,
+                AckHost::Detail(identity.to_string()),
+                Outcome::DeferPermanently,
+                false,
+            );
+            let mut refused_ctx = probe_ctx(identity);
+            let refused = build(
+                identity,
+                &mut refused_ctx,
+                AckHost::Detail(identity.to_string()),
+                Outcome::WontDo,
+                true,
+            );
+            vec![
+                one_state("reason field over the inbox", over_inbox, inbox),
+                one_state("optional reason over the detail view", over_detail, detail),
+                one_state(
+                    "refused empty reason, with its error row",
+                    refused_ctx,
+                    refused,
+                ),
+            ]
+        }),
+
+        "SettleConfirmScreen" => Some(|identity| {
+            use super::ack_confirm::AckHost;
+            use super::owner_settle::{Outcome, SettleChoice, SettlePlan};
+            use super::settle_popup::SettleConfirmScreen;
+            let plan = || SettlePlan {
+                draft: hostile_settle_draft(identity),
+                choice: SettleChoice {
+                    outcome: Outcome::WontDo,
+                    reason: identity.to_string(),
+                },
+            };
+            let mut over_inbox = probe_ctx(identity);
+            over_inbox
+                .owner_digests
+                .insert(identity.to_string(), hostile_owner_digest(identity));
+            vec![
+                one_state(
+                    "popup over the inbox",
+                    over_inbox,
+                    Box::new(SettleConfirmScreen::new(AckHost::Inbox, plan())),
+                ),
+                one_state(
+                    "popup over the detail view",
+                    probe_ctx(identity),
+                    Box::new(SettleConfirmScreen::new(
+                        AckHost::Detail(identity.to_string()),
+                        plan(),
                     )),
                 ),
             ]

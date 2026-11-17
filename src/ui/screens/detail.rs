@@ -3121,6 +3121,40 @@ pub(crate) fn owner_terminal_argv(
     argv
 }
 
+/// The program vector handed to the innermost multiplexer's `open` for a settle
+/// (`x`, 39): the scrubbed `env -u VAR ... claude` program and the prompt as ONE
+/// element.
+///
+/// **CWE-88 (T-39-01).** The only untrusted-derived element is the prompt: the
+/// `Display` of a typed [`RunCommand`](crate::state_reader::owner_items::RunCommand)
+/// (phase and workstream re-validated by the caller with `is_command_token` /
+/// `is_workstream_name`), a space, and an instruction built only from values that
+/// went through `owner_settle::clean`. It is one element, so a space inside it never
+/// splits into a second argument, and it starts with `/` so `claude` reads it as a
+/// slash command, not an option. The project path travels as the cwd.
+pub(crate) fn settle_mux_argv(
+    plan: &super::owner_settle::SettlePlan,
+) -> Result<crate::multiplexer::ExecArgv, crate::multiplexer::MuxError> {
+    let mut argv = owner_scrubbed_program();
+    argv.push(plan.prompt());
+    crate::multiplexer::ExecArgv::new(argv)
+}
+
+/// The GUI-terminal argv for a settle: the separator from
+/// [`terminal_program_separator`], the scrubbed program of
+/// [`owner_scrubbed_program`], then the prompt as one final element (see
+/// [`settle_mux_argv`]). Pinned by
+/// `settle_argv_is_the_scrubbed_program_and_one_prompt_element`.
+pub(crate) fn settle_terminal_argv(
+    term: &str,
+    plan: &super::owner_settle::SettlePlan,
+) -> Vec<String> {
+    let mut argv = vec![terminal_program_separator(term).to_string()];
+    argv.extend(owner_scrubbed_program());
+    argv.push(plan.prompt());
+    argv
+}
+
 /// The argv for launching a NEW Claude session. Same shape, same reason — see
 /// [`resume_terminal_argv`]. The project path used to be interpolated into the
 /// same interpreter program string here and now travels through
@@ -24698,6 +24732,88 @@ mod tests {
             let at = mux.as_slice().iter().position(|e| e == var).expect(var);
             assert_eq!(mux.as_slice()[at - 1], "-u");
         }
+    }
+
+    /// T-39-01: a settle's argv is the scrubbed program plus the prompt as ONE
+    /// element, for every terminal, even when the prompt holds spaces,
+    /// typographic quotes and `--ws alpha`.
+    #[test]
+    fn settle_argv_is_the_scrubbed_program_and_one_prompt_element() {
+        use crate::state_reader::owner_items::{RunCommand, RunVerb};
+        use crate::ui::screens::owner_block::GroupKey;
+        use crate::ui::screens::owner_settle::{
+            CheckRef, Outcome, SettleChoice, SettleDraft, SettlePlan, SettleScope, SettleTarget,
+        };
+        let plan = SettlePlan {
+            draft: SettleDraft {
+                target: SettleTarget {
+                    alias: "alder-api".to_owned(),
+                    key: GroupKey {
+                        lane: "test",
+                        kind: "uat",
+                        scope_label: None,
+                        workstream: Some("alpha".to_owned()),
+                        phase: "03".to_owned(),
+                        file: "03-UAT.md".to_owned(),
+                    },
+                    command: RunCommand {
+                        verb: RunVerb::VerifyWork,
+                        phase: Some("03".to_owned()),
+                        workstream: Some("alpha".to_owned()),
+                    },
+                    scope: SettleScope::Phase,
+                    checks: vec![CheckRef {
+                        file: "03-UAT.md".to_owned(),
+                        noun: "test",
+                        number: "2".to_owned(),
+                        name: "Saving a note".to_owned(),
+                    }],
+                },
+                cwd: std::path::PathBuf::from("/nonexistent/alder-api"),
+                live_session: None,
+            },
+            choice: SettleChoice {
+                outcome: Outcome::WontDo,
+                reason: "it\u{2019}s \u{201c}quoted\u{201d} --ws alpha".to_owned(),
+            },
+        };
+        let prompt = plan.prompt();
+        assert!(
+            prompt.starts_with("/gsd-verify-work 03 --ws alpha "),
+            "{prompt}"
+        );
+        assert!(prompt.contains(' '));
+        for (term, expected_separator) in [
+            ("kitty", "-e"),
+            ("alacritty", "-e"),
+            ("gnome-terminal", "--"),
+            ("xterm", "-e"),
+            ("ptyxis", "--"),
+            ("xdg-terminal-exec", "--"),
+            ("x-terminal-emulator", "-e"),
+            ("wezterm", "-e"),
+            ("/usr/bin/gnome-terminal", "--"),
+        ] {
+            assert_eq!(
+                settle_terminal_argv(term, &plan),
+                [
+                    vec![expected_separator.to_string()],
+                    scrubbed_program(),
+                    vec![prompt.clone()]
+                ]
+                .concat(),
+                "settle_terminal_argv({term:?}) must be the separator, the program and the \
+                 prompt as one element"
+            );
+        }
+        let mux = settle_mux_argv(&plan).expect("a valid argv");
+        assert_eq!(
+            mux.as_slice(),
+            [scrubbed_program(), vec![prompt.clone()]].concat()
+        );
+        let program = scrubbed_program();
+        assert_eq!(mux.as_slice().len(), program.len() + 1);
+        assert!(mux.as_slice().last().unwrap().starts_with('/'));
     }
 
     /// **The capability half of the fix** (T-21-27-06, prohibition 2).

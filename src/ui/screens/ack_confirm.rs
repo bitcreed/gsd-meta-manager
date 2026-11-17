@@ -103,7 +103,7 @@ fn items_phrase(count: usize) -> String {
 /// command never breaks inside a name. A piece longer than a whole row (no `/` or
 /// space to break at) is cut at the cell boundary as the last resort. A break at a
 /// space drops that space; a break at `/` keeps it on the row it ends.
-fn wrap_at_separators(text: &str, width: usize) -> Vec<String> {
+pub(crate) fn wrap_at_separators(text: &str, width: usize) -> Vec<String> {
     let width = width.max(1);
     let mut rows: Vec<String> = Vec::new();
     let mut row = String::new();
