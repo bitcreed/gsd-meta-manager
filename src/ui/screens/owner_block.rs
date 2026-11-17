@@ -15,8 +15,8 @@
 
 use crate::inbox::{self, ClauseForm};
 use crate::state_reader::owner_items::{
-    self, triage_entries, ClosesAfter, Kind, Lane, OwnerDigest, OwnerGroup, OwnerItem, Scope,
-    TriageEntry,
+    self, label_counts, labels_of, triage_entries, ClosesAfter, Kind, Lane, OwnerDigest,
+    OwnerGroup, OwnerItem, Scope, TriageEntry,
 };
 use crate::ui::glyphs;
 use crate::ui::screens::owner::OWNER_SEP;
@@ -297,6 +297,9 @@ pub(crate) struct RowCells {
     pub(crate) bookkeeping: bool,
     pub(crate) age: Option<(String, bool)>,
     pub(crate) command: String,
+    /// `2 files` and the label counts (D-08, D-11), DIM beside the phrase in the
+    /// inbox; empty from `row_cells` and so always in the Owner block.
+    pub(crate) extras: String,
 }
 
 impl RowCells {
@@ -396,7 +399,7 @@ pub(crate) fn row_cells(
         && !group.bookkeeping_only
         && group.counts.checks > 0;
     let checks = if counted {
-        inbox::plural(group.counts.checks, "check", "checks")
+        inbox::checks_cell(group.counts.checks, 2)
     } else {
         String::new()
     };
@@ -443,6 +446,7 @@ pub(crate) fn row_cells(
         bookkeeping: group.bookkeeping_only && group.command.is_some(),
         age,
         command,
+        extras: String::new(),
     }
 }
 
@@ -477,6 +481,23 @@ impl RowSrc {
 
     pub(crate) fn cells(&self, digest: &OwnerDigest) -> RowCells {
         row_cells(digest, &self.group, self.merged.as_ref())
+    }
+
+    /// [`cells`](Self::cells) for the inbox: the same cells plus `extras`, the
+    /// file count of a merged row and the label counts (D-08, D-11; labels never
+    /// move a row).
+    pub(crate) fn inbox_cells(&self, digest: &OwnerDigest) -> RowCells {
+        let mut cells = self.cells(digest);
+        let mut extras: Vec<String> = Vec::new();
+        if self.parts.len() > 1 {
+            extras.push(inbox::plural(self.parts.len(), "file", "files"));
+        }
+        let labels = label_counts(self.items(), self.group.lane).text();
+        if !labels.is_empty() {
+            extras.push(labels);
+        }
+        cells.extras = shown(&extras.join(OWNER_SEP));
+        cells
     }
 }
 
@@ -894,7 +915,10 @@ fn row_line(row: &RowCells, grid: &Grid, width: usize) -> Line<'static> {
     }
     if row.lane != Lane::Blocked {
         spans.push(Span::raw("  "));
-        spans.push(Span::styled(pad(&row.checks, CHECKS_W, true), plain));
+        spans.push(Span::styled(
+            pad(&row.checks, CHECKS_W.max(cells(&row.checks)), true),
+            plain,
+        ));
         spans.push(Span::raw("  "));
         // The phase column, which a bookkeeping phrase may spill out of across
         // the age and command columns (their cells are blank on that row).
@@ -1134,12 +1158,32 @@ fn gap_text(gap: &crate::state_reader::owner_items::OwnerGap) -> String {
 
 /// Up to five of `items` as lines, each with its detail and gap lines, then
 /// `... N more`.
-fn item_lines(items: &[OwnerItem], width: usize, shift: usize, lines: &mut Vec<Line<'static>>) {
+/// With `labeled` (the inbox, D-11) an item the matcher labels ends in a DIM
+/// `  (decision?)`, the CLI's wording.
+fn item_lines(
+    items: &[OwnerItem],
+    width: usize,
+    shift: usize,
+    labeled: Option<Lane>,
+    lines: &mut Vec<Line<'static>>,
+) {
     for item in items.iter().take(MAX_ITEMS) {
-        lines.push(Line::from(Span::raw(fit_cells(
-            &format!("{}{}", blanks(4 + shift), item_text(item)),
-            width,
-        ))));
+        let text = format!("{}{}", blanks(4 + shift), item_text(item));
+        let labels: Vec<&str> = labeled
+            .map(|lane| labels_of(item, lane))
+            .unwrap_or_default()
+            .into_iter()
+            .map(owner_items::Label::as_str)
+            .collect();
+        if labels.is_empty() {
+            lines.push(Line::from(Span::raw(fit_cells(&text, width))));
+        } else {
+            let suffix = format!("  ({})", labels.join(OWNER_SEP));
+            let room = width.saturating_sub(cells(&suffix));
+            let head = fit_cells(&text, room);
+            let tail = fit_cells(&suffix, width.saturating_sub(cells(&head)));
+            lines.push(Line::from(vec![Span::raw(head), Span::styled(tail, dim())]));
+        }
         if let Some(detail) = detail_text(item) {
             lines.push(dim_line(7 + shift, &detail, width));
         }
@@ -1165,7 +1209,7 @@ fn item_lines(items: &[OwnerItem], width: usize, shift: usize, lines: &mut Vec<L
 /// and gap lines, then `... N more`, then one `file` line per distinct file.
 pub(crate) fn expansion_lines(src: &RowSrc, width: usize, shift: usize) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
-    item_lines(src.items(), width, shift, &mut lines);
+    item_lines(src.items(), width, shift, None, &mut lines);
     for file in src.files.iter().filter(|f| !f.is_empty()) {
         lines.push(dim_line(4 + shift, &format!("file {}", shown(file)), width));
     }
@@ -1180,8 +1224,14 @@ pub(crate) fn inbox_expansion_lines(
     width: usize,
     shift: usize,
 ) -> Vec<Line<'static>> {
+    let lane = Some(src.group.lane);
     if src.parts.len() < 2 {
-        return expansion_lines(src, width, shift);
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        item_lines(src.items(), width, shift, lane, &mut lines);
+        for file in src.files.iter().filter(|f| !f.is_empty()) {
+            lines.push(dim_line(4 + shift, &format!("file {}", shown(file)), width));
+        }
+        return lines;
     }
     let mut lines: Vec<Line<'static>> = Vec::new();
     for part in &src.parts {
@@ -1190,7 +1240,7 @@ pub(crate) fn inbox_expansion_lines(
             &format!("file {}", shown(&part.file)),
             width,
         ));
-        item_lines(&part.items, width, shift + 2, &mut lines);
+        item_lines(&part.items, width, shift + 2, lane, &mut lines);
     }
     lines
 }

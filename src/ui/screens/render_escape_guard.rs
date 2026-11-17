@@ -1062,9 +1062,26 @@ fn hostile_owner_digest(identity: &str) -> crate::state_reader::owner_items::Own
         items: vec![item()],
     };
     let hostile = || vec![identity.to_string()];
+    // A VERIFICATION of the first group's phase, workstream and lane: the inbox
+    // draws the two as one merged row with `file` sub-headings (38, D-08).
+    let mut verification = group(Lane::Test, Scope::Current, None);
+    verification.kind = Kind::Verification;
+    // A group older than the default fold: the inbox lists it in the Stale fold,
+    // its item name reading like a decision (a label, D-11).
+    let mut stale = OwnerGroup {
+        age_days: Some(120),
+        ..group(
+            Lane::Test,
+            Scope::Current,
+            Some(format!("{identity}-stale")),
+        )
+    };
+    stale.items[0].name = format!("{identity} review");
     OwnerDigest {
         groups: vec![
             group(Lane::Test, Scope::Current, None),
+            verification,
+            stale,
             group(Lane::Decide, Scope::Current, None),
             group(Lane::Fix, Scope::Current, None),
             group(Lane::Blocked, Scope::Current, None),
@@ -2364,15 +2381,21 @@ fn fixture_for(type_name: &str) -> Option<Fixture> {
             drilled
                 .owner_digests
                 .insert(identity.to_string(), hostile_owner_digest(identity));
-            let keys: Vec<_> = super::inbox::inbox_rows(&drilled)
-                .iter()
-                .map(super::inbox::InboxRow::key)
-                .collect();
-            drilled.inbox_view.expanded.extend(keys);
+            // 38: the merged same-phase row expands to its `file` sub-headings and
+            // labels, and the Stale fold is open with its hostile row expanded.
             drilled
                 .inbox_view
                 .open_folds
                 .insert(super::owner_block::Fold::OldDebt);
+            drilled
+                .inbox_view
+                .open_folds
+                .insert(super::owner_block::Fold::Stale);
+            let keys: Vec<_> = super::inbox::stop_rows(&drilled)
+                .iter()
+                .map(super::inbox::InboxRow::key)
+                .collect();
+            drilled.inbox_view.expanded.extend(keys);
             drilled.inbox_view.cursor = Some(super::inbox::InboxStop::FoldLine);
             drilled.inbox_view.fold_cursor = Some(super::owner_block::Fold::OldDebt);
             drilled.status_message = Some((

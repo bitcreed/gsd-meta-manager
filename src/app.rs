@@ -4805,6 +4805,14 @@ mod tests {
                 extra: Default::default(),
             },
         );
+        // The fixtures carry fixed dates that grow older with the clock: a fold
+        // threshold of ten years keeps their rows in the inbox lanes instead of the
+        // Stale fold (38 D-09), whatever day the suite runs.
+        app.ctx
+            .config
+            .preferences
+            .extra
+            .insert("owner".to_owned(), serde_json::json!({"fold_days": 3650}));
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         app.ctx.event_tx = Some(tx);
         (app, rx)

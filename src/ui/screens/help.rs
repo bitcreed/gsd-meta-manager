@@ -535,12 +535,14 @@ pub(super) fn help_lines(experimental: bool) -> Vec<Line<'static>> {
         row("a", "Show all four lanes, Blocked included"),
         row("j/k Up/Down", "Move the cursor; PgUp/PgDn page, Home/End jump to the first or last row"),
         row("Enter", "Expand or collapse the selected group or fold (inbox)"),
-        row("Left / Right", "On the fold line: move between Old debt, Acknowledged and Triage (inbox)"),
+        row("Left / Right", "On the fold line: move between Old debt, Stale, Acknowledged and Triage (inbox)"),
         row("g", "Go to the project: detail view, Phases tab, on the same group when visible there"),
         row("o", "Open the group's source file, read-only (never your editor)"),
         row("v", "Run the group's command in its project through your multiplexer; a live session is focused instead and you type the command there"),
         row("A", "Acknowledge the group's file via gsd-core: file-level, uncommitted, asks first"),
         row("y", "Copy the group as a plain checklist (wl-copy, xclip, xsel, pbcopy, clip.exe, else OSC 52)"),
+        row("Stale", "Fold of phases idle for more than 90 days (preferences.owner.fold_days); still counted, Enter lists them"),
+        row("decision?", "Label only: the text reads like a ruling; looks resolved: it says fixed; a label never moves or hides a row"),
         row("Esc / q", "Back to the dashboard (the dashboard selection is unchanged)"),
         Line::from(""),
         // ── The badge legend. Glyph plus text label on every row, so nothing
@@ -921,7 +923,7 @@ mod tests {
             ),
             (
                 "Left / Right",
-                "On the fold line: move between Old debt, Acknowledged and Triage (inbox)",
+                "On the fold line: move between Old debt, Stale, Acknowledged and Triage (inbox)",
             ),
             (
                 "g",
@@ -939,6 +941,14 @@ mod tests {
             (
                 "y",
                 "Copy the group as a plain checklist (wl-copy, xclip, xsel, pbcopy, clip.exe, else OSC 52)",
+            ),
+            (
+                "Stale",
+                "Fold of phases idle for more than 90 days (preferences.owner.fold_days); still counted, Enter lists them",
+            ),
+            (
+                "decision?",
+                "Label only: the text reads like a ruling; looks resolved: it says fixed; a label never moves or hides a row",
             ),
             (
                 "Esc / q",
@@ -1409,7 +1419,7 @@ mod tests {
         // list is taken out before the word check.
         let text = flowed()
             .to_lowercase()
-            .replace("old debt, acknowledged and triage", "");
+            .replace("old debt, stale, acknowledged and triage", "");
         // The steering rows must not promise an observation the protocol cannot
         // make: a write to DIRECTION.md is not the driver having applied it (D-28).
         for forbidden in ["sent", "received", "acknowledged"] {

@@ -5,5 +5,5 @@ Owner ── sample · v2.2 closes after: test 12 · decide 1 · unblock 5 · �
   TEST    ph 25           first-unlock   3 checks  + fix 1           2 d        
   DECIDE  debug           widget-tap-…             awaiting your c…  2 d        
   DECIDE  ws v14 handoff  voice-pass               paused                       
-  FIX     ph 25           quota-clip      1 check  1 failed check,…             
+  FIX     ph 25           quota-clip     1 check   1 failed check,…             
 ▸ Old debt (6)   ▸ Acknowledged (8 files)   ▸ Todos 11 (oldest 96 d)            

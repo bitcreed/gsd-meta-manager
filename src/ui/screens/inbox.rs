@@ -527,8 +527,10 @@ fn state_counts(ctx: &AppContext) -> (usize, usize, usize) {
 // Layout
 // ---------------------------------------------------------------------------
 
-/// Width of the Checks column (`12 checks`).
+/// Narrowest the Checks column gets (`12 checks`); `120 checks` widens it.
 const CHECKS_W: usize = 9;
+/// Cells of the unit in a checks cell (` checks`): the digits take the rest.
+const CHECKS_UNIT_W: usize = 7;
 /// Width of the Age column (`203 d stale`).
 const AGE_W: usize = 11;
 /// The Age column shows from this width up (UI-SPEC narrowing order, step 2).
@@ -544,19 +546,24 @@ struct Cells {
     alias: String,
     section: Section,
     cells: RowCells,
+    /// The checks count when the row's checks cell is drawn (aligned over the
+    /// column by [`inbox::checks_cell`](crate::inbox::checks_cell)).
+    checks_n: Option<usize>,
 }
 
 fn cells_of(ctx: &AppContext, row: &InboxRow) -> Option<Cells> {
     let digest = ctx.owner_digest(&row.alias)?;
-    let mut cells = row.src.cells(digest);
+    let mut cells = row.src.inbox_cells(digest);
     // Section 1 says "closes a phase" in its title: no per-row phrase there.
     if row.fold.is_none() && row.section == Section::TestCloses && !row.src.group.bookkeeping_only {
         cells.phrase.clear();
     }
+    let checks_n = (!cells.checks.is_empty()).then_some(row.src.group.counts.checks);
     Some(Cells {
         alias: shown(&row.alias),
         section: row.section,
         cells,
+        checks_n,
     })
 }
 
@@ -566,6 +573,8 @@ pub(crate) struct Grid {
     pub alias_w: usize,
     pub phase_w: usize,
     pub name_w: usize,
+    /// The checks column: [`CHECKS_W`], or wider for a count of three digits.
+    pub checks_w: usize,
     pub phrase_w: usize,
     pub age_w: usize,
     /// The FIX rows' command, after the age; 0 when it does not fit.
@@ -581,7 +590,7 @@ impl Grid {
             + 2
             + self.name_w
             + 2
-            + CHECKS_W
+            + self.checks_w
             + if self.phrase_w > 0 {
                 2 + self.phrase_w
             } else {
@@ -601,7 +610,7 @@ impl Grid {
 
     fn age_x(&self) -> usize {
         self.checks_x()
-            + CHECKS_W
+            + self.checks_w
             + if self.phrase_w > 0 {
                 2 + self.phrase_w
             } else {
@@ -619,7 +628,9 @@ impl Grid {
 /// `fit_spans` per row.
 fn grid_for_inbox(all: &[Cells], width: usize) -> Grid {
     let widest = |f: &dyn Fn(&Cells) -> usize| all.iter().map(f).max().unwrap_or(0);
-    let phrase_nat = widest(&|c| cells(&c.cells.phrase));
+    let phrase_nat = widest(&|c| phrase_cell_w(c));
+    let digits =
+        crate::inbox::count_digits(all.iter().filter_map(|c| c.checks_n).max().unwrap_or(0));
     let mut grid = Grid {
         alias_w: widest(&|c| cells(&c.alias)).clamp(8, 18),
         phase_w: widest(&|c| c.cells.phase_cell_width()).clamp(5, 18),
@@ -630,6 +641,7 @@ fn grid_for_inbox(all: &[Cells], width: usize) -> Grid {
             .max()
             .unwrap_or(0)
             .clamp(8, 32),
+        checks_w: CHECKS_W.max(digits + CHECKS_UNIT_W),
         phrase_w: if phrase_nat == 0 {
             0
         } else {
@@ -688,6 +700,19 @@ fn dim() -> Style {
     Style::default().add_modifier(Modifier::DIM)
 }
 
+/// The phrase column's natural width: the phrase, then two cells and the extras
+/// (`2 files`, label counts) when the row has any.
+fn phrase_cell_w(c: &Cells) -> usize {
+    let extras = cells(&c.cells.extras);
+    if extras == 0 {
+        cells(&c.cells.phrase)
+    } else if c.cells.phrase.is_empty() {
+        extras
+    } else {
+        cells(&c.cells.phrase) + 2 + extras
+    }
+}
+
 /// One group row as spans, cut to `width`, the cursor row Cyan + BOLD throughout.
 fn row_line(c: &Cells, grid: &Grid, width: usize, cursor: bool, expanded: bool) -> Line<'static> {
     let plain = owner_block::style_for(&c.cells, Style::default());
@@ -725,13 +750,28 @@ fn row_line(c: &Cells, grid: &Grid, width: usize, cursor: bool, expanded: bool) 
     } else {
         spans.push(Span::styled(pad(&c.cells.name, grid.name_w, false), plain));
         spans.push(Span::raw("  "));
-        spans.push(Span::styled(pad(&c.cells.checks, CHECKS_W, true), plain));
+        let checks = c.checks_n.map_or_else(String::new, |n| {
+            crate::inbox::checks_cell(n, grid.checks_w - CHECKS_UNIT_W)
+        });
+        spans.push(Span::styled(pad(&checks, grid.checks_w, true), plain));
         if grid.phrase_w > 0 {
             spans.push(Span::raw("  "));
-            spans.push(Span::styled(
-                pad(&c.cells.phrase, grid.phrase_w, false),
-                plain,
-            ));
+            // The phrase, then its extras (`2 files`, label counts) DIM, all cut
+            // to the column.
+            let phrase = fit_cells(&c.cells.phrase, grid.phrase_w);
+            let mut used = cells(&phrase);
+            spans.push(Span::styled(phrase, plain));
+            if !c.cells.extras.is_empty() {
+                let gap = if used == 0 { 0 } else { 2 };
+                let room = grid.phrase_w.saturating_sub(used + gap);
+                let extras = fit_cells(&c.cells.extras, room);
+                if !extras.is_empty() {
+                    spans.push(Span::raw(blanks(gap)));
+                    used += gap + cells(&extras);
+                    spans.push(Span::styled(extras, plain.add_modifier(Modifier::DIM)));
+                }
+            }
+            spans.push(Span::raw(blanks(grid.phrase_w.saturating_sub(used))));
         }
         if grid.age_w > 0 {
             spans.push(Span::raw("  "));
@@ -786,9 +826,9 @@ fn title_line(section: Section, heads: Option<&Grid>, width: usize) -> Line<'sta
         let at = cells(&title);
         if at < grid.checks_x().saturating_sub(1) {
             spans.push(Span::raw(blanks(grid.checks_x() - at)));
-            spans.push(Span::styled(pad("checks", CHECKS_W, true), dim()));
+            spans.push(Span::styled(pad("checks", grid.checks_w, true), dim()));
             if grid.age_w > 0 {
-                let used = grid.checks_x() + CHECKS_W;
+                let used = grid.checks_x() + grid.checks_w;
                 spans.push(Span::raw(blanks(grid.age_x().saturating_sub(used))));
                 spans.push(Span::styled("age", dim()));
             }
@@ -4957,5 +4997,120 @@ mod tests {
         for perm in all {
             assert_eq!(listing(perm), first);
         }
+    }
+
+    #[test]
+    fn the_checks_column_lines_up() {
+        let mut ctx = ctx_with_aliases(&["p-one", "p-two", "p-twelve", "p-many"]);
+        for (alias, checks, phase) in [
+            ("p-one", 1, "1"),
+            ("p-two", 2, "2"),
+            ("p-twelve", 12, "3"),
+            ("p-many", 120, "4"),
+        ] {
+            owe(
+                &mut ctx,
+                alias,
+                digest(vec![test_group(phase, "counted", checks, false, 3, false)]),
+            );
+        }
+        let text = render_inbox_text(&ctx, 140, 40);
+        assert!(text.iter().any(|l| l.contains("120 checks")), "uncut");
+        // The digit before the unit sits in one column for every row.
+        let digit_x = |alias: &str, unit: &str| {
+            let (_, line) = line_of(&text, alias);
+            line[..line.find(unit).unwrap()].chars().count() - 1
+        };
+        let xs: Vec<usize> = [
+            ("p-one", " check "),
+            ("p-two", " checks"),
+            ("p-twelve", " checks"),
+        ]
+        .iter()
+        .map(|(a, u)| digit_x(a, u))
+        .collect();
+        assert!(xs.iter().all(|x| *x == xs[0]), "{xs:?}");
+        // `120 checks` pushes its digits left of the others, unit-aligned: the
+        // unit's first letter is in the same column on every row.
+        let unit_x = |alias: &str, unit: &str| {
+            let (_, line) = line_of(&text, alias);
+            line[..line.find(unit).unwrap()].chars().count()
+        };
+        assert_eq!(unit_x("p-one", " check "), unit_x("p-many", " checks"));
+        // The `checks` head ends where the cells end.
+        let (_, head) = line_of(&text, "checks  ");
+        let head_end = head[..head.find("checks").unwrap()].chars().count() + "checks".len();
+        let many_end = unit_x("p-many", " checks") + " checks".len();
+        assert_eq!(head_end, many_end, "{head:?}");
+    }
+
+    /// Whether the buffer cell at `(x, y)` is drawn DIM.
+    fn dim_at(buffer: &ratatui::buffer::Buffer, x: usize, y: usize) -> bool {
+        buffer
+            .cell((x as u16, y as u16))
+            .expect("cell")
+            .style()
+            .add_modifier
+            .contains(Modifier::DIM)
+    }
+
+    #[test]
+    fn labels_are_dim_and_never_move_a_row() {
+        let build = |names: [&str; 2]| {
+            let mut ctx = ctx_with_aliases(&["lab-a", "lab-b"]);
+            let mut a = test_group("5", "labels", 2, false, 4, false);
+            a.items[0].name = names[0].to_owned();
+            a.items[1].name = names[1].to_owned();
+            owe(&mut ctx, "lab-a", digest(vec![a]));
+            owe(
+                &mut ctx,
+                "lab-b",
+                digest(vec![test_group("6", "plain", 1, false, 9, false)]),
+            );
+            ctx
+        };
+        let plain = build(["first check", "second check"]);
+        let mut labeled = build(["approve the layout", "bug resolved in 41"]);
+        let key_rows = |ctx: &AppContext| {
+            stop_rows(ctx)
+                .iter()
+                .map(|r| {
+                    (
+                        r.alias.clone(),
+                        r.section,
+                        r.src.group.counts.checks,
+                        r.fold,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            key_rows(&plain),
+            key_rows(&labeled),
+            "labels never move a row"
+        );
+        let text = render_inbox_text(&labeled, 120, 40);
+        let (y, row) = line_of(&text, "lab-a");
+        assert!(
+            row.contains("1 decision? \u{b7} 1 looks resolved"),
+            "{row:?}"
+        );
+        let buffer = draw(&labeled, 120, 40);
+        let x = row[..row.find("1 decision?").unwrap()].chars().count();
+        assert!(dim_at(&buffer, x, y), "the label count is DIM");
+        assert!(!render_inbox_text(&plain, 120, 40)[y].contains("decision?"));
+        // An expanded item line ends in its DIM `(label)`.
+        let key = rows_of(&labeled, "lab-a")[0].key();
+        labeled.inbox_view.expanded.insert(key);
+        let text = render_inbox_text(&labeled, 120, 40);
+        let (y, line) = line_of(&text, "approve the layout");
+        assert!(line.trim_end().ends_with("(decision?)"), "{line:?}");
+        let buffer = draw(&labeled, 120, 40);
+        let x = line.find("(decision?)").unwrap();
+        assert!(dim_at(&buffer, line[..x].chars().count(), y));
+        assert!(line_of(&text, "bug resolved in 41")
+            .1
+            .trim_end()
+            .ends_with("(looks resolved)"));
     }
 }
