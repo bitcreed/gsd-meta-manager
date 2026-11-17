@@ -30,7 +30,7 @@ Verification ran in the worktree `/home/blk/projects/rust/gsd-meta-manager-owner
 **Commit:** acce9eb1
 **Applied fix:** `inbox_sources` now aggregates BLOCKED siblings across both halves and places the single aggregate row in the Stale fold only when every sibling is folded (one fresh sibling keeps it in the lane). Regression test `a_partly_folded_blocked_phase_is_one_row` (a fresh UAT plus a 200-day-old CHECKPOINT of one phase; same-phase UAT/VERIFICATION merge first, so a checkpoint is what reproduces it) failed before the fix with two identical keys and passes after. Logic change: fixed, requires human verification of the placement rule (newest sibling decides).
 
-### IN-01: Owner block checks cell widens a row past the planned grid
+### IN-01: Owner block checks cell widens a row past the planned grid at 100 or more checks
 
 **Files modified:** `src/ui/screens/owner_block.rs`
 **Commit:** 06d58362
@@ -42,7 +42,7 @@ Verification ran in the worktree `/home/blk/projects/rust/gsd-meta-manager-owner
 **Commit:** 0093007e
 **Applied fix:** Reworded to "a check whose name, expected text or reason says it was resolved or fixed".
 
-### IN-03: Help row hardcodes 90 days; Stale line calls non-phases phases
+### IN-03: Help overlay and Stale line hardcode or mislabel what is configurable or not a phase
 
 **Files modified:** `src/inbox.rs`, `src/ui/screens/help.rs`
 **Commit:** 4fa7a3e6
