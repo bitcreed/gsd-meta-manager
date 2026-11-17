@@ -161,3 +161,19 @@ Note on fix 1:
 - In the golden digest that row's phrase shrinks to `…`.
 - The golden digest is 22 lines and 100 cells at its widest. It fits a 100x24 terminal. At 80 columns, 5 NEXT rows wrap, so it needs 27 rows.
 - To fit 80 columns, NEXT would have to drop a D-03 cell (age or name) or move the command to a second line. That needs a decision from the owner.
+
+TUI side, 2026-11-17 (src/ui/screens/; CLI output and the Owner block goldens unchanged).
+
+| Finding | Status | Commit |
+|---------|--------|--------|
+| 3. TUI extras at 100 columns | Fixed (see the note below) | `65e5063e` |
+| 6. Narrow fold rung units | Fixed: `Stale (N)` counts the fold's checks, as `Old debt (N)` does | `15ffee5e` |
+| 7. `decision?` help row | Fixed: a `Labels` row says once "Label only, never moves or hides a row", then one row each for `decision?` and `looks resolved`. `looks resolved` is 14 cells and the key column 13, so the labels lead hanging rows under `Labels` instead of taking the key cell | `18622bc7` |
+| 8. Merged-row advice | Fixed by rewording (inferred decision: opening the first file would silently hide the other). `o`: `N files behind this row: press g to pick a file in the Owner block`; `A`: `… press g to pick a file in the Owner block, then A`. The BLOCKED multi-file refusal shares the `o` text | `87901842` |
+
+Note on fix 3:
+- The phrase column keeps room for its extras beside 8 phrase cells until the alias, name and phase cells have given way; only then does it drop to 12.
+- Extras are drawn whole, never cut mid-label; the phrase is cut first. A label that still does not fit is dropped whole and leaves ` · …` (Enter lists each item's label).
+- The 32-cell cap now applies to the phrase alone, so at 140 columns a FIX row shows `1 failed check, 1 gap  1 decision? · 1 looks resolved`.
+- New test `extras_stay_whole_at_80_and_100_columns` renders 80x24, 100x30 and 140x30 with a merged row, a labeled FIX row and an open Stale fold.
+- At 100 columns the fixture's FIX row reads `1 failed check…  1 decision? · …`. At 80 columns `2 files` stays whole, but the FIX row's labels drop whole with no trace: the row has 20 phrase cells and the age column keeps its 11. Fitting a label there needs a narrower age column or a smaller phrase floor, which is a UI-SPEC change left to the owner.
