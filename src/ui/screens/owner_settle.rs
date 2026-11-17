@@ -379,6 +379,20 @@ pub fn target_text(target: &SettleTarget) -> String {
         .join(" and ")
 }
 
+/// The owner's reason as a trailing sentence: a leading space and a closing
+/// period unless it already ends in one. Empty when there is no reason.
+fn reason_sentence(reason: &str) -> String {
+    if reason.is_empty() {
+        return String::new();
+    }
+    let stop = if reason.ends_with(['.', '!', '?']) {
+        ""
+    } else {
+        "."
+    };
+    format!(" {reason}{stop}")
+}
+
 /// The plain-language instruction after the slash command (D-08).
 pub fn instruction(target: &SettleTarget, choice: &SettleChoice) -> String {
     let r = target_text(target);
@@ -387,16 +401,7 @@ pub fn instruction(target: &SettleTarget, choice: &SettleChoice) -> String {
         (1, Some(check)) => (format!("{} {}", check.noun, check.number), "it", "It"),
         _ => ("each of them".to_owned(), "them", "They"),
     };
-    let reason = if choice.reason.is_empty() {
-        String::new()
-    } else {
-        let stop = if choice.reason.ends_with(['.', '!', '?']) {
-            ""
-        } else {
-            "."
-        };
-        format!(" {}{stop}", choice.reason)
-    };
+    let reason = reason_sentence(&choice.reason);
     let (lead, outcome) = match choice.outcome {
         Outcome::WontDo => (format!("The user will not perform {r}."), "will not do."),
         Outcome::DeferPermanently => (
@@ -437,16 +442,7 @@ fn move_instruction(
             format!("{k} {}", if k == 1 { "check" } else { "checks" })
         }
     };
-    let reason = if choice.reason.is_empty() {
-        String::new()
-    } else {
-        let stop = if choice.reason.ends_with(['.', '!', '?']) {
-            ""
-        } else {
-            "."
-        };
-        format!(" {}{stop}", choice.reason)
-    };
+    let reason = reason_sentence(&choice.reason);
     let comes = if it == "it" { "it comes" } else { "they come" };
     format!(
         "The user moves {r} to phase {m}{quoted}. Resume the UAT session of phase {n} without restarting it and record {each} as result: skipped, reason: {DEFERRED_PREFIX} moved to phase {m}.{reason} {upper_it} must not block phase {n}. Then add one todo as /gsd-capture does, titled \u{201c}Phase {m}{bare}: rerun {from} from phase {n}\u{201d}, so {comes} up again when phase {m} runs. Do not promote {it} to the 999.x backlog."
