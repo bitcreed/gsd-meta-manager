@@ -15,7 +15,8 @@
 
 use crate::inbox::{self, ClauseForm};
 use crate::state_reader::owner_items::{
-    ClosesAfter, Kind, Lane, OwnerDigest, OwnerGroup, OwnerItem, Scope,
+    self, triage_entries, ClosesAfter, Kind, Lane, OwnerDigest, OwnerGroup, OwnerItem, Scope,
+    TriageEntry,
 };
 use crate::ui::glyphs;
 use crate::ui::screens::owner::OWNER_SEP;
@@ -70,6 +71,17 @@ impl GroupKey {
             workstream: group.workstream.clone(),
             phase: group.phase.clone(),
             file: group.file.clone(),
+        }
+    }
+
+    /// A same-phase merged row (D-08): one per (workstream, phase, lane) over its
+    /// files, so its `file` is empty. [`group_for`] never resolves it (kind
+    /// `entry` matches no group); a lookup goes through [`entry_for`].
+    pub(crate) fn entry(first: &OwnerGroup) -> Self {
+        Self {
+            kind: "entry",
+            file: String::new(),
+            ..Self::of(first)
         }
     }
 
@@ -129,6 +141,9 @@ pub(crate) fn scope_label(scope: &Scope) -> Option<String> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Fold {
     OldDebt,
+    /// Phases older than `preferences.owner.fold_days` (D-09). Inbox only: the
+    /// Owner block never offers it, so `selectable_folds` does not list it.
+    Stale,
     Acknowledged,
     Todos,
 }
@@ -318,12 +333,7 @@ fn lane_tag(lane: Lane) -> &'static str {
 }
 
 fn is_owner_row(group: &OwnerGroup) -> bool {
-    group.scope == Scope::Current
-        && !group.acknowledged
-        && matches!(
-            group.lane,
-            Lane::Test | Lane::Decide | Lane::Fix | Lane::Blocked
-        )
+    owner_items::is_owner_row(group)
 }
 
 fn phase_text(group: &OwnerGroup) -> String {
@@ -444,16 +454,20 @@ pub(crate) struct RowSrc {
     pub(crate) merged: Option<OwnerGroup>,
     pub(crate) files: Vec<String>,
     pub(crate) key: GroupKey,
+    /// The per-file groups of a same-phase merged entry (D-08), empty for every
+    /// other row. `merged` keeps meaning the BLOCKED tally only.
+    pub(crate) parts: Vec<OwnerGroup>,
 }
 
 impl RowSrc {
-    fn single(group: &OwnerGroup) -> Self {
+    pub(crate) fn single(group: &OwnerGroup) -> Self {
         let blocked = group.lane == Lane::Blocked;
         Self {
             group: group.clone(),
             merged: blocked.then(|| group.clone()),
             files: vec![group.file.clone()],
             key: GroupKey::of(group),
+            parts: Vec::new(),
         }
     }
 
@@ -502,6 +516,7 @@ pub(crate) fn current_sources(digest: &OwnerDigest) -> Vec<RowSrc> {
                 merged: Some(merged),
                 files,
                 key: GroupKey::aggregate(group),
+                parts: Vec::new(),
             });
         } else {
             picked.push(RowSrc::single(group));
@@ -516,6 +531,107 @@ pub(crate) fn current_sources(digest: &OwnerDigest) -> Vec<RowSrc> {
         )
     });
     picked
+}
+
+/// The key of the row `entry` is drawn as: the BLOCKED aggregate, a merged row's
+/// `GroupKey::entry`, or the one group's own identity.
+pub(crate) fn entry_key(entry: &TriageEntry) -> GroupKey {
+    let first = &entry.parts[0];
+    if first.lane == Lane::Blocked {
+        GroupKey::aggregate(first)
+    } else if entry.is_merged() {
+        GroupKey::entry(first)
+    } else {
+        GroupKey::of(first)
+    }
+}
+
+/// The rows of the TUI inbox (38, D-08/D-09), next to the frozen
+/// [`current_sources`]: owner entries from [`triage_entries`], the model the CLI
+/// uses. Unfolded entries come first, the Stale fold's second; both in D-17 order.
+/// Pure and in-memory: built on the render path from the cached digest.
+pub(crate) fn inbox_sources(digest: &OwnerDigest, fold_days: u32) -> (Vec<RowSrc>, Vec<RowSrc>) {
+    let entries: Vec<TriageEntry> = triage_entries(digest, fold_days)
+        .into_iter()
+        .filter(|entry| is_owner_row(&entry.group))
+        .collect();
+    let mut halves: [Vec<RowSrc>; 2] = [Vec::new(), Vec::new()];
+    for (half, folded) in halves.iter_mut().zip([false, true]) {
+        let mut blocked_seen: Vec<(Option<String>, String)> = Vec::new();
+        for entry in entries.iter().filter(|e| e.folded == folded) {
+            let group = &entry.group;
+            if group.lane == Lane::Blocked {
+                let key = (group.workstream.clone(), group.phase.clone());
+                if blocked_seen.contains(&key) {
+                    continue;
+                }
+                // A BLOCKED row stays the 36 aggregate over every file of its
+                // (workstream, phase): a merged blocked entry contributes its parts.
+                let siblings: Vec<&OwnerGroup> = entries
+                    .iter()
+                    .filter(|e| {
+                        e.folded == folded
+                            && e.group.lane == Lane::Blocked
+                            && e.group.workstream == key.0
+                            && e.group.phase == key.1
+                    })
+                    .flat_map(|e| e.parts.iter())
+                    .collect();
+                let mut merged = group.clone();
+                merged.items = siblings
+                    .iter()
+                    .flat_map(|g| g.items.iter().cloned())
+                    .collect();
+                let mut files: Vec<String> = Vec::new();
+                for part in &siblings {
+                    if !files.contains(&part.file) {
+                        files.push(part.file.clone());
+                    }
+                }
+                blocked_seen.push(key);
+                half.push(RowSrc {
+                    group: group.clone(),
+                    merged: Some(merged),
+                    files,
+                    key: entry_key(entry),
+                    parts: Vec::new(),
+                });
+            } else if entry.is_merged() {
+                half.push(RowSrc {
+                    group: group.clone(),
+                    merged: None,
+                    files: entry.files().iter().map(|f| (*f).to_owned()).collect(),
+                    key: entry_key(entry),
+                    parts: entry.parts.clone(),
+                });
+            } else {
+                half.push(RowSrc::single(&entry.parts[0]));
+            }
+        }
+        half.sort_by_key(|src| {
+            let g = &src.group;
+            (
+                g.lane.order(),
+                u8::from(g.lane == Lane::Test && !g.closes_phase),
+                u8::from(g.workstream.is_some()),
+            )
+        });
+    }
+    let [rows, folded] = halves;
+    (rows, folded)
+}
+
+/// The owner entry drawn as the row with identity `key`, looked up afresh. `None`
+/// for a vanished identity.
+pub(crate) fn entry_for(
+    digest: &OwnerDigest,
+    key: &GroupKey,
+    fold_days: u32,
+) -> Option<TriageEntry> {
+    triage_entries(digest, fold_days)
+        .into_iter()
+        .filter(|entry| is_owner_row(&entry.group))
+        .find(|entry| entry_key(entry) == *key)
 }
 
 pub(crate) fn archived_rank(group: &OwnerGroup) -> usize {
@@ -1016,11 +1132,9 @@ fn gap_text(gap: &crate::state_reader::owner_items::OwnerGap) -> String {
     format!("gap: {} ({}{reason})", shown(&gap.name), shown(&gap.result))
 }
 
-/// The lines under an expanded group row: up to five items, each with its detail
-/// and gap lines, then `... N more`, then one `file` line per distinct file.
-pub(crate) fn expansion_lines(src: &RowSrc, width: usize, shift: usize) -> Vec<Line<'static>> {
-    let items = src.items();
-    let mut lines: Vec<Line<'static>> = Vec::new();
+/// Up to five of `items` as lines, each with its detail and gap lines, then
+/// `... N more`.
+fn item_lines(items: &[OwnerItem], width: usize, shift: usize, lines: &mut Vec<Line<'static>>) {
     for item in items.iter().take(MAX_ITEMS) {
         lines.push(Line::from(Span::raw(fit_cells(
             &format!("{}{}", blanks(4 + shift), item_text(item)),
@@ -1045,8 +1159,38 @@ pub(crate) fn expansion_lines(src: &RowSrc, width: usize, shift: usize) -> Vec<L
         let more = items.len() - MAX_ITEMS;
         lines.push(dim_line(4 + shift, &format!("\u{2026} {more} more"), width));
     }
+}
+
+/// The lines under an expanded group row: up to five items, each with its detail
+/// and gap lines, then `... N more`, then one `file` line per distinct file.
+pub(crate) fn expansion_lines(src: &RowSrc, width: usize, shift: usize) -> Vec<Line<'static>> {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    item_lines(src.items(), width, shift, &mut lines);
     for file in src.files.iter().filter(|f| !f.is_empty()) {
         lines.push(dim_line(4 + shift, &format!("file {}", shown(file)), width));
+    }
+    lines
+}
+
+/// The lines under an expanded inbox row: a merged row (D-08) lists each file's
+/// items under its own `file PATH` sub-heading; every other row is exactly
+/// [`expansion_lines`].
+pub(crate) fn inbox_expansion_lines(
+    src: &RowSrc,
+    width: usize,
+    shift: usize,
+) -> Vec<Line<'static>> {
+    if src.parts.len() < 2 {
+        return expansion_lines(src, width, shift);
+    }
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    for part in &src.parts {
+        lines.push(dim_line(
+            4 + shift,
+            &format!("file {}", shown(&part.file)),
+            width,
+        ));
+        item_lines(&part.items, width, shift + 2, &mut lines);
     }
     lines
 }

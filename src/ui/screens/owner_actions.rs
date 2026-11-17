@@ -512,6 +512,16 @@ pub(crate) fn copy_text(alias: &str, groups: &[OwnerGroup]) -> Result<(String, u
     finish_copy_text(lines)
 }
 
+/// The text `y` copies for one inbox entry (38, D-08): the lines `inbox ALIAS`
+/// prints for it (`inbox::entry_checklist`), so a merged row copies every file's
+/// items under its `file` lines.
+pub(crate) fn copy_entry_text(
+    alias: &str,
+    entry: &crate::state_reader::owner_items::TriageEntry,
+) -> Result<(String, usize), String> {
+    finish_copy_text(crate::inbox::entry_checklist(alias, entry))
+}
+
 /// The Old debt checklist: the `OLD DEBT` heading and every archived group of
 /// every registered project that has a digest, in the CLI's order.
 pub(crate) fn old_debt_text(ctx: &AppContext) -> Result<(String, usize), String> {
@@ -557,6 +567,7 @@ pub(crate) fn fold_copy(
             let (text, lines) = old_debt_text(ctx)?;
             Ok(copy(ctx, text, lines))
         }
+        Some(Fold::Stale) => Err("Nothing to copy: open Stale and copy one phase".to_owned()),
         Some(Fold::Acknowledged) => {
             Err("Nothing to copy: acknowledged items are already handled".to_owned())
         }

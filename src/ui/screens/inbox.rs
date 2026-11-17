@@ -27,7 +27,9 @@ use super::owner_actions;
 use super::owner_block::{self, blanks, cells, pad, Fold, GroupKey, RowCells, RowSrc};
 use super::{AppContext, Screen, ScreenAction};
 use crate::inbox::phase_key;
-use crate::state_reader::owner_items::Lane;
+use crate::state_reader::owner_items::{
+    is_owner_row, stale_totals, triage_entries, Lane, OwnerGroup, StaleTotals,
+};
 use crate::ui::glyphs;
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -198,10 +200,12 @@ impl InboxRow {
 
 /// Every current row of every registered project that has a digest, unsorted.
 ///
-/// Built from [`owner_block::current_sources`], so there is no second row
-/// selection rule. A project with no digest yet (or whose folder is gone) has no
+/// Built from [`owner_block::inbox_sources`] (the triage model the CLI uses): a
+/// same-phase UAT and VERIFICATION pair is one row (D-08) and a phase older than
+/// `preferences.owner.fold_days` is left to the Stale fold (D-09). A project with no digest yet (or whose folder is gone) has no
 /// rows: absent data is not clean data, and the loading copy is 37-04's.
 pub(crate) fn inbox_rows(ctx: &AppContext) -> Vec<InboxRow> {
+    let fold_days = ctx.config.preferences.owner_fold_days();
     let mut aliases: Vec<&String> = ctx.config.projects.keys().collect();
     aliases.sort();
     let mut rows = Vec::new();
@@ -218,7 +222,7 @@ pub(crate) fn inbox_rows(ctx: &AppContext) -> Vec<InboxRow> {
             })
             .unwrap_or((0, 0));
         let phases_open = digest.closes_after.phases_open.len();
-        for src in owner_block::current_sources(digest) {
+        for src in owner_block::inbox_sources(digest, fold_days).0 {
             rows.push(InboxRow {
                 alias: alias.clone(),
                 section: Section::of(&src),
@@ -304,6 +308,9 @@ pub(crate) fn fleet_folds(ctx: &AppContext) -> Vec<Fold> {
     if t.old_debt > 0 {
         folds.push(Fold::OldDebt);
     }
+    if t.stale.entries > 0 {
+        folds.push(Fold::Stale);
+    }
     if t.acknowledged > 0 {
         folds.push(Fold::Acknowledged);
     }
@@ -317,6 +324,7 @@ pub(crate) fn fleet_folds(ctx: &AppContext) -> Vec<Fold> {
 /// by milestone (rank, then label) with each project's lane order inside, the
 /// Acknowledged rows by project. Triage lists nothing.
 fn fold_rows(ctx: &AppContext, fold: Fold) -> Vec<InboxRow> {
+    let fold_days = ctx.config.preferences.owner_fold_days();
     let mut aliases: Vec<&String> = ctx.config.projects.keys().collect();
     aliases.sort();
     let mut rows = Vec::new();
@@ -326,6 +334,7 @@ fn fold_rows(ctx: &AppContext, fold: Fold) -> Vec<InboxRow> {
         };
         let sources = match fold {
             Fold::OldDebt => owner_block::old_debt_sources(digest),
+            Fold::Stale => owner_block::inbox_sources(digest, fold_days).1,
             Fold::Acknowledged => owner_block::acknowledged_sources(digest),
             Fold::Todos => Vec::new(),
         };
@@ -340,6 +349,9 @@ fn fold_rows(ctx: &AppContext, fold: Fold) -> Vec<InboxRow> {
                 fold: Some(fold),
             });
         }
+    }
+    if fold == Fold::Stale {
+        sort_groups(&mut rows);
     }
     if fold == Fold::OldDebt {
         // Stable: the alias and lane order inside one milestone label survives.
@@ -358,7 +370,7 @@ fn fold_rows(ctx: &AppContext, fold: Fold) -> Vec<InboxRow> {
 pub(crate) fn stop_rows(ctx: &AppContext) -> Vec<InboxRow> {
     let mut rows = visible_rows(ctx);
     let folds = fleet_folds(ctx);
-    for fold in [Fold::OldDebt, Fold::Acknowledged] {
+    for fold in [Fold::OldDebt, Fold::Stale, Fold::Acknowledged] {
         if ctx.inbox_view.open_folds.contains(&fold) && folds.contains(&fold) {
             rows.extend(fold_rows(ctx, fold));
         }
@@ -435,7 +447,7 @@ fn sub_cursor(ctx: &AppContext) -> Option<Fold> {
 /// which stays expanded while it exists); a fold with no content is closed.
 fn prune_view(ctx: &mut AppContext) {
     let mut live: HashSet<InboxKey> = inbox_rows(ctx).iter().map(InboxRow::key).collect();
-    for fold in [Fold::OldDebt, Fold::Acknowledged] {
+    for fold in [Fold::OldDebt, Fold::Stale, Fold::Acknowledged] {
         live.extend(fold_rows(ctx, fold).iter().map(InboxRow::key));
     }
     ctx.inbox_view.expanded.retain(|key| live.contains(key));
@@ -832,15 +844,27 @@ fn body_plan(rows: &[InboxRow]) -> Vec<BodyItem> {
     build_plan(rows, &mut |_| Vec::new())
 }
 
+/// The group a key acts on for `row`, looked up by identity as the key is pressed:
+/// the digest's own group, else the entry a merged row stands for, else the row's
+/// own group (a BLOCKED aggregate has no single group; the run path refuses it by
+/// lane).
+fn row_group(ctx: &AppContext, row: &InboxRow) -> OwnerGroup {
+    let fold_days = ctx.config.preferences.owner_fold_days();
+    ctx.owner_digest(&row.alias)
+        .and_then(|digest| {
+            owner_block::group_for(digest, &row.src.key).or_else(|| {
+                owner_block::entry_for(digest, &row.src.key, fold_days).map(|entry| entry.group)
+            })
+        })
+        .unwrap_or_else(|| row.src.group.clone())
+}
+
 /// The lines under an expanded row (D-06): the Owner block's own formatter one
 /// cell further right (the inbox gutter is three cells), then, inbox only, the
 /// exact command `v` would launch.
 fn expansion_for(ctx: &AppContext, row: &InboxRow, width: usize) -> Vec<Line<'static>> {
-    let mut lines = owner_block::expansion_lines(&row.src, width, 1);
-    let group = ctx
-        .owner_digest(&row.alias)
-        .and_then(|digest| owner_block::group_for(digest, &row.src.key))
-        .unwrap_or_else(|| row.src.group.clone());
+    let mut lines = owner_block::inbox_expansion_lines(&row.src, width, 1);
+    let group = row_group(ctx, row);
     if let Ok(plan) = owner_actions::run_plan(ctx, &row.alias, &group) {
         lines.push(owner_block::dim_line(
             5,
@@ -1225,6 +1249,8 @@ struct FoldTotals {
     old_projects: usize,
     /// Archived open questions are not checks: `items` once any are counted.
     old_unit_items: bool,
+    /// The entries older than `fold_days`, summed over every project (D-09).
+    stale: StaleTotals,
     acknowledged: usize,
     todos: usize,
     todo_projects: usize,
@@ -1232,6 +1258,7 @@ struct FoldTotals {
 }
 
 fn fold_totals(ctx: &AppContext) -> FoldTotals {
+    let fold_days = ctx.config.preferences.owner_fold_days();
     let mut totals = FoldTotals::default();
     for alias in ctx.config.projects.keys() {
         let Some(digest) = ctx.owner_digest(alias) else {
@@ -1244,6 +1271,14 @@ fn fold_totals(ctx: &AppContext) -> FoldTotals {
         totals.old_debt += old;
         totals.old_projects += usize::from(old > 0);
         totals.old_unit_items |= digest.archived.decide > 0;
+        let stale = stale_totals(
+            triage_entries(digest, fold_days)
+                .iter()
+                .filter(|entry| is_owner_row(&entry.group)),
+        );
+        totals.stale.entries += stale.entries;
+        totals.stale.items += stale.items;
+        totals.stale.non_check |= stale.non_check;
         totals.acknowledged += owner_block::acknowledged_files(digest);
         totals.todos += digest.hidden.todos;
         totals.todo_projects += usize::from(digest.hidden.todos > 0);
@@ -1255,6 +1290,7 @@ fn fold_totals(ctx: &AppContext) -> FoldTotals {
 impl FoldTotals {
     fn is_empty(&self) -> bool {
         self.old_debt == 0
+            && self.stale.entries == 0
             && self.acknowledged == 0
             && self.todos == 0
             && self.todos_unreadable == 0
@@ -1290,6 +1326,7 @@ fn fold_line_at(
     };
     let projects = |n: usize| plural(n, "project", "projects");
     let all_unreadable = t.todos == 0;
+    let fold_days = ctx.config.preferences.owner_fold_days();
     // (old debt, acknowledged, triage) texts of one rung; the third is DIM.
     let rung = |n: usize| -> Vec<(String, bool, Fold)> {
         let mut parts = Vec::new();
@@ -1310,6 +1347,24 @@ fn fold_line_at(
                 },
                 false,
                 Fold::OldDebt,
+            ));
+        }
+        if t.stale.entries > 0 {
+            parts.push((
+                match n {
+                    0 => crate::inbox::stale_fold_text(&t.stale, fold_days),
+                    1 => format!(
+                        "Stale: {}",
+                        plural(
+                            t.stale.items,
+                            if t.stale.non_check { "item" } else { "check" },
+                            if t.stale.non_check { "items" } else { "checks" }
+                        )
+                    ),
+                    _ => format!("Stale ({})", t.stale.entries),
+                },
+                false,
+                Fold::Stale,
             ));
         }
         if t.acknowledged > 0 {
@@ -1586,12 +1641,21 @@ impl InboxScreen {
             }
             Ok(Some(row)) => row,
         };
+        // A same-phase merged row stands for several files (D-08): acknowledging
+        // is file-level, so it never picks one for the owner (T-38-09).
+        if row.src.parts.len() > 1 {
+            let n = row.src.parts.len();
+            Self::say(
+                ctx,
+                format!(
+                    "{n} files behind this row: press g and acknowledge one file in the Owner block"
+                ),
+            );
+            return ScreenAction::None;
+        }
         // A BLOCKED aggregate has no single group: its row's own group stands in
         // and the request path refuses it by lane.
-        let group = ctx
-            .owner_digest(&row.alias)
-            .and_then(|digest| owner_block::group_for(digest, &row.src.key))
-            .unwrap_or_else(|| row.src.group.clone());
+        let group = row_group(ctx, &row);
         match owner_actions::ack_open(ctx, &row.alias, &group, AckHost::Inbox) {
             Ok(action) => {
                 ctx.needs_redraw = true;
@@ -1604,6 +1668,21 @@ impl InboxScreen {
         }
     }
 
+    /// The 37 copy path (D-09): the checklist of the groups behind `row`, looked up
+    /// by identity as the key is pressed; a BLOCKED aggregate covers every group of
+    /// its (workstream, phase).
+    fn copy_groups(ctx: &mut AppContext, row: &InboxRow) -> Result<ScreenAction, String> {
+        let mut groups = ctx
+            .owner_digest(&row.alias)
+            .map(|digest| owner_block::groups_for_copy(digest, &row.src.key))
+            .unwrap_or_default();
+        if groups.is_empty() {
+            groups.push(row.src.group.clone());
+        }
+        owner_actions::copy_text(&row.alias, &groups)
+            .map(|(text, lines)| owner_actions::copy(ctx, text, lines))
+    }
+
     /// `y` (D-09): copy the selected group's checklist, exactly the lines
     /// `gsd-meta-manager inbox` prints for it. On the fold line Old debt copies its
     /// checklist and the other folds say why not; an empty inbox ignores the key.
@@ -1611,19 +1690,23 @@ impl InboxScreen {
         let outcome = match Self::selected(ctx) {
             Err(()) => return ScreenAction::None,
             Ok(None) => owner_actions::fold_copy(ctx, sub_cursor(ctx)),
-            Ok(Some(row)) => {
-                // The groups are looked up by identity as the key is pressed; a
-                // BLOCKED aggregate covers every group of its (workstream, phase).
-                let mut groups = ctx
+            Ok(Some(row))
+                if matches!(row.fold, None | Some(Fold::Stale))
+                    && row.src.group.lane != Lane::Blocked =>
+            {
+                // The entry is looked up by identity as the key is pressed and
+                // copies the lines `inbox ALIAS` prints for it (38, D-08).
+                let fold_days = ctx.config.preferences.owner_fold_days();
+                let entry = ctx
                     .owner_digest(&row.alias)
-                    .map(|digest| owner_block::groups_for_copy(digest, &row.src.key))
-                    .unwrap_or_default();
-                if groups.is_empty() {
-                    groups.push(row.src.group.clone());
+                    .and_then(|digest| owner_block::entry_for(digest, &row.src.key, fold_days));
+                match entry {
+                    Some(entry) => owner_actions::copy_entry_text(&row.alias, &entry)
+                        .map(|(text, lines)| owner_actions::copy(ctx, text, lines)),
+                    None => Self::copy_groups(ctx, &row),
                 }
-                owner_actions::copy_text(&row.alias, &groups)
-                    .map(|(text, lines)| owner_actions::copy(ctx, text, lines))
             }
+            Ok(Some(row)) => Self::copy_groups(ctx, &row),
         };
         ctx.needs_redraw = true;
         match outcome {
@@ -1654,9 +1737,15 @@ impl InboxScreen {
             ctx.table_state.select(Some(index));
         }
         ctx.needs_redraw = true;
+        // A merged row opens the Owner block on its first file's group (D-08).
+        let key = row
+            .src
+            .parts
+            .first()
+            .map_or_else(|| row.src.key.clone(), GroupKey::of);
         ScreenAction::Push(Box::new(super::detail::DetailScreen::opened_on_owner(
             row.alias.clone(),
-            &row.src.key,
+            &key,
             ctx,
         )))
     }
@@ -1679,10 +1768,7 @@ impl InboxScreen {
         // The group is looked up by its identity as the key is pressed; a BLOCKED
         // aggregate has no single group, so its row's own group stands in and the
         // run path refuses it by lane.
-        let group = ctx
-            .owner_digest(&row.alias)
-            .and_then(|digest| owner_block::group_for(digest, &row.src.key))
-            .unwrap_or_else(|| row.src.group.clone());
+        let group = row_group(ctx, &row);
         let message = owner_actions::run_group(ctx, &row.alias, &group, launch);
         Self::say(ctx, message);
         ScreenAction::None
@@ -2042,6 +2128,13 @@ mod tests {
             "lime-bug",
         ];
         let mut ctx = ctx_with_aliases(&aliases);
+        // The fleet's oldest rows are 203 and 182 days old: a fold at 365 days keeps
+        // them in their lanes, so the 37 snapshots keep their meaning. The fold has
+        // its own context, `inbox_triage_ctx`, at the default 90.
+        ctx.config
+            .preferences
+            .extra
+            .insert("owner".to_owned(), serde_json::json!({"fold_days": 365}));
         let progress = |ctx: &mut AppContext, alias: &str, done: u32, total: u32| {
             let state = ctx.project_states.get_mut(alias).expect("registered");
             state.completed_phases = done;
@@ -4560,6 +4653,309 @@ mod tests {
             }
             let text = render_with(&screen, &ctx, width, 40).join("\n");
             assert!(!text.contains('\u{1b}') && !text.contains('\u{202e}'));
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 38: the triage model in the TUI (D-06, D-08, D-09)
+    // -----------------------------------------------------------------------
+
+    /// A Test-lane group of `phase` in workstream `market`, `kind` UAT or
+    /// VERIFICATION, with its own file and item names.
+    fn market_group(kind: Kind, checks: usize, age: i64) -> OwnerGroup {
+        let mut g = group(G {
+            lane: Lane::Test,
+            kind,
+            phase: "43",
+            name: "ledger-export",
+            checks,
+            closes: false,
+            age: Some(age),
+            stale: false,
+        });
+        g.workstream = Some("market".to_owned());
+        let run = RunCommand {
+            verb: RunVerb::VerifyWork,
+            phase: Some("43".to_owned()),
+            workstream: Some("market".to_owned()),
+        };
+        g.command = Some(run.to_string());
+        g.run = Some(run);
+        let tag = if kind == Kind::Uat {
+            "UAT"
+        } else {
+            "VERIFICATION"
+        };
+        g.file = format!("phases/43/43-{tag}.md");
+        g.items = (0..checks)
+            .map(|i| item(&format!("{tag} item {i}")))
+            .collect();
+        g
+    }
+
+    /// `inbox_triage_ctx` (default fold of 90 days): `market-app` holds a UAT and a
+    /// VERIFICATION of one phase and workstream; `ledger` one group 120 days old and
+    /// one 5 days old; `script` one UAT of 51 checks.
+    fn inbox_triage_ctx() -> AppContext {
+        let mut ctx = ctx_with_aliases(&["ledger", "market-app", "script"]);
+        owe(
+            &mut ctx,
+            "market-app",
+            digest(vec![
+                market_group(Kind::Uat, 2, 9),
+                market_group(Kind::Verification, 1, 4),
+            ]),
+        );
+        owe(
+            &mut ctx,
+            "ledger",
+            digest(vec![
+                test_group("11", "old-checks", 2, false, 120, false),
+                test_group("12", "new-checks", 1, false, 5, false),
+            ]),
+        );
+        owe(
+            &mut ctx,
+            "script",
+            digest(vec![test_group("7", "scripted", 51, false, 3, false)]),
+        );
+        ctx
+    }
+
+    fn rows_of(ctx: &AppContext, alias: &str) -> Vec<InboxRow> {
+        stop_rows(ctx)
+            .into_iter()
+            .filter(|row| row.alias == alias)
+            .collect()
+    }
+
+    #[test]
+    fn a_same_phase_pair_is_one_row() {
+        let mut ctx = inbox_triage_ctx();
+        let rows = rows_of(&ctx, "market-app");
+        assert_eq!(rows.len(), 1, "UAT and VERIFICATION are one row");
+        assert_eq!(rows[0].src.group.counts.checks, 3);
+        assert_eq!(rows[0].src.parts.len(), 2);
+        let text = render_inbox_text(&ctx, 120, 40);
+        let (_, row) = line_of(&text, "market-app");
+        assert!(row.contains("3 checks"), "{row:?}");
+        // Enter lists each file's items under its own sub-heading.
+        ctx.inbox_view.expanded.insert(rows[0].key());
+        let text = render_inbox_text(&ctx, 120, 40);
+        let at = |needle: &str| line_of(&text, needle).0;
+        assert!(at("file phases/43/43-UAT.md") < at("UAT item 0"));
+        assert!(at("UAT item 1") < at("file phases/43/43-VERIFICATION.md"));
+        assert!(at("file phases/43/43-VERIFICATION.md") < at("VERIFICATION item 0"));
+    }
+
+    #[test]
+    fn stale_entries_leave_the_lanes_for_the_stale_fold() {
+        let mut ctx = inbox_triage_ctx();
+        let rows = rows_of(&ctx, "ledger");
+        assert_eq!(rows.len(), 1, "only the 5-day row is listed");
+        assert_eq!(rows[0].src.group.phase, "12");
+        assert!(fleet_folds(&ctx).contains(&Fold::Stale));
+        let line = line_text(&fold_line(&ctx, 140).expect("a fold line"));
+        assert!(
+            line.contains("Stale: 2 checks in 1 phase older than 90 d"),
+            "{line:?}"
+        );
+        ctx.inbox_view.open_folds.insert(Fold::Stale);
+        let rows = rows_of(&ctx, "ledger");
+        assert_eq!(rows.len(), 2, "the open fold lists the 120-day row");
+        assert_eq!(rows[1].src.group.phase, "11");
+        assert_eq!(rows[1].fold, Some(Fold::Stale));
+        // The header numbers stay those of the digest.
+        let closed = inbox_triage_ctx();
+        let mut wide = inbox_triage_ctx();
+        wide.config
+            .preferences
+            .extra
+            .insert("owner".to_owned(), serde_json::json!({"fold_days": 3650}));
+        assert_eq!(
+            render_inbox_text(&closed, 120, 40)[0],
+            render_inbox_text(&wide, 120, 40)[0]
+        );
+        assert!(
+            !fleet_folds(&wide).contains(&Fold::Stale),
+            "no stale entry, no Stale fold"
+        );
+    }
+
+    #[test]
+    fn a_scripted_checklist_is_one_row() {
+        let ctx = inbox_triage_ctx();
+        assert_eq!(rows_of(&ctx, "script").len(), 1);
+        let text = render_inbox_text(&ctx, 120, 40);
+        assert!(line_of(&text, "script").1.contains("51 checks"));
+    }
+
+    #[test]
+    fn a_merged_row_refuses_acknowledge() {
+        let mut ctx = inbox_triage_ctx();
+        ctx.project_states.get_mut("market-app").unwrap().milestone = "v2.0".to_owned();
+        put_cursor_on(&mut ctx, "market-app", "43");
+        let action =
+            InboxScreen::new().handle_key(KeyCode::Char('A'), KeyModifiers::NONE, &mut ctx);
+        assert!(matches!(action, ScreenAction::None), "no popup");
+        assert_eq!(
+            status(&ctx),
+            "2 files behind this row: press g and acknowledge one file in the Owner block"
+        );
+        assert!(ctx.owner_ack_busy.is_empty());
+    }
+
+    #[test]
+    fn g_on_a_merged_row_opens_the_first_file_group() {
+        let mut ctx = inbox_triage_ctx();
+        put_cursor_on(&mut ctx, "market-app", "43");
+        let action =
+            InboxScreen::new().handle_key(KeyCode::Char('g'), KeyModifiers::NONE, &mut ctx);
+        let ScreenAction::Push(detail) = action else {
+            panic!("`g` pushes the detail view");
+        };
+        assert_eq!(detail.name(), "detail");
+        let uat = GroupKey::of(&ctx.owner_digests["market-app"].groups[0]);
+        assert_eq!(
+            ctx.view_cache["market-app"].owner_block.cursor,
+            Some(owner_block::Stop::Row(uat))
+        );
+    }
+
+    #[test]
+    fn v_on_a_merged_row_runs_the_shared_command() {
+        let mut ctx = inbox_triage_ctx();
+        put_cursor_on(&mut ctx, "market-app", "43");
+        let (backend, plan) = recorder();
+        press_v(&mut ctx, &plan);
+        let opened = backend.opened.lock().unwrap().clone();
+        assert_eq!(opened.len(), 1);
+        assert_eq!(opened[0].0, PathBuf::from("/nonexistent/market-app"));
+        assert_eq!(
+            opened[0].1,
+            [
+                crate::ui::screens::detail::scrubbed_program(),
+                vec!["/gsd-verify-work 43 --ws market".to_owned()]
+            ]
+            .concat()
+        );
+    }
+
+    #[test]
+    fn y_on_a_merged_row_copies_the_entry_checklist() {
+        let mut ctx = inbox_triage_ctx();
+        put_cursor_on(&mut ctx, "market-app", "43");
+        owner_actions::force_clipboard(Some(wayland_probes()));
+        let _ = press_y(&mut ctx);
+        let entry = owner_block::entry_for(
+            &ctx.owner_digests["market-app"],
+            &rows_of(&ctx, "market-app")[0].src.key,
+            90,
+        )
+        .expect("the entry");
+        let mut want = crate::inbox::entry_checklist("market-app", &entry).join("\n");
+        want.push('\n');
+        let ran = owner_actions::seam_ran();
+        assert_eq!(ran.last().expect("a copy").1, want);
+        assert!(want.contains("file 43-UAT.md") && want.contains("file 43-VERIFICATION.md"));
+        owner_actions::force_clipboard(None);
+        // `o` keeps its refusal.
+        let action =
+            InboxScreen::new().handle_key(KeyCode::Char('o'), KeyModifiers::NONE, &mut ctx);
+        assert!(matches!(action, ScreenAction::None));
+        assert_eq!(
+            status(&ctx),
+            "2 files behind this row: expand it with Enter, or press g"
+        );
+    }
+
+    #[test]
+    fn y_on_the_stale_fold_says_why_not() {
+        let mut ctx = inbox_triage_ctx();
+        let mut screen = InboxScreen::new();
+        screen.handle_key(KeyCode::End, KeyModifiers::NONE, &mut ctx);
+        assert_eq!(sub_cursor(&ctx), Some(Fold::Stale));
+        screen.handle_key(KeyCode::Char('y'), KeyModifiers::NONE, &mut ctx);
+        assert_eq!(
+            status(&ctx),
+            "Nothing to copy: open Stale and copy one phase"
+        );
+    }
+
+    #[test]
+    fn a_merge_appearing_keeps_the_cursor_on_its_row() {
+        let mut ctx = ctx_with_aliases(&["market-app"]);
+        owe(
+            &mut ctx,
+            "market-app",
+            digest(vec![market_group(Kind::Uat, 2, 9)]),
+        );
+        put_cursor_on(&mut ctx, "market-app", "43");
+        owe(
+            &mut ctx,
+            "market-app",
+            digest(vec![
+                market_group(Kind::Uat, 2, 9),
+                market_group(Kind::Verification, 1, 4),
+            ]),
+        );
+        reanchor(&mut ctx);
+        let rows = stop_rows(&ctx);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(ctx.inbox_view.cursor, Some(InboxStop::Row(rows[0].key())));
+        // And back: the merge vanishes, the cursor rests on the row that took its index.
+        owe(
+            &mut ctx,
+            "market-app",
+            digest(vec![market_group(Kind::Uat, 2, 9)]),
+        );
+        reanchor(&mut ctx);
+        let rows = stop_rows(&ctx);
+        assert_eq!(ctx.inbox_view.cursor, Some(InboxStop::Row(rows[0].key())));
+    }
+
+    /// Every permutation of `items` (Heap's algorithm).
+    fn permutations<T: Clone>(items: &mut Vec<T>, k: usize, out: &mut Vec<Vec<T>>) {
+        if k <= 1 {
+            out.push(items.clone());
+            return;
+        }
+        for i in 0..k {
+            permutations(items, k - 1, out);
+            let swap = if k.is_multiple_of(2) { i } else { 0 };
+            items.swap(swap, k - 1);
+        }
+    }
+
+    #[test]
+    fn inbox_sources_sort_is_total() {
+        let mut stale_a = test_group("11", "old-a", 2, false, 120, false);
+        stale_a.file = "phases/11/11-UAT.md".to_owned();
+        let stale_b = test_group("13", "old-b", 1, false, 130, false);
+        let mut groups = vec![
+            market_group(Kind::Uat, 2, 9),
+            market_group(Kind::Verification, 1, 4),
+            test_group("44", "fresh", 1, false, 3, false),
+            stale_a,
+            stale_b,
+        ];
+        let mut all = Vec::new();
+        let n = groups.len();
+        permutations(&mut groups, n, &mut all);
+        assert_eq!(all.len(), 120);
+        let listing = |groups: Vec<OwnerGroup>| {
+            let mut ctx = ctx_with_aliases(&["market-app"]);
+            owe(&mut ctx, "market-app", digest(groups));
+            ctx.inbox_view.open_folds.insert(Fold::Stale);
+            stop_rows(&ctx)
+                .iter()
+                .map(|row| format!("{:?}", row.src.key))
+                .collect::<Vec<_>>()
+        };
+        let first = listing(all[0].clone());
+        assert_eq!(first.len(), 4, "merged row, fresh row, two stale rows");
+        for perm in all {
+            assert_eq!(listing(perm), first);
         }
     }
 }

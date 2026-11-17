@@ -1180,7 +1180,6 @@ pub(crate) fn collapsed_block(rows: &[Collapsed]) -> Vec<String> {
 
 /// The group line of one entry: a merged entry adds `N files`, and the label tally
 /// follows (D-08, D-11).
-#[cfg_attr(not(test), allow(dead_code))] // read by the TUI (plan 38-04)
 pub(crate) fn entry_line(alias: &str, entry: &TriageEntry) -> String {
     let mut tail = String::new();
     if entry.is_merged() {
