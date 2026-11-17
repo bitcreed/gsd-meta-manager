@@ -1,19 +1,19 @@
 {
   "version": 1,
-  "generated_at": "2026-11-17T19:02:02.492Z",
+  "generated_at": "2026-11-17T21:52:10.012Z",
   "runtime": "claude-code",
   "transcript_dir": "/home/blk/.claude/projects/-home-blk-projects-rust-gsd-meta-manager",
   "worktree_transcript_dirs": 0,
   "since": null,
   "min_samples": 5,
   "basis": "harness",
-  "sessions": 17,
-  "subagents": 632,
-  "messages": 23517,
+  "sessions": 18,
+  "subagents": 643,
+  "messages": 23947,
   "totals": {
-    "tokens": 118254426,
-    "cache_read": 3619392892,
-    "attributed_to_phase": 89400191
+    "tokens": 120652208,
+    "cache_read": 3697031675,
+    "attributed_to_phase": 91752926
   },
   "prices": {
     "per_task": {
@@ -79,10 +79,10 @@
       "p50_per_run": 236800
     },
     "general-purpose": {
-      "runs": 244,
-      "tokens_total": 8645438,
-      "cache_read_total": 72610881,
-      "p50_per_run": 25022
+      "runs": 255,
+      "tokens_total": 10607016,
+      "cache_read_total": 136848255,
+      "p50_per_run": 25050
     },
     "gsd-code-reviewer": {
       "runs": 38,
@@ -91,16 +91,16 @@
       "p50_per_run": 184974
     },
     "orchestrator:/gsd-execute-phase": {
-      "runs": 36,
-      "tokens_total": 5126621,
-      "cache_read_total": 185146340,
-      "p50_per_run": 118155
+      "runs": 37,
+      "tokens_total": 5250662,
+      "cache_read_total": 189813819,
+      "p50_per_run": 119451
     },
     "main": {
-      "runs": 14,
-      "tokens_total": 4513248,
-      "cache_read_total": 56415553,
-      "p50_per_run": 219114
+      "runs": 15,
+      "tokens_total": 4558295,
+      "cache_read_total": 56932649,
+      "p50_per_run": 216354
     },
     "gsd-verifier": {
       "runs": 51,
@@ -109,10 +109,10 @@
       "p50_per_run": 75989
     },
     "orchestrator:/gsd-code-review": {
-      "runs": 46,
-      "tokens_total": 3982703,
-      "cache_read_total": 102445061,
-      "p50_per_run": 86920
+      "runs": 47,
+      "tokens_total": 4104618,
+      "cache_read_total": 107314422,
+      "p50_per_run": 87763
     },
     "gsd-phase-researcher": {
       "runs": 10,
@@ -138,23 +138,23 @@
       "cache_read_total": 96118580,
       "p50_per_run": 340641
     },
+    "orchestrator:/gsd-secure-phase": {
+      "runs": 37,
+      "tokens_total": 1974320,
+      "cache_read_total": 43228037,
+      "p50_per_run": 50844
+    },
     "gsd-plan-checker": {
       "runs": 25,
       "tokens_total": 1970252,
       "cache_read_total": 11211153,
       "p50_per_run": 62585
     },
-    "orchestrator:/gsd-secure-phase": {
-      "runs": 36,
-      "tokens_total": 1936888,
-      "cache_read_total": 42455529,
-      "p50_per_run": 51343
-    },
     "orchestrator:/gsd-plan-phase": {
-      "runs": 14,
-      "tokens_total": 1755981,
-      "cache_read_total": 51090451,
-      "p50_per_run": 117958
+      "runs": 15,
+      "tokens_total": 1863750,
+      "cache_read_total": 53665416,
+      "p50_per_run": 116301
     },
     "gsd-code-fixer": {
       "runs": 5,
@@ -1421,6 +1421,42 @@
           "tokens_total": 9305,
           "cache_read_total": 164691,
           "p50_per_run": 9305
+        }
+      }
+    },
+    "39": {
+      "tokens_total": 2352735,
+      "cache_read_total": 77121687,
+      "by_agent_type": {
+        "general-purpose": {
+          "runs": 11,
+          "tokens_total": 1961578,
+          "cache_read_total": 64237374,
+          "p50_per_run": 139844
+        },
+        "orchestrator:/gsd-execute-phase": {
+          "runs": 1,
+          "tokens_total": 124041,
+          "cache_read_total": 4667479,
+          "p50_per_run": 124041
+        },
+        "orchestrator:/gsd-code-review": {
+          "runs": 1,
+          "tokens_total": 121915,
+          "cache_read_total": 4869361,
+          "p50_per_run": 121915
+        },
+        "orchestrator:/gsd-plan-phase": {
+          "runs": 1,
+          "tokens_total": 107769,
+          "cache_read_total": 2574965,
+          "p50_per_run": 107769
+        },
+        "orchestrator:/gsd-secure-phase": {
+          "runs": 1,
+          "tokens_total": 37432,
+          "cache_read_total": 772508,
+          "p50_per_run": 37432
         }
       }
     },
