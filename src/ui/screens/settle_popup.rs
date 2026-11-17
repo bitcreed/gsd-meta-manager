@@ -1027,6 +1027,36 @@ mod tests {
         assert_eq!(tree(&root), before);
     }
 
+    /// WR-02 (39 review): `j` past the last item of the last stop is a no-op; it
+    /// must not drop the item selection, or a following `x` settles the phase.
+    #[test]
+    fn j_past_the_last_item_of_the_last_stop_keeps_the_item() {
+        take_settle_launches();
+        let (_dir, root) = temp_fixture("uat-pending");
+        let mut ctx = fixture_ctx(&root, ALIAS);
+        let rows = stop_rows(&ctx);
+        let last = rows.last().cloned().expect("a row");
+        let ids = crate::ui::screens::owner_block::inbox_item_ids(&last.src);
+        let last_id = ids.last().cloned().expect("an item");
+        ctx.inbox_view.cursor = Some(crate::ui::screens::inbox::InboxStop::Row(last.key()));
+        ctx.inbox_view.expanded.insert(last.key());
+        let mut stack = Stack::inbox();
+        for _ in 0..ids.len() {
+            stack.key(&mut ctx, KeyCode::Char('j'));
+        }
+        assert_eq!(ctx.inbox_view.item_cursor.as_ref(), Some(&last_id));
+        stack.key(&mut ctx, KeyCode::Char('j'));
+        assert_eq!(ctx.inbox_view.item_cursor.as_ref(), Some(&last_id));
+        stack.key(&mut ctx, KeyCode::Char('x'));
+        stack.key(&mut ctx, KeyCode::Char('w'));
+        stack.keys(&mut ctx, "r");
+        stack.key(&mut ctx, KeyCode::Enter);
+        stack.key(&mut ctx, KeyCode::Char('y'));
+        let launches = take_settle_launches();
+        assert_eq!(launches.len(), 1);
+        assert_eq!(launches[0].draft.target.scope, SettleScope::Check(last_id));
+    }
+
     #[test]
     fn x_on_a_merged_rows_second_file_names_that_file() {
         take_settle_launches();

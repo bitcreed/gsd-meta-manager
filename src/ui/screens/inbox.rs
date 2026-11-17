@@ -1772,7 +1772,14 @@ impl InboxScreen {
                     ctx.needs_redraw = true;
                     return;
                 }
-                owner_block::ItemStep::Leave => {}
+                owner_block::ItemStep::Leave => {
+                    // Nothing below the last stop: the press is a no-op, so the
+                    // item stays selected (the Detail host's `PastLast` rule).
+                    let count = rows.len() + usize::from(!fleet_folds(ctx).is_empty());
+                    if forward && at + 1 >= count {
+                        return;
+                    }
+                }
             }
         }
         self.step(ctx, if forward { 1 } else { -1 });
