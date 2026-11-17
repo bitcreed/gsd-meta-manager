@@ -268,7 +268,7 @@ Plans:
 **Depends on:** Phase 37
 **Verification:** Automatic (fixtures, golden CLI output, buffer snapshots) plus one human readability check
 **UI hint**: yes
-**Plans:** 2/4 plans executed
+**Plans:** 3/4 plans executed
 
 Plans:
 **Wave 1**
@@ -276,7 +276,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 - [x] 38-02-PLAN.md — Tracer: `inbox ALIAS` prints one project's full checklist with merged entries, label suffixes and the STALE section; three D-13 fixtures and the `inbox-alias.txt` golden (D-04, D-08, D-09, D-11, D-13)
-- [ ] 38-04-PLAN.md — Tracer: TUI inbox on the triage model: one row per same-phase pair, Stale fold row, `A`/`g`/`v`/`y` on merged rows; aligned checks column (inbox and Owner block), dimmed labels, help overlay, escape guard (D-06, D-08..D-11 TUI)
+- [x] 38-04-PLAN.md — Tracer: TUI inbox on the triage model: one row per same-phase pair, Stale fold row, `A`/`g`/`v`/`y` on merged rows; aligned checks column (inbox and Owner block), dimmed labels, help overlay, escape guard (D-06, D-08..D-11 TUI)
 
 **Wave 3** *(blocked on Wave 2 completion)*
 - [ ] 38-03-PLAN.md — Tracer: `inbox --lane` collapsed lane view, 51-step fixture, digest and lane goldens with the line budget; additive `--json` keys (`labels`, `folded_stale`, `entry_files`, `next_actions`, `stale_folded`), README, `status --skill`, D-14 evidence (D-05, D-12, D-13)
