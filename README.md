@@ -834,7 +834,7 @@ Schema version 1:
 | `projects[].groups[].items[].gaps[].name` | string | the gap |
 | `projects[].groups[].items[].gaps[].result` | string | the gap's result |
 | `projects[].groups[].items[].gaps[].reason` | string or null | the gap's reason |
-| `projects[].groups[].items[].labels` | array of strings | text hints: `decision?` (a check that reads as a decision), `looks resolved` (a failed check whose text says it was fixed), both in that order, `[]` when none. Hints only: they never move, hide or re-rank an item |
+| `projects[].groups[].items[].labels` | array of strings | text hints: `decision?` (a check that reads as a decision), `looks resolved` (a check whose name, expected text or reason says it was resolved or fixed), both in that order, `[]` when none. Hints only: they never move, hide or re-rank an item |
 | `projects[].hidden` | object | what the lists leave out, always the full counts |
 | `projects[].hidden.deferred` | integer | deferred items |
 | `projects[].hidden.acknowledged_files` | integer | acknowledged UAT and VERIFICATION files, debug sessions and CONTEXT files |
