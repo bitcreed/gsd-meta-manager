@@ -148,3 +148,4 @@
 {"ts":"2026-11-15T07:38:02.012Z","type":"snapshot","phase":"37","measured":{"plans":7,"tasks":15,"tokens":null,"cache_read":null,"basis":"none"},"estimated":{"cuts_applied":1,"reinstated":0,"add_back_ratio":0,"gross":{"basis":"harness","n":1,"p25":0,"p50":18685,"p75":70909},"pass_cost":790,"net":{"basis":"harness","n":1,"p25":-790,"p50":17895,"p75":70119}}}
 {"ts":"2026-11-17T00:15:01.504Z","type":"pass","phase":"38","point":"discuss:pre"}
 {"ts":"2026-11-17T19:02:09.035Z","type":"snapshot","phase":"38","measured":{"plans":4,"tasks":9,"tokens":null,"cache_read":null,"basis":"none"},"estimated":{"cuts_applied":0,"reinstated":0,"add_back_ratio":null,"gross":{"basis":"harness","n":0,"p25":0,"p50":0,"p75":0},"pass_cost":440,"net":{"basis":"harness","n":0,"p25":-440,"p50":-440,"p75":-440}}}
+{"ts":"2026-11-17T19:05:22.191Z","type":"pass","phase":"39","point":"discuss:pre"}
