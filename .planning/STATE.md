@@ -2,18 +2,18 @@
 gsd_state_version: "1.0"
 milestone: v2.5.0
 milestone_name: Owner Inbox
-current_phase: 37
-current_phase_name: Inbox screen and actions
-status: verifying
+current_phase: 38
+current_phase_name: Inbox digest and triage hygiene
+status: executing
 stopped_at: Phase 38 context gathered
-last_updated: "2026-11-17T00:15:07.410Z"
+last_updated: "2026-11-17T01:28:48.788Z"
 last_activity: 2026-11-15
 last_activity_desc: Phase 37 execution started
-state_head: 45c203b7d920abe9264088087bd082e50eb2ee78
+state_head: 5f855cb8d0d5e8c321800c8691efec1c0cd51566
 progress:
   total_phases: 6
   completed_phases: 1
-  total_plans: 21
+  total_plans: 25
   completed_plans: 21
   percent: 17
 ---
@@ -29,9 +29,9 @@ See: .planning/PROJECT.md (updated 2026-11-14)
 
 ## Current Position
 
-Phase: 37 (Inbox screen and actions) — EXECUTING
+Phase: 38 (Inbox digest and triage hygiene) — READY TO EXECUTE
 Plan: 7 of 7
-Status: Phase complete — ready for verification
+Status: Ready to execute
 Last activity: 2026-11-14 — Phase 37 execution started
 
 

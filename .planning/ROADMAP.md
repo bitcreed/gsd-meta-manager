@@ -268,10 +268,18 @@ Plans:
 **Depends on:** Phase 37
 **Verification:** Automatic (fixtures, golden CLI output, buffer snapshots) plus one human readability check
 **UI hint**: yes
-**Plans:** 0 plans
+**Plans:** 4 plans
 
 Plans:
-- [ ] TBD (run /gsd-plan-phase 38 to break down)
+**Wave 1**
+- [ ] 38-01-PLAN.md — Tracer: plain `inbox` prints the digest (triage model: same-phase merge, 90-day fold, D-07 ranking; `fold_days`; `--all` byte-identical; D-02 view dispatch), then the full D-03 layout and 25-line budget, the labels matcher and the shared `entry_checklist` (D-01..D-03, D-06..D-11)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+- [ ] 38-02-PLAN.md — Tracer: `inbox ALIAS` prints one project's full checklist with merged entries, label suffixes and the STALE section; three D-13 fixtures and the `inbox-alias.txt` golden (D-04, D-08, D-09, D-11, D-13)
+- [ ] 38-04-PLAN.md — Tracer: TUI inbox on the triage model: one row per same-phase pair, Stale fold row, `A`/`g`/`v`/`y` on merged rows; aligned checks column (inbox and Owner block), dimmed labels, help overlay, escape guard (D-06, D-08..D-11 TUI)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+- [ ] 38-03-PLAN.md — Tracer: `inbox --lane` collapsed lane view, 51-step fixture, digest and lane goldens with the line budget; additive `--json` keys (`labels`, `folded_stale`, `entry_files`, `next_actions`, `stale_folded`), README, `status --skill`, D-14 evidence (D-05, D-12, D-13)
 
 **Success Criteria** (what must be TRUE):
 1. Plain `inbox` on the owner's machine prints a digest of about 15-25 lines: totals, the per-project `closes after` block and the top ~5 next actions ranked by payoff (fewest checks per phase closed first; older items rank lower), each naming project, phase and command.
