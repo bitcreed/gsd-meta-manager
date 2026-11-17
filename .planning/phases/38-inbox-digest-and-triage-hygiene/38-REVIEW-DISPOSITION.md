@@ -9,7 +9,7 @@ findings:
     title: "A partly folded BLOCKED phase yields two rows with one GroupKey"
   - id: IN-01
     severity: info
-    disposition: open
+    disposition: fixed
     title: "Owner block checks cell widens a row past the planned grid at 100 or more checks"
   - id: IN-02
     severity: info
@@ -17,7 +17,7 @@ findings:
     title: "README misdescribes the `looks resolved` label"
   - id: IN-03
     severity: info
-    disposition: open
+    disposition: fixed
     title: "Help overlay and Stale line hardcode or mislabel what is configurable or not a phase"
   - id: IN-04
     severity: info
@@ -27,9 +27,9 @@ findings:
     severity: info
     disposition: fixed
     title: "Duplicated fixture-aging code in tests"
-open: 2
+open: 0
 total: 6
-recorded: 2026-11-17T17:52:47.530Z
+recorded: 2026-11-17T17:52:55.236Z
 ---
 
 # Phase 38: Code Review Disposition
@@ -37,9 +37,9 @@ recorded: 2026-11-17T17:52:47.530Z
 | Finding | Severity | Disposition | Source |
 |---------|----------|-------------|--------|
 | WR-01 | warning | fixed | 38-REVIEW-FIX.md |
-| IN-01 | info | open | - |
+| IN-01 | info | fixed | 38-REVIEW-FIX.md |
 | IN-02 | info | fixed | 38-REVIEW-FIX.md |
-| IN-03 | info | open | - |
+| IN-03 | info | fixed | 38-REVIEW-FIX.md |
 | IN-04 | info | skipped | 38-REVIEW-FIX.md |
 | IN-05 | info | fixed | 38-REVIEW-FIX.md |
 
