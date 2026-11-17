@@ -1,21 +1,23 @@
-//! The three screens of settle (`x`, 39): the one-row chooser, the reason field
-//! and the default-No confirm popup that shows the exact argv.
+//! The screens of settle (`x`, 39): the one-row chooser, the phase step of a Move,
+//! the reason field and the default-No confirm popup that shows the exact argv.
 //!
 //! **No screen here writes a file or starts a process.** Yes hands the plan to
 //! `owner_settle::launch_settle` after `settle_recheck` found the row unchanged;
 //! No, Esc and a clipped popup launch nothing.
 //!
-//! The chooser is replaced by the reason field and the reason field by the popup
-//! (`ScreenAction::Replace`, never `Push`: WR-03), so Esc and No return straight
-//! to the host.
+//! The chooser is replaced by the phase step (Move only) or the reason field, and
+//! each of those by the next screen and finally the popup (`ScreenAction::Replace`,
+//! never `Push`: WR-03), so Esc and No return straight to the host.
 
 use super::ack_confirm::{wrap_at_separators, AckHost};
 use super::confirm_popup::{self, ConfirmOutcome, ConfirmPopup};
+use super::detail::fit_cells;
 use super::detail::{fit_spans, settle_mux_argv, shown};
 use super::driver_steer::tail_cells;
 use super::inbox::InboxScreen;
 use super::owner_settle::{
-    self, clean, Outcome, SettleChoice, SettleDraft, SettlePlan, SettleScope, REASON_MAX_CHARS,
+    self, clean, MoveTarget, Outcome, SettleChoice, SettleDraft, SettlePlan, SettleScope,
+    REASON_MAX_CHARS,
 };
 use super::{AppContext, Screen, ScreenAction};
 use crate::ui::mouse::MouseInput;
@@ -47,7 +49,8 @@ fn render_host(host: &AckHost, frame: &mut Frame, area: Rect, ctx: &AppContext) 
 // ── The chooser ─────────────────────────────────────────────────────────────
 
 /// `x`: the one-row chooser `Settle {target}: [w] won't do  [p] defer permanently
-/// [Esc] cancel`. A key replaces it with the reason field; Esc cancels.
+/// [m] move  [Esc] cancel`. `w` and `p` replace it with the reason field, `m` with
+/// the phase step; Esc cancels.
 pub struct SettleChooserScreen {
     host: AckHost,
     draft: SettleDraft,
@@ -89,6 +92,14 @@ impl Screen for SettleChooserScreen {
         match code {
             KeyCode::Char('w') => self.choose(Outcome::WontDo, ctx),
             KeyCode::Char('p') => self.choose(Outcome::DeferPermanently, ctx),
+            KeyCode::Char('m') => {
+                ctx.needs_redraw = true;
+                ScreenAction::Replace(Box::new(SettlePhaseScreen::open(
+                    ctx,
+                    self.host.clone(),
+                    self.draft.clone(),
+                )))
+            }
             KeyCode::Esc => {
                 ctx.needs_redraw = true;
                 ScreenAction::Pop
@@ -109,6 +120,7 @@ impl Screen for SettleChooserScreen {
         ))];
         spans.extend(key("[w]", " won't do  "));
         spans.extend(key("[p]", " defer permanently  "));
+        spans.extend(key("[m]", " move  "));
         spans.extend(key("[Esc]", " cancel"));
         let line = fit_spans(spans, usize::from(chunks[1].width));
         frame.render_widget(Paragraph::new(line), chunks[1]);
@@ -116,6 +128,220 @@ impl Screen for SettleChooserScreen {
 
     fn name(&self) -> &str {
         "settle_chooser"
+    }
+}
+
+// ── The phase step of a Move ────────────────────────────────────────────────
+
+/// Most characters of a typed phase number (a token is digits, an optional
+/// letter and `.digits` groups).
+const TYPED_PHASE_MAX: usize = 16;
+
+/// `m` in the chooser: pick the phase the checks move to (D-01, D-06). The
+/// candidates are the scope's open roadmap phases after the source, then its
+/// backlog phases; `j`/`k` move the pick while the entry is empty, a typed number
+/// overrides it. Enter opens the optional reason field; Esc launches nothing.
+pub struct SettlePhaseScreen {
+    host: AckHost,
+    draft: SettleDraft,
+    candidates: Vec<MoveTarget>,
+    pick: usize,
+    typed: String,
+    error: Option<String>,
+}
+
+impl SettlePhaseScreen {
+    /// The step for `draft`. **Reads one directory** (the scope's backlog) and is
+    /// called from the chooser's key arm only.
+    pub(crate) fn open(ctx: &AppContext, host: AckHost, draft: SettleDraft) -> Self {
+        let workstream = draft.target.command.workstream.as_deref();
+        let (candidates, pick) = match ctx.project_states.get(&draft.target.alias) {
+            Some(state) => {
+                let backlog = owner_settle::backlog_for(&draft.cwd, workstream);
+                owner_settle::move_candidates(state, workstream, draft.target.phase(), &backlog)
+            }
+            None => (Vec::new(), 0),
+        };
+        Self::with_candidates(host, draft, candidates, pick)
+    }
+
+    pub(crate) fn with_candidates(
+        host: AckHost,
+        draft: SettleDraft,
+        candidates: Vec<MoveTarget>,
+        pick: usize,
+    ) -> Self {
+        Self {
+            host,
+            draft,
+            candidates,
+            pick,
+            typed: String::new(),
+            error: None,
+        }
+    }
+
+    fn step(&mut self, forward: bool) {
+        if forward {
+            self.pick = (self.pick + 1).min(self.candidates.len().saturating_sub(1));
+        } else {
+            self.pick = self.pick.saturating_sub(1);
+        }
+    }
+
+    fn enter(&mut self, ctx: &mut AppContext) -> ScreenAction {
+        ctx.needs_redraw = true;
+        let target = if self.typed.is_empty() {
+            match self.candidates.get(self.pick) {
+                Some(candidate) => Ok(candidate.clone()),
+                None => Err("Type a phase number".to_owned()),
+            }
+        } else {
+            owner_settle::move_target(&self.candidates, &self.typed, self.draft.target.phase())
+        };
+        match target {
+            Ok(target) => ScreenAction::Replace(Box::new(SettleReasonScreen::new_move(
+                self.host.clone(),
+                self.draft.clone(),
+                target,
+            ))),
+            Err(message) => {
+                self.error = Some(message);
+                ScreenAction::None
+            }
+        }
+    }
+}
+
+crate::ui::screens::adjudicate_screen!(
+    SettlePhaseScreen,
+    crate::ui::screens::RENDERS_ATTACKER_INFLUENCED_IDENTITY,
+    "Paints the inbox or the detail view behind a footer that lists the candidate \
+     phases (roadmap phase names and backlog slugs read out of `.planning/`), the \
+     target (a phase token or a check number) and the phase number the owner typed, \
+     all through `shown`. Fixture states: the hostile identity as candidate number \
+     and name, as the target and as the typed entry.",
+);
+
+impl Screen for SettlePhaseScreen {
+    fn handle_key(
+        &mut self,
+        code: KeyCode,
+        _modifiers: KeyModifiers,
+        ctx: &mut AppContext,
+    ) -> ScreenAction {
+        match code {
+            KeyCode::Enter => self.enter(ctx),
+            KeyCode::Esc => {
+                ctx.needs_redraw = true;
+                ScreenAction::Pop
+            }
+            KeyCode::Down => {
+                self.step(true);
+                ctx.needs_redraw = true;
+                ScreenAction::None
+            }
+            KeyCode::Up => {
+                self.step(false);
+                ctx.needs_redraw = true;
+                ScreenAction::None
+            }
+            KeyCode::Backspace => {
+                self.typed.pop();
+                self.error = None;
+                ctx.needs_redraw = true;
+                ScreenAction::None
+            }
+            // A phase token starts with a digit, so a letter first can only be
+            // movement.
+            KeyCode::Char('j') if self.typed.is_empty() => {
+                self.step(true);
+                ctx.needs_redraw = true;
+                ScreenAction::None
+            }
+            KeyCode::Char('k') if self.typed.is_empty() => {
+                self.step(false);
+                ctx.needs_redraw = true;
+                ScreenAction::None
+            }
+            KeyCode::Char(c)
+                if (c.is_ascii_digit()
+                    || (!self.typed.is_empty() && (c.is_ascii_alphabetic() || c == '.')))
+                    && self.typed.chars().count() < TYPED_PHASE_MAX =>
+            {
+                self.typed.push(c);
+                self.error = None;
+                ctx.needs_redraw = true;
+                ScreenAction::None
+            }
+            _ => ScreenAction::None,
+        }
+    }
+
+    fn render(&self, frame: &mut Frame, area: Rect, ctx: &AppContext) {
+        let width = usize::from(area.width);
+        let hint = "   [j/k] pick  [Enter] next  [Esc] cancel";
+        let prompt = format!("  Move {} to phase> ", shown(&self.draft.target.short()));
+        let room = width
+            .saturating_sub(Span::raw(prompt.as_str()).width())
+            .saturating_sub(1)
+            .saturating_sub(Span::raw(hint).width());
+        let input_row = Line::from(vec![
+            Span::styled(prompt, bold()),
+            Span::raw(tail_cells(&shown(&self.typed), room)),
+            Span::raw("_"),
+            Span::styled(hint, muted()),
+        ]);
+        let error = self.error.as_ref().map(|error| {
+            Line::from(Span::styled(
+                fit_cells(&format!("    {}", shown(error)), width),
+                Style::default().fg(Color::Red),
+            ))
+        });
+        // One row per candidate (or the empty-list line), the input row and an error
+        // row, at most half the screen.
+        let cap = usize::from((area.height / 2).max(3));
+        let list_room = cap.saturating_sub(1 + usize::from(error.is_some())).max(1);
+        let mut rows: Vec<Line<'static>> = Vec::new();
+        if self.candidates.is_empty() {
+            rows.push(Line::from(Span::styled(
+                "  No other open phase: type a phase number",
+                muted(),
+            )));
+        } else {
+            let first = self
+                .pick
+                .saturating_sub(list_room - 1)
+                .min(self.candidates.len().saturating_sub(list_room));
+            for (at, candidate) in self
+                .candidates
+                .iter()
+                .enumerate()
+                .skip(first)
+                .take(list_room)
+            {
+                let name = candidate.name.as_deref().unwrap_or_default();
+                let text = fit_cells(
+                    &shown(&format!("{}  {name}", candidate.number)),
+                    width.saturating_sub(2),
+                );
+                rows.push(if at == self.pick {
+                    Line::from(Span::styled(format!("> {text}"), bold().fg(Color::Cyan)))
+                } else {
+                    Line::raw(format!("  {text}"))
+                });
+            }
+        }
+        rows.push(input_row);
+        rows.extend(error);
+        let height = u16::try_from(rows.len().min(cap + 1)).unwrap_or(1);
+        let chunks = Layout::vertical([Constraint::Min(0), Constraint::Length(height)]).split(area);
+        render_host(&self.host, frame, chunks[0], ctx);
+        frame.render_widget(Paragraph::new(rows), chunks[1]);
+    }
+
+    fn name(&self) -> &str {
+        "settle_phase"
     }
 }
 
@@ -129,6 +355,8 @@ pub struct SettleReasonScreen {
     host: AckHost,
     draft: SettleDraft,
     outcome: Outcome,
+    /// The phase a Move goes to (its reason is optional, D-02).
+    move_to: Option<MoveTarget>,
     buffer: String,
     error: Option<String>,
 }
@@ -139,8 +367,17 @@ impl SettleReasonScreen {
             host,
             draft,
             outcome,
+            move_to: None,
             buffer: String::new(),
             error: None,
+        }
+    }
+
+    /// The reason field of a Move to `target`.
+    pub(crate) fn new_move(host: AckHost, draft: SettleDraft, target: MoveTarget) -> Self {
+        Self {
+            move_to: Some(target),
+            ..Self::new(host, draft, Outcome::Move)
         }
     }
 
@@ -185,6 +422,7 @@ impl Screen for SettleReasonScreen {
                         choice: SettleChoice {
                             outcome: self.outcome,
                             reason,
+                            move_to: self.move_to.clone(),
                         },
                     },
                 )))
@@ -222,11 +460,18 @@ impl Screen for SettleReasonScreen {
         } else {
             " (optional)"
         };
-        let prompt = format!(
-            "  {} {}: reason{optional}> ",
-            self.outcome.label(),
-            shown(&self.draft.target.short())
-        );
+        let prompt = match &self.move_to {
+            Some(to) => format!(
+                "  Move {} to phase {}: reason{optional}> ",
+                shown(&self.draft.target.short()),
+                shown(&to.number)
+            ),
+            None => format!(
+                "  {} {}: reason{optional}> ",
+                self.outcome.label(),
+                shown(&self.draft.target.short())
+            ),
+        };
         let room = usize::from(area.width)
             .saturating_sub(Span::raw(prompt.as_str()).width())
             .saturating_sub(1)
@@ -326,7 +571,18 @@ pub(crate) fn settle_body(plan: &SettlePlan, inner_w: u16) -> Vec<Line<'static>>
     let mut body: Vec<Line<'static>> = Vec::new();
     body.extend(field("Project", shown(&target.alias)));
     body.extend(field("Target", shown(&shown_target)));
-    body.extend(field("Outcome", plan.choice.outcome.label().to_owned()));
+    let outcome = match &plan.choice.move_to {
+        Some(to) => {
+            let name = to
+                .name
+                .as_deref()
+                .map(|name| format!(" \u{201c}{name}\u{201d}"))
+                .unwrap_or_default();
+            format!("{} {}{name}", plan.choice.outcome.label(), to.number)
+        }
+        None => plan.choice.outcome.label().to_owned(),
+    };
+    body.extend(field("Outcome", shown(&outcome)));
     body.push(Line::raw(""));
     let argv = match settle_mux_argv(plan) {
         Ok(argv) => {
@@ -355,6 +611,21 @@ pub(crate) fn settle_body(plan: &SettlePlan, inner_w: u16) -> Vec<Line<'static>>
         body.push(Line::raw(format!("{indent}{part}")));
     }
     body.push(Line::raw(""));
+    // D-06: a phase neither the roadmap nor the backlog lists is accepted, with this
+    // warning above the consequence row.
+    if let Some(to) = plan.choice.move_to.as_ref().filter(|to| !to.known) {
+        let warning = format!(
+            "Phase {} is not in the roadmap or backlog: GSD may create or reject it.",
+            shown(&to.number)
+        );
+        for part in wrap_at_separators(&warning, inner_w) {
+            body.push(Line::from(Span::styled(
+                part,
+                Style::default().fg(Color::Yellow),
+            )));
+        }
+        body.push(Line::raw(""));
+    }
     body.push(Line::raw(if plan.draft.live_session.is_some() {
         "Claude already runs here: Yes switches to it, no second session."
     } else {
@@ -545,6 +816,7 @@ mod tests {
             choice: SettleChoice {
                 outcome,
                 reason: reason.to_owned(),
+                move_to: None,
             },
         }
     }
@@ -773,6 +1045,260 @@ mod tests {
         assert!(take_settle_launches().is_empty());
     }
 
+    /// The prompt of the Move flow on `heuristic-labels` phase 01 to phase 02 (D-08).
+    const MOVE_PROMPT: &str = "/gsd-verify-work 01 The user moves tests 1, 2, 3, 4, 5, 6, 7 in 01-UAT.md to phase 02 \u{201c}Sync\u{201d}. Resume the UAT session of phase 01 without restarting it and record each of them as result: skipped, reason: Deferred follow-up: moved to phase 02. They must not block phase 01. Then add one todo as /gsd-capture does, titled \u{201c}Phase 02 Sync: rerun 7 checks from phase 01\u{201d}, so they come up again when phase 02 runs. Do not promote them to the 999.x backlog.";
+
+    #[test]
+    fn the_inbox_move_flow_launches_the_move_prompt_and_writes_nothing() {
+        take_settle_launches();
+        let (_dir, root) = temp_fixture("heuristic-labels");
+        let before = tree(&root);
+        let mut ctx = fixture_ctx(&root, "pricing-app");
+        let mut stack = Stack::inbox();
+        assert!(stack.key(&mut ctx, KeyCode::Char('x')));
+        assert!(stack.key(&mut ctx, KeyCode::Char('m')));
+        assert_eq!((stack.name().as_str(), stack.depth()), ("settle_phase", 2));
+        let step = stack.render(&ctx, 100, 24);
+        assert!(step.contains("> 02  Sync"), "{step}");
+        assert!(step.contains("  03  Plans"), "{step}");
+        assert!(step.contains("Move phase 01 to phase> _"), "{step}");
+        // `j` picks 03, `k` goes back to 02.
+        stack.key(&mut ctx, KeyCode::Char('j'));
+        assert!(stack.render(&ctx, 100, 24).contains("> 03  Plans"));
+        stack.key(&mut ctx, KeyCode::Char('k'));
+        assert!(stack.render(&ctx, 100, 24).contains("> 02  Sync"));
+        assert!(stack.key(&mut ctx, KeyCode::Enter));
+        assert_eq!(stack.name(), "settle_reason");
+        let field = stack.render(&ctx, 100, 24);
+        assert!(
+            field.contains("Move phase 01 to phase 02: reason (optional)>"),
+            "{field}"
+        );
+        assert!(
+            stack.key(&mut ctx, KeyCode::Enter),
+            "an empty reason is allowed"
+        );
+        assert_eq!(
+            (stack.name().as_str(), stack.depth()),
+            ("settle_confirm", 2)
+        );
+        let popup = stack.render(&ctx, 100, 40);
+        assert!(
+            popup.contains("Outcome    Move to phase 02 \u{201c}Sync\u{201d}"),
+            "{popup}"
+        );
+        assert!(take_settle_launches().is_empty(), "nothing before Yes");
+        assert!(stack.key(&mut ctx, KeyCode::Char('y')));
+        let launches = take_settle_launches();
+        assert_eq!(launches.len(), 1);
+        assert_eq!(launches[0].prompt(), MOVE_PROMPT);
+        assert_eq!(
+            status(&ctx),
+            "Launched /gsd-verify-work 01 in pricing-app: moved to phase 02 for phase 01 (7 checks)"
+        );
+        assert_eq!(tree(&root), before, "the app wrote nothing");
+    }
+
+    #[test]
+    fn the_default_pick_follows_the_source_and_a_typed_phase_overrides_it() {
+        take_settle_launches();
+        let (_dir, root) = temp_fixture("heuristic-labels");
+        let mut ctx = fixture_ctx(&root, "pricing-app");
+        // From phase 02 (second row) the first phase after it is 03.
+        let rows = stop_rows(&ctx);
+        let second = rows
+            .iter()
+            .find(|r| r.src.group.phase == "02")
+            .expect("phase 02")
+            .key();
+        ctx.inbox_view.cursor = Some(crate::ui::screens::inbox::InboxStop::Row(second));
+        let mut stack = Stack::inbox();
+        stack.key(&mut ctx, KeyCode::Char('x'));
+        stack.key(&mut ctx, KeyCode::Char('m'));
+        assert!(stack.render(&ctx, 100, 24).contains("> 03  Plans"));
+        // Typing overrides the pick: `1` is a known roadmap phase (01, pad-insensitive).
+        stack.keys(&mut ctx, "1");
+        stack.key(&mut ctx, KeyCode::Enter);
+        stack.key(&mut ctx, KeyCode::Enter);
+        stack.key(&mut ctx, KeyCode::Char('y'));
+        let launches = take_settle_launches();
+        assert_eq!(launches.len(), 1);
+        let to = launches[0].choice.move_to.clone().expect("a target");
+        assert_eq!(
+            (to.number.as_str(), to.name.as_deref(), to.known),
+            ("01", Some("Pricing"), true)
+        );
+    }
+
+    #[test]
+    fn an_unknown_phase_is_warned_in_the_popup() {
+        take_settle_launches();
+        let (_dir, root) = temp_fixture("heuristic-labels");
+        let mut ctx = fixture_ctx(&root, "pricing-app");
+        let mut stack = Stack::inbox();
+        stack.key(&mut ctx, KeyCode::Char('x'));
+        stack.key(&mut ctx, KeyCode::Char('m'));
+        stack.keys(&mut ctx, "7");
+        stack.key(&mut ctx, KeyCode::Enter);
+        stack.keys(&mut ctx, "later");
+        stack.key(&mut ctx, KeyCode::Enter);
+        assert_eq!(stack.name(), "settle_confirm");
+        let popup = stack.render(&ctx, 100, 40);
+        assert!(
+            popup
+                .contains("Phase 7 is not in the roadmap or backlog: GSD may create or reject it."),
+            "{popup}"
+        );
+        assert!(popup.contains("Outcome    Move to phase 7"), "{popup}");
+        stack.key(&mut ctx, KeyCode::Char('y'));
+        let prompt = take_settle_launches().remove(0).prompt();
+        assert!(prompt.contains("moved to phase 7. later."), "{prompt}");
+        // A known phase carries no warning.
+        let mut stack = Stack::inbox();
+        stack.key(&mut ctx, KeyCode::Char('x'));
+        stack.key(&mut ctx, KeyCode::Char('m'));
+        stack.key(&mut ctx, KeyCode::Enter);
+        stack.key(&mut ctx, KeyCode::Enter);
+        assert!(!stack
+            .render(&ctx, 100, 40)
+            .contains("is not in the roadmap"));
+    }
+
+    #[test]
+    fn the_phase_step_refuses_the_source_and_bad_entries() {
+        take_settle_launches();
+        let (_dir, root) = temp_fixture("heuristic-labels");
+        let mut ctx = fixture_ctx(&root, "pricing-app");
+        let mut stack = Stack::inbox();
+        stack.key(&mut ctx, KeyCode::Char('x'));
+        stack.key(&mut ctx, KeyCode::Char('m'));
+        stack.keys(&mut ctx, "1");
+        assert!(
+            !stack.key(&mut ctx, KeyCode::Enter),
+            "the source phase stays on the step"
+        );
+        assert!(stack
+            .render(&ctx, 100, 24)
+            .contains("That is the source phase; pick another"));
+        stack.key(&mut ctx, KeyCode::Backspace);
+        stack.keys(&mut ctx, "1.");
+        stack.key(&mut ctx, KeyCode::Enter);
+        assert_eq!(stack.name(), "settle_phase");
+        assert!(stack
+            .render(&ctx, 100, 24)
+            .contains("Not a phase number: 1."));
+        // Only digits, letters and dots are taken, and a letter cannot start a number.
+        stack.key(&mut ctx, KeyCode::Backspace);
+        stack.key(&mut ctx, KeyCode::Backspace);
+        stack.keys(&mut ctx, "\u{1b};-x");
+        stack.key(&mut ctx, KeyCode::Char('3'));
+        stack.keys(&mut ctx, ";\u{1b}");
+        stack.key(&mut ctx, KeyCode::Enter);
+        assert_eq!(stack.name(), "settle_reason", "only the `3` was taken");
+        assert!(take_settle_launches().is_empty());
+        // No candidate at all: the step says so, and Enter needs a number.
+        let (_d2, root2) = temp_fixture("uat-pending");
+        let mut ctx2 = fixture_ctx(&root2, ALIAS);
+        let mut stack = Stack::inbox();
+        stack.key(&mut ctx2, KeyCode::Char('x'));
+        stack.key(&mut ctx2, KeyCode::Char('m'));
+        assert!(stack
+            .render(&ctx2, 100, 24)
+            .contains("No other open phase: type a phase number"));
+        stack.key(&mut ctx2, KeyCode::Enter);
+        assert_eq!(stack.name(), "settle_phase");
+        assert!(stack.render(&ctx2, 100, 24).contains("Type a phase number"));
+    }
+
+    #[test]
+    fn every_move_cancel_launches_nothing() {
+        take_settle_launches();
+        let (_dir, root) = temp_fixture("heuristic-labels");
+        let before = tree(&root);
+        let mut ctx = fixture_ctx(&root, "pricing-app");
+        let mut stack = Stack::inbox();
+        stack.key(&mut ctx, KeyCode::Char('x'));
+        stack.key(&mut ctx, KeyCode::Char('m'));
+        stack.key(&mut ctx, KeyCode::Esc);
+        assert_eq!(
+            (stack.depth(), stack.name().as_str()),
+            (1, "inbox"),
+            "Esc at the phase step"
+        );
+        stack.key(&mut ctx, KeyCode::Char('x'));
+        stack.key(&mut ctx, KeyCode::Char('m'));
+        stack.key(&mut ctx, KeyCode::Enter);
+        stack.keys(&mut ctx, "later");
+        stack.key(&mut ctx, KeyCode::Esc);
+        assert_eq!(stack.depth(), 1, "Esc at the reason field");
+        for code in [KeyCode::Esc, KeyCode::Char('n'), KeyCode::Enter] {
+            stack.key(&mut ctx, KeyCode::Char('x'));
+            stack.key(&mut ctx, KeyCode::Char('m'));
+            stack.key(&mut ctx, KeyCode::Enter);
+            stack.key(&mut ctx, KeyCode::Enter);
+            assert_eq!(stack.name(), "settle_confirm");
+            stack.key(&mut ctx, code);
+            assert_eq!(stack.depth(), 1, "{code:?} at the popup");
+        }
+        assert!(take_settle_launches().is_empty());
+        assert_eq!(tree(&root), before);
+    }
+
+    /// A Move plan on `fixture` for the row of its first stop (a check when
+    /// `item` is `Some`).
+    fn move_plan(
+        fixture: &str,
+        alias: &str,
+        item: Option<&str>,
+    ) -> (SettlePlan, AppContext, tempfile::TempDir) {
+        let (dir, root) = temp_fixture(fixture);
+        let ctx = fixture_ctx(&root, alias);
+        let row = stop_rows(&ctx).remove(0);
+        let draft = owner_settle::resolve_draft(&ctx, alias, &row.src.key, item).unwrap();
+        let target = owner_settle::MoveTarget {
+            number: "02".to_owned(),
+            name: Some("Sync".to_owned()),
+            known: true,
+        };
+        let plan = SettlePlan {
+            draft,
+            choice: SettleChoice {
+                outcome: Outcome::Move,
+                reason: String::new(),
+                move_to: Some(target),
+            },
+        };
+        (plan, ctx, dir)
+    }
+
+    #[test]
+    fn the_move_popup_fits_for_a_check_at_80x24() {
+        let (plan, ctx, _dir) = move_plan("heuristic-labels", "pricing-app", Some("01-UAT.md#4"));
+        let (inner_w, room) = confirm_popup::body_room(Rect::new(0, 0, 80, 24));
+        let rows = confirm_popup::wrapped_rows(&settle_body(&plan, inner_w), inner_w);
+        assert!(rows <= room, "{rows} rows > {room}");
+        let screen = SettleConfirmScreen::new(AckHost::Inbox, plan);
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|f| screen.render(f, f.area(), &ctx)).unwrap();
+        assert!(!screen.popup.clipped(), "{}", dump(&terminal, 80, 24));
+    }
+
+    #[test]
+    fn the_move_popup_fits_for_a_phase_at_100x30() {
+        let (plan, ctx, _dir) = move_plan("heuristic-labels", "pricing-app", None);
+        let (inner_w, room) = confirm_popup::body_room(Rect::new(0, 0, 100, 30));
+        let rows = confirm_popup::wrapped_rows(&settle_body(&plan, inner_w), inner_w);
+        assert!(rows <= room, "{rows} rows > {room}");
+        let screen = SettleConfirmScreen::new(AckHost::Inbox, plan.clone());
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        terminal.draw(|f| screen.render(f, f.area(), &ctx)).unwrap();
+        assert!(!screen.popup.clipped(), "{}", dump(&terminal, 100, 30));
+        // The 80x24 count of the same plan, measured for the SUMMARY.
+        let (w80, room80) = confirm_popup::body_room(Rect::new(0, 0, 80, 24));
+        let rows80 = confirm_popup::wrapped_rows(&settle_body(&plan, w80), w80);
+        eprintln!("phase-level Move popup at 80x24: {rows80} rows of {room80}");
+    }
+
     #[test]
     fn every_cancel_launches_nothing() {
         take_settle_launches();
@@ -957,7 +1483,9 @@ mod tests {
         stack.key(&mut ctx, KeyCode::Char('x'));
         let chooser = stack.render(&ctx, 100, 24);
         assert!(
-            chooser.contains("Settle phase 01: [w] won't do  [p] defer permanently  [Esc] cancel"),
+            chooser.contains(
+                "Settle phase 01: [w] won't do  [p] defer permanently  [m] move  [Esc] cancel"
+            ),
             "{chooser}"
         );
         stack.key(&mut ctx, KeyCode::Char('p'));

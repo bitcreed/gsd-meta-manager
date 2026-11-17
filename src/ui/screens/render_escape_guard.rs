@@ -388,6 +388,7 @@ const SCREEN_IDENTITY_DISPOSITIONS: &[FixtureRow] = &[
     ),
     ("SettleChooserScreen", "src/ui/screens/settle_popup.rs"),
     ("SettleConfirmScreen", "src/ui/screens/settle_popup.rs"),
+    ("SettlePhaseScreen", "src/ui/screens/settle_popup.rs"),
     ("SettleReasonScreen", "src/ui/screens/settle_popup.rs"),
     ("SlugInputScreen", "src/ui/screens/driver_launch.rs"),
     (
@@ -2424,6 +2425,70 @@ fn fixture_for(type_name: &str) -> Option<Fixture> {
             ]
         }),
 
+        "SettlePhaseScreen" => Some(|identity| {
+            use super::ack_confirm::AckHost;
+            use super::owner_settle::MoveTarget;
+            use super::settle_popup::SettlePhaseScreen;
+            use crossterm::event::{KeyCode, KeyModifiers};
+            // Candidate numbers are safe tokens by construction; the names are the
+            // roadmap's own text and carry the identity.
+            let candidates = || {
+                vec![
+                    MoveTarget {
+                        number: "2".to_owned(),
+                        name: Some(identity.to_string()),
+                        known: true,
+                    },
+                    MoveTarget {
+                        number: "999.1".to_owned(),
+                        name: Some(identity.to_string()),
+                        known: true,
+                    },
+                ]
+            };
+            let build = |ctx: &mut AppContext, host: AckHost, typed: &str, refuse: bool| {
+                let mut screen = SettlePhaseScreen::with_candidates(
+                    host,
+                    hostile_settle_draft(identity),
+                    candidates(),
+                    0,
+                );
+                for ch in typed.chars() {
+                    screen.handle_key(KeyCode::Char(ch), KeyModifiers::NONE, ctx);
+                }
+                if refuse {
+                    // The hostile text is not a phase number: the error row draws
+                    // the cleaned echo.
+                    screen.handle_key(KeyCode::Enter, KeyModifiers::NONE, ctx);
+                }
+                Box::new(screen) as Box<dyn Screen>
+            };
+            let mut over_inbox = probe_ctx(identity);
+            over_inbox
+                .owner_digests
+                .insert(identity.to_string(), hostile_owner_digest(identity));
+            let inbox = build(&mut over_inbox, AckHost::Inbox, "", false);
+            let mut over_detail = probe_ctx(identity);
+            let detail = build(
+                &mut over_detail,
+                AckHost::Detail(identity.to_string()),
+                // The typed entry takes only ASCII digits, letters and dots: the
+                // identity's ASCII part is what survives.
+                &identity
+                    .chars()
+                    .filter(char::is_ascii_digit)
+                    .collect::<String>(),
+                false,
+            );
+            let mut refused_ctx = probe_ctx(identity);
+            let refused = build(&mut refused_ctx, AckHost::Inbox, "1x\u{1b}[2J", true);
+            vec![
+                one_state("candidates over the inbox", over_inbox, inbox),
+                one_state("typed entry over the detail view", over_detail, detail),
+                one_state("refused entry with its error row", refused_ctx, refused),
+            ]
+        }),
+
         "SettleReasonScreen" => Some(|identity| {
             use super::ack_confirm::AckHost;
             use super::owner_settle::Outcome;
@@ -2486,6 +2551,7 @@ fn fixture_for(type_name: &str) -> Option<Fixture> {
 
         "SettleConfirmScreen" => Some(|identity| {
             use super::ack_confirm::AckHost;
+            use super::owner_settle::MoveTarget;
             use super::owner_settle::{Outcome, SettleChoice, SettlePlan};
             use super::settle_popup::SettleConfirmScreen;
             let plan = || SettlePlan {
@@ -2493,6 +2559,20 @@ fn fixture_for(type_name: &str) -> Option<Fixture> {
                 choice: SettleChoice {
                     outcome: Outcome::WontDo,
                     reason: identity.to_string(),
+                    move_to: None,
+                },
+            };
+            // A Move whose target name (and number) carry the identity, known or not.
+            let move_plan = |known: bool| SettlePlan {
+                draft: hostile_settle_draft(identity),
+                choice: SettleChoice {
+                    outcome: Outcome::Move,
+                    reason: identity.to_string(),
+                    move_to: Some(MoveTarget {
+                        number: identity.to_string(),
+                        name: known.then(|| identity.to_string()),
+                        known,
+                    }),
                 },
             };
             let mut over_inbox = probe_ctx(identity);
@@ -2504,6 +2584,19 @@ fn fixture_for(type_name: &str) -> Option<Fixture> {
                     "popup over the inbox",
                     over_inbox,
                     Box::new(SettleConfirmScreen::new(AckHost::Inbox, plan())),
+                ),
+                one_state(
+                    "move popup with a named phase",
+                    probe_ctx(identity),
+                    Box::new(SettleConfirmScreen::new(AckHost::Inbox, move_plan(true))),
+                ),
+                one_state(
+                    "move popup with the unknown-phase warning",
+                    probe_ctx(identity),
+                    Box::new(SettleConfirmScreen::new(
+                        AckHost::Detail(identity.to_string()),
+                        move_plan(false),
+                    )),
                 ),
                 one_state(
                     "popup over the detail view",

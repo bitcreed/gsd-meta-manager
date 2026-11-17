@@ -24845,6 +24845,7 @@ mod tests {
             choice: SettleChoice {
                 outcome: Outcome::WontDo,
                 reason: "it\u{2019}s \u{201c}quoted\u{201d} --ws alpha".to_owned(),
+                move_to: None,
             },
         };
         let prompt = plan.prompt();

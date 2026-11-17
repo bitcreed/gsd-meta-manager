@@ -20,12 +20,13 @@
 
 use crate::session_detector::ClaudeSession;
 use crate::state_reader::owner_items::{
-    command_phase, is_command_token, is_workstream_name, Kind, Lane, OwnerDigest, OwnerGroup,
-    OwnerItem, RunCommand, RunVerb, Scope,
+    command_phase, is_command_token, is_workstream_name, scope_state, Kind, Lane, OwnerDigest,
+    OwnerGroup, OwnerItem, RunCommand, RunVerb, Scope,
 };
+use crate::state_reader::phase_num::same_phase;
 use crate::state_reader::ProjectState;
 use crate::ui::screens::{AppContext, ScreenAction};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use super::ack_confirm::AckHost;
 use super::owner_actions::active_workstream_is_set;
@@ -50,6 +51,8 @@ pub enum Outcome {
     WontDo,
     /// The owner defers these checks for good.
     DeferPermanently,
+    /// The owner moves these checks to another phase; GSD files a todo for it.
+    Move,
 }
 
 impl Outcome {
@@ -58,6 +61,7 @@ impl Outcome {
         match self {
             Outcome::WontDo => "Won't do",
             Outcome::DeferPermanently => "Deferred permanently",
+            Outcome::Move => "Move to phase",
         }
     }
 
@@ -66,6 +70,7 @@ impl Outcome {
         match self {
             Outcome::WontDo => "won't do",
             Outcome::DeferPermanently => "deferred permanently",
+            Outcome::Move => "moved",
         }
     }
 }
@@ -119,11 +124,26 @@ impl SettleTarget {
     }
 }
 
+/// The phase a Move goes to (D-01, D-06). Its name already went through [`clean`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MoveTarget {
+    /// The phase token, as the roadmap spells it (a typed unknown phase: as typed).
+    /// Always passes `is_command_token`.
+    pub number: String,
+    /// The roadmap name, or the backlog slug as words.
+    pub name: Option<String>,
+    /// Whether the roadmap or the backlog lists the phase (D-06: an unknown one is
+    /// accepted and warned about in the popup).
+    pub known: bool,
+}
+
 /// The owner's choice. The reason is already cleaned.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SettleChoice {
     pub outcome: Outcome,
     pub reason: String,
+    /// The phase a Move goes to; `Some` exactly for [`Outcome::Move`].
+    pub move_to: Option<MoveTarget>,
 }
 
 /// A resolved target with the project facts a launch needs.
@@ -383,9 +403,53 @@ pub fn instruction(target: &SettleTarget, choice: &SettleChoice) -> String {
             format!("The user defers {r} permanently."),
             "deferred permanently.",
         ),
+        Outcome::Move => return move_instruction(target, choice, &r, (&each, it, upper_it)),
     };
     format!(
         "{lead} Resume the UAT session of phase {n} without restarting it and record {each} as result: skipped, reason: {DEFERRED_PREFIX} {outcome}{reason} {upper_it} must not block phase {n} or be asked again. Keep {it} in the UAT file and do not promote {it} to the 999.x backlog."
+    )
+}
+
+/// The Move template (D-07, D-08, D-09; RESEARCH Pitfalls 5 and 12): the deferral
+/// record gsd-core counts as non-blocking, then ONE todo requested the way
+/// `/gsd-capture` files it, titled with phase M's number and roadmap name so
+/// gsd-core's keyword match finds it when M runs. The app runs no todo command.
+fn move_instruction(
+    target: &SettleTarget,
+    choice: &SettleChoice,
+    r: &str,
+    (each, it, upper_it): (&str, &str, &str),
+) -> String {
+    let n = target.phase();
+    let to = choice
+        .move_to
+        .as_ref()
+        .expect("a Move choice carries its target");
+    let m = &to.number;
+    let (quoted, bare) = match &to.name {
+        Some(name) => (format!(" \u{201c}{name}\u{201d}"), format!(" {name}")),
+        None => (String::new(), String::new()),
+    };
+    let from = match (&target.scope, target.checks.first()) {
+        (SettleScope::Check(_), Some(check)) => format!("{} {}", check.noun, check.number),
+        _ => {
+            let k = target.checks.len();
+            format!("{k} {}", if k == 1 { "check" } else { "checks" })
+        }
+    };
+    let reason = if choice.reason.is_empty() {
+        String::new()
+    } else {
+        let stop = if choice.reason.ends_with(['.', '!', '?']) {
+            ""
+        } else {
+            "."
+        };
+        format!(" {}{stop}", choice.reason)
+    };
+    let comes = if it == "it" { "it comes" } else { "they come" };
+    format!(
+        "The user moves {r} to phase {m}{quoted}. Resume the UAT session of phase {n} without restarting it and record {each} as result: skipped, reason: {DEFERRED_PREFIX} moved to phase {m}.{reason} {upper_it} must not block phase {n}. Then add one todo as /gsd-capture does, titled \u{201c}Phase {m}{bare}: rerun {from} from phase {n}\u{201d}, so {comes} up again when phase {m} runs. Do not promote {it} to the 999.x backlog."
     )
 }
 
@@ -447,6 +511,100 @@ pub(crate) fn resolve_draft(
     })
 }
 
+/// The backlog phases (`999.N`) of the project, or of workstream `workstream`:
+/// `(dir_name, number, slug)` from one `read_dir` of its `phases/` directory
+/// through the Backlog tab's own rule. **Called only from key handlers** (the
+/// chooser's `m` and the Yes recheck), never from a render path (OWN-12).
+pub(crate) fn backlog_for(cwd: &Path, workstream: Option<&str>) -> Vec<(String, String, String)> {
+    let planning = cwd.join(".planning");
+    match workstream {
+        Some(name) => {
+            crate::state_reader::backlog::backlog_dirs(&planning.join("workstreams").join(name))
+        }
+        None => crate::state_reader::backlog::backlog_dirs(&planning),
+    }
+}
+
+/// The phases a Move can go to (D-06) and the default pick: the scope's roadmap
+/// phases that are neither completed nor the `source` phase, in roadmap order, then
+/// its backlog phases by number. The pick is the first roadmap candidate after the
+/// source phase in roadmap order, else the first. Every number passes
+/// `is_command_token`; names go through [`clean`].
+pub(crate) fn move_candidates(
+    state: &ProjectState,
+    workstream: Option<&str>,
+    source: &str,
+    backlog: &[(String, String, String)],
+) -> (Vec<MoveTarget>, usize) {
+    let scoped = scope_state(state, workstream);
+    let source_at = scoped
+        .phases
+        .iter()
+        .position(|phase| same_phase(&phase.number, source));
+    let named = |name: &str| Some(clean(name, NAME_MAX_CHARS)).filter(|name| !name.is_empty());
+    let mut out: Vec<MoveTarget> = Vec::new();
+    let mut pick: Option<usize> = None;
+    for (at, phase) in scoped.phases.iter().enumerate() {
+        if phase.completed || same_phase(&phase.number, source) || !is_command_token(&phase.number)
+        {
+            continue;
+        }
+        if pick.is_none() && source_at.is_some_and(|source_at| at > source_at) {
+            pick = Some(out.len());
+        }
+        out.push(MoveTarget {
+            number: phase.number.clone(),
+            name: named(&phase.name),
+            known: true,
+        });
+    }
+    let order = |number: &str| -> Vec<u64> {
+        number
+            .split('.')
+            .map(|part| part.parse().unwrap_or(u64::MAX))
+            .collect()
+    };
+    let mut parked: Vec<&(String, String, String)> = backlog
+        .iter()
+        .filter(|(_, number, _)| is_command_token(number) && !same_phase(number, source))
+        .collect();
+    parked.sort_by_key(|(_, number, _)| order(number));
+    for (_, number, slug) in parked {
+        out.push(MoveTarget {
+            number: number.clone(),
+            name: named(&slug.replace('-', " ")),
+            known: true,
+        });
+    }
+    (out, pick.unwrap_or(0))
+}
+
+/// The target a typed phase number names (D-06): a candidate when one has that
+/// number (pad-insensitively), else an unknown phase the popup warns about. A
+/// token that is not a phase number and the source phase itself are refused.
+pub(crate) fn move_target(
+    candidates: &[MoveTarget],
+    typed: &str,
+    source: &str,
+) -> Result<MoveTarget, String> {
+    let typed = typed.trim();
+    if !is_command_token(typed) {
+        return Err(format!("Not a phase number: {}", clean(typed, 16)));
+    }
+    if same_phase(typed, source) {
+        return Err("That is the source phase; pick another".to_owned());
+    }
+    Ok(candidates
+        .iter()
+        .find(|candidate| same_phase(&candidate.number, typed))
+        .cloned()
+        .unwrap_or_else(|| MoveTarget {
+            number: typed.to_owned(),
+            name: None,
+            known: false,
+        }))
+}
+
 /// `x` on the row `key` (and one check `item`, if any) of `alias`: the chooser over
 /// `host`, or the status line that says why not. **Called from key arms only**: it
 /// reads one pointer file and starts nothing.
@@ -488,6 +646,21 @@ pub(crate) fn settle_recheck(ctx: &AppContext, plan: &SettlePlan) -> Result<Sett
     if fresh.prompt() != plan.prompt() || fresh.draft.cwd != plan.draft.cwd {
         return Err("The row changed since the popup opened; nothing launched".to_owned());
     }
+    // A known Move target must still be listed under the same name (T-39-13).
+    if let Some(to) = plan.choice.move_to.as_ref().filter(|to| to.known) {
+        let workstream = target.command.workstream.as_deref();
+        let listed = ctx.project_states.get(&target.alias).is_some_and(|state| {
+            let backlog = backlog_for(&fresh.draft.cwd, workstream);
+            let (candidates, _) = move_candidates(state, workstream, target.phase(), &backlog);
+            candidates.iter().any(|c| c.known && c == to)
+        });
+        if !listed {
+            return Err(format!(
+                "Phase {} changed since the popup opened; nothing launched",
+                to.number
+            ));
+        }
+    }
     if fresh.draft.live_session.is_some() != plan.draft.live_session.is_some() {
         return Err(format!(
             "A session started or ended in {} since the popup opened; nothing launched",
@@ -509,11 +682,13 @@ pub(crate) fn launched_status(plan: &SettlePlan) -> String {
             format!("{} ({n} {noun})", target.short())
         }
     };
+    let phrase = match &plan.choice.move_to {
+        Some(to) => format!("{} to phase {}", plan.choice.outcome.phrase(), to.number),
+        None => plan.choice.outcome.phrase().to_owned(),
+    };
     format!(
-        "Launched {} in {}: {} for {what}",
-        target.command,
-        target.alias,
-        plan.choice.outcome.phrase()
+        "Launched {} in {}: {phrase} for {what}",
+        target.command, target.alias
     )
 }
 
@@ -693,6 +868,7 @@ mod tests {
         SettleChoice {
             outcome,
             reason: clean(reason, REASON_MAX_CHARS),
+            move_to: None,
         }
     }
 
@@ -1180,5 +1356,286 @@ mod tests {
         assert!(p.contains("will not do. no device? They must not"), "{p}");
         // Every phase row of the fixture is a real row.
         assert!(!stop_rows(&ctx).is_empty());
+    }
+
+    // ── Move (39-02, D-01, D-06, D-09) ──────────────────────────────────────
+
+    fn numbers(candidates: &[MoveTarget]) -> Vec<&str> {
+        candidates.iter().map(|c| c.number.as_str()).collect()
+    }
+
+    fn names(candidates: &[MoveTarget]) -> Vec<&str> {
+        candidates
+            .iter()
+            .map(|c| c.name.as_deref().unwrap_or_default())
+            .collect()
+    }
+
+    #[test]
+    fn move_candidates_list_open_phases_after_the_source() {
+        let (_d, root) = temp_fixture("heuristic-labels");
+        let ctx = fixture_ctx(&root, ALIAS);
+        let state = &ctx.project_states[ALIAS];
+        let (list, pick) = move_candidates(state, None, "01", &[]);
+        assert_eq!(
+            (numbers(&list), names(&list), pick),
+            (vec!["02", "03"], vec!["Sync", "Plans"], 0)
+        );
+        assert!(list.iter().all(|c| c.known));
+        // From 02 the first phase after it is 03; 01 is listed before it.
+        let (list, pick) = move_candidates(state, None, "02", &[]);
+        assert_eq!((numbers(&list), pick), (vec!["01", "03"], 1));
+        // Pad-insensitive: `2` is the source phase `02`.
+        let (list, _) = move_candidates(state, None, "2", &[]);
+        assert_eq!(numbers(&list), ["01", "03"]);
+        // One phase: nothing else to move to.
+        let (_d2, root2) = temp_fixture("uat-pending");
+        let ctx2 = fixture_ctx(&root2, ALIAS);
+        let (none, pick) = move_candidates(&ctx2.project_states[ALIAS], None, "01", &[]);
+        assert!(none.is_empty());
+        assert_eq!(pick, 0);
+    }
+
+    #[test]
+    fn move_candidates_skip_completed_source_and_bad_tokens() {
+        let (_d, root) = temp_fixture("heuristic-labels");
+        let mut ctx = fixture_ctx(&root, ALIAS);
+        ctx.project_states
+            .get_mut(ALIAS)
+            .unwrap()
+            .phases
+            .iter_mut()
+            .find(|p| p.number == "02")
+            .unwrap()
+            .completed = true;
+        let state = &ctx.project_states[ALIAS];
+        let (list, _) = move_candidates(state, None, "01", &[]);
+        assert_eq!(
+            numbers(&list),
+            ["03"],
+            "a completed phase is not a candidate"
+        );
+        // A phase whose number is not a command token is dropped, so is a bad
+        // backlog number.
+        let mut odd = ctx.project_states[ALIAS].clone();
+        odd.phases[2].number = "3;rm".to_owned();
+        let backlog = vec![("999.x-bad".to_owned(), "999.x".to_owned(), "bad".to_owned())];
+        let (list, _) = move_candidates(&odd, None, "01", &backlog);
+        assert!(list.is_empty(), "{list:?}");
+    }
+
+    #[test]
+    fn move_candidates_append_the_backlog() {
+        let (_d, root) = temp_fixture("heuristic-labels");
+        let ctx = fixture_ctx(&root, ALIAS);
+        let backlog = vec![
+            (
+                "999.2-later-idea".to_owned(),
+                "999.2".to_owned(),
+                "later-idea".to_owned(),
+            ),
+            ("999.1-x".to_owned(), "999.1".to_owned(), "x".to_owned()),
+            (
+                "999.10-tail".to_owned(),
+                "999.10".to_owned(),
+                "tail".to_owned(),
+            ),
+        ];
+        let (list, pick) = move_candidates(&ctx.project_states[ALIAS], None, "01", &backlog);
+        assert_eq!(numbers(&list), ["02", "03", "999.1", "999.2", "999.10"]);
+        assert_eq!(names(&list)[2..], ["x", "later idea", "tail"]);
+        assert_eq!(pick, 0);
+        // backlog_for reads the real directory names through the Backlog rule.
+        std::fs::create_dir_all(root.join(".planning/phases/999.3-parked-thing")).unwrap();
+        std::fs::create_dir_all(root.join(".planning/phases/999.x-nope-not-a-number-ok")).unwrap();
+        let listed = backlog_for(&root, None);
+        assert!(listed
+            .iter()
+            .any(|(d, n, s)| d == "999.3-parked-thing" && n == "999.3" && s == "parked-thing"));
+        assert!(backlog_for(&root, Some("alpha")).is_empty());
+    }
+
+    #[test]
+    fn move_candidates_in_a_workstream_list_its_roadmap_only() {
+        let (_d, root) = temp_fixture("workstreams");
+        let ctx = fixture_ctx(&root, ALIAS);
+        let state = &ctx.project_states[ALIAS];
+        let (list, _) = move_candidates(state, Some("alpha"), "99", &[]);
+        assert_eq!(numbers(&list), ["03"]);
+        let (root_list, _) = move_candidates(state, None, "99", &[]);
+        assert_eq!(numbers(&root_list), ["1"]);
+    }
+
+    #[test]
+    fn move_target_resolves_typed_phases() {
+        let (_d, root) = temp_fixture("heuristic-labels");
+        let ctx = fixture_ctx(&root, ALIAS);
+        let (list, _) = move_candidates(&ctx.project_states[ALIAS], None, "01", &[]);
+        let known = move_target(&list, "2", "01").unwrap();
+        assert_eq!(
+            known,
+            MoveTarget {
+                number: "02".to_owned(),
+                name: Some("Sync".to_owned()),
+                known: true
+            }
+        );
+        let unknown = move_target(&list, "7", "01").unwrap();
+        assert_eq!(
+            unknown,
+            MoveTarget {
+                number: "7".to_owned(),
+                name: None,
+                known: false
+            }
+        );
+        assert_eq!(
+            move_target(&list, "1", "01").unwrap_err(),
+            "That is the source phase; pick another"
+        );
+        assert_eq!(
+            move_target(&list, "1;rm", "01").unwrap_err(),
+            "Not a phase number: 1;rm"
+        );
+        assert_eq!(
+            move_target(&list, "\u{ff11}", "01").unwrap_err(),
+            "Not a phase number: \u{ff11}"
+        );
+        assert_eq!(
+            move_target(&list, "", "01").unwrap_err(),
+            "Not a phase number: "
+        );
+        // A decimal phase and a lettered one are tokens.
+        assert!(move_target(&list, "7.1", "01").is_ok());
+        assert!(move_target(&list, "3A", "01").is_ok());
+        assert!(move_target(&list, "-1", "01").is_err());
+    }
+
+    fn move_choice(reason: &str, to: MoveTarget) -> SettleChoice {
+        SettleChoice {
+            outcome: Outcome::Move,
+            reason: clean(reason, REASON_MAX_CHARS),
+            move_to: Some(to),
+        }
+    }
+
+    fn sync() -> MoveTarget {
+        MoveTarget {
+            number: "02".to_owned(),
+            name: Some("Sync".to_owned()),
+            known: true,
+        }
+    }
+
+    #[test]
+    fn move_prompts_for_phase_and_check_targets() {
+        let (_d, root) = temp_fixture("heuristic-labels");
+        let ctx = fixture_ctx(&root, ALIAS);
+        let key = group_key(&ctx, Lane::Test, None);
+        let phase = target(&ctx, &key, None, false).unwrap();
+        assert_eq!(phase.checks.len(), 7);
+        assert_eq!(
+            prompt(&phase, &move_choice("", sync())),
+            "/gsd-verify-work 01 The user moves tests 1, 2, 3, 4, 5, 6, 7 in 01-UAT.md to phase 02 \u{201c}Sync\u{201d}. Resume the UAT session of phase 01 without restarting it and record each of them as result: skipped, reason: Deferred follow-up: moved to phase 02. They must not block phase 01. Then add one todo as /gsd-capture does, titled \u{201c}Phase 02 Sync: rerun 7 checks from phase 01\u{201d}, so they come up again when phase 02 runs. Do not promote them to the 999.x backlog."
+        );
+        let id = ctx.owner_digest(ALIAS).unwrap().groups[0].items[3]
+            .id
+            .clone();
+        let one = target(&ctx, &key, Some(&id), false).unwrap();
+        let unknown = MoveTarget {
+            number: "7".to_owned(),
+            name: None,
+            known: false,
+        };
+        assert_eq!(
+            prompt(&one, &move_choice("after the redesign", unknown)),
+            "/gsd-verify-work 01 The user moves test 4 (\u{201c}Looks OK on a phone\u{201d}) in 01-UAT.md to phase 7. Resume the UAT session of phase 01 without restarting it and record test 4 as result: skipped, reason: Deferred follow-up: moved to phase 7. after the redesign. It must not block phase 01. Then add one todo as /gsd-capture does, titled \u{201c}Phase 7: rerun test 4 from phase 01\u{201d}, so it comes up again when phase 7 runs. Do not promote it to the 999.x backlog."
+        );
+        // A backlog phase is named by its slug words, and never promoted.
+        let parked = MoveTarget {
+            number: "999.1".to_owned(),
+            name: Some("later idea".to_owned()),
+            known: true,
+        };
+        let text = prompt(&one, &move_choice("", parked));
+        assert!(
+            text.contains("to phase 999.1 \u{201c}later idea\u{201d}."),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                "titled \u{201c}Phase 999.1 later idea: rerun test 4 from phase 01\u{201d}"
+            ),
+            "{text}"
+        );
+        // The app runs no todo command: the instruction only asks.
+        assert!(!text.contains("gsd-tools"), "{text}");
+    }
+
+    #[test]
+    fn move_prompts_carry_the_workstream_once() {
+        let (_d, root) = temp_fixture("workstreams");
+        let ctx = fixture_ctx(&root, ALIAS);
+        let key = group_key(&ctx, Lane::Test, Some("alpha"));
+        let phase = target(&ctx, &key, None, false).unwrap();
+        let hostile = MoveTarget {
+            number: "9".to_owned(),
+            name: Some(clean("it's a \"name\" --ws beta \\ x", NAME_MAX_CHARS)),
+            known: true,
+        };
+        for to in [sync(), hostile] {
+            let text = prompt(&phase, &move_choice("r --ws beta", to));
+            assert!(
+                text.starts_with("/gsd-verify-work 03 --ws alpha The user moves "),
+                "{text}"
+            );
+            assert_eq!(text.matches("--ws").count(), 1, "{text}");
+            assert!(!text.contains(['\'', '"', '\\']), "{text}");
+            assert_eq!(shown(&text), text);
+        }
+    }
+
+    #[test]
+    fn move_recheck_refuses_a_renamed_phase() {
+        take_settle_launches();
+        let (_d, root) = temp_fixture("heuristic-labels");
+        let mut ctx = fixture_ctx(&root, ALIAS);
+        let key = group_key(&ctx, Lane::Test, None);
+        let draft = resolve_draft(&ctx, ALIAS, &key, None).unwrap();
+        let plan = SettlePlan {
+            draft,
+            choice: move_choice("", sync()),
+        };
+        // Unchanged: the recheck passes and the status names the phase.
+        let fresh = settle_recheck(&ctx, &plan).unwrap();
+        assert_eq!(
+            launched_status(&fresh),
+            "Launched /gsd-verify-work 01 in alder-api: moved to phase 02 for phase 01 (7 checks)"
+        );
+        // Renamed between the popup and Yes.
+        ctx.project_states
+            .get_mut(ALIAS)
+            .unwrap()
+            .phases
+            .iter_mut()
+            .find(|p| p.number == "02")
+            .unwrap()
+            .name = "Search".to_owned();
+        assert_eq!(
+            settle_recheck(&ctx, &plan).unwrap_err(),
+            "Phase 02 changed since the popup opened; nothing launched"
+        );
+        // An unknown phase is not rechecked against the roadmap.
+        let unknown = MoveTarget {
+            number: "7".to_owned(),
+            name: None,
+            known: false,
+        };
+        let plan = SettlePlan {
+            choice: move_choice("", unknown),
+            ..plan
+        };
+        assert!(settle_recheck(&ctx, &plan).is_ok());
+        assert!(take_settle_launches().is_empty());
     }
 }

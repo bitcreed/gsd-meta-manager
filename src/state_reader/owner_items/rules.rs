@@ -108,7 +108,10 @@ pub(crate) fn is_workstream_name(name: &str) -> bool {
 
 /// The project state a file's phase is looked up in: its workstream's, else the
 /// project's own.
-fn scope_state<'a>(state: &'a ProjectState, workstream: Option<&str>) -> &'a ProjectState {
+pub(crate) fn scope_state<'a>(
+    state: &'a ProjectState,
+    workstream: Option<&str>,
+) -> &'a ProjectState {
     workstream
         .and_then(|name| state.workstreams.iter().find(|ws| ws.name == name))
         .map_or(state, |ws| &ws.state)
