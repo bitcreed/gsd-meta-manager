@@ -173,8 +173,24 @@ pub struct OwnerBlockState {
     /// `OwnerItem::id` (identity, never an index). `None` while the cursor rests
     /// on the row itself (D-04).
     pub item_cursor: Option<String>,
+    /// The `file PATH` line the sub-cursor rests on (quick 261118-u4e, I-1): the
+    /// path as the group carries it. Never set together with `item_cursor`;
+    /// written only through [`SubStop::store`] ([`set_sub_stop`](Self::set_sub_stop)).
+    pub file_cursor: Option<String>,
     /// The cursor's last index, so a vanished stop clamps to its neighbor.
     pub cursor_index: usize,
+}
+
+impl OwnerBlockState {
+    /// The sub-stop the sub-cursor rests on, if any.
+    pub(crate) fn sub_stop(&self) -> Option<SubStop> {
+        SubStop::of(&self.item_cursor, &self.file_cursor)
+    }
+
+    /// Move the sub-cursor onto `to` (`None`: back onto the row).
+    pub(crate) fn set_sub_stop(&mut self, to: Option<SubStop>) {
+        SubStop::store(to, &mut self.item_cursor, &mut self.file_cursor);
+    }
 }
 
 /// The cursor as the renderer needs it: the stop index and, on the fold line, the
@@ -210,9 +226,10 @@ pub(crate) struct BlockModel {
     /// The fold line and its marks picked for two cells less, drawn when the
     /// cursor is on it: the `> ` gutter then fits without cutting the tail (IN-02).
     pub cursor_fold_line: Option<(Line<'static>, Vec<(Fold, usize)>)>,
-    /// Row key, item id and the `body` index of the first line of every drawn
-    /// item, in drawn order (the item sub-cursor's stops, D-04).
-    pub item_lines: Vec<(GroupKey, String, usize)>,
+    /// Row key, sub-stop and the `body` index of the first line of every drawn
+    /// check and `file PATH` line, in drawn order (the sub-cursor's stops, D-04;
+    /// quick 261118-u4e).
+    pub item_lines: Vec<(GroupKey, SubStop, usize)>,
 }
 
 fn dim() -> Style {
@@ -1189,10 +1206,10 @@ fn item_lines(
     shift: usize,
     labeled: Option<Lane>,
     lines: &mut Vec<Line<'static>>,
-    ids: &mut Vec<(usize, String)>,
+    ids: &mut Vec<(usize, SubStop)>,
 ) {
     for item in items.iter().take(MAX_ITEMS) {
-        ids.push((lines.len(), item.id.clone()));
+        ids.push((lines.len(), SubStop::Item(item.id.clone())));
         let text = format!("{}{}", blanks(4 + shift), item_text(item));
         let labels: Vec<&str> = labeled
             .map(|lane| labels_of(item, lane))
@@ -1237,50 +1254,63 @@ pub(crate) fn expansion_lines(src: &RowSrc, width: usize, shift: usize) -> Vec<L
     expansion_lines_mapped(src, width, shift).0
 }
 
-/// [`expansion_lines`] plus the line index at which each drawn item starts (the
-/// item sub-cursor's stops; the `... N more` line is never one).
+/// [`expansion_lines`] plus the line index of every sub-stop it draws: each item
+/// (the `... N more` line is never one) and each `file PATH` line, in drawn order
+/// (quick 261118-u4e, I-1). The stops equal [`row_sub_stops`].
 pub(crate) fn expansion_lines_mapped(
     src: &RowSrc,
     width: usize,
     shift: usize,
-) -> (Vec<Line<'static>>, Vec<(usize, String)>) {
+) -> (Vec<Line<'static>>, Vec<(usize, SubStop)>) {
     let mut lines: Vec<Line<'static>> = Vec::new();
-    let mut ids: Vec<(usize, String)> = Vec::new();
-    item_lines(src.items(), width, shift, None, &mut lines, &mut ids);
-    for file in src.files.iter().filter(|f| !f.is_empty()) {
-        lines.push(dim_line(4 + shift, &format!("file {}", shown(file)), width));
-    }
-    (lines, ids)
+    let mut stops: Vec<(usize, SubStop)> = Vec::new();
+    item_lines(src.items(), width, shift, None, &mut lines, &mut stops);
+    file_lines(src, width, shift, &mut lines, &mut stops);
+    (lines, stops)
 }
 
-/// The lines under an expanded inbox row plus the line index at which each drawn
-/// item starts: a merged row (D-08) lists each file's items under its own
-/// `file PATH` sub-heading (each part's items in part order); every other row is
-/// [`expansion_lines_mapped`] with labels.
+/// One `file PATH` line per non-empty file of `src`, each a [`SubStop::File`].
+fn file_lines(
+    src: &RowSrc,
+    width: usize,
+    shift: usize,
+    lines: &mut Vec<Line<'static>>,
+    stops: &mut Vec<(usize, SubStop)>,
+) {
+    for file in src.files.iter().filter(|f| !f.is_empty()) {
+        stops.push((lines.len(), SubStop::File(file.clone())));
+        lines.push(dim_line(4 + shift, &format!("file {}", shown(file)), width));
+    }
+}
+
+/// The lines under an expanded inbox row plus the line index of every sub-stop
+/// (item or `file PATH` line, in drawn order): a merged row (D-08) lists each
+/// file's items under its own `file PATH` sub-heading (each part's items in part
+/// order); every other row is [`expansion_lines_mapped`] with labels. The stops
+/// equal [`inbox_sub_stops`].
 pub(crate) fn inbox_expansion_lines_mapped(
     src: &RowSrc,
     width: usize,
     shift: usize,
-) -> (Vec<Line<'static>>, Vec<(usize, String)>) {
+) -> (Vec<Line<'static>>, Vec<(usize, SubStop)>) {
     let lane = Some(src.group.lane);
     let mut lines: Vec<Line<'static>> = Vec::new();
-    let mut ids: Vec<(usize, String)> = Vec::new();
+    let mut stops: Vec<(usize, SubStop)> = Vec::new();
     if src.parts.len() < 2 {
-        item_lines(src.items(), width, shift, lane, &mut lines, &mut ids);
-        for file in src.files.iter().filter(|f| !f.is_empty()) {
-            lines.push(dim_line(4 + shift, &format!("file {}", shown(file)), width));
-        }
-        return (lines, ids);
+        item_lines(src.items(), width, shift, lane, &mut lines, &mut stops);
+        file_lines(src, width, shift, &mut lines, &mut stops);
+        return (lines, stops);
     }
     for part in &src.parts {
+        stops.push((lines.len(), SubStop::File(part.file.clone())));
         lines.push(dim_line(
             4 + shift,
             &format!("file {}", shown(&part.file)),
             width,
         ));
-        item_lines(&part.items, width, shift + 2, lane, &mut lines, &mut ids);
+        item_lines(&part.items, width, shift + 2, lane, &mut lines, &mut stops);
     }
-    (lines, ids)
+    (lines, stops)
 }
 
 /// The ids of the first [`MAX_ITEMS`] items of `src`: exactly the ids
@@ -1306,41 +1336,182 @@ pub(crate) fn inbox_item_ids(src: &RowSrc) -> Vec<String> {
         .collect()
 }
 
-/// The line index of the item `id` in an `*_expansion_lines_mapped` map.
-pub(crate) fn item_line(map: &[(usize, String)], id: &str) -> Option<usize> {
-    map.iter().find(|(_, i)| i == id).map(|(line, _)| *line)
+/// The group and item behind the drawn check `id` of the row `src` (quick
+/// 261118-u4e): the candidate groups in order are the merged row's `parts`, the
+/// row's own group, then the digest's groups of the same lane, scope, workstream
+/// and phase (a BLOCKED aggregate's siblings); the first holding an item with
+/// that id wins. `None` when a refresh made the id vanish.
+pub(crate) fn item_source(
+    digest: Option<&OwnerDigest>,
+    src: &RowSrc,
+    id: &str,
+) -> Option<(OwnerGroup, OwnerItem)> {
+    candidate_groups(digest, src).find_map(|group| {
+        let item = group.items.iter().find(|item| item.id == id)?;
+        Some((group.clone(), item.clone()))
+    })
 }
 
-/// One step of the item walk inside an expanded row.
+/// The groups that can hold what row `src` draws, in lookup order: a merged
+/// row's `parts`, the row's own group, then the digest's groups of the same
+/// lane, scope, workstream and phase (a BLOCKED aggregate's siblings).
+fn candidate_groups<'a>(
+    digest: Option<&'a OwnerDigest>,
+    src: &'a RowSrc,
+) -> impl Iterator<Item = &'a OwnerGroup> {
+    let head = &src.group;
+    let siblings = digest
+        .into_iter()
+        .flat_map(|d| d.groups.iter())
+        .filter(move |g| {
+            g.lane == head.lane
+                && g.scope == head.scope
+                && g.workstream == head.workstream
+                && g.phase == head.phase
+        });
+    src.parts
+        .iter()
+        .chain(std::iter::once(head))
+        .chain(siblings)
+}
+
+/// The line index of `stop` in an `*_expansion_lines_mapped` map.
+pub(crate) fn sub_line(map: &[(usize, SubStop)], stop: &SubStop) -> Option<usize> {
+    map.iter().find(|(_, s)| s == stop).map(|(line, _)| *line)
+}
+
+/// A sub-cursor stop inside an expanded row (quick 261118-u4e, I-1): a drawn
+/// check, or a `file PATH` line. Hosts keep one as two fields (`item_cursor`,
+/// `file_cursor`, never both set); [`SubStop::of`] and [`SubStop::store`] are the
+/// only code that combines the two.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ItemStep {
-    /// The sub-cursor lands on this item.
+pub(crate) enum SubStop {
+    /// An `OwnerItem::id`.
     Item(String),
-    /// Backward from the first item: back onto the row itself.
+    /// A project-relative file path as the group carries it.
+    File(String),
+}
+
+impl SubStop {
+    /// The stop the two stored fields name; the item wins if a bug set both.
+    pub(crate) fn of(item: &Option<String>, file: &Option<String>) -> Option<SubStop> {
+        item.clone()
+            .map(SubStop::Item)
+            .or_else(|| file.clone().map(SubStop::File))
+    }
+
+    /// Store `to` in the two fields: it sets one and clears the other.
+    pub(crate) fn store(to: Option<SubStop>, item: &mut Option<String>, file: &mut Option<String>) {
+        *item = None;
+        *file = None;
+        match to {
+            Some(SubStop::Item(id)) => *item = Some(id),
+            Some(SubStop::File(path)) => *file = Some(path),
+            None => {}
+        }
+    }
+}
+
+/// The sub-stops of an expanded Owner block row, in drawn order: the first
+/// [`MAX_ITEMS`] checks, then one file line per non-empty file. Exactly the stops
+/// [`expansion_lines_mapped`] draws.
+pub(crate) fn row_sub_stops(src: &RowSrc) -> Vec<SubStop> {
+    row_item_ids(src)
+        .into_iter()
+        .map(SubStop::Item)
+        .chain(
+            src.files
+                .iter()
+                .filter(|f| !f.is_empty())
+                .cloned()
+                .map(SubStop::File),
+        )
+        .collect()
+}
+
+/// The `body` index of `stop` under the row `key` in `model`, when the model
+/// draws it.
+pub(crate) fn sub_stop_line(model: &BlockModel, key: &GroupKey, stop: &SubStop) -> Option<usize> {
+    model
+        .item_lines
+        .iter()
+        .find(|(k, s, _)| k == key && s == stop)
+        .map(|(_, _, line)| *line)
+}
+
+/// The sub-stops of an expanded inbox row, in drawn order: a row with fewer than
+/// two parts lists its checks, then one file line per non-empty file; a merged
+/// row lists, per part, its file line and then that part's first [`MAX_ITEMS`]
+/// checks. Exactly the stops [`inbox_expansion_lines_mapped`] draws.
+pub(crate) fn inbox_sub_stops(src: &RowSrc) -> Vec<SubStop> {
+    if src.parts.len() < 2 {
+        return inbox_item_ids(src)
+            .into_iter()
+            .map(SubStop::Item)
+            .chain(
+                src.files
+                    .iter()
+                    .filter(|f| !f.is_empty())
+                    .cloned()
+                    .map(SubStop::File),
+            )
+            .collect();
+    }
+    src.parts
+        .iter()
+        .flat_map(|part| {
+            std::iter::once(SubStop::File(part.file.clone())).chain(
+                part.items
+                    .iter()
+                    .take(MAX_ITEMS)
+                    .map(|item| SubStop::Item(item.id.clone())),
+            )
+        })
+        .collect()
+}
+
+/// One step of the sub-stop walk inside an expanded row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SubStep {
+    /// The sub-cursor lands on this stop.
+    Stop(SubStop),
+    /// Backward from the first stop: back onto the row itself.
     Parent,
     /// Past either end: the walk leaves the row for the next or previous one.
     Leave,
 }
 
-/// Where the item sub-cursor goes from `current` (an id, or `None` on the row)
-/// within `ids`; an id not listed behaves as `None`.
-pub(crate) fn item_step(ids: &[String], current: Option<&str>, forward: bool) -> ItemStep {
-    let at = current.and_then(|id| ids.iter().position(|i| i == id));
+/// Where the sub-cursor goes from `current` (`None` on the row) within `stops`;
+/// a stop that is not listed behaves as `None`.
+pub(crate) fn sub_step(stops: &[SubStop], current: Option<&SubStop>, forward: bool) -> SubStep {
+    let at = current.and_then(|stop| stops.iter().position(|s| s == stop));
     match (at, forward) {
-        (None, true) => ids
+        (None, true) => stops
             .first()
-            .map_or(ItemStep::Leave, |id| ItemStep::Item(id.clone())),
-        (None, false) => ItemStep::Leave,
-        (Some(i), true) => ids
+            .map_or(SubStep::Leave, |stop| SubStep::Stop(stop.clone())),
+        (None, false) => SubStep::Leave,
+        (Some(i), true) => stops
             .get(i + 1)
-            .map_or(ItemStep::Leave, |id| ItemStep::Item(id.clone())),
-        (Some(0), false) => ItemStep::Parent,
-        (Some(i), false) => ItemStep::Item(ids[i - 1].clone()),
+            .map_or(SubStep::Leave, |stop| SubStep::Stop(stop.clone())),
+        (Some(0), false) => SubStep::Parent,
+        (Some(i), false) => SubStep::Stop(stops[i - 1].clone()),
     }
 }
 
+/// The group behind the `file PATH` line `path` of the row `src` (quick
+/// 261118-u4e): [`item_source`]'s candidate order, matching the group's file.
+pub(crate) fn file_source(
+    digest: Option<&OwnerDigest>,
+    src: &RowSrc,
+    path: &str,
+) -> Option<OwnerGroup> {
+    candidate_groups(digest, src)
+        .find(|group| group.file == path)
+        .cloned()
+}
+
 /// The source of the row with identity `key` (current, old debt or acknowledged).
-fn row_src_for(digest: &OwnerDigest, key: &GroupKey) -> Option<RowSrc> {
+pub(crate) fn row_src_for(digest: &OwnerDigest, key: &GroupKey) -> Option<RowSrc> {
     current_sources(digest)
         .into_iter()
         .chain(old_debt_sources(digest))
@@ -1392,7 +1563,7 @@ pub(crate) fn block_model(
 
     let mut body: Vec<Line<'static>> = Vec::new();
     let mut stop_lines: Vec<Option<usize>> = Vec::new();
-    let mut item_lines: Vec<(GroupKey, String, usize)> = Vec::new();
+    let mut item_lines: Vec<(GroupKey, SubStop, usize)> = Vec::new();
     let mut push_rows = |srcs: &[RowSrc], cells: &[RowCells], sub_headers: bool, dimmed: bool| {
         let mut last_label: Option<Option<String>> = None;
         for (src, row) in srcs.iter().zip(cells) {
@@ -1412,9 +1583,9 @@ pub(crate) fn block_model(
             body.push(line);
             if view.expanded.contains(&src.key) {
                 let base = body.len();
-                let (extras, ids) = expansion_lines_mapped(src, width, 0);
-                for (line, id) in ids {
-                    item_lines.push((src.key.clone(), id, base + line));
+                let (extras, stops) = expansion_lines_mapped(src, width, 0);
+                for (line, stop) in stops {
+                    item_lines.push((src.key.clone(), stop, base + line));
                 }
                 for mut extra in extras {
                     if dimmed {
@@ -1692,7 +1863,7 @@ pub(crate) fn resolve_cursor(view: &OwnerBlockState, stops: &[Stop]) -> Option<u
 }
 
 fn set_cursor(view: &mut OwnerBlockState, stops: &[Stop], index: usize) {
-    view.item_cursor = None;
+    view.set_sub_stop(None);
     view.cursor_index = index;
     view.cursor = stops.get(index).cloned();
 }
@@ -1745,7 +1916,7 @@ pub(crate) fn resolved_fold(view: &OwnerBlockState, folds: &[Fold]) -> Option<Fo
 pub(crate) fn toggle(view: &mut OwnerBlockState, folds: &[Fold]) -> bool {
     match view.cursor.clone() {
         Some(Stop::Row(key)) => {
-            view.item_cursor = None;
+            view.set_sub_stop(None);
             if !view.expanded.remove(&key) {
                 view.expanded.insert(key);
             }
@@ -1791,7 +1962,7 @@ pub(crate) fn clamp(view: &mut OwnerBlockState, digest: &OwnerDigest) {
     // Closing a fold changes the stops: take them again.
     let sk = skeleton(digest, view);
     view.fold_cursor = resolved_fold(view, &sk.folds).filter(|_| view.fold_cursor.is_some());
-    let item = view.item_cursor.take();
+    let sub = view.sub_stop();
     match resolve_cursor(view, &sk.stops) {
         Some(index) => set_cursor(view, &sk.stops, index),
         None => {
@@ -1799,19 +1970,21 @@ pub(crate) fn clamp(view: &mut OwnerBlockState, digest: &OwnerDigest) {
             view.cursor_index = 0;
         }
     }
-    // The item survives while its row is still the cursor row, still expanded
-    // and still draws it (D-04, T-39-11).
-    view.item_cursor = item.filter(|id| match &view.cursor {
+    // The sub-stop survives while its row is still the cursor row, still
+    // expanded and still draws it (D-04, T-39-11).
+    let keep = sub.filter(|stop| match &view.cursor {
         Some(Stop::Row(key)) if view.expanded.contains(key) => {
-            row_src_for(digest, key).is_some_and(|src| row_item_ids(&src).contains(id))
+            row_src_for(digest, key).is_some_and(|src| row_sub_stops(&src).contains(stop))
         }
         _ => false,
     });
+    view.set_sub_stop(keep);
 }
 
-/// A cursor step that walks the item lines of an expanded row first (D-04):
-/// `forward` is `j`/Down. Leaving the row moves by [`move_cursor`]; a backward
-/// leave onto an expanded row lands on that row's last drawn item.
+/// A cursor step that walks the check lines and `file PATH` lines of an expanded
+/// row first (D-04; quick 261118-u4e, I-1): `forward` is `j`/Down. Leaving the
+/// row moves by [`move_cursor`]; a backward leave onto an expanded row lands on
+/// that row's last sub-stop.
 pub(crate) fn step_with_items(
     view: &mut OwnerBlockState,
     digest: &OwnerDigest,
@@ -1823,28 +1996,28 @@ pub(crate) fn step_with_items(
     if let Some(Stop::Row(key)) = at.and_then(|i| stops.get(i)) {
         if view.expanded.contains(key) {
             if let Some(src) = row_src_for(digest, key) {
-                let ids = row_item_ids(&src);
-                match item_step(&ids, view.item_cursor.as_deref(), forward) {
-                    ItemStep::Item(id) => {
-                        view.item_cursor = Some(id);
+                let walk = row_sub_stops(&src);
+                match sub_step(&walk, view.sub_stop().as_ref(), forward) {
+                    SubStep::Stop(stop) => {
+                        view.set_sub_stop(Some(stop));
                         return Moved::Within;
                     }
-                    ItemStep::Parent => {
-                        view.item_cursor = None;
+                    SubStep::Parent => {
+                        view.set_sub_stop(None);
                         return Moved::Within;
                     }
-                    ItemStep::Leave => {}
+                    SubStep::Leave => {}
                 }
             }
         }
     }
-    view.item_cursor = None;
+    view.set_sub_stop(None);
     let moved = move_cursor(view, stops, mv);
     if !forward && moved == Moved::Within {
         if let Some(Stop::Row(key)) = view.cursor.clone() {
             if view.expanded.contains(&key) {
-                view.item_cursor =
-                    row_src_for(digest, &key).and_then(|src| row_item_ids(&src).pop());
+                let last = row_src_for(digest, &key).and_then(|src| row_sub_stops(&src).pop());
+                view.set_sub_stop(last);
             }
         }
     }
@@ -2836,22 +3009,6 @@ mod tests {
         list.iter().map(|s| (*s).to_owned()).collect()
     }
 
-    #[test]
-    fn item_step_walks_the_drawn_ids() {
-        let ab = ids(&["a", "b"]);
-        let item = |id: &str| ItemStep::Item(id.to_owned());
-        assert_eq!(item_step(&ab, None, true), item("a"));
-        assert_eq!(item_step(&ab, Some("a"), true), item("b"));
-        assert_eq!(item_step(&ab, Some("b"), true), ItemStep::Leave);
-        assert_eq!(item_step(&ab, Some("b"), false), item("a"));
-        assert_eq!(item_step(&ab, Some("a"), false), ItemStep::Parent);
-        assert_eq!(item_step(&ab, None, false), ItemStep::Leave);
-        assert_eq!(item_step(&[], None, true), ItemStep::Leave);
-        // An id that is not listed behaves as the row.
-        assert_eq!(item_step(&ab, Some("zzz"), true), item("a"));
-        assert_eq!(item_step(&ab, Some("zzz"), false), ItemStep::Leave);
-    }
-
     /// A merged inbox row over two copies of the sample's phase 24 group.
     fn merged_src(digest: &OwnerDigest) -> RowSrc {
         let first = digest
@@ -2875,6 +3032,46 @@ mod tests {
     }
 
     #[test]
+    fn sub_step_walks_items_then_files() {
+        let item = |id: &str| SubStop::Item(id.to_owned());
+        let file = |id: &str| SubStop::File(id.to_owned());
+        let stops = vec![item("a"), item("b"), file("f")];
+        let stop = |s: SubStop| SubStep::Stop(s);
+        assert_eq!(sub_step(&stops, None, true), stop(item("a")));
+        assert_eq!(sub_step(&stops, Some(&item("a")), true), stop(item("b")));
+        assert_eq!(sub_step(&stops, Some(&item("b")), true), stop(file("f")));
+        assert_eq!(sub_step(&stops, Some(&file("f")), true), SubStep::Leave);
+        assert_eq!(sub_step(&stops, Some(&file("f")), false), stop(item("b")));
+        assert_eq!(sub_step(&stops, Some(&item("a")), false), SubStep::Parent);
+        assert_eq!(sub_step(&stops, None, false), SubStep::Leave);
+        assert_eq!(sub_step(&[], None, true), SubStep::Leave);
+        // A stop that is not listed behaves as the row.
+        assert_eq!(sub_step(&stops, Some(&item("zzz")), true), stop(item("a")));
+        assert_eq!(sub_step(&stops, Some(&file("zzz")), false), SubStep::Leave);
+        // An item and a file with the same text are different stops.
+        assert_eq!(
+            sub_step(&[file("a")], Some(&item("a")), true),
+            stop(file("a"))
+        );
+    }
+
+    #[test]
+    fn the_two_cursor_fields_are_one_sub_stop() {
+        let (mut item, mut file) = (None, None);
+        assert_eq!(SubStop::of(&item, &file), None);
+        SubStop::store(Some(SubStop::Item("a".to_owned())), &mut item, &mut file);
+        assert_eq!((item.as_deref(), file.as_deref()), (Some("a"), None));
+        SubStop::store(Some(SubStop::File("f".to_owned())), &mut item, &mut file);
+        assert_eq!((item.as_deref(), file.as_deref()), (None, Some("f")));
+        assert_eq!(
+            SubStop::of(&item, &file),
+            Some(SubStop::File("f".to_owned()))
+        );
+        SubStop::store(None, &mut item, &mut file);
+        assert_eq!(SubStop::of(&item, &file), None);
+    }
+
+    #[test]
     fn mapped_lines_match_the_drawn_ids() {
         let digest = sample_owner_digest();
         let mut sources: Vec<RowSrc> = current_sources(&digest);
@@ -2889,24 +3086,49 @@ mod tests {
                     .map(text)
                     .collect::<Vec<_>>()
             );
-            let mapped: Vec<String> = map.iter().map(|(_, id)| id.clone()).collect();
-            assert_eq!(mapped, row_item_ids(src), "{:?}", src.key);
+            let items_of = |map: &[(usize, SubStop)]| -> Vec<String> {
+                map.iter()
+                    .filter_map(|(_, stop)| match stop {
+                        SubStop::Item(id) => Some(id.clone()),
+                        SubStop::File(_) => None,
+                    })
+                    .collect()
+            };
+            assert_eq!(items_of(&map), row_item_ids(src), "{:?}", src.key);
             let (lines, map) = inbox_expansion_lines_mapped(src, 100, 0);
-            let mapped: Vec<String> = map.iter().map(|(_, id)| id.clone()).collect();
-            assert_eq!(mapped, inbox_item_ids(src), "inbox {:?}", src.key);
-            // Each mapped line is where that item's text starts.
-            for (line, id) in &map {
-                let item = src
-                    .items()
-                    .iter()
-                    .chain(src.parts.iter().flat_map(|p| p.items.iter()))
-                    .find(|i| i.id == *id)
-                    .expect("the item");
-                assert!(
-                    text(&lines[*line]).contains(item.name.as_str()),
-                    "{id} at {line}: {}",
-                    text(&lines[*line])
-                );
+            assert_eq!(items_of(&map), inbox_item_ids(src), "inbox {:?}", src.key);
+            // The drawn stops, in order, are exactly the walk's stops.
+            let drawn: Vec<SubStop> = map.iter().map(|(_, stop)| stop.clone()).collect();
+            assert_eq!(drawn, inbox_sub_stops(src), "inbox {:?}", src.key);
+            assert!(
+                map.windows(2).all(|w| w[0].0 < w[1].0),
+                "stops are in drawn order"
+            );
+            // Each mapped line is where that item's (or file's) text starts.
+            for (line, stop) in &map {
+                match stop {
+                    SubStop::Item(id) => {
+                        let item = src
+                            .items()
+                            .iter()
+                            .chain(src.parts.iter().flat_map(|p| p.items.iter()))
+                            .find(|i| i.id == *id)
+                            .expect("the item");
+                        assert!(
+                            text(&lines[*line]).contains(item.name.as_str()),
+                            "{id} at {line}: {}",
+                            text(&lines[*line])
+                        );
+                    }
+                    SubStop::File(path) => {
+                        let want = format!("file {path}");
+                        assert!(
+                            text(&lines[*line]).contains(&want),
+                            "{path} at {line}: {}",
+                            text(&lines[*line])
+                        );
+                    }
+                }
                 checked += 1;
             }
         }
@@ -2917,9 +3139,26 @@ mod tests {
             inbox_item_ids(&merged),
             ids(&["check 0", "check 1", "check 2", "check 3", "check 4", "v0", "v1"])
         );
+        let map = inbox_expansion_lines_mapped(&merged, 100, 0).1;
+        assert_eq!(sub_line(&map, &SubStop::Item("v1".to_owned())), Some(9));
+        // Merged rows draw each file line before that part's checks.
         assert_eq!(
-            item_line(&inbox_expansion_lines_mapped(&merged, 100, 0).1, "v1"),
-            Some(9)
+            inbox_sub_stops(&merged)
+                .iter()
+                .filter(|s| matches!(s, SubStop::File(_)))
+                .count(),
+            2
+        );
+        assert_eq!(
+            sub_line(&map, &SubStop::File("phases/24/24-UAT.md".to_owned())),
+            Some(0)
+        );
+        assert_eq!(
+            sub_line(
+                &map,
+                &SubStop::File("phases/24/24-VERIFICATION.md".to_owned())
+            ),
+            Some(7)
         );
     }
 
@@ -2939,36 +3178,57 @@ mod tests {
     #[test]
     fn step_with_items_enters_and_leaves_rows() {
         let digest = sample_owner_digest();
-        // Row a is phase 21 (two checks), row b phase 24 (six checks).
+        // Row a is phase 21 (two checks), row b phase 24 (six checks); each draws
+        // one `file PATH` line after its checks (quick 261118-u4e, I-1).
         let (mut view, stops, a, b) = walk_view(&digest);
+        let file_of = |key: &GroupKey| key.file.clone();
         let fwd = |view: &mut OwnerBlockState| step_with_items(view, &digest, &stops, true);
         let back = |view: &mut OwnerBlockState| step_with_items(view, &digest, &stops, false);
-        let at = |view: &OwnerBlockState| (view.cursor.clone(), view.item_cursor.clone());
-        let item =
-            |key: &GroupKey, n: usize| (Some(Stop::Row(key.clone())), Some(format!("check {n}")));
+        let at = |view: &OwnerBlockState| (view.cursor.clone(), view.sub_stop());
+        let item = |key: &GroupKey, n: usize| {
+            (
+                Some(Stop::Row(key.clone())),
+                Some(SubStop::Item(format!("check {n}"))),
+            )
+        };
+        let file = |key: &GroupKey| {
+            (
+                Some(Stop::Row(key.clone())),
+                Some(SubStop::File(file_of(key))),
+            )
+        };
         assert_eq!(fwd(&mut view), Moved::Within);
         assert_eq!(at(&view), item(&a, 0));
         fwd(&mut view);
         assert_eq!(at(&view), item(&a, 1));
-        // Past the last item: the next row, item cleared.
+        // Then the row's file line: an item and a file cursor are never both set.
+        fwd(&mut view);
+        assert_eq!(at(&view), file(&a));
+        assert_eq!(view.item_cursor, None);
+        // Past the last stop: the next row, sub-stop cleared.
         fwd(&mut view);
         assert_eq!(at(&view), (Some(Stop::Row(b.clone())), None));
-        // Backward from the row lands on the previous expanded row's LAST item.
+        assert_eq!(view.file_cursor, None);
+        // Backward from the row lands on the previous expanded row's LAST stop.
+        back(&mut view);
+        assert_eq!(at(&view), file(&a));
         back(&mut view);
         assert_eq!(at(&view), item(&a, 1));
         back(&mut view);
         assert_eq!(at(&view), item(&a, 0));
-        // From the first item: its own row, item cleared.
+        // From the first item: its own row, sub-stop cleared.
         back(&mut view);
         assert_eq!(at(&view), (Some(Stop::Row(a.clone())), None));
         assert_eq!(back(&mut view), Moved::PastFirst);
-        // Row b: five stops (the sixth check is only a `... 1 more` line).
+        // Row b: five checks (the sixth is only a `... 1 more` line), its file.
         view.cursor = Some(Stop::Row(b.clone()));
-        view.item_cursor = None;
+        view.set_sub_stop(None);
         for n in 0..5 {
             fwd(&mut view);
             assert_eq!(at(&view), item(&b, n));
         }
+        fwd(&mut view);
+        assert_eq!(at(&view), file(&b), "the sixth check is not a stop");
         fwd(&mut view);
         let next = stops[stops
             .iter()
@@ -2976,11 +3236,9 @@ mod tests {
             .unwrap()
             + 1]
         .clone();
-        assert_eq!(
-            at(&view),
-            (Some(next), None),
-            "the sixth check is not a stop"
-        );
+        assert_eq!(at(&view), (Some(next), None));
+        back(&mut view);
+        assert_eq!(at(&view), file(&b));
         back(&mut view);
         assert_eq!(at(&view), item(&b, 4));
     }
@@ -2989,7 +3247,8 @@ mod tests {
     fn rows_without_drawn_items_and_collapsed_rows_are_crossed_row_to_row() {
         let digest = sample_owner_digest();
         let rows = current_sources(&digest);
-        // Phase 22 has no items at all: expanded or not, `j` crosses it.
+        // Phase 22 has no items at all: expanded, its file line is its only
+        // sub-stop; collapsed, `j` crosses it.
         let empty = rows
             .iter()
             .position(|r| r.group.phase == "22")
@@ -2999,20 +3258,26 @@ mod tests {
         let stops = skeleton(&digest, &view).stops;
         view.cursor = Some(Stop::Row(rows[empty].key.clone()));
         step_with_items(&mut view, &digest, &stops, true);
+        assert_eq!(view.cursor, Some(Stop::Row(rows[empty].key.clone())));
+        assert_eq!(view.file_cursor.as_deref(), Some("phases/22/22-UAT.md"));
+        step_with_items(&mut view, &digest, &stops, true);
         assert_eq!(view.cursor, Some(Stop::Row(rows[empty + 1].key.clone())));
-        assert_eq!(view.item_cursor, None);
-        // `k` back onto the empty expanded row: no item to land on.
+        assert_eq!(view.sub_stop(), None);
+        // `k` back onto the expanded row lands on its file line, then the row.
         step_with_items(&mut view, &digest, &stops, false);
         assert_eq!(view.cursor, Some(Stop::Row(rows[empty].key.clone())));
-        assert_eq!(view.item_cursor, None);
-        // A collapsed row is crossed too.
+        assert!(view.file_cursor.is_some());
+        step_with_items(&mut view, &digest, &stops, false);
+        assert_eq!(view.cursor, Some(Stop::Row(rows[empty].key.clone())));
+        assert_eq!(view.sub_stop(), None);
+        // A collapsed row is crossed.
         let mut view = OwnerBlockState {
             cursor: Some(Stop::Row(rows[0].key.clone())),
             ..OwnerBlockState::default()
         };
         step_with_items(&mut view, &digest, &stops, true);
         assert_eq!(view.cursor, Some(Stop::Row(rows[1].key.clone())));
-        assert_eq!(view.item_cursor, None);
+        assert_eq!(view.sub_stop(), None);
     }
 
     #[test]
@@ -3055,6 +3320,52 @@ mod tests {
         assert_eq!(view.item_cursor, None);
     }
 
+    /// Quick 261118-u4e: a file cursor follows the item cursor's rules.
+    #[test]
+    fn a_file_cursor_survives_only_while_its_row_still_draws_it() {
+        let digest = sample_owner_digest();
+        let walk_to_file = |view: &mut OwnerBlockState, stops: &[Stop]| {
+            for _ in 0..3 {
+                step_with_items(view, &digest, stops, true);
+            }
+        };
+        let (mut view, stops, a, _) = walk_view(&digest);
+        walk_to_file(&mut view, &stops);
+        let file = view.file_cursor.clone().expect("the file line");
+        assert_eq!(file, a.file);
+        // A refresh that keeps it keeps it, and the model finds its line.
+        clamp(&mut view, &digest);
+        assert_eq!(view.file_cursor.as_deref(), Some(file.as_str()));
+        let model = block_model("sample", "v2.2", &digest, &view, 100);
+        let line = sub_stop_line(&model, &a, &SubStop::File(file.clone())).expect("a line");
+        assert!(text(&model.body[line]).contains(&format!("file {file}")));
+        // A refresh that moves the file away drops it.
+        let mut moved = digest.clone();
+        for group in &mut moved.groups {
+            if group.phase == "21" && group.lane == Lane::Test {
+                group.file = "phases/21/other.md".to_owned();
+            }
+        }
+        clamp(&mut view, &moved);
+        assert_eq!(view.file_cursor, None);
+        // A collapse drops it too, as do Enter/Space and every cursor move.
+        let (mut view, stops, a, _) = walk_view(&digest);
+        walk_to_file(&mut view, &stops);
+        view.expanded.remove(&a);
+        clamp(&mut view, &digest);
+        assert_eq!(view.file_cursor, None);
+        let (mut view, stops, _, _) = walk_view(&digest);
+        walk_to_file(&mut view, &stops);
+        assert!(toggle(&mut view, &selectable_folds(&digest)));
+        assert_eq!(view.sub_stop(), None);
+        for mv in [Move::First, Move::Last, Move::By(1), Move::By(-1)] {
+            let (mut view, stops, _, _) = walk_view(&digest);
+            walk_to_file(&mut view, &stops);
+            move_cursor(&mut view, &stops, mv);
+            assert_eq!(view.sub_stop(), None, "{mv:?}");
+        }
+    }
+
     #[test]
     fn the_item_highlight_changes_no_text() {
         let digest = sample_owner_digest();
@@ -3067,7 +3378,7 @@ mod tests {
             model
                 .item_lines
                 .iter()
-                .find(|(k, id, _)| *k == a && id == "check 1")
+                .find(|(k, stop, _)| *k == a && *stop == SubStop::Item("check 1".to_owned()))
                 .map(|(_, _, line)| *line)
                 .expect("item line"),
         );

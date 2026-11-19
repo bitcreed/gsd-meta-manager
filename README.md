@@ -307,7 +307,7 @@ Tab-specific keys:
 | Waves pane | `e` | Edit the plan's PLAN.md in `$EDITOR` at its objective |
 | Waves pane | `←` / `Esc` | Back to the phase list (`q` still leaves the detail view; a digit, `[` or `]` leaves the pane and acts as usual) |
 | Phases | `↑` / `k` from the first phase | Enter the Owner block (with no phases the block holds the keyboard from the start) |
-| Owner block | `j` `k` `g` `G` `PgUp` `PgDn` `Enter` `Space` `←` `→` `Esc` | Move, expand a group or fold, switch fold, back to the phase list (to the tab bar when there are no phases) |
+| Owner block | `j` `k` `g` `G` `PgUp` `PgDn` `Enter` `Space` `←` `→` `Esc` | Move, expand a group or fold, open a check or file line read-only at that place, switch fold, back to the phase list (to the tab bar when there are no phases) |
 | Backlog | `Enter` | Open / close the item's content pane |
 | Backlog | `j` `k` `PgUp` `PgDn` | Scroll the open content pane |
 | Backlog | `e` | With the pane open, edit the item where it lives (e.g. its ROADMAP.md section) in `$EDITOR`; otherwise enqueue it |
@@ -412,7 +412,10 @@ holds the keyboard from the start. `Enter` expands a group to its checks and sou
 `Esc` returns to the phase list (to the tab bar when there are no phases). Old debt,
 acknowledged files and pending todos are collapsed folds under the rows. On a group row
 `v`, `o`, `A`, `y` and `x` work as in the inbox screen below, and `j` walks into an
-expanded group's checks (the first five), so `x` can settle one check.
+expanded group's checks (the first five) and its file line, so `x` can settle one check.
+`Enter` on a check or on the file line opens that file read-only at that check (the file
+line: the group's first check, else the phase heading, else the top); the opened line is
+marked in the viewer. `Space` collapses the group from any of those lines.
 
 **Inbox screen (`i` on the dashboard).** One list of everything that waits on you, across
 every registered project, grouped into `TEST — closes a phase`, `TEST — phase stays open`,
@@ -427,7 +430,7 @@ keyboard-only.
 |-----|--------|
 | `1` `2` `3` `4` / `a` | Show one lane / all lanes including Blocked; press again for the default |
 | `j` `k` `PgUp` `PgDn` `Home` `End` | Move |
-| `Enter` | Expand a group to its checks and source file; on the fold line, open a fold (`←` `→` move between folds) |
+| `Enter` | Expand a group to its checks and source file; on a check or file line, open that file read-only at that place; on the fold line, open a fold (`←` `→` move between folds) |
 | `g` | Open the project's detail view on the same group |
 | `o` | Open the group's source file in a read-only viewer |
 | `v` | Run the group's command in its project through your multiplexer (tmux, herdr, ...), or switch to the project's live session and show the command to type |

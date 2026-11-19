@@ -1337,6 +1337,11 @@ mod tests {
         }
         assert_eq!(ctx.inbox_view.item_cursor.as_ref(), Some(&last_id));
         stack.key(&mut ctx, KeyCode::Char('j'));
+        assert!(ctx.inbox_view.file_cursor.is_some() && ctx.inbox_view.item_cursor.is_none());
+        let on_file = ctx.inbox_view.file_cursor.clone();
+        stack.key(&mut ctx, KeyCode::Char('j'));
+        assert_eq!(ctx.inbox_view.file_cursor, on_file);
+        stack.key(&mut ctx, KeyCode::Char('k'));
         assert_eq!(ctx.inbox_view.item_cursor.as_ref(), Some(&last_id));
         stack.key(&mut ctx, KeyCode::Char('x'));
         stack.key(&mut ctx, KeyCode::Char('w'));
@@ -1363,7 +1368,7 @@ mod tests {
         ctx.inbox_view.cursor = Some(crate::ui::screens::inbox::InboxStop::Row(merged.key()));
         ctx.inbox_view.expanded.insert(merged.key());
         let mut stack = Stack::inbox();
-        for _ in 0..ids.len() {
+        for _ in 0..crate::ui::screens::owner_block::inbox_sub_stops(&merged.src).len() {
             stack.key(&mut ctx, KeyCode::Char('j'));
         }
         assert_eq!(ctx.inbox_view.item_cursor.as_ref(), Some(&last));

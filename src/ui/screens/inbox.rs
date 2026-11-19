@@ -24,7 +24,7 @@ use super::detail::{fit_cells, fit_spans, shown};
 use super::driver::DRY_RUN_LOADING;
 use super::owner::{owner_numbers, OWNER_SEP};
 use super::owner_actions;
-use super::owner_block::{self, blanks, cells, pad, Fold, GroupKey, RowCells, RowSrc};
+use super::owner_block::{self, blanks, cells, pad, Fold, GroupKey, RowCells, RowSrc, SubStop};
 use super::owner_settle;
 use super::{AppContext, Screen, ScreenAction};
 use crate::inbox::phase_key;
@@ -144,6 +144,22 @@ pub struct InboxViewState {
     /// `OwnerItem::id`, identity and never an index. `None` while the cursor rests
     /// on the row itself.
     pub item_cursor: Option<String>,
+    /// The `file PATH` line the sub-cursor rests on (quick 261118-u4e, I-1): the
+    /// path as the group carries it. Never set together with `item_cursor`;
+    /// written only through [`SubStop::store`] ([`set_sub_stop`](Self::set_sub_stop)).
+    pub file_cursor: Option<String>,
+}
+
+impl InboxViewState {
+    /// The sub-stop the sub-cursor rests on, if any.
+    pub(crate) fn sub_stop(&self) -> Option<SubStop> {
+        SubStop::of(&self.item_cursor, &self.file_cursor)
+    }
+
+    /// Move the sub-cursor onto `to` (`None`: back onto the row).
+    pub(crate) fn set_sub_stop(&mut self, to: Option<SubStop>) {
+        SubStop::store(to, &mut self.item_cursor, &mut self.file_cursor);
+    }
 }
 
 /// The sections in D-02 order.
@@ -414,7 +430,7 @@ pub(crate) fn cursor_pos(ctx: &AppContext, rows: &[InboxRow]) -> Option<usize> {
 
 /// Put the cursor on stop `to` (clamped): the row's identity, or the fold line.
 fn set_cursor(ctx: &mut AppContext, rows: &[InboxRow], to: usize) {
-    ctx.inbox_view.item_cursor = None;
+    ctx.inbox_view.set_sub_stop(None);
     let folds = fleet_folds(ctx);
     let count = rows.len() + usize::from(!folds.is_empty());
     if count == 0 {
@@ -468,18 +484,18 @@ fn prune_view(ctx: &mut AppContext) {
     {
         ctx.inbox_view.fold_cursor = None;
     }
-    // D-04, T-39-11: the item sub-cursor survives only while its row is the cursor
-    // row, still expanded, and still draws that item.
-    if let Some(id) = ctx.inbox_view.item_cursor.clone() {
+    // D-04, T-39-11: the sub-cursor (a check, or a file line) survives only while
+    // its row is the cursor row, still expanded, and still draws that stop.
+    if let Some(stop) = ctx.inbox_view.sub_stop() {
         let keep = match ctx.inbox_view.cursor.clone() {
             Some(InboxStop::Row(key)) if ctx.inbox_view.expanded.contains(&key) => stop_rows(ctx)
                 .iter()
                 .find(|row| row.key() == key)
-                .is_some_and(|row| owner_block::inbox_item_ids(&row.src).contains(&id)),
+                .is_some_and(|row| owner_block::inbox_sub_stops(&row.src).contains(&stop)),
             _ => false,
         };
         if !keep {
-            ctx.inbox_view.item_cursor = None;
+            ctx.inbox_view.set_sub_stop(None);
         }
     }
 }
@@ -498,15 +514,12 @@ pub(crate) fn reanchor(ctx: &mut AppContext) {
     let rows = stop_rows(ctx);
     match cursor_pos(ctx, &rows) {
         Some(at) => {
-            // `prune_view` kept the item only for a surviving cursor row; the
+            // `prune_view` kept the sub-stop only for a surviving cursor row; the
             // re-anchor itself does not move off it.
-            let (before, item) = (
-                ctx.inbox_view.cursor.clone(),
-                ctx.inbox_view.item_cursor.clone(),
-            );
+            let (before, sub) = (ctx.inbox_view.cursor.clone(), ctx.inbox_view.sub_stop());
             set_cursor(ctx, &rows, at);
             if ctx.inbox_view.cursor == before {
-                ctx.inbox_view.item_cursor = item;
+                ctx.inbox_view.set_sub_stop(sub);
             }
         }
         None => {
@@ -1016,8 +1029,9 @@ fn expansion_for(ctx: &AppContext, row: &InboxRow, width: usize) -> Vec<Line<'st
             }
         }
     }
-    // D-04: the selected item is highlighted in place, no gutter, no new line.
-    if let Some(at) = selected_item_line(ctx, row, &map) {
+    // D-04: the selected check or file line is highlighted in place, no gutter,
+    // no new line, no change of text.
+    if let Some(at) = selected_sub_line(ctx, row, &map) {
         for span in &mut lines[at].spans {
             span.style = span.style.patch(owner_block::cursor_style());
         }
@@ -1025,17 +1039,17 @@ fn expansion_for(ctx: &AppContext, row: &InboxRow, width: usize) -> Vec<Line<'st
     lines
 }
 
-/// The expansion line of the item the sub-cursor rests on, when `row` is the
-/// cursor row and draws that item.
-fn selected_item_line(ctx: &AppContext, row: &InboxRow, map: &[(usize, String)]) -> Option<usize> {
-    let id = ctx.inbox_view.item_cursor.as_deref()?;
+/// The expansion line of the sub-stop the sub-cursor rests on, when `row` is the
+/// cursor row and draws that stop.
+fn selected_sub_line(ctx: &AppContext, row: &InboxRow, map: &[(usize, SubStop)]) -> Option<usize> {
+    let stop = ctx.inbox_view.sub_stop()?;
     match &ctx.inbox_view.cursor {
-        Some(InboxStop::Row(key)) if *key == row.key() => owner_block::item_line(map, id),
+        Some(InboxStop::Row(key)) if *key == row.key() => owner_block::sub_line(map, &stop),
         _ => None,
     }
 }
 
-/// Widen `offset` the least amount that shows the selected item's body line (D-04).
+/// Widen `offset` the least amount that shows the selected sub-stop's body line (D-04).
 fn scroll_to_item(
     offset: usize,
     ctx: &AppContext,
@@ -1049,7 +1063,7 @@ fn scroll_to_item(
         return offset;
     };
     let map = owner_block::inbox_expansion_lines_mapped(&row.src, width, 1).1;
-    let Some(line) = selected_item_line(ctx, row, &map) else {
+    let Some(line) = selected_sub_line(ctx, row, &map) else {
         return offset;
     };
     let Some(pos) = plan
@@ -1740,9 +1754,9 @@ impl InboxScreen {
         ctx.needs_redraw = true;
     }
 
-    /// `j`/`k` (39-02, D-04): walk the drawn item lines of an expanded cursor row
-    /// first, then the rows. Leaving a row backward onto an expanded row lands on
-    /// that row's last drawn item.
+    /// `j`/`k` (39-02, D-04; quick 261118-u4e, I-1): walk the drawn check lines and
+    /// `file PATH` lines of an expanded cursor row first, then the rows. Leaving a
+    /// row backward onto an expanded row lands on that row's last sub-stop.
     fn step_items(&self, ctx: &mut AppContext, forward: bool) {
         let rows = stop_rows(ctx);
         let Some(at) = cursor_pos(ctx, &rows) else {
@@ -1753,28 +1767,28 @@ impl InboxScreen {
             .filter(|row| ctx.inbox_view.expanded.contains(&row.key()))
         {
             // No key yet: the first stop is implicit, so make it the real cursor
-            // before an item hangs off it.
+            // before a sub-stop hangs off it.
             if ctx.inbox_view.cursor.is_none() {
                 set_cursor(ctx, &rows, at);
             }
-            let ids = owner_block::inbox_item_ids(&row.src);
-            let current = ctx.inbox_view.item_cursor.as_deref();
-            match owner_block::item_step(&ids, current, forward) {
-                owner_block::ItemStep::Item(id) => {
-                    ctx.inbox_view.item_cursor = Some(id);
+            let stops = owner_block::inbox_sub_stops(&row.src);
+            let current = ctx.inbox_view.sub_stop();
+            match owner_block::sub_step(&stops, current.as_ref(), forward) {
+                owner_block::SubStep::Stop(stop) => {
+                    ctx.inbox_view.set_sub_stop(Some(stop));
                     self.follow(ctx, &rows, at);
                     ctx.needs_redraw = true;
                     return;
                 }
-                owner_block::ItemStep::Parent => {
-                    ctx.inbox_view.item_cursor = None;
+                owner_block::SubStep::Parent => {
+                    ctx.inbox_view.set_sub_stop(None);
                     self.follow(ctx, &rows, at);
                     ctx.needs_redraw = true;
                     return;
                 }
-                owner_block::ItemStep::Leave => {
+                owner_block::SubStep::Leave => {
                     // Nothing below the last stop: the press is a no-op, so the
-                    // item stays selected (the Detail host's `PastLast` rule).
+                    // sub-stop stays selected (the Detail host's `PastLast` rule).
                     let count = rows.len() + usize::from(!fleet_folds(ctx).is_empty());
                     if forward && at + 1 >= count {
                         return;
@@ -1791,7 +1805,8 @@ impl InboxScreen {
                 .and_then(|now| rows.get(now))
                 .filter(|row| ctx.inbox_view.expanded.contains(&row.key()))
             {
-                ctx.inbox_view.item_cursor = owner_block::inbox_item_ids(&row.src).pop();
+                let last = owner_block::inbox_sub_stops(&row.src).pop();
+                ctx.inbox_view.set_sub_stop(last);
                 if let Some(now) = now {
                     self.follow(ctx, &rows, now);
                 }
@@ -1824,9 +1839,48 @@ impl InboxScreen {
         ctx.needs_redraw = true;
     }
 
-    /// `Enter` / `Space` (D-06): toggle the group row's expansion; on the fold
-    /// line open or close the fold under the sub-cursor (Triage is refused). It
-    /// never launches anything and never moves the cursor.
+    /// `Enter` (quick 261118-u4e, I-2, I-3): on a check line of the cursor row,
+    /// open that file in the read-only viewer at the check; on a `file PATH` line,
+    /// open that file at the group's place (its first listed check, else the phase
+    /// heading, else the top); everywhere else it is
+    /// [`toggle_key`](Self::toggle_key). A stop that a refresh made vanish falls
+    /// back to the row's file (`o`). Opens the in-app viewer only, never an editor
+    /// (T-37-16).
+    fn enter_key(&self, ctx: &mut AppContext) -> ScreenAction {
+        let rows = stop_rows(ctx);
+        let row = cursor_pos(ctx, &rows).and_then(|at| rows.get(at));
+        let (Some(row), Some(stop)) = (row, ctx.inbox_view.sub_stop()) else {
+            self.toggle_key(ctx);
+            return ScreenAction::None;
+        };
+        let digest = ctx.owner_digest(&row.alias);
+        let result = match stop {
+            SubStop::Item(id) => match owner_block::item_source(digest, &row.src, &id) {
+                Some((group, item)) => {
+                    owner_actions::open_at(ctx, &row.alias, &group.file, Some(&group), Some(&item))
+                }
+                None => owner_actions::open_target(ctx, &row.alias, &row.src.files),
+            },
+            SubStop::File(path) => {
+                let group = owner_block::file_source(digest, &row.src, &path);
+                owner_actions::open_at(ctx, &row.alias, &path, group.as_ref(), None)
+            }
+        };
+        match result {
+            Ok(action) => {
+                ctx.needs_redraw = true;
+                action
+            }
+            Err(message) => {
+                Self::say(ctx, message);
+                ScreenAction::None
+            }
+        }
+    }
+
+    /// `Space` (D-06), and `Enter` off a check line: toggle the group row's
+    /// expansion; on the fold line open or close the fold under the sub-cursor
+    /// (Triage is refused). It never launches anything and never moves the cursor.
     fn toggle_key(&self, ctx: &mut AppContext) {
         let rows = stop_rows(ctx);
         let Some(at) = cursor_pos(ctx, &rows) else {
@@ -1834,7 +1888,7 @@ impl InboxScreen {
         };
         if let Some(row) = rows.get(at) {
             let key = row.key();
-            ctx.inbox_view.item_cursor = None;
+            ctx.inbox_view.set_sub_stop(None);
             if !ctx.inbox_view.expanded.remove(&key) {
                 ctx.inbox_view.expanded.insert(key);
             }
@@ -2136,7 +2190,10 @@ impl Screen for InboxScreen {
             KeyCode::Char('y') if plain => self.copy_key(ctx),
             KeyCode::Char('x') if plain => self.settle_key(ctx),
             KeyCode::Char('g') if plain => self.goto_key(ctx),
-            KeyCode::Enter | KeyCode::Char(' ') => {
+            // Enter expands, or opens the file on a check line; Space always
+            // toggles, so a check line can still collapse its group (I-3).
+            KeyCode::Enter => self.enter_key(ctx),
+            KeyCode::Char(' ') => {
                 self.toggle_key(ctx);
                 ScreenAction::None
             }
@@ -2267,7 +2324,7 @@ impl Screen for InboxScreen {
                             let expanded = ctx.inbox_view.expanded.contains(&row.key());
                             // D-04: a selected item takes the cursor from its row.
                             let on_row =
-                                cursor == Some(*index) && ctx.inbox_view.item_cursor.is_none();
+                                cursor == Some(*index) && ctx.inbox_view.sub_stop().is_none();
                             let mut line = row_line(&c, &grid, width, on_row, expanded);
                             if row.fold == Some(Fold::Acknowledged) {
                                 for span in &mut line.spans {
@@ -4366,8 +4423,15 @@ mod tests {
         // then moves into the next group row.
         keys_on(&mut *screen, &mut ctx, &[KeyCode::Char('j')], size);
         assert_eq!(item_of(&ctx).as_deref(), Some("check 0"));
-        keys_on(&mut *screen, &mut ctx, &[KeyCode::Char('j'); 5], size);
+        keys_on(&mut *screen, &mut ctx, &[KeyCode::Char('j'); 4], size);
+        assert_eq!(item_of(&ctx).as_deref(), Some("check 4"));
+        // The sixth stop is the group's `file PATH` line (quick 261118-u4e).
+        keys_on(&mut *screen, &mut ctx, &[KeyCode::Char('j')], size);
         assert_eq!(item_of(&ctx), None);
+        assert!(ctx.inbox_view.file_cursor.is_some());
+        keys_on(&mut *screen, &mut ctx, &[KeyCode::Char('j')], size);
+        assert_eq!(item_of(&ctx), None);
+        assert!(ctx.inbox_view.file_cursor.is_none());
         let text = render_with(&*screen, &ctx, size.0, size.1);
         assert!(line_of(&text, "alder-api")
             .1
@@ -4375,13 +4439,12 @@ mod tests {
         assert!(line_of(&text, "dune-app")
             .1
             .starts_with(" \u{25be} dune-app"));
-        // `Enter` and `Space` toggle; collapsing shows nothing under the row.
-        keys_on(
-            &mut *screen,
-            &mut ctx,
-            &[KeyCode::Char('k'), KeyCode::Enter],
-            size,
-        );
+        // `Enter` and `Space` toggle on the row (Enter on a check line opens the
+        // file instead, quick 261118-u4e); collapsing shows nothing under it.
+        keys_on(&mut *screen, &mut ctx, &[KeyCode::Char('k'); 7], size);
+        assert_eq!(item_of(&ctx), None);
+        assert!(ctx.inbox_view.file_cursor.is_none());
+        keys_on(&mut *screen, &mut ctx, &[KeyCode::Enter], size);
         let text = render_with(&*screen, &ctx, size.0, size.1);
         assert!(!text.join("\n").contains("check 0"));
         keys_on(&mut *screen, &mut ctx, &[KeyCode::Char(' ')], size);
@@ -4451,7 +4514,8 @@ mod tests {
             &mut ctx,
             &[
                 KeyCode::Enter,
-                // Five item lines, then the next row (D-04).
+                // Five item lines, the file line, then the next row (D-04).
+                KeyCode::Char('j'),
                 KeyCode::Char('j'),
                 KeyCode::Char('j'),
                 KeyCode::Char('j'),
@@ -4876,7 +4940,7 @@ mod tests {
         assert!(matches!(action, ScreenAction::None));
         assert_eq!(
             ctx.status_message.as_ref().map(|(m, _)| m.as_str()),
-            Some("2 files behind this row: press g to pick a file in the Owner block")
+            Some("2 files behind this row: expand it and press Enter on a file line")
         );
     }
 
@@ -5270,7 +5334,7 @@ mod tests {
         assert!(matches!(action, ScreenAction::None));
         assert_eq!(
             status(&ctx),
-            "2 files behind this row: press g to pick a file in the Owner block"
+            "2 files behind this row: expand it and press Enter on a file line"
         );
     }
 
@@ -5628,14 +5692,27 @@ mod tests {
             assert_eq!(item_of(&ctx), Some(format!("01-UAT.md#{n}")));
             assert_eq!(ctx.inbox_view.cursor, Some(InboxStop::Row(first.key())));
         }
-        // The sixth `j` leaves for the next row (the 6th and 7th checks are only
+        // The sixth `j` lands on the row's `file PATH` line (quick 261118-u4e), a
+        // sub-stop of its own: the file cursor is set, the item cursor is not.
+        press(&mut screen, &mut ctx, KeyCode::Char('j'));
+        let file = ".planning/phases/01-pricing/01-UAT.md".to_owned();
+        assert_eq!(item_of(&ctx), None);
+        assert_eq!(ctx.inbox_view.file_cursor.as_deref(), Some(file.as_str()));
+        assert_eq!(ctx.inbox_view.cursor, Some(InboxStop::Row(first.key())));
+        // The seventh leaves for the next row (the 6th and 7th checks are only
         // reachable through the phase-level `x`).
         press(&mut screen, &mut ctx, KeyCode::Char('j'));
         assert_eq!(item_of(&ctx), None);
+        assert_eq!(ctx.inbox_view.file_cursor, None);
         assert_ne!(ctx.inbox_view.cursor, Some(InboxStop::Row(first.key())));
-        // `k` from there lands on the last drawn item of the expanded row.
+        // `k` from there lands on the expanded row's last sub-stop, its file
+        // line, and `k` again on the last drawn item.
+        press(&mut screen, &mut ctx, KeyCode::Char('k'));
+        assert_eq!(item_of(&ctx), None);
+        assert_eq!(ctx.inbox_view.file_cursor.as_deref(), Some(file.as_str()));
         press(&mut screen, &mut ctx, KeyCode::Char('k'));
         assert_eq!(item_of(&ctx), Some("01-UAT.md#5".to_owned()));
+        assert_eq!(ctx.inbox_view.file_cursor, None);
         // From the first item `k` goes to its own row, and `k` again leaves up.
         for _ in 0..4 {
             press(&mut screen, &mut ctx, KeyCode::Up);
@@ -5644,7 +5721,8 @@ mod tests {
         press(&mut screen, &mut ctx, KeyCode::Char('k'));
         assert_eq!(item_of(&ctx), None);
         assert_eq!(ctx.inbox_view.cursor, Some(InboxStop::Row(first.key())));
-        // Home, End, PgUp, PgDn clear an item; so does Enter on the item line.
+        // Home, End, PgUp, PgDn clear an item; so does Space on the item line
+        // (Enter opens the file there instead, quick 261118-u4e).
         for code in [
             KeyCode::Home,
             KeyCode::End,
@@ -5655,11 +5733,16 @@ mod tests {
             ctx.inbox_view.item_cursor = Some("01-UAT.md#2".to_owned());
             press(&mut screen, &mut ctx, code);
             assert_eq!(item_of(&ctx), None, "{code:?}");
+            ctx.inbox_view.cursor = Some(InboxStop::Row(first.key()));
+            ctx.inbox_view
+                .set_sub_stop(Some(SubStop::File(file.clone())));
+            press(&mut screen, &mut ctx, code);
+            assert_eq!(ctx.inbox_view.file_cursor, None, "{code:?}");
         }
         ctx.inbox_view.cursor = Some(InboxStop::Row(first.key()));
         ctx.inbox_view.cursor_index = 0;
         ctx.inbox_view.item_cursor = Some("01-UAT.md#2".to_owned());
-        press(&mut screen, &mut ctx, KeyCode::Enter);
+        press(&mut screen, &mut ctx, KeyCode::Char(' '));
         assert_eq!(item_of(&ctx), None);
         assert!(!ctx.inbox_view.expanded.contains(&first.key()));
     }
@@ -5674,7 +5757,8 @@ mod tests {
         screen.handle_key(KeyCode::Char('j'), KeyModifiers::NONE, &mut ctx);
         assert_eq!(ctx.inbox_view.cursor, Some(InboxStop::Row(rows[1].key())));
         assert_eq!(item_of(&ctx), None);
-        // Expanded but without a drawn item: crossed row to row, both ways.
+        // Expanded but without a drawn check: its `file PATH` line is its only
+        // sub-stop (quick 261118-u4e), then the walk moves on, both ways.
         let digest = ctx.owner_digests.get_mut("pricing-app").unwrap();
         for group in &mut digest.groups {
             if group.phase == rows[1].src.group.phase && group.lane == rows[1].src.group.lane {
@@ -5687,11 +5771,20 @@ mod tests {
         ctx.inbox_view.cursor = Some(InboxStop::Row(rows[1].key()));
         ctx.inbox_view.cursor_index = 1;
         screen.handle_key(KeyCode::Char('j'), KeyModifiers::NONE, &mut ctx);
+        assert_eq!(ctx.inbox_view.cursor, Some(InboxStop::Row(rows[1].key())));
+        assert!(ctx.inbox_view.file_cursor.is_some());
+        screen.handle_key(KeyCode::Char('j'), KeyModifiers::NONE, &mut ctx);
         assert_eq!(ctx.inbox_view.cursor_index, 2.min(rows.len() - 1));
-        assert_eq!(item_of(&ctx), None);
+        assert_eq!(ctx.inbox_view.sub_stop(), None);
         screen.handle_key(KeyCode::Char('k'), KeyModifiers::NONE, &mut ctx);
         assert_eq!(ctx.inbox_view.cursor, Some(InboxStop::Row(rows[1].key())));
-        assert_eq!(item_of(&ctx), None, "no item to land on");
+        assert!(
+            ctx.inbox_view.file_cursor.is_some(),
+            "lands on the file line"
+        );
+        screen.handle_key(KeyCode::Char('k'), KeyModifiers::NONE, &mut ctx);
+        assert_eq!(ctx.inbox_view.cursor, Some(InboxStop::Row(rows[1].key())));
+        assert_eq!(ctx.inbox_view.sub_stop(), None, "then the row itself");
     }
 
     #[test]
@@ -5701,10 +5794,11 @@ mod tests {
             .into_iter()
             .find(|row| row.src.parts.len() > 1)
             .expect("a merged row");
-        let want = owner_block::inbox_item_ids(&merged.src);
-        assert!(want.len() >= 2, "{want:?}");
+        let want = owner_block::inbox_sub_stops(&merged.src);
+        let items = owner_block::inbox_item_ids(&merged.src);
+        assert!(items.len() >= 2, "{items:?}");
         // The ids come part by part, each file's own.
-        let files: Vec<&str> = want
+        let files: Vec<&str> = items
             .iter()
             .map(|id| id.split('#').next().unwrap())
             .collect();
@@ -5712,13 +5806,18 @@ mod tests {
             files.iter().any(|f| f.contains("UAT"))
                 && files.iter().any(|f| f.contains("VERIFICATION"))
         );
+        // Each part's file line comes before that part's checks (I-1).
+        assert!(matches!(&want[0], SubStop::File(f) if f.contains("UAT")));
+        assert!(want
+            .iter()
+            .any(|s| matches!(s, SubStop::File(f) if f.contains("VERIFICATION"))));
         ctx.inbox_view.cursor = Some(InboxStop::Row(merged.key()));
         ctx.inbox_view.expanded.insert(merged.key());
         let mut screen = InboxScreen::new();
         let mut seen = Vec::new();
         for _ in 0..want.len() {
             screen.handle_key(KeyCode::Char('j'), KeyModifiers::NONE, &mut ctx);
-            seen.push(item_of(&ctx).expect("an item"));
+            seen.push(ctx.inbox_view.sub_stop().expect("a sub-stop"));
         }
         assert_eq!(seen, want);
     }
@@ -5870,6 +5969,274 @@ mod tests {
             last = text.join("\n");
         }
         assert!(!last.is_empty());
+    }
+
+    /// Quick 261118-u4e (I-2, I-5): Enter on a selected check line opens the
+    /// read-only viewer on that check's heading, marked in the gutter and in
+    /// REVERSED+BOLD, and the inbox keeps its cursor, sub-cursor and expansion.
+    #[test]
+    fn enter_on_a_check_line_opens_the_viewer_at_that_check() {
+        let (_dir, mut ctx) = walk_ctx("heuristic-labels", "pricing-app");
+        let row = stop_rows(&ctx).remove(0);
+        let mut screen = InboxScreen::new();
+        let size = (100, 30);
+        let keys = [KeyCode::Enter, KeyCode::Char('j'), KeyCode::Char('j')];
+        keys_on(&mut screen, &mut ctx, &keys, size);
+        keys_on(&mut screen, &mut ctx, &[KeyCode::Char('j')], size);
+        assert_eq!(item_of(&ctx), Some("01-UAT.md#3".to_owned()));
+        let action = keys_on(&mut screen, &mut ctx, &[KeyCode::Enter], size).remove(0);
+        let ScreenAction::Push(mut viewer) = action else {
+            panic!(
+                "Enter on a check line pushes the viewer, got {}",
+                describe(&action)
+            );
+        };
+        assert_eq!(viewer.name(), "owner_file_view");
+        assert!(ctx.status_message.is_none(), "opening shows no message");
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("backend");
+        terminal
+            .draw(|frame| viewer.render(frame, frame.area(), &ctx))
+            .expect("draw");
+        let buffer = terminal.backend().buffer().clone();
+        let text: Vec<String> = (0..24u16)
+            .map(|y| {
+                (0..80u16)
+                    .map(|x| buffer[(x, y)].symbol().to_owned())
+                    .collect()
+            })
+            .collect();
+        let (y, line) = line_of(&text, "3. Review the export screen");
+        let marked = format!(
+            "{} 3. Review the export screen",
+            crate::ui::glyphs::POINTER_RIGHT
+        );
+        assert!(line.contains(&marked), "{line:?}");
+        let x = u16::try_from(line.chars().position(|c| c == '3').unwrap()).unwrap();
+        let cell = &buffer[(x, u16::try_from(y).unwrap())];
+        assert!(
+            cell.modifier.contains(ratatui::style::Modifier::REVERSED),
+            "{cell:?}"
+        );
+        assert!(
+            cell.modifier.contains(ratatui::style::Modifier::BOLD),
+            "{cell:?}"
+        );
+        let back = viewer.handle_key(KeyCode::Esc, KeyModifiers::NONE, &mut ctx);
+        assert!(matches!(back, ScreenAction::Pop));
+        assert_eq!(ctx.inbox_view.cursor, Some(InboxStop::Row(row.key())));
+        assert_eq!(item_of(&ctx), Some("01-UAT.md#3".to_owned()));
+        assert!(ctx.inbox_view.expanded.contains(&row.key()));
+    }
+
+    /// The viewer drawn at 80x24, as rows of text.
+    fn viewer_rows(viewer: &dyn Screen, ctx: &AppContext) -> Vec<String> {
+        render_with(viewer, ctx, 80, 24)
+    }
+
+    /// Quick 261118-u4e (I-1, I-2): the sixth `j` selects the `file PATH` line and
+    /// Enter opens that file marked on the group's first check.
+    #[test]
+    fn enter_on_a_file_line_opens_the_file_at_the_groups_first_check() {
+        let (_dir, mut ctx) = walk_ctx("heuristic-labels", "pricing-app");
+        let row = stop_rows(&ctx).remove(0);
+        let mut screen = InboxScreen::new();
+        let size = (100, 30);
+        keys_on(&mut screen, &mut ctx, &[KeyCode::Enter], size);
+        keys_on(&mut screen, &mut ctx, &[KeyCode::Char('j'); 6], size);
+        assert_eq!(item_of(&ctx), None);
+        assert!(ctx.inbox_view.file_cursor.is_some());
+        let action = keys_on(&mut screen, &mut ctx, &[KeyCode::Enter], size).remove(0);
+        let ScreenAction::Push(viewer) = action else {
+            panic!(
+                "Enter on a file line pushes the viewer, got {}",
+                describe(&action)
+            );
+        };
+        assert_eq!(viewer.name(), "owner_file_view");
+        let text = viewer_rows(&*viewer, &ctx);
+        let marker = crate::ui::glyphs::POINTER_RIGHT;
+        let (_, line) = line_of(&text, "1. Owner decision: trial length");
+        assert!(
+            line.contains(&format!("{marker} 1. Owner decision")),
+            "{line:?}"
+        );
+        assert_eq!(text.iter().filter(|l| l.contains(marker)).count(), 1);
+        // Nothing changed in the inbox.
+        assert_eq!(ctx.inbox_view.cursor, Some(InboxStop::Row(row.key())));
+        assert!(ctx.inbox_view.file_cursor.is_some());
+        assert!(ctx.inbox_view.expanded.contains(&row.key()));
+        // Space on the file line still collapses the group.
+        keys_on(&mut screen, &mut ctx, &[KeyCode::Char(' ')], size);
+        assert!(!ctx.inbox_view.expanded.contains(&row.key()));
+        assert_eq!(ctx.inbox_view.sub_stop(), None);
+    }
+
+    /// Merged rows draw each file before its checks; Enter on the second file
+    /// line opens the VERIFICATION file.
+    #[test]
+    fn enter_on_a_merged_rows_second_file_line_opens_that_file() {
+        let (_dir, mut ctx) = walk_ctx("same-phase-merge", "market-app");
+        let merged = stop_rows(&ctx)
+            .into_iter()
+            .find(|row| row.src.parts.len() > 1)
+            .expect("a merged row");
+        ctx.inbox_view.cursor = Some(InboxStop::Row(merged.key()));
+        ctx.inbox_view.expanded.insert(merged.key());
+        let stops = owner_block::inbox_sub_stops(&merged.src);
+        let second = stops
+            .iter()
+            .position(|s| matches!(s, SubStop::File(f) if f.contains("VERIFICATION")))
+            .expect("the second file line");
+        let mut screen = InboxScreen::new();
+        let size = (100, 30);
+        keys_on(
+            &mut screen,
+            &mut ctx,
+            &vec![KeyCode::Char('j'); second + 1],
+            size,
+        );
+        assert!(ctx
+            .inbox_view
+            .file_cursor
+            .as_deref()
+            .is_some_and(|f| f.contains("VERIFICATION")));
+        let action = keys_on(&mut screen, &mut ctx, &[KeyCode::Enter], size).remove(0);
+        let ScreenAction::Push(viewer) = action else {
+            panic!("pushes the viewer, got {}", describe(&action));
+        };
+        let text = render_with(&*viewer, &ctx, 120, 24);
+        assert!(text[0].contains("43-VERIFICATION.md"), "{}", text[0]);
+    }
+
+    /// Selecting a file line only re-styles that line.
+    #[test]
+    fn a_selected_file_line_changes_no_text_and_stays_in_view() {
+        let (_dir, mut ctx) = walk_ctx("heuristic-labels", "pricing-app");
+        let row = stop_rows(&ctx).remove(0);
+        ctx.inbox_view.cursor = Some(InboxStop::Row(row.key()));
+        ctx.inbox_view.expanded.insert(row.key());
+        let mut screen = InboxScreen::new();
+        let (w, h) = (100u16, 30u16);
+        let draw = |screen: &InboxScreen, ctx: &AppContext| {
+            let mut terminal = Terminal::new(TestBackend::new(w, h)).expect("backend");
+            terminal
+                .draw(|frame| screen.render(frame, frame.area(), ctx))
+                .expect("draw");
+            terminal.backend().buffer().clone()
+        };
+        let rows = |buffer: &ratatui::buffer::Buffer| -> Vec<String> {
+            (0..h)
+                .map(|y| (0..w).map(|x| buffer[(x, y)].symbol().to_owned()).collect())
+                .collect()
+        };
+        let on_row = draw(&screen, &ctx);
+        keys_on(&mut screen, &mut ctx, &[KeyCode::Char('j'); 6], (w, h));
+        assert!(ctx.inbox_view.file_cursor.is_some());
+        let on_file = draw(&screen, &ctx);
+        let (before, after) = (rows(&on_row), rows(&on_file));
+        for (y, (a, b)) in before.iter().zip(&after).enumerate() {
+            let skip = if a == b { 0 } else { 2 };
+            assert_eq!(
+                a.chars().skip(skip).collect::<String>(),
+                b.chars().skip(skip).collect::<String>(),
+                "line {y}"
+            );
+        }
+        let cyan: Vec<usize> = (0..usize::from(h))
+            .filter(|y| {
+                let cell = &on_file[(8, u16::try_from(*y).unwrap())];
+                cell.fg == Color::Cyan && cell.modifier.contains(ratatui::style::Modifier::BOLD)
+            })
+            .collect();
+        assert_eq!(cyan.len(), 1, "one highlighted line: {cyan:?}");
+        assert!(
+            after[cyan[0]].contains("file .planning/phases/01-pricing/01-UAT.md"),
+            "{}",
+            after[cyan[0]]
+        );
+        assert!(!after[cyan[0]].starts_with('>'), "no gutter on a sub-stop");
+        // A short terminal keeps the selected file line in view.
+        let (w, h) = (100u16, 12u16);
+        let mut short = InboxScreen::new();
+        let mut ctx2 = walk_ctx("heuristic-labels", "pricing-app");
+        let row2 = stop_rows(&ctx2.1).remove(0);
+        ctx2.1.inbox_view.cursor = Some(InboxStop::Row(row2.key()));
+        ctx2.1.inbox_view.expanded.insert(row2.key());
+        keys_on(&mut short, &mut ctx2.1, &[KeyCode::Char('j'); 6], (w, h));
+        let text = render_with(&short, &ctx2.1, w, h);
+        assert!(
+            text.iter()
+                .any(|l| l.contains("file .planning/phases/01-pricing")),
+            "{text:#?}"
+        );
+    }
+
+    /// `v o A y g` and `x` on a file line act on the parent row, as on a check.
+    #[test]
+    fn row_keys_on_a_file_line_act_on_the_parent() {
+        let outcome = |code: char, on_file: bool| {
+            let (_dir, mut ctx) = walk_ctx("heuristic-labels", "pricing-app");
+            let row = stop_rows(&ctx).remove(0);
+            ctx.inbox_view.cursor = Some(InboxStop::Row(row.key()));
+            ctx.inbox_view.expanded.insert(row.key());
+            if on_file {
+                ctx.inbox_view
+                    .set_sub_stop(owner_block::inbox_sub_stops(&row.src).pop());
+                assert!(ctx.inbox_view.file_cursor.is_some());
+            }
+            owner_actions::force_clipboard(Some(crate::clipboard::ClipboardProbes {
+                os: "linux",
+                wayland_display: true,
+                display: true,
+                on_path: vec!["wl-copy"],
+            }));
+            let mut screen = InboxScreen::new();
+            let mut ran: Vec<String> = Vec::new();
+            let action = if code == 'v' {
+                screen.run_key(&mut ctx, &mut |run| {
+                    ran.push(format!("{} in {}", run.command, run.alias));
+                    "ran".to_owned()
+                })
+            } else {
+                screen.handle_key(KeyCode::Char(code), KeyModifiers::NONE, &mut ctx)
+            };
+            let seam = owner_actions::seam_ran();
+            owner_actions::force_clipboard(None);
+            (
+                describe(&action),
+                status(&ctx),
+                ran,
+                seam,
+                ctx.inbox_view.cursor.clone(),
+            )
+        };
+        for code in ['v', 'o', 'A', 'y', 'g', 'x'] {
+            let (on_row, on_file) = (outcome(code, false), outcome(code, true));
+            assert_eq!(on_row, on_file, "{code}");
+        }
+    }
+
+    /// A refresh that drops the file, or a collapse, clears the file cursor.
+    #[test]
+    fn a_vanished_file_line_falls_back_to_its_row() {
+        let (_dir, mut ctx) = walk_ctx("heuristic-labels", "pricing-app");
+        let row = stop_rows(&ctx).remove(0);
+        ctx.inbox_view.cursor = Some(InboxStop::Row(row.key()));
+        ctx.inbox_view.expanded.insert(row.key());
+        let file = row.src.files[0].clone();
+        ctx.inbox_view.set_sub_stop(Some(SubStop::File(file)));
+        reanchor(&mut ctx);
+        assert!(ctx.inbox_view.file_cursor.is_some(), "a refresh keeps it");
+        ctx.inbox_view
+            .set_sub_stop(Some(SubStop::File("gone.md".to_owned())));
+        reanchor(&mut ctx);
+        assert_eq!(ctx.inbox_view.file_cursor, None);
+        assert_eq!(ctx.inbox_view.cursor, Some(InboxStop::Row(row.key())));
+        ctx.inbox_view
+            .set_sub_stop(Some(SubStop::File(row.src.files[0].clone())));
+        ctx.inbox_view.expanded.remove(&row.key());
+        reanchor(&mut ctx);
+        assert_eq!(ctx.inbox_view.file_cursor, None);
     }
 
     #[test]
