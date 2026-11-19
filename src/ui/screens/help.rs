@@ -449,8 +449,11 @@ pub(super) fn help_lines(experimental: bool) -> Vec<Line<'static>> {
         row("Up / k", "Phases tab: from the first phase, enter the Owner block above it (detail view)"),
         row("j/k g/G", "Owner block: move the row cursor / top / bottom (detail view)"),
         row("PgUp / PgDn", "Owner block: page the rows (detail view)"),
-        row("Enter / Space", "Owner block: expand or collapse the selected group or fold; Enter on a check or file line opens the file there (detail view)"),
-        row("Left / Right", "Owner block: move between the folds on the fold line (detail view)"),
+        row("Enter", "Owner block: open the selected group's action menu; on a check or file line open the file there; on the fold line open or close the fold (detail view)"),
+        row("Space", "Owner block: expand or collapse the selected group or fold (detail view)"),
+        row("Left / Right", "Owner block: collapse / expand the selected group; on the fold line move between the folds (detail view)"),
+        row("h / l", "Owner block: the same as Left / Right (detail view)"),
+        row("j/k Enter Esc", "Owner block action menu: move, run the selected action, close; a key letter runs its action at once (detail view)"),
         row("v o A y x", "Owner block: run, open, acknowledge, copy or settle the selected group or check, as in the inbox (detail view)"),
         row("Esc", "Owner block: back to the phase list, or the tab bar when it is empty (detail view)"),
         Line::from(""),
@@ -613,8 +616,11 @@ pub(super) fn help_lines(experimental: bool) -> Vec<Line<'static>> {
         row("1 2 3 4", "Show one lane: Test, Decide, Fix, Blocked (press the key again for the default view)"),
         row("a", "Show all four lanes, Blocked included"),
         row("j/k Up/Down", "Move the cursor; PgUp/PgDn page, Home/End jump to the first or last row"),
-        row("Enter", "Expand or collapse the selected group or fold; on a check or file line, open the file there, read-only (inbox)"),
-        row("Left / Right", "On the fold line: move between Old debt, Stale, Acknowledged and Triage (inbox)"),
+        row("Enter", "Open the selected group's action menu: its keys, commands and why an action is unavailable; on a check or file line, open the file there, read-only; on the fold line, open or close a fold (inbox)"),
+        row("Space", "Expand or collapse the selected group or fold (inbox)"),
+        row("Left / Right", "Collapse / expand the selected group; on the fold line, move between Old debt, Stale, Acknowledged and Triage (inbox)"),
+        row("h / l", "The same as Left / Right (inbox)"),
+        row("j/k Enter Esc", "In the action menu: move, run the selected action, close; a key letter runs its action at once (inbox)"),
         row("g", "Go to the project: detail view, Phases tab, on the same group when visible there"),
         row("o", "Open the group's source file, read-only (never your editor)"),
         row("v", "Run the group's command in its project through your multiplexer; a live session is focused instead and you type the command there"),
@@ -1343,11 +1349,20 @@ mod tests {
             ),
             (
                 "Enter",
-                "Expand or collapse the selected group or fold; on a check or file line, open the file there, read-only (inbox)",
+                "Open the selected group's action menu: its keys, commands and why an action is unavailable; on a check or file line, open the file there, read-only; on the fold line, open or close a fold (inbox)",
+            ),
+            (
+                "Space",
+                "Expand or collapse the selected group or fold (inbox)",
             ),
             (
                 "Left / Right",
-                "On the fold line: move between Old debt, Stale, Acknowledged and Triage (inbox)",
+                "Collapse / expand the selected group; on the fold line, move between Old debt, Stale, Acknowledged and Triage (inbox)",
+            ),
+            ("h / l", "The same as Left / Right (inbox)"),
+            (
+                "j/k Enter Esc",
+                "In the action menu: move, run the selected action, close; a key letter runs its action at once (inbox)",
             ),
             (
                 "g",
@@ -1435,7 +1450,7 @@ mod tests {
     #[test]
     fn help_documents_the_owner_block_keys() {
         let text = body();
-        let rows: [(&str, &str); 7] = [
+        let rows: [(&str, &str); 10] = [
             (
                 "Up / k",
                 "Phases tab: from the first phase, enter the Owner block above it (detail view)",
@@ -1446,12 +1461,21 @@ mod tests {
             ),
             ("PgUp / PgDn", "Owner block: page the rows (detail view)"),
             (
-                "Enter / Space",
-                "Owner block: expand or collapse the selected group or fold; Enter on a check or file line opens the file there (detail view)",
+                "Enter",
+                "Owner block: open the selected group's action menu; on a check or file line open the file there; on the fold line open or close the fold (detail view)",
+            ),
+            (
+                "Space",
+                "Owner block: expand or collapse the selected group or fold (detail view)",
             ),
             (
                 "Left / Right",
-                "Owner block: move between the folds on the fold line (detail view)",
+                "Owner block: collapse / expand the selected group; on the fold line move between the folds (detail view)",
+            ),
+            ("h / l", "Owner block: the same as Left / Right (detail view)"),
+            (
+                "j/k Enter Esc",
+                "Owner block action menu: move, run the selected action, close; a key letter runs its action at once (detail view)",
             ),
             (
                 "v o A y x",
@@ -1887,7 +1911,7 @@ mod tests {
         let mut screen = screen_with_viewport(200, 20);
 
         let title = find_char(&mut screen, &mut ctx, 'j');
-        assert!(title.contains("j: 1/7"), "{title}");
+        assert!(title.contains("j: 1/9"), "{title}");
         assert_eq!(screen.scroll_offset(), 0, "the first `j` row is visible");
         // The arrows still scroll.
         press(&mut screen, &mut ctx, KeyCode::Down);
@@ -2874,7 +2898,7 @@ mod tests {
         let (mut ctx, _rx) = ctx_with_project(std::path::Path::new("/tmp/x"));
         for (code, expected) in [
             (KeyCode::Tab, "Tab: 1/1"),
-            (KeyCode::Char(' '), "Space: 1/3"),
+            (KeyCode::Char(' '), "Space: 1/4"),
             (KeyCode::Left, "Left: 1/5"),
         ] {
             let mut screen = HelpScreen::new();

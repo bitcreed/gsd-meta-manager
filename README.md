@@ -307,7 +307,7 @@ Tab-specific keys:
 | Waves pane | `e` | Edit the plan's PLAN.md in `$EDITOR` at its objective |
 | Waves pane | `←` / `Esc` | Back to the phase list (`q` still leaves the detail view; a digit, `[` or `]` leaves the pane and acts as usual) |
 | Phases | `↑` / `k` from the first phase | Enter the Owner block (with no phases the block holds the keyboard from the start) |
-| Owner block | `j` `k` `g` `G` `PgUp` `PgDn` `Enter` `Space` `←` `→` `Esc` | Move, expand a group or fold, open a check or file line read-only at that place, switch fold, back to the phase list (to the tab bar when there are no phases) |
+| Owner block | `j` `k` `g` `G` `PgUp` `PgDn` `Enter` `Space` `←` `→` `h` `l` `Esc` | Move; `Enter` opens the action menu on a group (on a check or file line: that file read-only at that place; on the fold line: opens or closes the fold); `Space` expands or collapses; `→` `l` expand, `←` `h` collapse (on the fold line: switch fold); back to the phase list (to the tab bar when there are no phases) |
 | Backlog | `Enter` | Open / close the item's content pane |
 | Backlog | `j` `k` `PgUp` `PgDn` | Scroll the open content pane |
 | Backlog | `e` | With the pane open, edit the item where it lives (e.g. its ROADMAP.md section) in `$EDITOR`; otherwise enqueue it |
@@ -337,7 +337,7 @@ Tab-specific keys:
 | Docs › Milestones | `Esc` | Back up one level |
 | Docs › Milestones | `e` | Archived files are read-only, so this only shows a status message; a workstream's active-milestone docs (`ws …` rows) open in `$EDITOR` |
 | Any other tab | `e` | Enqueue the suggested next GSD command |
-| Owner inbox | `1`-`4` `a` `j` `k` `Enter` `g` `o` `v` `A` `y` `x` `Esc` | See Owner inbox |
+| Owner inbox | `1`-`4` `a` `j` `k` `Enter` `Space` `←` `→` `h` `l` `g` `o` `v` `A` `y` `x` `Esc` | See Owner inbox; `Enter` opens the action menu |
 
 #### Mouse
 
@@ -364,7 +364,7 @@ Roadmap detail pane's Needs / Unblocks / Parallel lines are not links (`h` /
 `l` follow them); the wheel over the Backlog list while its content pane is
 open does nothing; dialogs, the help overlay and text entry ignore the mouse;
 the Owner block on the Phases tab is keyboard-only (a click there selects nothing and
-the wheel over it scrolls nothing), and so is the inbox screen (`i`);
+the wheel over it scrolls nothing, and a click does nothing while its action menu is open), and so is the inbox screen (`i`);
 drag, right / middle click, hover and horizontal scroll are ignored.
 
 To start with mouse capture off, set `"mouse": false` under `preferences` in
@@ -408,14 +408,17 @@ the milestone (`closes after: test 12 (ph 21 22 24) · unblock 5 (ph 20 23) · �
 lists one row per group: `TEST`, `DECIDE`, `FIX`, `BLOCKED`, each with its phase, checks,
 age and the command that handles it. `↓` from the tab bar and `↑` from the first phase
 enter the block, and `↓` past its last row reaches the phase list; with no phases the block
-holds the keyboard from the start. `Enter` expands a group to its checks and source file;
-`Esc` returns to the phase list (to the tab bar when there are no phases). Old debt,
-acknowledged files and pending todos are collapsed folds under the rows. On a group row
-`v`, `o`, `A`, `y` and `x` work as in the inbox screen below, and `j` walks into an
-expanded group's checks (the first five) and its file line, so `x` can settle one check.
-`Enter` on a check or on the file line opens that file read-only at that check (the file
-line: the group's first check, else the phase heading, else the top); the opened line is
-marked in the viewer. `Space` collapses the group from any of those lines.
+holds the keyboard from the start. `Enter` on a group opens its action menu (see
+the footer and action menu paragraph below); `Space` (or `→` / `l`) expands
+a group to its checks and source file, and `←` / `h` collapses it. `Esc` returns to the
+phase list (to the tab bar when there are no phases). Old debt,
+acknowledged files and pending todos are collapsed folds under the rows; `Enter` or `Space`
+on the fold line opens or closes the fold, and `←` `→` (or `h` `l`) move between folds.
+On a group row `v`, `o`, `A`, `y` and `x` work as in the inbox screen below, and `j` walks
+into an expanded group's checks (the first five) and its file line, so `x` can settle one
+check. `Enter` on a check or on the file line opens that file read-only at that check (the
+file line: the group's first check, else the phase heading, else the top); the opened line
+is marked in the viewer. `Space` collapses the group from any of those lines.
 
 **Inbox screen (`i` on the dashboard).** One list of everything that waits on you, across
 every registered project, grouped into `TEST — closes a phase`, `TEST — phase stays open`,
@@ -430,7 +433,9 @@ keyboard-only.
 |-----|--------|
 | `1` `2` `3` `4` / `a` | Show one lane / all lanes including Blocked; press again for the default |
 | `j` `k` `PgUp` `PgDn` `Home` `End` | Move |
-| `Enter` | Expand a group to its checks and source file; on a check or file line, open that file read-only at that place; on the fold line, open a fold (`←` `→` move between folds) |
+| `Enter` | Open the group's action menu; on a check or file line, open that file read-only at that place; on the fold line, open or close a fold |
+| `Space` | Expand or collapse a group to its checks and source file, or a fold |
+| `←` `→` / `h` `l` | Collapse / expand the selected group; on the fold line, move between folds |
 | `g` | Open the project's detail view on the same group |
 | `o` | Open the group's source file in a read-only viewer |
 | `v` | Run the group's command in its project through your multiplexer (tmux, herdr, ...), or switch to the project's live session and show the command to type |
@@ -438,6 +443,18 @@ keyboard-only.
 | `x` | Settle the selected check or phase: won't do (with a reason), deferred permanently, or move to phase M; asks first, then launches `/gsd-verify-work N` |
 | `y` | Copy the checklist `gsd-meta-manager inbox ALIAS` prints for that row (on the Old debt fold: that fold's checklist) |
 | `Esc` / `q` | Back to the dashboard |
+
+**The footer and the action menu.** In both the inbox and the Owner block the footer lists
+the keys that work on the selected row, with the command `v` runs when there is room
+(`[v]run /gsd-verify-work 16`). Narrow terminals drop the lower-priority hints (the movement
+and `Space` hints first, then the command text) but always keep `[?]help`. `Enter` on a group
+or debug row opens an action menu: one line per action for that row with its key, a label and
+the command or target. A key letter (`v` `x` `o` `A` `y`, and `g` in the inbox) or `Space`
+runs that action at once; `j` / `k` and `Enter` pick one; `Esc` or `q` closes the menu. An
+action that exists for the row but cannot run now stays in the list, dimmed, with the reason
+in text (for example `Settle already pending for this row`). A menu entry runs exactly what
+the key does, so `x` still opens the settle chooser and its confirmation and `A` still asks
+first. The menu is keyboard-only: other keys and mouse clicks do nothing while it is open.
 
 `v` builds the command from the group's kind, phase and workstream
 (`/gsd-verify-work N`, `/gsd-plan-phase N --gaps`, `/gsd-debug`, `/gsd-resume-work`,
@@ -452,7 +469,7 @@ in the project directory. `<gsd-tools.cjs>` comes from your own install only (`$
 frontmatter and does not commit; the marker is file-level (it hides every item of the file
 in every lane) and lapses by itself when the file changes. This app never writes the file.
 `x` settles what you could not or will not test. On a TEST or BLOCKED row it settles the
-whole phase; after `Enter` and `j` onto one check it settles that check. A one-row chooser
+whole phase; after `Space` and `j` onto one check it settles that check. A one-row chooser
 offers three outcomes: `w` won't do, `p` deferred permanently, `m` move to another phase
 (you pick phase M; an optional reason follows). A default-No popup then sums the settle
 up: project, target, outcome, your reason, the command it runs in bold with how many

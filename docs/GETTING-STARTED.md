@@ -199,6 +199,19 @@ a phase not started yet (`not started`, every wave open), a completed phase
 (`No plans yet — /gsd-plan-phase N`). Below 100 columns, focusing the pane
 widens it to the full width under a one-line breadcrumb.
 
+### Acting on owner work
+
+`i` on the dashboard opens the inbox: everything that waits on you, across every
+registered project. The same rows appear for one project in the Owner block at
+the top of its Phases tab. On either screen the footer lists the keys that work
+on the selected row, and `Enter` on a group opens an **action menu** with the
+command or target behind each key, and the reason when an action cannot run
+right now. Press the action's letter, or `j` / `k` and `Enter`, to run it; `Esc`
+closes the menu. `Space` or `→` expands a group to its checks and source file,
+and `Enter` on a check or file line opens that file read-only at that place.
+`x` (settle) and `A` (acknowledge) always show a default-No confirmation before
+anything runs. See [the README](../README.md#owner-inbox) for the full key list.
+
 ## Common setup issues
 
 ### "command not found: gsd-meta-manager"
