@@ -298,6 +298,8 @@ fn dep_ref_key(id: &str) -> String {
 ///   are still counted — but **every line of a closed-milestone collapse is
 ///   skipped** ([`closed_milestone_lines`], GSD's own rule): those phases are
 ///   shipped history and go to [`parse_shipped_phases`] instead.
+/// - lines inside fenced code are ignored: a fenced example neither opens an
+///   entry nor ends one nor counts as a plan item (gsd-core #5880, v1.22.0).
 pub fn parse_roadmap_phases(content: &str, convention: PhaseIdConvention) -> Vec<RoadmapPhase> {
     parse_phases_in_region(content, Region::Current, convention)
 }
@@ -544,11 +546,12 @@ fn parse_phases_in_region(
 
     let lines: Vec<&str> = content.lines().collect();
     let closed = closed_milestone_lines(&lines);
+    let fenced = fenced_line_mask(&lines);
     let in_region = |i: usize| closed[i] == (region == Region::Closed);
     let mut phases: Vec<RoadmapPhase> = Vec::new();
 
     for (i, line) in lines.iter().enumerate() {
-        if !in_region(i) {
+        if !in_region(i) || fenced[i] {
             continue;
         }
         let Some(recognized) = recognize_phase_line(line, region, convention) else {
@@ -564,7 +567,13 @@ fn parse_phases_in_region(
         // in a closed collapse is never credited to a live phase above it.
         let (mut scanned_total, mut scanned_done) = (0u32, 0u32);
         for (j, l) in lines.iter().enumerate().skip(i + 1) {
-            if !in_region(j) || is_entry_line(l, region, convention) {
+            if !in_region(j) {
+                break;
+            }
+            if fenced[j] {
+                continue;
+            }
+            if is_entry_line(l, region, convention) {
                 break;
             }
             if let Some(plan_caps) = plan_re.captures(l) {
@@ -954,11 +963,17 @@ fn any_heading_re() -> &'static Regex {
 ///
 /// The separator may also be a **spaced** dash (`### Phase 13 — Title`, `-`,
 /// `–`, `--`). Spaced, so `### Phase 3 Implementation Scope` stays prose.
+///
+/// Only a real level 2-4 ATX heading opens an entry: at most three leading
+/// spaces (CommonMark), so a four-space-indented, blockquoted, `#####` or
+/// no-space line is prose. A heading inside fenced code is excluded by the
+/// callers through [`fenced_line_mask`]. A port of gsd-core #5880 / PR #6291
+/// (v1.22.0, `tokenizeHeadings`).
 fn phase_heading_re(convention: PhaseIdConvention) -> &'static Regex {
     static RE: [OnceLock<Regex>; 2] = [OnceLock::new(), OnceLock::new()];
     per_convention(&RE, convention, |id| {
         format!(
-            r"^\s*#{{2,4}}\s+Phase ({id})(?:\s*\([^)]*\))?(?::\s+|\s+(?:--|[-\x{{2013}}\x{{2014}}])\s+)(.+?)\s*$",
+            r"^ {{0,3}}#{{2,4}}[ \t]+Phase ({id})(?:\s*\([^)]*\))?(?::\s+|\s+(?:--|[-\x{{2013}}\x{{2014}}])\s+)(.+?)\s*$",
             id = id
         )
     })
@@ -1193,7 +1208,9 @@ pub fn parse_phase_goals(
     let mut open: Option<String> = None;
     // (key, parts) of a goal whose continuation lines are still being read.
     let mut pending: Option<(String, Vec<String>)> = None;
-    for line in content.lines() {
+    let lines: Vec<&str> = content.lines().collect();
+    let fenced = fenced_line_mask(&lines);
+    for (idx, line) in lines.iter().copied().enumerate() {
         if let Some((_, parts)) = &mut pending {
             if !ends_field_continuation(line) {
                 parts.push(line.trim().to_string());
@@ -1202,6 +1219,11 @@ pub fn parse_phase_goals(
             // The boundary line still goes through the loop below, so a
             // heading keeps opening / closing entries.
             finalise(pending.take(), &mut goals);
+        }
+        // A fenced example neither opens an entry nor supplies a goal
+        // (gsd-core #5880).
+        if fenced[idx] {
+            continue;
         }
         if any_heading.is_match(line) {
             open = phase_heading
@@ -1912,14 +1934,14 @@ pub fn roadmap_milestones(content: &str, convention: PhaseIdConvention) -> Vec<R
     ))
     .unwrap();
     let single = Regex::new(&format!(r"(?i)\bphase\s+({id})", id = PHASE_ID)).unwrap();
-    let any_heading = Regex::new(r"^\s*(#{1,6})[ \t]+(.*?)\s*$").unwrap();
+    let any_heading = Regex::new(r"^ {0,3}(#{1,6})[ \t]+(.*?)\s*$").unwrap();
     // A build-phase heading (`#### Build phase 14 (Milestone 3): …`) counts as
     // a phase heading here: otherwise its `(Milestone 3)` reads as a milestone
     // of its own, and its id never joins the enclosing milestone's scope.
     // A spaced-dash heading (`### Phase 2 - Migrate to v2 API`) is a phase
     // heading too, never a `v2` milestone (quick 260926-fi9).
     let phase_heading = Regex::new(&format!(
-        r"^\s*#{{2,4}}\s+(?:(?i:build)\s+)?[Pp]hase ({id})(?:\s*\([^)]*\))?(?::|\s+(?:--|[-\x{{2013}}\x{{2014}}])\s)",
+        r"^ {{0,3}}#{{2,4}}[ \t]+(?:(?i:build)\s+)?[Pp]hase ({id})(?:\s*\([^)]*\))?(?::|\s+(?:--|[-\x{{2013}}\x{{2014}}])\s)",
         id = phase_id_source(convention)
     ))
     .unwrap();
@@ -1987,7 +2009,13 @@ pub fn roadmap_milestones(content: &str, convention: PhaseIdConvention) -> Vec<R
     // The open heading scope: (heading level, index into `raw`).
     let mut scope: Option<(usize, usize)> = None;
     let mut scoped: Vec<(usize, String)> = Vec::new();
-    for line in content.lines() {
+    let lines: Vec<&str> = content.lines().collect();
+    let fenced = fenced_line_mask(&lines);
+    for (idx, line) in lines.iter().copied().enumerate() {
+        // A fenced example opens no milestone and scopes no phase (#5880).
+        if fenced[idx] {
+            continue;
+        }
         if let Some(caps) = any_heading.captures(line) {
             let level = caps[1].len();
             if scope.is_some_and(|(open, _)| level <= open) {
@@ -3942,6 +3970,62 @@ Plans:
             "{one:?}"
         );
         assert!(!one.contains("Phase 999.2"), "{one:?}");
+    }
+
+    /// gsd-core #5880 / PR #6291 (v1.22.0): only real ATX phase headings open
+    /// an entry, and fenced lines are neither entries nor entry boundaries.
+    #[test]
+    fn only_real_atx_phase_headings_open_a_phase_entry() {
+        let roadmap = "## Phase 1: One\n\n\
+            **Depends on**: Nothing\n\n\
+            - [ ] 01-01-PLAN.md\n\n\
+            ```\n- [x] 01-02-PLAN.md\n```\n\n\
+            **Depends on**: Phase 0\n\n\
+            \x20  ### Phase 2: Three spaces\n\n\
+            #### Phase 3: Four hashes\n\n\
+            ##### Phase 5: Level five\n\n\
+            ###Phase 6: No space\n\n\
+            > ### Phase 7: Quoted\n\n\
+            \x20   ### Phase 8: Indented four\n\n\
+            ```\n### Phase 9: Example\n- [ ] **Phase 4: Fenced entry**\n```\n\n\
+            ~~~\n## Phase 10: Tilde example\n~~~\n";
+        let phases = parse_roadmap_phases(roadmap, PhaseIdConvention::Legacy);
+        let numbers: Vec<&str> = phases.iter().map(|p| p.number.as_str()).collect();
+        assert_eq!(numbers, vec!["1", "2", "3"], "{phases:?}");
+        let one = &phases[0];
+        assert_eq!(one.total_plans, 1, "{one:?}");
+        assert_eq!(one.completed_plans, 0, "{one:?}");
+        assert!(
+            !one.depends_on.is_empty(),
+            "the first Depends on line is read"
+        );
+    }
+
+    #[test]
+    fn a_fenced_example_neither_shadows_a_goal_nor_opens_a_milestone() {
+        let roadmap = "# Roadmap\n\n```\n## v9.9 Example milestone\n### Phase 1: Example\n\
+            **Goal**: example goal\n```\n\n\
+            ## v1.0 Real\n\n\
+            ### Phase 1: Real\n\n**Goal**: real goal\n";
+        let goals = parse_phase_goals(roadmap, PhaseIdConvention::Legacy);
+        assert_eq!(
+            goals
+                .get("1")
+                .map(|g| g.as_raw_for_logic_only().to_string()),
+            Some("real goal".to_string()),
+            "{goals:?}"
+        );
+        let milestones = roadmap_milestones(roadmap, PhaseIdConvention::Legacy);
+        let labels: Vec<String> = milestones
+            .iter()
+            .map(|m| m.label.as_raw_for_logic_only().to_string())
+            .collect();
+        assert!(labels.iter().all(|l| !l.starts_with("v9.9")), "{labels:?}");
+        let real = milestones
+            .iter()
+            .find(|m| m.label.as_raw_for_logic_only().starts_with("v1.0"))
+            .expect("the real milestone");
+        assert_eq!(real.scoped_phases, vec!["1".to_string()]);
     }
 
     #[test]
