@@ -220,10 +220,11 @@ pub(crate) fn open_target(
     let [file] = files.as_slice() else {
         return match files.len() {
             0 => Err("Cannot open this row: no source file".to_owned()),
-            // Expansion lines are not cursor stops, so only `g` leads to a
-            // single file (38-UI-REVIEW fix 8).
+            // The expansion's `file PATH` lines are cursor stops (quick
+            // 261118-u4e, I-6), so Enter on one opens that file; this replaces
+            // the 38-UI-REVIEW fix 8 premise that only `g` could.
             n => Err(format!(
-                "{n} files behind this row: press g to pick a file in the Owner block"
+                "{n} files behind this row: expand it and press Enter on a file line"
             )),
         };
     };
@@ -1408,7 +1409,7 @@ mod tests {
     }
 
     #[test]
-    fn a_blocked_row_over_two_files_points_at_g() {
+    fn a_blocked_row_over_two_files_points_at_the_file_lines() {
         let (_dir, ctx) = project_with_uat("alder-api");
         let two = vec![
             ".planning/phases/24-x/24-UAT.md".to_owned(),
@@ -1416,7 +1417,7 @@ mod tests {
         ];
         assert_eq!(
             open_target(&ctx, "alder-api", &two).err().as_deref(),
-            Some("2 files behind this row: press g to pick a file in the Owner block")
+            Some("2 files behind this row: expand it and press Enter on a file line")
         );
         // Duplicates and blanks do not count as files.
         let dup = vec![".planning/phases/24-x/24-UAT.md".to_owned(), String::new()];

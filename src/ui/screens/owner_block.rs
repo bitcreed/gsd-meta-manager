@@ -1189,10 +1189,10 @@ fn item_lines(
     shift: usize,
     labeled: Option<Lane>,
     lines: &mut Vec<Line<'static>>,
-    ids: &mut Vec<(usize, String)>,
+    ids: &mut Vec<(usize, SubStop)>,
 ) {
     for item in items.iter().take(MAX_ITEMS) {
-        ids.push((lines.len(), item.id.clone()));
+        ids.push((lines.len(), SubStop::Item(item.id.clone())));
         let text = format!("{}{}", blanks(4 + shift), item_text(item));
         let labels: Vec<&str> = labeled
             .map(|lane| labels_of(item, lane))
@@ -1237,50 +1237,63 @@ pub(crate) fn expansion_lines(src: &RowSrc, width: usize, shift: usize) -> Vec<L
     expansion_lines_mapped(src, width, shift).0
 }
 
-/// [`expansion_lines`] plus the line index at which each drawn item starts (the
-/// item sub-cursor's stops; the `... N more` line is never one).
+/// [`expansion_lines`] plus the line index of every sub-stop it draws: each item
+/// (the `... N more` line is never one) and each `file PATH` line, in drawn order
+/// (quick 261118-u4e, I-1). The stops equal [`row_sub_stops`].
 pub(crate) fn expansion_lines_mapped(
     src: &RowSrc,
     width: usize,
     shift: usize,
-) -> (Vec<Line<'static>>, Vec<(usize, String)>) {
+) -> (Vec<Line<'static>>, Vec<(usize, SubStop)>) {
     let mut lines: Vec<Line<'static>> = Vec::new();
-    let mut ids: Vec<(usize, String)> = Vec::new();
-    item_lines(src.items(), width, shift, None, &mut lines, &mut ids);
-    for file in src.files.iter().filter(|f| !f.is_empty()) {
-        lines.push(dim_line(4 + shift, &format!("file {}", shown(file)), width));
-    }
-    (lines, ids)
+    let mut stops: Vec<(usize, SubStop)> = Vec::new();
+    item_lines(src.items(), width, shift, None, &mut lines, &mut stops);
+    file_lines(src, width, shift, &mut lines, &mut stops);
+    (lines, stops)
 }
 
-/// The lines under an expanded inbox row plus the line index at which each drawn
-/// item starts: a merged row (D-08) lists each file's items under its own
-/// `file PATH` sub-heading (each part's items in part order); every other row is
-/// [`expansion_lines_mapped`] with labels.
+/// One `file PATH` line per non-empty file of `src`, each a [`SubStop::File`].
+fn file_lines(
+    src: &RowSrc,
+    width: usize,
+    shift: usize,
+    lines: &mut Vec<Line<'static>>,
+    stops: &mut Vec<(usize, SubStop)>,
+) {
+    for file in src.files.iter().filter(|f| !f.is_empty()) {
+        stops.push((lines.len(), SubStop::File(file.clone())));
+        lines.push(dim_line(4 + shift, &format!("file {}", shown(file)), width));
+    }
+}
+
+/// The lines under an expanded inbox row plus the line index of every sub-stop
+/// (item or `file PATH` line, in drawn order): a merged row (D-08) lists each
+/// file's items under its own `file PATH` sub-heading (each part's items in part
+/// order); every other row is [`expansion_lines_mapped`] with labels. The stops
+/// equal [`inbox_sub_stops`].
 pub(crate) fn inbox_expansion_lines_mapped(
     src: &RowSrc,
     width: usize,
     shift: usize,
-) -> (Vec<Line<'static>>, Vec<(usize, String)>) {
+) -> (Vec<Line<'static>>, Vec<(usize, SubStop)>) {
     let lane = Some(src.group.lane);
     let mut lines: Vec<Line<'static>> = Vec::new();
-    let mut ids: Vec<(usize, String)> = Vec::new();
+    let mut stops: Vec<(usize, SubStop)> = Vec::new();
     if src.parts.len() < 2 {
-        item_lines(src.items(), width, shift, lane, &mut lines, &mut ids);
-        for file in src.files.iter().filter(|f| !f.is_empty()) {
-            lines.push(dim_line(4 + shift, &format!("file {}", shown(file)), width));
-        }
-        return (lines, ids);
+        item_lines(src.items(), width, shift, lane, &mut lines, &mut stops);
+        file_lines(src, width, shift, &mut lines, &mut stops);
+        return (lines, stops);
     }
     for part in &src.parts {
+        stops.push((lines.len(), SubStop::File(part.file.clone())));
         lines.push(dim_line(
             4 + shift,
             &format!("file {}", shown(&part.file)),
             width,
         ));
-        item_lines(&part.items, width, shift + 2, lane, &mut lines, &mut ids);
+        item_lines(&part.items, width, shift + 2, lane, &mut lines, &mut stops);
     }
-    (lines, ids)
+    (lines, stops)
 }
 
 /// The ids of the first [`MAX_ITEMS`] items of `src`: exactly the ids
@@ -1316,11 +1329,24 @@ pub(crate) fn item_source(
     src: &RowSrc,
     id: &str,
 ) -> Option<(OwnerGroup, OwnerItem)> {
+    candidate_groups(digest, src).find_map(|group| {
+        let item = group.items.iter().find(|item| item.id == id)?;
+        Some((group.clone(), item.clone()))
+    })
+}
+
+/// The groups that can hold what row `src` draws, in lookup order: a merged
+/// row's `parts`, the row's own group, then the digest's groups of the same
+/// lane, scope, workstream and phase (a BLOCKED aggregate's siblings).
+fn candidate_groups<'a>(
+    digest: Option<&'a OwnerDigest>,
+    src: &'a RowSrc,
+) -> impl Iterator<Item = &'a OwnerGroup> {
     let head = &src.group;
     let siblings = digest
         .into_iter()
         .flat_map(|d| d.groups.iter())
-        .filter(|g| {
+        .filter(move |g| {
             g.lane == head.lane
                 && g.scope == head.scope
                 && g.workstream == head.workstream
@@ -1330,15 +1356,114 @@ pub(crate) fn item_source(
         .iter()
         .chain(std::iter::once(head))
         .chain(siblings)
-        .find_map(|group| {
-            let item = group.items.iter().find(|item| item.id == id)?;
-            Some((group.clone(), item.clone()))
-        })
 }
 
-/// The line index of the item `id` in an `*_expansion_lines_mapped` map.
-pub(crate) fn item_line(map: &[(usize, String)], id: &str) -> Option<usize> {
-    map.iter().find(|(_, i)| i == id).map(|(line, _)| *line)
+/// The line index of `stop` in an `*_expansion_lines_mapped` map.
+pub(crate) fn sub_line(map: &[(usize, SubStop)], stop: &SubStop) -> Option<usize> {
+    map.iter().find(|(_, s)| s == stop).map(|(line, _)| *line)
+}
+
+/// A sub-cursor stop inside an expanded row (quick 261118-u4e, I-1): a drawn
+/// check, or a `file PATH` line. Hosts keep one as two fields (`item_cursor`,
+/// `file_cursor`, never both set); [`SubStop::of`] and [`SubStop::store`] are the
+/// only code that combines the two.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SubStop {
+    /// An `OwnerItem::id`.
+    Item(String),
+    /// A project-relative file path as the group carries it.
+    File(String),
+}
+
+impl SubStop {
+    /// The stop the two stored fields name; the item wins if a bug set both.
+    pub(crate) fn of(item: &Option<String>, file: &Option<String>) -> Option<SubStop> {
+        item.clone()
+            .map(SubStop::Item)
+            .or_else(|| file.clone().map(SubStop::File))
+    }
+
+    /// Store `to` in the two fields: it sets one and clears the other.
+    pub(crate) fn store(to: Option<SubStop>, item: &mut Option<String>, file: &mut Option<String>) {
+        *item = None;
+        *file = None;
+        match to {
+            Some(SubStop::Item(id)) => *item = Some(id),
+            Some(SubStop::File(path)) => *file = Some(path),
+            None => {}
+        }
+    }
+}
+
+/// The sub-stops of an expanded inbox row, in drawn order: a row with fewer than
+/// two parts lists its checks, then one file line per non-empty file; a merged
+/// row lists, per part, its file line and then that part's first [`MAX_ITEMS`]
+/// checks. Exactly the stops [`inbox_expansion_lines_mapped`] draws.
+pub(crate) fn inbox_sub_stops(src: &RowSrc) -> Vec<SubStop> {
+    if src.parts.len() < 2 {
+        return inbox_item_ids(src)
+            .into_iter()
+            .map(SubStop::Item)
+            .chain(
+                src.files
+                    .iter()
+                    .filter(|f| !f.is_empty())
+                    .cloned()
+                    .map(SubStop::File),
+            )
+            .collect();
+    }
+    src.parts
+        .iter()
+        .flat_map(|part| {
+            std::iter::once(SubStop::File(part.file.clone())).chain(
+                part.items
+                    .iter()
+                    .take(MAX_ITEMS)
+                    .map(|item| SubStop::Item(item.id.clone())),
+            )
+        })
+        .collect()
+}
+
+/// One step of the sub-stop walk inside an expanded row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SubStep {
+    /// The sub-cursor lands on this stop.
+    Stop(SubStop),
+    /// Backward from the first stop: back onto the row itself.
+    Parent,
+    /// Past either end: the walk leaves the row for the next or previous one.
+    Leave,
+}
+
+/// Where the sub-cursor goes from `current` (`None` on the row) within `stops`;
+/// a stop that is not listed behaves as `None`.
+pub(crate) fn sub_step(stops: &[SubStop], current: Option<&SubStop>, forward: bool) -> SubStep {
+    let at = current.and_then(|stop| stops.iter().position(|s| s == stop));
+    match (at, forward) {
+        (None, true) => stops
+            .first()
+            .map_or(SubStep::Leave, |stop| SubStep::Stop(stop.clone())),
+        (None, false) => SubStep::Leave,
+        (Some(i), true) => stops
+            .get(i + 1)
+            .map_or(SubStep::Leave, |stop| SubStep::Stop(stop.clone())),
+        (Some(0), false) => SubStep::Parent,
+        (Some(i), false) => SubStep::Stop(stops[i - 1].clone()),
+    }
+}
+
+/// The group behind the `file PATH` line `path` of the row `src` (quick
+/// 261118-u4e): [`item_source`]'s candidate order, matching the group's file.
+pub(crate) fn file_source(
+    digest: Option<&OwnerDigest>,
+    src: &RowSrc,
+    path: &str,
+) -> Option<OwnerGroup> {
+    candidate_groups(digest, src)
+        .find(|group| group.file == path)
+        .cloned()
 }
 
 /// One step of the item walk inside an expanded row.
@@ -1442,9 +1567,11 @@ pub(crate) fn block_model(
             body.push(line);
             if view.expanded.contains(&src.key) {
                 let base = body.len();
-                let (extras, ids) = expansion_lines_mapped(src, width, 0);
-                for (line, id) in ids {
-                    item_lines.push((src.key.clone(), id, base + line));
+                let (extras, stops) = expansion_lines_mapped(src, width, 0);
+                for (line, stop) in stops {
+                    if let SubStop::Item(id) = stop {
+                        item_lines.push((src.key.clone(), id, base + line));
+                    }
                 }
                 for mut extra in extras {
                     if dimmed {
@@ -2905,6 +3032,46 @@ mod tests {
     }
 
     #[test]
+    fn sub_step_walks_items_then_files() {
+        let item = |id: &str| SubStop::Item(id.to_owned());
+        let file = |id: &str| SubStop::File(id.to_owned());
+        let stops = vec![item("a"), item("b"), file("f")];
+        let stop = |s: SubStop| SubStep::Stop(s);
+        assert_eq!(sub_step(&stops, None, true), stop(item("a")));
+        assert_eq!(sub_step(&stops, Some(&item("a")), true), stop(item("b")));
+        assert_eq!(sub_step(&stops, Some(&item("b")), true), stop(file("f")));
+        assert_eq!(sub_step(&stops, Some(&file("f")), true), SubStep::Leave);
+        assert_eq!(sub_step(&stops, Some(&file("f")), false), stop(item("b")));
+        assert_eq!(sub_step(&stops, Some(&item("a")), false), SubStep::Parent);
+        assert_eq!(sub_step(&stops, None, false), SubStep::Leave);
+        assert_eq!(sub_step(&[], None, true), SubStep::Leave);
+        // A stop that is not listed behaves as the row.
+        assert_eq!(sub_step(&stops, Some(&item("zzz")), true), stop(item("a")));
+        assert_eq!(sub_step(&stops, Some(&file("zzz")), false), SubStep::Leave);
+        // An item and a file with the same text are different stops.
+        assert_eq!(
+            sub_step(&[file("a")], Some(&item("a")), true),
+            stop(file("a"))
+        );
+    }
+
+    #[test]
+    fn the_two_cursor_fields_are_one_sub_stop() {
+        let (mut item, mut file) = (None, None);
+        assert_eq!(SubStop::of(&item, &file), None);
+        SubStop::store(Some(SubStop::Item("a".to_owned())), &mut item, &mut file);
+        assert_eq!((item.as_deref(), file.as_deref()), (Some("a"), None));
+        SubStop::store(Some(SubStop::File("f".to_owned())), &mut item, &mut file);
+        assert_eq!((item.as_deref(), file.as_deref()), (None, Some("f")));
+        assert_eq!(
+            SubStop::of(&item, &file),
+            Some(SubStop::File("f".to_owned()))
+        );
+        SubStop::store(None, &mut item, &mut file);
+        assert_eq!(SubStop::of(&item, &file), None);
+    }
+
+    #[test]
     fn mapped_lines_match_the_drawn_ids() {
         let digest = sample_owner_digest();
         let mut sources: Vec<RowSrc> = current_sources(&digest);
@@ -2919,24 +3086,49 @@ mod tests {
                     .map(text)
                     .collect::<Vec<_>>()
             );
-            let mapped: Vec<String> = map.iter().map(|(_, id)| id.clone()).collect();
-            assert_eq!(mapped, row_item_ids(src), "{:?}", src.key);
+            let items_of = |map: &[(usize, SubStop)]| -> Vec<String> {
+                map.iter()
+                    .filter_map(|(_, stop)| match stop {
+                        SubStop::Item(id) => Some(id.clone()),
+                        SubStop::File(_) => None,
+                    })
+                    .collect()
+            };
+            assert_eq!(items_of(&map), row_item_ids(src), "{:?}", src.key);
             let (lines, map) = inbox_expansion_lines_mapped(src, 100, 0);
-            let mapped: Vec<String> = map.iter().map(|(_, id)| id.clone()).collect();
-            assert_eq!(mapped, inbox_item_ids(src), "inbox {:?}", src.key);
-            // Each mapped line is where that item's text starts.
-            for (line, id) in &map {
-                let item = src
-                    .items()
-                    .iter()
-                    .chain(src.parts.iter().flat_map(|p| p.items.iter()))
-                    .find(|i| i.id == *id)
-                    .expect("the item");
-                assert!(
-                    text(&lines[*line]).contains(item.name.as_str()),
-                    "{id} at {line}: {}",
-                    text(&lines[*line])
-                );
+            assert_eq!(items_of(&map), inbox_item_ids(src), "inbox {:?}", src.key);
+            // The drawn stops, in order, are exactly the walk's stops.
+            let drawn: Vec<SubStop> = map.iter().map(|(_, stop)| stop.clone()).collect();
+            assert_eq!(drawn, inbox_sub_stops(src), "inbox {:?}", src.key);
+            assert!(
+                map.windows(2).all(|w| w[0].0 < w[1].0),
+                "stops are in drawn order"
+            );
+            // Each mapped line is where that item's (or file's) text starts.
+            for (line, stop) in &map {
+                match stop {
+                    SubStop::Item(id) => {
+                        let item = src
+                            .items()
+                            .iter()
+                            .chain(src.parts.iter().flat_map(|p| p.items.iter()))
+                            .find(|i| i.id == *id)
+                            .expect("the item");
+                        assert!(
+                            text(&lines[*line]).contains(item.name.as_str()),
+                            "{id} at {line}: {}",
+                            text(&lines[*line])
+                        );
+                    }
+                    SubStop::File(path) => {
+                        let want = format!("file {path}");
+                        assert!(
+                            text(&lines[*line]).contains(&want),
+                            "{path} at {line}: {}",
+                            text(&lines[*line])
+                        );
+                    }
+                }
                 checked += 1;
             }
         }
@@ -2947,9 +3139,26 @@ mod tests {
             inbox_item_ids(&merged),
             ids(&["check 0", "check 1", "check 2", "check 3", "check 4", "v0", "v1"])
         );
+        let map = inbox_expansion_lines_mapped(&merged, 100, 0).1;
+        assert_eq!(sub_line(&map, &SubStop::Item("v1".to_owned())), Some(9));
+        // Merged rows draw each file line before that part's checks.
         assert_eq!(
-            item_line(&inbox_expansion_lines_mapped(&merged, 100, 0).1, "v1"),
-            Some(9)
+            inbox_sub_stops(&merged)
+                .iter()
+                .filter(|s| matches!(s, SubStop::File(_)))
+                .count(),
+            2
+        );
+        assert_eq!(
+            sub_line(&map, &SubStop::File("phases/24/24-UAT.md".to_owned())),
+            Some(0)
+        );
+        assert_eq!(
+            sub_line(
+                &map,
+                &SubStop::File("phases/24/24-VERIFICATION.md".to_owned())
+            ),
+            Some(7)
         );
     }
 
