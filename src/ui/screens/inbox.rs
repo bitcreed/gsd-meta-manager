@@ -1824,9 +1824,39 @@ impl InboxScreen {
         ctx.needs_redraw = true;
     }
 
-    /// `Enter` / `Space` (D-06): toggle the group row's expansion; on the fold
-    /// line open or close the fold under the sub-cursor (Triage is refused). It
-    /// never launches anything and never moves the cursor.
+    /// `Enter` (quick 261118-u4e, I-2, I-3): on a check line of the cursor row,
+    /// open that file in the read-only viewer at the check; everywhere else it is
+    /// [`toggle_key`](Self::toggle_key). A check that a refresh made vanish falls
+    /// back to the row's file (`o`). Opens the in-app viewer only, never an
+    /// editor (T-37-16).
+    fn enter_key(&self, ctx: &mut AppContext) -> ScreenAction {
+        let rows = stop_rows(ctx);
+        let row = cursor_pos(ctx, &rows).and_then(|at| rows.get(at));
+        let (Some(row), Some(id)) = (row, ctx.inbox_view.item_cursor.clone()) else {
+            self.toggle_key(ctx);
+            return ScreenAction::None;
+        };
+        let result = match owner_block::item_source(ctx.owner_digest(&row.alias), &row.src, &id) {
+            Some((group, item)) => {
+                owner_actions::open_at(ctx, &row.alias, &group.file, Some(&group), Some(&item))
+            }
+            None => owner_actions::open_target(ctx, &row.alias, &row.src.files),
+        };
+        match result {
+            Ok(action) => {
+                ctx.needs_redraw = true;
+                action
+            }
+            Err(message) => {
+                Self::say(ctx, message);
+                ScreenAction::None
+            }
+        }
+    }
+
+    /// `Space` (D-06), and `Enter` off a check line: toggle the group row's
+    /// expansion; on the fold line open or close the fold under the sub-cursor
+    /// (Triage is refused). It never launches anything and never moves the cursor.
     fn toggle_key(&self, ctx: &mut AppContext) {
         let rows = stop_rows(ctx);
         let Some(at) = cursor_pos(ctx, &rows) else {
@@ -2136,7 +2166,10 @@ impl Screen for InboxScreen {
             KeyCode::Char('y') if plain => self.copy_key(ctx),
             KeyCode::Char('x') if plain => self.settle_key(ctx),
             KeyCode::Char('g') if plain => self.goto_key(ctx),
-            KeyCode::Enter | KeyCode::Char(' ') => {
+            // Enter expands, or opens the file on a check line; Space always
+            // toggles, so a check line can still collapse its group (I-3).
+            KeyCode::Enter => self.enter_key(ctx),
+            KeyCode::Char(' ') => {
                 self.toggle_key(ctx);
                 ScreenAction::None
             }
@@ -4375,13 +4408,11 @@ mod tests {
         assert!(line_of(&text, "dune-app")
             .1
             .starts_with(" \u{25be} dune-app"));
-        // `Enter` and `Space` toggle; collapsing shows nothing under the row.
-        keys_on(
-            &mut *screen,
-            &mut ctx,
-            &[KeyCode::Char('k'), KeyCode::Enter],
-            size,
-        );
+        // `Enter` and `Space` toggle on the row (Enter on a check line opens the
+        // file instead, quick 261118-u4e); collapsing shows nothing under it.
+        keys_on(&mut *screen, &mut ctx, &[KeyCode::Char('k'); 6], size);
+        assert_eq!(item_of(&ctx), None);
+        keys_on(&mut *screen, &mut ctx, &[KeyCode::Enter], size);
         let text = render_with(&*screen, &ctx, size.0, size.1);
         assert!(!text.join("\n").contains("check 0"));
         keys_on(&mut *screen, &mut ctx, &[KeyCode::Char(' ')], size);
@@ -5644,7 +5675,8 @@ mod tests {
         press(&mut screen, &mut ctx, KeyCode::Char('k'));
         assert_eq!(item_of(&ctx), None);
         assert_eq!(ctx.inbox_view.cursor, Some(InboxStop::Row(first.key())));
-        // Home, End, PgUp, PgDn clear an item; so does Enter on the item line.
+        // Home, End, PgUp, PgDn clear an item; so does Space on the item line
+        // (Enter opens the file there instead, quick 261118-u4e).
         for code in [
             KeyCode::Home,
             KeyCode::End,
@@ -5659,7 +5691,7 @@ mod tests {
         ctx.inbox_view.cursor = Some(InboxStop::Row(first.key()));
         ctx.inbox_view.cursor_index = 0;
         ctx.inbox_view.item_cursor = Some("01-UAT.md#2".to_owned());
-        press(&mut screen, &mut ctx, KeyCode::Enter);
+        press(&mut screen, &mut ctx, KeyCode::Char(' '));
         assert_eq!(item_of(&ctx), None);
         assert!(!ctx.inbox_view.expanded.contains(&first.key()));
     }
@@ -5870,6 +5902,63 @@ mod tests {
             last = text.join("\n");
         }
         assert!(!last.is_empty());
+    }
+
+    /// Quick 261118-u4e (I-2, I-5): Enter on a selected check line opens the
+    /// read-only viewer on that check's heading, marked in the gutter and in
+    /// REVERSED+BOLD, and the inbox keeps its cursor, sub-cursor and expansion.
+    #[test]
+    fn enter_on_a_check_line_opens_the_viewer_at_that_check() {
+        let (_dir, mut ctx) = walk_ctx("heuristic-labels", "pricing-app");
+        let row = stop_rows(&ctx).remove(0);
+        let mut screen = InboxScreen::new();
+        let size = (100, 30);
+        let keys = [KeyCode::Enter, KeyCode::Char('j'), KeyCode::Char('j')];
+        keys_on(&mut screen, &mut ctx, &keys, size);
+        keys_on(&mut screen, &mut ctx, &[KeyCode::Char('j')], size);
+        assert_eq!(item_of(&ctx), Some("01-UAT.md#3".to_owned()));
+        let action = keys_on(&mut screen, &mut ctx, &[KeyCode::Enter], size).remove(0);
+        let ScreenAction::Push(mut viewer) = action else {
+            panic!(
+                "Enter on a check line pushes the viewer, got {}",
+                describe(&action)
+            );
+        };
+        assert_eq!(viewer.name(), "owner_file_view");
+        assert!(ctx.status_message.is_none(), "opening shows no message");
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("backend");
+        terminal
+            .draw(|frame| viewer.render(frame, frame.area(), &ctx))
+            .expect("draw");
+        let buffer = terminal.backend().buffer().clone();
+        let text: Vec<String> = (0..24u16)
+            .map(|y| {
+                (0..80u16)
+                    .map(|x| buffer[(x, y)].symbol().to_owned())
+                    .collect()
+            })
+            .collect();
+        let (y, line) = line_of(&text, "3. Review the export screen");
+        let marked = format!(
+            "{} 3. Review the export screen",
+            crate::ui::glyphs::POINTER_RIGHT
+        );
+        assert!(line.contains(&marked), "{line:?}");
+        let x = u16::try_from(line.chars().position(|c| c == '3').unwrap()).unwrap();
+        let cell = &buffer[(x, u16::try_from(y).unwrap())];
+        assert!(
+            cell.modifier.contains(ratatui::style::Modifier::REVERSED),
+            "{cell:?}"
+        );
+        assert!(
+            cell.modifier.contains(ratatui::style::Modifier::BOLD),
+            "{cell:?}"
+        );
+        let back = viewer.handle_key(KeyCode::Esc, KeyModifiers::NONE, &mut ctx);
+        assert!(matches!(back, ScreenAction::Pop));
+        assert_eq!(ctx.inbox_view.cursor, Some(InboxStop::Row(row.key())));
+        assert_eq!(item_of(&ctx), Some("01-UAT.md#3".to_owned()));
+        assert!(ctx.inbox_view.expanded.contains(&row.key()));
     }
 
     #[test]

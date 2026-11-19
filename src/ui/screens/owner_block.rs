@@ -1306,6 +1306,36 @@ pub(crate) fn inbox_item_ids(src: &RowSrc) -> Vec<String> {
         .collect()
 }
 
+/// The group and item behind the drawn check `id` of the row `src` (quick
+/// 261118-u4e): the candidate groups in order are the merged row's `parts`, the
+/// row's own group, then the digest's groups of the same lane, scope, workstream
+/// and phase (a BLOCKED aggregate's siblings); the first holding an item with
+/// that id wins. `None` when a refresh made the id vanish.
+pub(crate) fn item_source(
+    digest: Option<&OwnerDigest>,
+    src: &RowSrc,
+    id: &str,
+) -> Option<(OwnerGroup, OwnerItem)> {
+    let head = &src.group;
+    let siblings = digest
+        .into_iter()
+        .flat_map(|d| d.groups.iter())
+        .filter(|g| {
+            g.lane == head.lane
+                && g.scope == head.scope
+                && g.workstream == head.workstream
+                && g.phase == head.phase
+        });
+    src.parts
+        .iter()
+        .chain(std::iter::once(head))
+        .chain(siblings)
+        .find_map(|group| {
+            let item = group.items.iter().find(|item| item.id == id)?;
+            Some((group.clone(), item.clone()))
+        })
+}
+
 /// The line index of the item `id` in an `*_expansion_lines_mapped` map.
 pub(crate) fn item_line(map: &[(usize, String)], id: &str) -> Option<usize> {
     map.iter().find(|(_, i)| i == id).map(|(line, _)| *line)

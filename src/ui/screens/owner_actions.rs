@@ -25,8 +25,8 @@
 
 use crate::session_detector::ClaudeSession;
 use crate::state_reader::owner_items::{
-    is_command_token, is_workstream_name, Kind, Lane, OwnerDigest, OwnerGroup, RunCommand, RunVerb,
-    Scope,
+    is_command_token, is_workstream_name, Kind, Lane, OwnerDigest, OwnerGroup, OwnerItem,
+    RunCommand, RunVerb, Scope,
 };
 use crate::state_reader::queue_md::GsdToolsCmd;
 use crate::state_reader::ProjectState;
@@ -192,11 +192,25 @@ fn read_capped(source: impl std::io::Read, cap: u64) -> Option<Vec<u8>> {
     (u64::try_from(bytes.len()).ok()? <= cap).then_some(bytes)
 }
 
+/// The text of `file` of project `alias`, read on the key press through
+/// [`read_owner_file`] (containment to `.planning/`, [`MAX_VIEW_BYTES`] cap), or
+/// the status line that says why not. The one copy of the read and of its
+/// refusal strings, shared by `o` and by Enter on a check or file line.
+fn read_for_view(ctx: &AppContext, alias: &str, file: &str) -> Result<String, String> {
+    if file.is_empty() {
+        return Err("Cannot open this row: no source file".to_owned());
+    }
+    let not_readable = || format!("Cannot open {}: not readable", shown(file));
+    let project = ctx.config.projects.get(alias).ok_or_else(not_readable)?;
+    read_owner_file(&project.path, file).ok_or_else(not_readable)
+}
+
 /// `o` (D-08): read the file behind a row and push the read-only viewer, or the
 /// status line that says why not. `files` are the row's distinct source files
 /// (one for a group, several for a BLOCKED aggregate). **Called from key arms
 /// only**: the read happens on the key press, never on the render path, and
-/// nothing is spawned (T-37-16).
+/// nothing is spawned (T-37-16). The viewer opens at the top (quick 261118-u4e,
+/// I-4); Enter on a check or file line opens it at a line through [`open_at`].
 pub(crate) fn open_target(
     ctx: &AppContext,
     alias: &str,
@@ -213,12 +227,139 @@ pub(crate) fn open_target(
             )),
         };
     };
-    let not_readable = || format!("Cannot open {}: not readable", shown(file));
-    let project = ctx.config.projects.get(alias).ok_or_else(not_readable)?;
-    let text = read_owner_file(&project.path, file).ok_or_else(not_readable)?;
+    let text = read_for_view(ctx, alias, file)?;
     Ok(ScreenAction::Push(Box::new(OwnerFileViewScreen::new(
         alias, file, &text,
     ))))
+}
+
+/// Enter on a check or a `file PATH` line (quick 261118-u4e, I-2): read `file` of
+/// `alias` and push the read-only viewer scrolled to the line [`target_line`]
+/// finds for `item` (else the group's first check, else the phase heading, else
+/// the top). The read goes through [`read_owner_file`] only (T-u4e-01); nothing
+/// is spawned and no editor starts (T-37-16). **Called from key arms only.**
+pub(crate) fn open_at(
+    ctx: &AppContext,
+    alias: &str,
+    file: &str,
+    group: Option<&OwnerGroup>,
+    item: Option<&OwnerItem>,
+) -> Result<ScreenAction, String> {
+    let text = read_for_view(ctx, alias, file)?;
+    let at = target_line(&text, group, item);
+    Ok(ScreenAction::Push(Box::new(
+        OwnerFileViewScreen::new(alias, file, &text).at_line(at),
+    )))
+}
+
+/// The longest prefix of an item name [`target_line`] searches for.
+const NAME_PROBE_CHARS: usize = 40;
+
+/// Whether `line` is an ATX heading: 1 to 6 `#`, then a space or a tab.
+fn heading_body(line: &str) -> Option<&str> {
+    let line = line.trim_start();
+    let hashes = line.chars().take_while(|c| *c == '#').count();
+    let rest = line.get(hashes..)?;
+    ((1..=6).contains(&hashes) && rest.starts_with([' ', '\t'])).then_some(rest)
+}
+
+/// `rest` begins with `token` and the token ends there: a `.`, `:` or `)`,
+/// whitespace, or the end of the text.
+fn starts_with_token(rest: &str, token: &str) -> bool {
+    rest.strip_prefix(token).is_some_and(|tail| {
+        tail.chars()
+            .next()
+            .is_none_or(|c| matches!(c, '.' | ':' | ')') || c.is_whitespace())
+    })
+}
+
+/// The zero-based line of `text` that `item` (else the first item of `group`)
+/// is listed on, or the group's phase heading, or `None` (quick 261118-u4e,
+/// I-7).
+///
+/// The index counts `str::lines`, the split both viewer branches use, so it is
+/// the viewer's own line index. The owner-items readers carry no line numbers
+/// (they are gsd-core oracle ports), so the position is found by text search at
+/// key time, in the text the viewer is about to show. Three probes, per item:
+/// (a) a numbered `###`-style heading holding the item's test number, (b) the
+/// first line holding the item name's first 40 characters (verbatim, then
+/// ASCII-case-insensitive), (c) a numbered list line. A UAT tries a, b, c; any
+/// other kind tries b, a, c (VERIFICATION synthesizes its test number from the
+/// entry index, so a body heading with the same number is not the entry). No
+/// match: the first heading naming `phase {group.phase}`. Plain substring and
+/// character comparisons only, no regex, on text a project controls (T-u4e-02).
+pub(crate) fn target_line(
+    text: &str,
+    group: Option<&OwnerGroup>,
+    item: Option<&OwnerItem>,
+) -> Option<usize> {
+    let lines: Vec<&str> = text.lines().collect();
+    let probe = item.or_else(|| group.and_then(|g| g.items.first()));
+    if let Some(item) = probe {
+        let token = item
+            .test
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty());
+        let heading = || {
+            let token = token?;
+            lines.iter().position(|line| {
+                heading_body(line).is_some_and(|rest| starts_with_token(rest.trim_start(), token))
+            })
+        };
+        let name = || {
+            let first = item.name.lines().next().unwrap_or_default().trim();
+            let needle: String = first.chars().take(NAME_PROBE_CHARS).collect();
+            let needle = needle.trim_end();
+            if needle.chars().count() < 3 {
+                return None;
+            }
+            lines
+                .iter()
+                .position(|line| line.contains(needle))
+                .or_else(|| {
+                    let lower = needle.to_ascii_lowercase();
+                    lines
+                        .iter()
+                        .position(|line| line.to_ascii_lowercase().contains(&lower))
+                })
+        };
+        let numbered = || {
+            let token = token?;
+            lines.iter().position(|line| {
+                line.trim_start()
+                    .strip_prefix(token)
+                    .and_then(|tail| tail.strip_prefix('.'))
+                    .is_some_and(|tail| tail.starts_with(char::is_whitespace))
+            })
+        };
+        let uat = group.is_some_and(|g| g.kind == Kind::Uat);
+        let found = if uat {
+            heading().or_else(name).or_else(numbered)
+        } else {
+            name().or_else(heading).or_else(numbered)
+        };
+        if found.is_some() {
+            return found;
+        }
+    }
+    let phase = group
+        .map(|g| g.phase.trim())
+        .filter(|p| !p.is_empty())?
+        .to_ascii_lowercase();
+    let wanted = format!("phase {phase}");
+    lines.iter().position(|line| {
+        heading_body(line).is_some_and(|rest| {
+            let rest = rest.to_ascii_lowercase();
+            // `phase 2` must not match a `Phase 24` heading.
+            rest.match_indices(&wanted).any(|(at, _)| {
+                !rest[at + wanted.len()..]
+                    .chars()
+                    .next()
+                    .is_some_and(char::is_alphanumeric)
+            })
+        })
+    })
 }
 
 /// The gsd-core command that acknowledges an owner file: the verb and its
@@ -1281,6 +1422,130 @@ mod tests {
         let dup = vec![".planning/phases/24-x/24-UAT.md".to_owned(), String::new()];
         assert!(open_target(&ctx, "alder-api", &dup).is_ok());
     }
+
+    // ---- Enter on a check or file line: target_line and open_at (quick 261118-u4e) ----
+
+    fn probe_item(test: Option<&str>, name: &str) -> OwnerItem {
+        OwnerItem {
+            id: format!("f#{}", test.unwrap_or(name)),
+            test: test.map(str::to_owned),
+            name: name.to_owned(),
+            expected: None,
+            result: "pending".to_owned(),
+            category: crate::state_reader::owner_items::Category::HumanUat,
+            reason: None,
+            blocked_by: None,
+            gaps: Vec::new(),
+            why_human: None,
+        }
+    }
+
+    const UAT_TEXT: &str = "---\nstatus: testing\n---\n\nSummary mentions Gamma here.\n\n## Tests\n\n### 1. Alpha\nresult: pending\n\n### 3. Gamma\nresult: pending\n\n## Phase 24 notes\n";
+
+    #[test]
+    fn locator_finds_a_uat_check_by_its_numbered_heading() {
+        let g = group(Lane::Test, None);
+        // The summary line naming "Gamma" is above the heading: the heading wins.
+        let it = probe_item(Some("3"), "Gamma");
+        assert_eq!(target_line(UAT_TEXT, Some(&g), Some(&it)), Some(11));
+        let one = probe_item(Some("1"), "Alpha");
+        assert_eq!(target_line(UAT_TEXT, Some(&g), Some(&one)), Some(8));
+        // `3` is not the prefix of `31.`.
+        let text = "### 31. Other\n### 3: Real\n";
+        assert_eq!(
+            target_line(text, Some(&g), Some(&probe_item(Some("3"), "zz"))),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn locator_finds_other_kinds_by_name_first() {
+        let mut g = group(Lane::Fix, None);
+        g.kind = Kind::Verification;
+        let text = "---\nhuman_verification:\n  - test: \"Check the clock\"\n---\n\n### 1. Unrelated body heading\n";
+        let it = probe_item(Some("1"), "Check the clock");
+        assert_eq!(target_line(text, Some(&g), Some(&it)), Some(2));
+        // A gap item without a test resolves by its name.
+        let gap_text = "gaps:\n  - truth: \"Clock ticks\"\n";
+        let gap = probe_item(None, "Clock ticks");
+        assert_eq!(target_line(gap_text, Some(&g), Some(&gap)), Some(1));
+        // ASCII case does not matter, a verbatim match wins over it.
+        let lower = probe_item(None, "CLOCK TICKS");
+        assert_eq!(target_line(gap_text, Some(&g), Some(&lower)), Some(1));
+        let both = "a clock ticks\nb Clock ticks\n";
+        assert_eq!(target_line(both, Some(&g), Some(&gap)), Some(1));
+    }
+
+    #[test]
+    fn locator_falls_back_to_the_first_check_the_phase_heading_then_none() {
+        let mut g = group(Lane::Test, None);
+        g.items = vec![
+            probe_item(Some("3"), "Gamma"),
+            probe_item(Some("1"), "Alpha"),
+        ];
+        // No item: the group's first listed check.
+        assert_eq!(target_line(UAT_TEXT, Some(&g), None), Some(11));
+        // No item match: the phase heading (and not `Phase 2`'s).
+        let text = "# Intro\n\n## Phase 24 notes\n\nnothing\n";
+        let missing = probe_item(Some("9"), "Not present anywhere");
+        assert_eq!(target_line(text, Some(&g), Some(&missing)), Some(2));
+        g.phase = "2".to_owned();
+        assert_eq!(target_line(text, Some(&g), Some(&missing)), None);
+        g.phase = "24".to_owned();
+        g.items.clear();
+        assert_eq!(target_line(text, Some(&g), None), Some(2));
+        assert_eq!(target_line("plain\ntext\n", Some(&g), None), None);
+        assert_eq!(target_line(text, None, None), None);
+        // A short name is not searched.
+        assert_eq!(
+            target_line("ab\n", None, Some(&probe_item(None, "ab"))),
+            None
+        );
+        // A numbered list line is the last probe.
+        let listed = "1. first\n3. third\n";
+        assert_eq!(
+            target_line(listed, None, Some(&probe_item(Some("3"), "zz"))),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn locator_counts_lines_the_way_str_lines_does() {
+        let g = group(Lane::Test, None);
+        let it = probe_item(Some("3"), "Gamma");
+        let lf = "a\n\n### 3. Gamma\n";
+        let crlf = "a\r\n\r\n### 3. Gamma\r\n";
+        assert_eq!(target_line(lf, Some(&g), Some(&it)), Some(2));
+        assert_eq!(target_line(crlf, Some(&g), Some(&it)), Some(2));
+    }
+
+    #[test]
+    fn enter_open_pushes_the_viewer_at_the_line_or_says_why_not() {
+        let (_dir, ctx) = project_with_uat("alder-api");
+        let file = ".planning/phases/24-x/24-UAT.md";
+        let Ok(ScreenAction::Push(screen)) = open_at(&ctx, "alder-api", file, None, None) else {
+            panic!("a readable file pushes the viewer");
+        };
+        assert_eq!(screen.name(), "owner_file_view");
+        assert_eq!(
+            open_at(&ctx, "alder-api", "", None, None).err().as_deref(),
+            Some("Cannot open this row: no source file")
+        );
+        assert_eq!(
+            open_at(&ctx, "alder-api", ".planning/gone.md", None, None)
+                .err()
+                .as_deref(),
+            Some("Cannot open .planning/gone.md: not readable")
+        );
+        assert_eq!(
+            open_at(&ctx, "nobody", file, None, None).err().as_deref(),
+            Some("Cannot open .planning/phases/24-x/24-UAT.md: not readable")
+        );
+        // Containment is the same read path as `o` (T-u4e-01).
+        let escape = "../../../../etc/passwd";
+        assert!(open_at(&ctx, "alder-api", escape, None, None).is_err());
+    }
+
     // ---- `A`: the acknowledge argv, its refusals and its child (37-06) ----
 
     use crate::state_reader::workstreams::WorkstreamState;

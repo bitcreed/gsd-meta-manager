@@ -1,7 +1,10 @@
 //! The read-only file viewer behind `o` (37-05, D-08).
 //!
 //! `o` on an inbox row or an Owner block row shows the group's source file inside
-//! the app. It never starts `$EDITOR` or any other program (T-37-16): this screen
+//! the app, from the top. Enter on a check or a `file PATH` line opens it at a
+//! line instead (quick 261118-u4e, [`OwnerFileViewScreen::at_line`]): the target
+//! line carries a gutter marker and REVERSED+BOLD, and sits two rows below the
+//! top. It never starts `$EDITOR` or any other program (T-37-16): this screen
 //! hands no file to an editor and nothing is spawned. The file is read
 //! once, on the key press, by [`super::owner_actions::read_owner_file`] (contained
 //! to the project's `.planning/`, at most 1 MiB); this screen only holds the
@@ -116,11 +119,45 @@ fn wrap_line(line: &Line<'static>, width: usize) -> Vec<Line<'static>> {
     out
 }
 
+/// The rows between the top of the viewer and a freshly opened target line.
+const TARGET_ROWS_FROM_TOP: usize = 2;
+
+/// Cells the target gutter takes: the marker and a space.
+const GUTTER_CELLS: u16 = 2;
+
+/// `row` with the target gutter in front: the marker and a space on the target's
+/// first row, two blanks elsewhere. The target's rows are REVERSED+BOLD, never
+/// color alone. The marker is a registry glyph, never file text (T-u4e-04).
+fn with_gutter(row: Line<'static>, is_target: bool, first: bool) -> Line<'static> {
+    let mark = Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD);
+    let gutter = if is_target && first {
+        format!("{} ", crate::ui::glyphs::POINTER_RIGHT)
+    } else {
+        " ".repeat(usize::from(GUTTER_CELLS))
+    };
+    let mut spans = vec![Span::raw(gutter)];
+    spans.extend(row.spans);
+    if is_target {
+        for span in &mut spans {
+            span.style = span.style.patch(mark);
+        }
+    }
+    Line::from(spans)
+}
+
 pub struct OwnerFileViewScreen {
     title: String,
     /// The file as lines, escaped once at push time.
     lines: Vec<Line<'static>>,
-    scroll_offset: u16,
+    /// The last line is the "more lines not shown" notice, not file text.
+    notice: bool,
+    /// Written by `render` (the opening jump depends on the wrapped width) and by
+    /// the keys, so a `Cell`.
+    scroll_offset: Cell<u16>,
+    /// The line [`at_line`](Self::at_line) marks, an index into `lines`.
+    target: Option<usize>,
+    /// The first `render` still has to scroll to the target.
+    jump_pending: Cell<bool>,
     /// Written by `render`, read by the key handler (the help.rs idiom).
     viewport: Cell<ViewportMetrics>,
 }
@@ -136,7 +173,8 @@ impl OwnerFileViewScreen {
                 .map(|line| Line::from(Span::raw(shown(line))))
                 .collect()
         };
-        if lines.len() > MAX_LINES {
+        let notice = lines.len() > MAX_LINES;
+        if notice {
             // Say so instead of letting a long file look complete.
             let hidden = lines.len() - (MAX_LINES - 1);
             lines.truncate(MAX_LINES - 1);
@@ -148,14 +186,28 @@ impl OwnerFileViewScreen {
         Self {
             title: title_for(alias, path),
             lines,
-            scroll_offset: 0,
+            notice,
+            scroll_offset: Cell::new(0),
+            target: None,
+            jump_pending: Cell::new(false),
             viewport: Cell::new(ViewportMetrics::default()),
         }
     }
 
+    /// Open at `line` (a zero-based index into the file's `str::lines`): the line
+    /// gets a gutter marker plus REVERSED+BOLD, and the first render scrolls it to
+    /// two rows below the top. A line past the end, or the truncation notice, is
+    /// dropped: the viewer then opens exactly as [`new`](Self::new) does.
+    pub fn at_line(mut self, line: Option<usize>) -> Self {
+        let held = self.lines.len() - usize::from(self.notice);
+        self.target = line.filter(|at| *at < held);
+        self.jump_pending.set(self.target.is_some());
+        self
+    }
+
     #[cfg(test)]
     pub(super) fn scroll_offset(&self) -> u16 {
-        self.scroll_offset
+        self.scroll_offset.get()
     }
 
     #[cfg(test)]
@@ -175,17 +227,19 @@ impl OwnerFileViewScreen {
     /// Down: add, then clamp. Up: clamp, then subtract (UIFIX-04, as help.rs).
     fn down(&mut self, by: u16) {
         let vp = self.viewport.get();
-        self.scroll_offset = clamp_scroll(
-            self.scroll_offset.saturating_add(by),
+        self.scroll_offset.set(clamp_scroll(
+            self.scroll_offset.get().saturating_add(by),
             vp.total_lines,
             vp.visible_height,
-        );
+        ));
     }
 
     fn up(&mut self, by: u16) {
         let vp = self.viewport.get();
-        self.scroll_offset =
-            clamp_scroll(self.scroll_offset, vp.total_lines, vp.visible_height).saturating_sub(by);
+        self.scroll_offset.set(
+            clamp_scroll(self.scroll_offset.get(), vp.total_lines, vp.visible_height)
+                .saturating_sub(by),
+        );
     }
 }
 
@@ -226,7 +280,7 @@ impl Screen for OwnerFileViewScreen {
                 ScreenAction::None
             }
             KeyCode::Home => {
-                self.scroll_offset = 0;
+                self.scroll_offset.set(0);
                 ScreenAction::None
             }
             KeyCode::End => {
@@ -251,9 +305,29 @@ impl Screen for OwnerFileViewScreen {
         let footer = inner.height >= 3;
         let body_h = inner.height.saturating_sub(u16::from(footer));
         // Long lines wrap at the inner width instead of being cut by the border.
+        // With a target every line gets a gutter, so the wrap is two cells
+        // narrower.
+        let gutter = if self.target.is_some() {
+            GUTTER_CELLS
+        } else {
+            0
+        };
+        let wrap_width = usize::from(inner.width.saturating_sub(gutter)).max(1);
         let mut wrapped: Vec<Line<'static>> = Vec::with_capacity(self.lines.len());
-        for line in &self.lines {
-            wrapped.extend(wrap_line(line, usize::from(inner.width)));
+        let mut target_row = None;
+        for (index, line) in self.lines.iter().enumerate() {
+            let rows = wrap_line(line, wrap_width);
+            if self.target.is_none() {
+                wrapped.extend(rows);
+            } else {
+                let is_target = self.target == Some(index);
+                if is_target {
+                    target_row = Some(wrapped.len());
+                }
+                for (n, row) in rows.into_iter().enumerate() {
+                    wrapped.push(with_gutter(row, is_target, n == 0));
+                }
+            }
             if wrapped.len() > MAX_LINES {
                 wrapped.truncate(MAX_LINES);
                 break;
@@ -264,7 +338,11 @@ impl Screen for OwnerFileViewScreen {
             total_lines: total,
             visible_height: body_h,
         });
-        let offset = clamp_scroll(self.scroll_offset, total, body_h);
+        if let Some(row) = target_row.filter(|_| self.jump_pending.replace(false)) {
+            let top = u16::try_from(row.saturating_sub(TARGET_ROWS_FROM_TOP)).unwrap_or(u16::MAX);
+            self.scroll_offset.set(clamp_scroll(top, total, body_h));
+        }
+        let offset = clamp_scroll(self.scroll_offset.get(), total, body_h);
         frame.render_widget(block, area);
         frame.render_widget(
             Paragraph::new(wrapped).scroll((offset, 0)),
@@ -455,6 +533,105 @@ mod tests {
         // A file that fits gets no notice.
         let fits = OwnerFileViewScreen::new("alder-api", ".planning/a.json", &many_lines(10));
         assert_eq!(fits.line_count(), 10);
+    }
+
+    /// Quick 261118-u4e (I-5): the target gutter, the REVERSED+BOLD row and the
+    /// two-rows-below-the-top jump, inside the borders at 80 columns.
+    #[test]
+    fn at_line_marks_the_target_and_scrolls_it_two_rows_below_the_top() {
+        let mut ctx = ctx_with_aliases(&["alder-api"]);
+        let mut screen =
+            OwnerFileViewScreen::new("alder-api", ".planning/HANDOFF.json", &many_lines(100))
+                .at_line(Some(50));
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal
+            .draw(|frame| screen.render(frame, frame.area(), &ctx))
+            .unwrap();
+        assert_eq!(screen.scroll_offset(), 48);
+        let buf = terminal.backend().buffer().clone();
+        let row = |y: u16| -> String {
+            (0..80u16)
+                .map(|x| buf[(x, y)].symbol().to_owned())
+                .collect()
+        };
+        // Body row 0 is screen row 1: line 48 is at the top, the target 2 below.
+        assert!(row(1).starts_with("\u{2502}  line 048"), "{}", row(1));
+        let target = row(3);
+        let marker = crate::ui::glyphs::POINTER_RIGHT;
+        assert!(
+            target.starts_with(&format!("\u{2502}{marker} line 050")),
+            "{target}"
+        );
+        for y in 1..23u16 {
+            let line = row(y);
+            assert!(
+                line.starts_with('\u{2502}') && line.ends_with('\u{2502}'),
+                "{line:?}"
+            );
+            let modifier = buf[(5, y)].modifier;
+            let marked = modifier.contains(Modifier::REVERSED | Modifier::BOLD);
+            assert_eq!(marked, y == 3, "row {y}");
+            if y != 3 {
+                assert!(!line.contains(marker), "{line}");
+            }
+        }
+        // j moves on from the jumped offset.
+        screen.handle_key(KeyCode::Char('j'), KeyModifiers::NONE, &mut ctx);
+        assert_eq!(screen.scroll_offset(), 49);
+        // A later frame keeps the owner's scroll: the jump happens once.
+        terminal
+            .draw(|frame| screen.render(frame, frame.area(), &ctx))
+            .unwrap();
+        assert_eq!(screen.scroll_offset(), 49);
+    }
+
+    #[test]
+    fn at_line_none_or_out_of_range_renders_like_new() {
+        let ctx = ctx_with_aliases(&["alder-api"]);
+        let text = many_lines(100);
+        let plain = OwnerFileViewScreen::new("alder-api", ".planning/HANDOFF.json", &text);
+        let want = draw(&plain, &ctx, 80, 24);
+        for at in [None, Some(100), Some(5000)] {
+            let screen =
+                OwnerFileViewScreen::new("alder-api", ".planning/HANDOFF.json", &text).at_line(at);
+            assert_eq!(draw(&screen, &ctx, 80, 24), want, "{at:?}");
+            assert_eq!(screen.scroll_offset(), 0);
+        }
+        // The truncation notice is not a target.
+        let long = many_lines(70_000);
+        let screen = OwnerFileViewScreen::new("alder-api", ".planning/HANDOFF.json", &long)
+            .at_line(Some(usize::from(u16::MAX) - 1));
+        assert!(screen.target.is_none());
+        let last_real = OwnerFileViewScreen::new("alder-api", ".planning/HANDOFF.json", &long)
+            .at_line(Some(usize::from(u16::MAX) - 2));
+        assert!(last_real.target.is_some());
+    }
+
+    #[test]
+    fn a_target_near_the_top_or_with_wrapping_stays_inside_the_borders() {
+        let ctx = ctx_with_aliases(&["alder-api"]);
+        let long = format!("target {}", "word ".repeat(40));
+        let text = format!("one\ntwo\n{long}\nfour\n");
+        let screen =
+            OwnerFileViewScreen::new("alder-api", ".planning/HANDOFF.json", &text).at_line(Some(2));
+        let out = draw(&screen, &ctx, 40, 12);
+        assert_eq!(
+            screen.scroll_offset(),
+            0,
+            "two rows from the top is the top"
+        );
+        let marker = crate::ui::glyphs::POINTER_RIGHT;
+        assert_eq!(
+            out.matches(marker).count(),
+            1,
+            "one marker for a wrapped line:\n{out}"
+        );
+        for row in out.lines().skip(1).take(10) {
+            assert!(
+                row.starts_with('\u{2502}') && row.ends_with('\u{2502}'),
+                "{row:?}"
+            );
+        }
     }
 
     #[test]
