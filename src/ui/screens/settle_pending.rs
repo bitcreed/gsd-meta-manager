@@ -620,7 +620,7 @@ mod tests {
         }
 
         /// The popup flow of the tracer: `x w <reason> Enter`.
-        fn to_popup(&mut self, ctx: &mut AppContext) {
+        fn open_popup(&mut self, ctx: &mut AppContext) {
             self.key(ctx, KeyCode::Char('x'));
             self.key(ctx, KeyCode::Char('w'));
             self.keys(ctx, "no device here");
@@ -633,7 +633,7 @@ mod tests {
         take_settle_launches();
         let mut ctx = fixture_ctx(root, ALIAS);
         let mut stack = Stack(vec![Box::new(InboxScreen::new())]);
-        stack.to_popup(&mut ctx);
+        stack.open_popup(&mut ctx);
         stack.key(&mut ctx, KeyCode::Char('y'));
         assert_eq!(ctx.settle_pending.len(), 1);
         (ctx, stack)
@@ -848,7 +848,7 @@ mod tests {
         stack.key(&mut ctx, KeyCode::Enter);
         stack.key(&mut ctx, KeyCode::Char('j'));
         assert_eq!(ctx.inbox_view.item_cursor.as_deref(), Some("01-UAT.md#2"));
-        stack.to_popup(&mut ctx);
+        stack.open_popup(&mut ctx);
         stack.key(&mut ctx, KeyCode::Char('y'));
         assert_eq!(ctx.settle_pending.len(), 1);
         assert_eq!(ctx.settle_pending.entries()[0].words, "test 2 won't do");
@@ -919,7 +919,7 @@ mod tests {
         let mut ctx = fixture_ctx(&root, ALIAS);
         ctx.active_sessions.push(session_in(&root));
         let mut stack = Stack(vec![Box::new(InboxScreen::new())]);
-        stack.to_popup(&mut ctx);
+        stack.open_popup(&mut ctx);
         stack.key(&mut ctx, KeyCode::Char('y'));
         assert_eq!(stack.0.len(), 1, "the popup closed");
         assert_eq!(ctx.settle_pending.len(), 1, "the paste happens outside");
@@ -965,8 +965,169 @@ mod tests {
     fn a_second_yes_on_the_same_checks_replaces_the_entry() {
         let (_dir, root) = temp_fixture("uat-pending");
         let (mut ctx, mut stack) = settled_in_inbox(&root);
-        stack.to_popup(&mut ctx);
+        stack.open_popup(&mut ctx);
         stack.key(&mut ctx, KeyCode::Char('y'));
         assert_eq!(ctx.settle_pending.len(), 1);
+    }
+
+    /// The detail view on the Owner block, rendered at `width` x `height`.
+    fn detail_stack(ctx: &mut AppContext, key: &GroupKey) -> Stack {
+        let screen =
+            crate::ui::screens::detail::DetailScreen::opened_on_owner(ALIAS.to_owned(), key, ctx);
+        assert!(screen.owner_focused(), "the Owner block holds the keyboard");
+        let stack = Stack(vec![Box::new(screen)]);
+        stack.render(ctx, 100, 30);
+        stack
+    }
+
+    fn uat_key(ctx: &AppContext) -> GroupKey {
+        crate::ui::screens::inbox::stop_rows(ctx).remove(0).src.key
+    }
+
+    /// The line of `stack` that carries `needle`, panicking with the screen.
+    fn line_with(stack: &Stack, ctx: &AppContext, w: u16, h: u16, needle: &str) -> String {
+        let lines = stack.render(ctx, w, h);
+        lines
+            .iter()
+            .find(|line| line.contains(needle))
+            .cloned()
+            .unwrap_or_else(|| panic!("no line with {needle:?}:\n{}", lines.join("\n")))
+    }
+
+    /// Yes from the Owner block: the row keeps its place, shows the badge in place
+    /// of its phrase, age and command, and the cursor marking still covers it.
+    #[test]
+    fn yes_in_the_owner_block_badges_the_row_and_both_hosts_share_the_entry() {
+        take_settle_launches();
+        let (_dir, root) = temp_fixture("uat-pending");
+        let mut ctx = fixture_ctx(&root, ALIAS);
+        let key = uat_key(&ctx);
+        let mut stack = detail_stack(&mut ctx, &key);
+        stack.key(&mut ctx, KeyCode::Enter);
+        stack.open_popup(&mut ctx);
+        stack.key(&mut ctx, KeyCode::Char('y'));
+        assert_eq!(take_settle_launches().len(), 1);
+        assert_eq!(ctx.settle_pending.len(), 1);
+        let row = line_with(&stack, &ctx, 100, 30, "settling");
+        assert!(
+            row.contains("settling\u{2026} won't do \u{b7} launched 0:0"),
+            "{row}"
+        );
+        assert!(row.contains("TEST") && row.contains("ph 01"), "{row}");
+        assert!(row.trim_start().starts_with('>'), "the cursor mark: {row}");
+        // The same entry shows on the inbox row of the same phase.
+        let inbox = Stack(vec![Box::new(InboxScreen::new())]);
+        let row = line_with(&inbox, &ctx, 100, 30, "settling");
+        assert!(row.contains(ALIAS) && row.contains("won't do"), "{row}");
+        // And an entry registered from the inbox shows in the Owner block.
+        let (_dir2, root2) = temp_fixture("uat-pending");
+        let (mut ctx2, _inbox) = settled_in_inbox(&root2);
+        let key2 = uat_key(&ctx2);
+        let block = detail_stack(&mut ctx2, &key2);
+        let row = line_with(&block, &ctx2, 100, 30, "settling");
+        assert!(row.contains("won't do \u{b7} launched"), "{row}");
+    }
+
+    /// The done row of the Owner block: drawn only, outside the stops and the
+    /// grid, the block keeps its height while it lingers and is as before after.
+    #[test]
+    fn a_finished_settle_lingers_in_the_owner_block_without_a_stop() {
+        use crate::ui::screens::owner_block::{block_height, block_model, block_model_with};
+        take_settle_launches();
+        let (_dir, root) = temp_fixture("uat-pending");
+        let (mut ctx, _inbox) = settled_in_inbox(&root);
+        let view = crate::ui::screens::owner_block::OwnerBlockState::default();
+        let live = |ctx: &AppContext, pending: bool| {
+            let digest = ctx.owner_digest(ALIAS).unwrap();
+            match pending {
+                true => block_model_with(
+                    ALIAS,
+                    "v1",
+                    digest,
+                    &view,
+                    100,
+                    Some((&ctx.settle_pending, Instant::now())),
+                ),
+                false => block_model(ALIAS, "v1", digest, &view, 100),
+            }
+        };
+        record(&root, &["2", "3"]);
+        reread(&mut ctx, &root);
+        assert!(refresh_at(&mut ctx, ALIAS, 5));
+        let digest = ctx.owner_digest(ALIAS).unwrap();
+        let skeleton = crate::ui::screens::owner_block::skeleton(digest, &view);
+        let bare = live(&ctx, false);
+        let with = live(&ctx, true);
+        assert!(
+            !bare.has_content || bare.body.len() < with.body.len(),
+            "the bare block has no row"
+        );
+        assert_eq!(with.stops, skeleton.stops, "a lingering row is no stop");
+        assert_eq!(with.stop_lines.len(), skeleton.stops.len());
+        for line in with.stop_lines.iter().flatten() {
+            assert!(
+                !with.body[*line].to_string().contains('\u{2713}'),
+                "no stop points at the lingering line"
+            );
+        }
+        assert!(
+            with.has_content,
+            "the block keeps its height while it lingers"
+        );
+        assert!(block_height(&with, 30) > 0);
+        let text: String = with.body.iter().map(|l| l.to_string()).collect();
+        assert!(text.contains("\u{2713} phase 01 skipped"), "{text}");
+        assert!(
+            with.body
+                .iter()
+                .all(|line| !line.spans.iter().any(|s| s.content.contains(">"))),
+            "no cursor mark on it"
+        );
+        // After the linger the block is exactly what it is without pending state.
+        let since = match stage(&ctx) {
+            Stage::Done { since } => since,
+            other => panic!("{other:?}"),
+        };
+        assert!(ctx.settle_pending.expire(since + LINGER));
+        let after = live(&ctx, true);
+        assert_eq!(after.body.len(), bare.body.len());
+        assert_eq!(block_height(&after, 30), block_height(&bare, 30));
+    }
+
+    /// 80x24: the pending row is one line with `settling...`, the stage and the
+    /// timer, in the inbox and in the detail view; the done line fits as well.
+    #[test]
+    fn the_badge_fits_80_columns_in_both_hosts() {
+        take_settle_launches();
+        let (_dir, root) = temp_fixture("uat-pending");
+        let (mut ctx, inbox) = settled_in_inbox(&root);
+        let key = uat_key(&ctx);
+        let detail = detail_stack(&mut ctx, &key);
+        for (host, stack) in [("inbox", &inbox), ("detail", &detail)] {
+            let row = line_with(stack, &ctx, 80, 24, "settling");
+            eprintln!("{host} 80x24 pending: {row}");
+            assert!(cells(&row) <= 80, "{row}");
+            assert!(
+                row.contains("launched") && row.contains(" 0:0"),
+                "{host}: {row}"
+            );
+            assert_eq!(
+                stack
+                    .render(&ctx, 80, 24)
+                    .iter()
+                    .filter(|line| line.contains("settling"))
+                    .count(),
+                1,
+                "{host}: one line, never wrapped"
+            );
+        }
+        record(&root, &["2", "3"]);
+        reread(&mut ctx, &root);
+        assert!(refresh_at(&mut ctx, ALIAS, 5));
+        for (host, stack) in [("inbox", &inbox), ("detail", &detail)] {
+            let row = line_with(stack, &ctx, 80, 24, "\u{2713}");
+            eprintln!("{host} 80x24 done: {row}");
+            assert!(row.contains("\u{2713} phase 01 skipped"), "{host}: {row}");
+        }
     }
 }

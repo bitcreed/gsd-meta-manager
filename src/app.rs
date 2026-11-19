@@ -3880,7 +3880,7 @@ impl App {
         // A settle's pending badge describes a row of a registered project only
         // (quick 261118-v6l); the entries are memory-only and small, but a removed
         // project's `settling…` must not outlive the project.
-        self.ctx.settle_pending.retain_registered(&registered);
+        self.ctx.settle_pending.retain_registered(registered);
         // The unreadable marks follow their digests: an unregistered alias has
         // nothing to be unreadable about (37-04).
         self.ctx

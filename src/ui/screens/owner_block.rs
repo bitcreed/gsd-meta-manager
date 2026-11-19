@@ -29,6 +29,8 @@ use std::collections::HashSet;
 
 use super::detail::{fit_cells, fit_spans, shown};
 use super::driver::muted_style;
+use super::settle_pending::{self, PendingSettle, PendingSettles};
+use std::time::Instant;
 
 /// The block hides below this many tab rows (D-15).
 const MIN_TAB_ROWS: u16 = 12;
@@ -313,6 +315,7 @@ fn header_line(alias: &str, milestone: &str, gate: &ClosesAfter, width: usize) -
 // ---------------------------------------------------------------------------
 
 /// One body row before layout: every string already escaped.
+#[derive(Clone)]
 pub(crate) struct RowCells {
     pub(crate) lane: Lane,
     /// `ws {name} ` (Magenta) for a workstream group.
@@ -571,15 +574,20 @@ pub(crate) fn current_sources(digest: &OwnerDigest) -> Vec<RowSrc> {
             picked.push(RowSrc::single(group));
         }
     }
-    picked.sort_by_key(|src| {
-        let g = &src.group;
-        (
-            g.lane.order(),
-            u8::from(g.lane == Lane::Test && !g.closes_phase),
-            u8::from(g.workstream.is_some()),
-        )
-    });
+    picked.sort_by_key(current_order_key);
     picked
+}
+
+/// The key the current rows sort by (D-17): lane, then closes-a-phase first within
+/// TEST, then root groups before workstream groups. A lingering row of a finished
+/// settle is placed by it too.
+fn current_order_key(src: &RowSrc) -> (u8, u8, u8) {
+    let g = &src.group;
+    (
+        g.lane.order(),
+        u8::from(g.lane == Lane::Test && !g.closes_phase),
+        u8::from(g.workstream.is_some()),
+    )
 }
 
 /// The key of the row `entry` is drawn as: the BLOCKED aggregate, a merged row's
@@ -1531,13 +1539,38 @@ fn patch_line(line: &mut Line<'static>, style: Style) {
 }
 
 /// The block for one project at `width` cells, with the view state's expanded
-/// groups and open folds applied.
+/// groups and open folds applied: [`block_model_with`] without pending settles.
+/// What the tests build (the Phases tab always passes the context's).
+#[cfg(test)]
 pub(crate) fn block_model(
     alias: &str,
     milestone: &str,
     digest: &OwnerDigest,
     view: &OwnerBlockState,
     width: u16,
+) -> BlockModel {
+    block_model_with(alias, milestone, digest, view, width, None)
+}
+
+/// The cells a pending settle's badge takes the place of (quick 261118-v6l, I-6).
+fn clear_for_badge(cells: &mut RowCells) {
+    cells.phrase.clear();
+    cells.age = None;
+    cells.command.clear();
+}
+
+/// [`block_model`] with the pending settles of the context (quick 261118-v6l): a
+/// row a settle covers shows its badge in place of the phrase, age and command, and
+/// a finished settle's row, already gone from the digest, lingers as a draw-only
+/// line. Such a line is in the body only: no stop, no item lines, no expansion,
+/// and it is left out of the grid so nothing reflows when it goes.
+pub(crate) fn block_model_with(
+    alias: &str,
+    milestone: &str,
+    digest: &OwnerDigest,
+    view: &OwnerBlockState,
+    width: u16,
+    pending: Option<(&PendingSettles, Instant)>,
 ) -> BlockModel {
     let width = usize::from(width);
     let sk = skeleton(digest, view);
@@ -1559,14 +1592,72 @@ pub(crate) fn block_model(
         .chain(&ack)
         .map(|src| src.cells(digest))
         .collect();
-    let grid = grid_for(&all, width);
+    // The lingering rows of finished settles: `(rows of `current` before it, cells,
+    // the settle)`, by the current rows' own order.
+    let lingering: Vec<(usize, RowCells, &PendingSettle)> = pending
+        .map(|(settles, _)| {
+            let live: HashSet<GroupKey> = current.iter().map(|src| src.key.clone()).collect();
+            settles
+                .lingering_block(alias, &live)
+                .into_iter()
+                .map(|(src, entry)| {
+                    let before = current
+                        .iter()
+                        .filter(|real| current_order_key(real) <= current_order_key(src))
+                        .count();
+                    let mut cells = src.cells(digest);
+                    clear_for_badge(&mut cells);
+                    (before, cells, entry)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    // A lingering row sizes the grid only when it is alone, so nothing reflows.
+    let grid = if all.is_empty() {
+        let sized: Vec<RowCells> = lingering
+            .iter()
+            .map(|(_, cells, _)| cells.clone())
+            .collect();
+        grid_for(&sized, width)
+    } else {
+        grid_for(&all, width)
+    };
+    // Where the phrase column starts: the badge takes the place of phrase, age and
+    // command from here to the row end.
+    let phrase_x = 2 + TAG_W + 1 + grid.phase_w + 2 + grid.name_w + 2 + grid.checks_w + 2;
+    let now = pending.map(|(_, now)| now);
+    let ghost_lines: Vec<(usize, Line<'static>)> = lingering
+        .iter()
+        .map(|(before, cells, entry)| {
+            let mut line = row_line(cells, &grid, width);
+            patch_line(&mut line, Style::default().add_modifier(Modifier::DIM));
+            let line = settle_pending::badged_row(
+                line,
+                phrase_x,
+                entry,
+                now.unwrap_or_else(Instant::now),
+                width,
+            );
+            (*before, line)
+        })
+        .collect();
 
     let mut body: Vec<Line<'static>> = Vec::new();
     let mut stop_lines: Vec<Option<usize>> = Vec::new();
     let mut item_lines: Vec<(GroupKey, SubStop, usize)> = Vec::new();
-    let mut push_rows = |srcs: &[RowSrc], cells: &[RowCells], sub_headers: bool, dimmed: bool| {
+    let mut push_rows = |srcs: &[RowSrc],
+                         cells: &[RowCells],
+                         sub_headers: bool,
+                         dimmed: bool,
+                         ghosts: &[(usize, Line<'static>)]| {
         let mut last_label: Option<Option<String>> = None;
-        for (src, row) in srcs.iter().zip(cells) {
+        for (index, (src, row)) in srcs.iter().zip(cells).enumerate() {
+            body.extend(
+                ghosts
+                    .iter()
+                    .filter(|(before, _)| *before == index)
+                    .map(|(_, line)| line.clone()),
+            );
             if sub_headers {
                 let label = scope_label(&src.group.scope);
                 if last_label.as_ref() != Some(&label) {
@@ -1576,7 +1667,22 @@ pub(crate) fn block_model(
                 }
             }
             stop_lines.push(Some(body.len()));
-            let mut line = row_line(row, &grid, width);
+            let mut line = match pending
+                .and_then(|(settles, now)| settles.for_row(alias, src).map(|entry| (entry, now)))
+            {
+                Some((entry, now)) => {
+                    let mut bare = src.cells(digest);
+                    clear_for_badge(&mut bare);
+                    settle_pending::badged_row(
+                        row_line(&bare, &grid, width),
+                        phrase_x,
+                        entry,
+                        now,
+                        width,
+                    )
+                }
+                None => row_line(row, &grid, width),
+            };
             if dimmed {
                 patch_line(&mut line, Style::default().add_modifier(Modifier::DIM));
             }
@@ -1595,12 +1701,19 @@ pub(crate) fn block_model(
                 }
             }
         }
+        // The lingering rows that sort after every real row of this section.
+        body.extend(
+            ghosts
+                .iter()
+                .filter(|(before, _)| *before >= srcs.len())
+                .map(|(_, line)| line.clone()),
+        );
     };
     let (cur_cells, rest) = all.split_at(current.len());
     let (old_cells, ack_cells) = rest.split_at(old.len());
-    push_rows(&current, cur_cells, false, false);
-    push_rows(&old, old_cells, true, false);
-    push_rows(&ack, ack_cells, false, true);
+    push_rows(&current, cur_cells, false, false, &ghost_lines);
+    push_rows(&old, old_cells, true, false, &[]);
+    push_rows(&ack, ack_cells, false, true, &[]);
 
     let cursor_fold_line = fold_line(digest, view, width.saturating_sub(CURSOR_GUTTER_CELLS));
     let (fold_line, fold_marks) = match fold_line(digest, view, width) {
