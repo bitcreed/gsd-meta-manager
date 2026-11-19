@@ -38335,9 +38335,9 @@ mod tests {
         key(&mut screen, &mut ctx, KeyCode::Char('g'));
         key(&mut screen, &mut ctx, KeyCode::Char('j'));
         key(&mut screen, &mut ctx, KeyCode::Enter);
-        // Walk past the expansion (five items, then the next row; D-04) so its
-        // tail (overflow, file) is in the window.
-        for _ in 0..6 {
+        // Walk past the expansion (five items, the file line, then the next row;
+        // D-04, quick 261118-u4e) so its tail (overflow, file) is in the window.
+        for _ in 0..7 {
             key(&mut screen, &mut ctx, KeyCode::Char('j'));
         }
         let text = owner_draw(&screen, &ctx);
@@ -38354,7 +38354,7 @@ mod tests {
         );
         assert!(text.contains("Phases"), "{text}");
         // Back at the group the detail line and the first items show.
-        for _ in 0..6 {
+        for _ in 0..7 {
             key(&mut screen, &mut ctx, KeyCode::Char('k'));
         }
         let text = owner_draw(&screen, &ctx);
