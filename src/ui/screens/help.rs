@@ -152,6 +152,50 @@ impl HelpScreen {
         screen
     }
 
+    /// Run one find for `key`: cycle when it repeats the active find, else start
+    /// at the first match at or below the top row (wrapping to the first in the
+    /// body), then scroll so the current match is visible.
+    fn find(&mut self, key: HelpKey, experimental: bool) {
+        let lines = help_lines(experimental);
+        let entries = help_entries(&lines);
+        let matched = matching_entries(&entries, key);
+        if matched.is_empty() {
+            self.highlight = Some(Highlight::Missing { key });
+            return;
+        }
+        let vp = self.viewport.get();
+        let current = match self.highlight {
+            Some(Highlight::Found {
+                key: active,
+                current,
+            }) if active == key => (current + 1) % matched.len(),
+            _ => {
+                let top = usize::from(clamp_scroll(
+                    self.scroll_offset,
+                    vp.total_lines,
+                    vp.visible_height,
+                ));
+                matched
+                    .iter()
+                    .position(|&m| entries[m].first >= top)
+                    .unwrap_or(0)
+            }
+        };
+        self.highlight = Some(Highlight::Found { key, current });
+        self.scroll_offset = reveal_offset(self.scroll_offset, entries[matched[current]].first, vp);
+    }
+
+    /// The first line of the current match, for the tests.
+    #[cfg(test)]
+    fn current_line(&self, experimental: bool) -> Option<usize> {
+        let Some(Highlight::Found { key, current }) = self.highlight else {
+            return None;
+        };
+        let entries = help_entries(&help_lines(experimental));
+        let matched = matching_entries(&entries, key);
+        matched.get(current).map(|&m| entries[m].first)
+    }
+
     /// The offset a test can read without rendering a frame.
     #[cfg(test)]
     pub(super) fn scroll_offset(&self) -> u16 {
@@ -670,7 +714,7 @@ impl Screen for HelpScreen {
     fn handle_key(
         &mut self,
         code: KeyCode,
-        _modifiers: KeyModifiers,
+        modifiers: KeyModifiers,
         ctx: &mut AppContext,
     ) -> ScreenAction {
         let vp = self.viewport.get();
@@ -716,23 +760,14 @@ impl Screen for HelpScreen {
                 ScreenAction::None
             }
             // Every other key is a find (quick 261118-tki): mark the rows whose key
-            // column lists it. Keys that are not a plain char are consumed for now.
-            KeyCode::Char(c) => {
-                let key = HelpKey {
-                    code: KeyCode::Char(c),
-                    ctrl: false,
-                };
-                let lines = help_lines(ctx.experimental);
-                let entries = help_entries(&lines);
-                self.highlight = if matching_entries(&entries, key).is_empty() {
-                    None
-                } else {
-                    Some(Highlight::Found { key, current: 0 })
-                };
-                ctx.needs_redraw = true;
+            // column lists it. Modifier-only and null events change nothing.
+            _ => {
+                if let Some(key) = HelpKey::pressed(code, modifiers) {
+                    self.find(key, ctx.experimental);
+                    ctx.needs_redraw = true;
+                }
                 ScreenAction::None
             }
-            _ => ScreenAction::None, // Consume all other keys
         }
     }
 
@@ -743,19 +778,25 @@ impl Screen for HelpScreen {
 
         let mut help_text = help_lines(ctx.experimental);
         let mut title = " Help ".to_string();
-        if let Some(Highlight::Found { key, current }) = self.highlight {
-            let entries = help_entries(&help_text);
-            let matched = matching_entries(&entries, key);
-            if !matched.is_empty() {
-                let current = current.min(matched.len() - 1);
-                title = format!(
-                    " Help  {}: {}/{} ",
-                    key_label(key),
-                    current + 1,
-                    matched.len()
-                );
-                help_text = apply_highlight(help_text, &entries, &matched, current);
+        match self.highlight {
+            Some(Highlight::Found { key, current }) => {
+                let entries = help_entries(&help_text);
+                let matched = matching_entries(&entries, key);
+                if !matched.is_empty() {
+                    let current = current.min(matched.len() - 1);
+                    title = format!(
+                        " Help  {}: {}/{} ",
+                        key_label(key),
+                        current + 1,
+                        matched.len()
+                    );
+                    help_text = apply_highlight(help_text, &entries, &matched, current);
+                }
             }
+            Some(Highlight::Missing { key }) => {
+                title = format!(" Help  no help entry for {} ", key_label(key));
+            }
+            None => {}
         }
         let block = Block::default().borders(Borders::ALL).title(title);
         let inner = block.inner(popup_area);
@@ -817,6 +858,27 @@ impl HelpKey {
             ctrl: false,
         }
     }
+
+    fn of(code: KeyCode) -> Self {
+        Self { code, ctrl: false }
+    }
+
+    /// A key press as the help body would name it. Shift is ignored (chars carry
+    /// their case), except that an ASCII lowercase char reported with SHIFT is
+    /// uppercased, since some keyboard protocols send Shift+d that way. Ctrl is
+    /// part of the key. Alt is ignored. Modifier-only and null events are not keys.
+    fn pressed(code: KeyCode, modifiers: KeyModifiers) -> Option<Self> {
+        let ctrl = modifiers.contains(KeyModifiers::CONTROL);
+        let code = match code {
+            KeyCode::Modifier(_) | KeyCode::Null => return None,
+            KeyCode::Char(c) if ctrl => KeyCode::Char(c.to_ascii_lowercase()),
+            KeyCode::Char(c) if modifiers.contains(KeyModifiers::SHIFT) => {
+                KeyCode::Char(c.to_ascii_uppercase())
+            }
+            other => other,
+        };
+        Some(Self { code, ctrl })
+    }
 }
 
 /// The headings whose rows never name a key: their first column holds filter
@@ -838,15 +900,83 @@ fn key_tokens(label: &str) -> Result<Vec<HelpKey>, String> {
     let mut keys = Vec::new();
     for word in label.split_whitespace().filter(|w| *w != "/") {
         for piece in word.split('/').filter(|p| !p.is_empty()) {
-            let mut chars = piece.chars();
-            match (chars.next(), chars.next()) {
-                (Some(c), None) => keys.push(HelpKey::plain(c)),
-                _ => return Err(piece.to_string()),
-            }
+            keys.extend(piece_keys(piece)?);
         }
     }
     Ok(keys)
 }
+
+/// The keys one `/`-free piece of a key column names. Case-sensitive.
+fn piece_keys(piece: &str) -> Result<Vec<HelpKey>, String> {
+    let mut chars = piece.chars();
+    if let (Some(c), None) = (chars.next(), chars.next()) {
+        return Ok(vec![HelpKey::plain(c)]);
+    }
+    let code = match piece {
+        "Enter" => KeyCode::Enter,
+        "Esc" => KeyCode::Esc,
+        "Tab" => KeyCode::Tab,
+        "Up" => KeyCode::Up,
+        "Down" => KeyCode::Down,
+        "Left" => KeyCode::Left,
+        "Right" => KeyCode::Right,
+        "Home" => KeyCode::Home,
+        "End" => KeyCode::End,
+        "Space" => KeyCode::Char(' '),
+        "PgUp" => KeyCode::PageUp,
+        "PgDn" => KeyCode::PageDown,
+        "Shift+Tab" => KeyCode::BackTab,
+        _ => return composite_keys(piece).ok_or_else(|| piece.to_string()),
+    };
+    Ok(vec![HelpKey::of(code)])
+}
+
+/// `Shift+<letter>`, `Ctrl+<char>` and `<digit>-<digit>` pieces.
+fn composite_keys(piece: &str) -> Option<Vec<HelpKey>> {
+    let single = |rest: &str| {
+        let mut chars = rest.chars();
+        match (chars.next(), chars.next()) {
+            (Some(c), None) => Some(c),
+            _ => None,
+        }
+    };
+    if let Some(c) = piece.strip_prefix("Shift+").and_then(single) {
+        return c
+            .is_ascii_alphabetic()
+            .then(|| vec![HelpKey::plain(c.to_ascii_uppercase())]);
+    }
+    if let Some(c) = piece.strip_prefix("Ctrl+").and_then(single) {
+        return Some(vec![HelpKey {
+            code: KeyCode::Char(c.to_ascii_lowercase()),
+            ctrl: true,
+        }]);
+    }
+    let b = piece.as_bytes();
+    if b.len() == 3
+        && b[0].is_ascii_digit()
+        && b[1] == b'-'
+        && b[2].is_ascii_digit()
+        && b[0] <= b[2]
+    {
+        return Some(
+            (b[0]..=b[2])
+                .map(|d| HelpKey::plain(char::from(d)))
+                .collect(),
+        );
+    }
+    None
+}
+
+/// The first words of key-section labels that are not keys: the mouse gestures
+/// and the inbox's pseudo-keys. Anything else must tokenize (the coverage test).
+const NON_KEY_LABELS: [&str; 6] = [
+    "Click",
+    "Double-click",
+    "Wheel",
+    "Shift+drag",
+    "Stale",
+    "Labels",
+];
 
 /// One key-section row of the help body (with its continuation rows).
 #[derive(Clone, Debug)]
@@ -855,6 +985,11 @@ struct HelpEntry {
     first: usize,
     last: usize,
     keys: Vec<HelpKey>,
+    /// The label is one of [`NON_KEY_LABELS`]: it names no key on purpose. Only the
+    /// coverage test reads it (it tells an exempt entry from one that failed to
+    /// tokenize), hence the allow.
+    #[cfg_attr(not(test), allow(dead_code))]
+    exempt: bool,
 }
 
 fn line_text(line: &Line<'static>) -> String {
@@ -882,10 +1017,20 @@ fn help_entries(lines: &[Line<'static>]) -> Vec<HelpEntry> {
                     entry.last = i;
                 }
             } else {
+                let exempt = label
+                    .split_whitespace()
+                    .next()
+                    .is_some_and(|w| NON_KEY_LABELS.contains(&w));
+                let keys = if exempt {
+                    Vec::new()
+                } else {
+                    key_tokens(label).unwrap_or_default()
+                };
                 entries.push(HelpEntry {
                     first: i,
                     last: i,
-                    keys: key_tokens(label).unwrap_or_default(),
+                    keys,
+                    exempt,
                 });
                 open = true;
             }
@@ -911,6 +1056,26 @@ fn matching_entries(entries: &[HelpEntry], key: HelpKey) -> Vec<usize> {
 enum Highlight {
     /// `current` indexes the matching entries, in body order.
     Found { key: HelpKey, current: usize },
+    /// No key column lists `key`.
+    Missing { key: HelpKey },
+}
+
+/// The offset that shows `line`: the current one when the line is already
+/// visible (not under the more-indicator row), else [`clamp_scroll`] with the
+/// line on the top row, or at the view's maximum near the end.
+fn reveal_offset(offset: u16, line: usize, vp: ViewportMetrics) -> u16 {
+    let top = clamp_scroll(offset, vp.total_lines, vp.visible_height);
+    let line = u16::try_from(line).unwrap_or(u16::MAX);
+    let mut end = top.saturating_add(vp.visible_height);
+    if more_below(top, vp.total_lines, vp.visible_height) {
+        // MORE_INDICATOR paints over the last visible row.
+        end = end.saturating_sub(1);
+    }
+    if (top..end).contains(&line) {
+        top
+    } else {
+        clamp_scroll(line, vp.total_lines, vp.visible_height)
+    }
 }
 
 /// `lines` with every row of every matched entry marked: `> ` plus
@@ -950,6 +1115,22 @@ fn key_label(key: HelpKey) -> String {
         KeyCode::Char(' ') => "Space".to_string(),
         KeyCode::Char(c) if c.is_ascii_graphic() => c.to_string(),
         KeyCode::Char(c) => format!("U+{:04X}", u32::from(c)),
+        KeyCode::Enter => "Enter".to_string(),
+        KeyCode::Esc => "Esc".to_string(),
+        KeyCode::Tab => "Tab".to_string(),
+        KeyCode::BackTab => "Shift+Tab".to_string(),
+        KeyCode::Backspace => "Backspace".to_string(),
+        KeyCode::Delete => "Del".to_string(),
+        KeyCode::Insert => "Ins".to_string(),
+        KeyCode::Home => "Home".to_string(),
+        KeyCode::End => "End".to_string(),
+        KeyCode::Up => "Up".to_string(),
+        KeyCode::Down => "Down".to_string(),
+        KeyCode::Left => "Left".to_string(),
+        KeyCode::Right => "Right".to_string(),
+        KeyCode::PageUp => "PgUp".to_string(),
+        KeyCode::PageDown => "PgDn".to_string(),
+        KeyCode::F(n) => format!("F{n}"),
         _ => "that key".to_string(),
     };
     if key.ctrl {
@@ -2381,5 +2562,327 @@ mod tests {
         let x = rows[at].find("> s").expect("marker") as u16;
         let cell = buffer.cell((x, at as u16)).expect("cell");
         assert!(cell.modifier.contains(Modifier::REVERSED));
+    }
+
+    fn keys(codes: &[KeyCode]) -> Vec<HelpKey> {
+        codes.iter().copied().map(HelpKey::of).collect()
+    }
+
+    fn ctrl_key(c: char) -> HelpKey {
+        HelpKey {
+            code: KeyCode::Char(c),
+            ctrl: true,
+        }
+    }
+
+    #[test]
+    fn key_tokens_covers_every_spelling_the_help_uses() {
+        use KeyCode::{Down, Enter, Esc, Left, PageDown, PageUp, Right, Tab, Up};
+        let space = HelpKey::plain(' ');
+        let cases: Vec<(&str, Vec<HelpKey>)> = vec![
+            ("j / Down", vec![HelpKey::plain('j'), HelpKey::of(Down)]),
+            (
+                "j/k PgUp/PgDn",
+                [plain_keys("jk"), keys(&[PageUp, PageDown])].concat(),
+            ),
+            ("q / Esc", vec![HelpKey::plain('q'), HelpKey::of(Esc)]),
+            ("Esc / q", vec![HelpKey::of(Esc), HelpKey::plain('q')]),
+            ("Ctrl+C", vec![ctrl_key('c')]),
+            ("1-8", plain_keys("12345678")),
+            ("Enter / Space", vec![HelpKey::of(Enter), space]),
+            ("Shift+D", plain_keys("D")),
+            ("Shift+Tab", keys(&[KeyCode::BackTab])),
+            ("1 2 3 4", plain_keys("1234")),
+            (
+                "j/k Up/Down",
+                [plain_keys("jk"), keys(&[Up, Down])].concat(),
+            ),
+            ("Up / k", vec![HelpKey::of(Up), HelpKey::plain('k')]),
+            ("Left / Esc", keys(&[Left, Esc])),
+            ("Right / Enter", keys(&[Right, Enter])),
+            ("Down / Enter", keys(&[Down, Enter])),
+            ("Tab", keys(&[Tab])),
+            ("Left / Right", keys(&[Left, Right])),
+            ("Space", vec![space]),
+            ("PgUp / PgDn", keys(&[PageUp, PageDown])),
+            ("Home / End", keys(&[KeyCode::Home, KeyCode::End])),
+        ];
+        for (label, expected) in cases {
+            assert_eq!(key_tokens(label), Ok(expected), "{label}");
+        }
+        assert!(key_tokens("8-1").is_err());
+        assert!(key_tokens("Click value").is_err());
+        assert_eq!(key_tokens("Click value"), Err("Click".to_string()));
+    }
+
+    #[test]
+    fn every_key_row_names_a_key_or_is_explicitly_exempt() {
+        for experimental in [true, false] {
+            let lines = help_lines(experimental);
+            let entries = help_entries(&lines);
+            assert!(!entries.is_empty());
+            for e in &entries {
+                let text = text_of(&lines[e.first]);
+                assert_eq!(text.chars().nth(15), Some(' '), "label overflows: {text:?}");
+                let label: String = text.chars().skip(2).take(13).collect();
+                let label = label.trim();
+                if e.exempt {
+                    assert!(e.keys.is_empty(), "{text:?}");
+                    continue;
+                }
+                match key_tokens(label) {
+                    Ok(k) => assert!(!k.is_empty(), "no key in {text:?}"),
+                    Err(piece) => panic!(
+                        "experimental={experimental}: {piece:?} in {text:?} is neither a key \
+                         nor in NON_KEY_LABELS"
+                    ),
+                }
+            }
+        }
+        let on = body_with(true);
+        for heading in NON_KEY_SECTIONS {
+            assert!(on.lines().any(|l| l == heading), "no heading {heading}");
+        }
+        let lines = help_lines(true);
+        let entries = help_entries(&lines);
+        for word in NON_KEY_LABELS {
+            assert!(
+                entries.iter().any(|e| {
+                    let t = text_of(&lines[e.first]);
+                    let label: String = t.chars().skip(2).take(13).collect();
+                    e.exempt && label.split_whitespace().next() == Some(word)
+                }),
+                "stale exemption {word}"
+            );
+        }
+    }
+
+    /// Render the screen at 100x30 and return its rows.
+    fn rendered_rows(screen: &HelpScreen, ctx: &AppContext) -> Vec<String> {
+        use ratatui::{backend::TestBackend, Terminal};
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).expect("backend");
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                Screen::render(screen, frame, area, ctx);
+            })
+            .expect("draw");
+        let buffer = terminal.backend().buffer().clone();
+        (0..30)
+            .map(|y| {
+                (0..100)
+                    .map(|x| buffer.cell((x, y)).expect("cell").symbol().to_owned())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    /// The popup's title row, trimmed to what sits between the border corners.
+    fn title_of(screen: &HelpScreen, ctx: &AppContext) -> String {
+        rendered_rows(screen, ctx)
+            .into_iter()
+            .find(|r| r.contains(" Help "))
+            .expect("a title row")
+            .trim()
+            .to_string()
+    }
+
+    fn find_with(
+        screen: &mut HelpScreen,
+        ctx: &mut AppContext,
+        code: KeyCode,
+        modifiers: KeyModifiers,
+    ) -> String {
+        Screen::handle_key(screen, code, modifiers, ctx);
+        title_of(screen, ctx)
+    }
+
+    fn find_char(screen: &mut HelpScreen, ctx: &mut AppContext, c: char) -> String {
+        find_with(screen, ctx, KeyCode::Char(c), KeyModifiers::NONE)
+    }
+
+    fn line_of(screen: &HelpScreen) -> String {
+        let lines = help_lines(true);
+        text_of(&lines[screen.current_line(true).expect("a current match")])
+    }
+
+    #[test]
+    fn repeating_a_key_cycles_through_its_matches_and_wraps() {
+        let (mut ctx, _rx) = ctx_with_project(std::path::Path::new("/tmp/x"));
+        let mut screen = HelpScreen::new();
+        let owner_block = row(
+            "v o A y x",
+            "Owner block: run, open, acknowledge, copy or settle the selected group or check, as in the inbox (detail view)",
+        );
+        for expected in ["x: 1/4", "x: 2/4", "x: 3/4", "x: 4/4", "x: 1/4"] {
+            let title = find_char(&mut screen, &mut ctx, 'x');
+            assert!(title.contains(expected), "{title}");
+            if expected == "x: 1/4" {
+                assert!(
+                    line_of(&screen).starts_with(&text_of(&owner_block)[..20]),
+                    "{}",
+                    line_of(&screen)
+                );
+            }
+        }
+        ctx.experimental = false;
+        let mut screen = HelpScreen::new();
+        let title = find_char(&mut screen, &mut ctx, 'x');
+        assert!(title.contains("x: 1/2"), "{title}");
+    }
+
+    #[test]
+    fn case_matters_and_ranges_expand() {
+        let (mut ctx, _rx) = ctx_with_project(std::path::Path::new("/tmp/x"));
+        for (c, expected) in [
+            ('m', "m: 1/1"),
+            ('M', "M: 1/1"),
+            ('3', "3: 1/2"),
+            ('8', "8: 1/1"),
+            ('s', "s: 1/2"),
+            ('g', "g: 1/5"),
+            ('c', "c: 1/2"),
+            ('D', "D: 1/1"),
+        ] {
+            let mut screen = HelpScreen::new();
+            let title = find_char(&mut screen, &mut ctx, c);
+            assert!(title.contains(expected), "{c}: {title}");
+        }
+        let mut screen = HelpScreen::new();
+        let title = find_char(&mut screen, &mut ctx, '3');
+        assert!(title.contains("3: 1/2"), "{title}");
+        assert!(line_of(&screen).contains("jump straight into a tab"));
+    }
+
+    #[test]
+    fn keys_no_row_lists_give_the_no_entry_notice_and_mark_nothing() {
+        let (mut ctx, _rx) = ctx_with_project(std::path::Path::new("/tmp/x"));
+        let plain = KeyModifiers::NONE;
+        let cases: Vec<(KeyCode, &str)> = vec![
+            (KeyCode::Char('9'), "no help entry for 9"),
+            (KeyCode::Char('n'), "no help entry for n"),
+            (KeyCode::Char('N'), "no help entry for N"),
+            (KeyCode::F(5), "no help entry for F5"),
+            (KeyCode::BackTab, "no help entry for Shift+Tab"),
+            (KeyCode::Char('\u{e9}'), "no help entry for U+00E9"),
+            (KeyCode::Char('\u{1b}'), "no help entry for U+001B"),
+            (KeyCode::Home, "no help entry for Home"),
+        ];
+        for (code, expected) in cases {
+            let mut screen = HelpScreen::new();
+            let title = find_with(&mut screen, &mut ctx, code, plain);
+            assert!(title.contains(expected), "{code:?}: {title}");
+            assert!(screen.current_line(true).is_none());
+            let rows = rendered_rows(&screen, &ctx);
+            assert!(
+                !rows
+                    .iter()
+                    .any(|r| r.contains("\u{2502}> ") || r.contains("\u{2502}* ")),
+                "nothing is marked:\n{}",
+                rows.join("\n")
+            );
+        }
+    }
+
+    #[test]
+    fn named_keys_find_their_rows() {
+        let (mut ctx, _rx) = ctx_with_project(std::path::Path::new("/tmp/x"));
+        for (code, expected) in [
+            (KeyCode::Tab, "Tab: 1/1"),
+            (KeyCode::Char(' '), "Space: 1/3"),
+            (KeyCode::Left, "Left: 1/5"),
+        ] {
+            let mut screen = HelpScreen::new();
+            let title = find_with(&mut screen, &mut ctx, code, KeyModifiers::NONE);
+            assert!(title.contains(expected), "{code:?}: {title}");
+        }
+    }
+
+    #[test]
+    fn shift_and_control_are_part_of_the_key() {
+        let (mut ctx, _rx) = ctx_with_project(std::path::Path::new("/tmp/x"));
+        for c in ['D', 'd'] {
+            let mut screen = HelpScreen::new();
+            let title = find_with(&mut screen, &mut ctx, KeyCode::Char(c), KeyModifiers::SHIFT);
+            assert!(title.contains("D: 1/1"), "{title}");
+            assert!(line_of(&screen).contains("Jump to the Driver tab"));
+        }
+        let mut screen = HelpScreen::new();
+        let title = find_with(
+            &mut screen,
+            &mut ctx,
+            KeyCode::Char('c'),
+            KeyModifiers::CONTROL,
+        );
+        assert!(title.contains("Ctrl+c: 1/1"), "{title}");
+        assert!(line_of(&screen).contains("Force quit"));
+        // Plain `c` never marks the Ctrl+C row.
+        let mut screen = HelpScreen::new();
+        find_char(&mut screen, &mut ctx, 'c');
+        for _ in 0..2 {
+            assert!(!line_of(&screen).contains("Force quit"));
+            find_char(&mut screen, &mut ctx, 'c');
+        }
+        // Modifier-only and null events change nothing.
+        let mut screen = HelpScreen::new();
+        find_with(&mut screen, &mut ctx, KeyCode::Null, KeyModifiers::NONE);
+        assert!(screen.highlight.is_none());
+    }
+
+    #[test]
+    fn a_fresh_key_starts_at_the_first_match_at_or_below_the_top_row() {
+        let (mut ctx, _rx) = ctx_with_project(std::path::Path::new("/tmp/x"));
+        let total = help_lines(true).len() as u16;
+        let mut screen = HelpScreen::at_section("Owner Inbox", true);
+        screen.viewport.set(ViewportMetrics {
+            total_lines: total,
+            visible_height: 20,
+        });
+        let title = find_char(&mut screen, &mut ctx, 'g');
+        assert!(title.contains("g: 5/5"), "{title}");
+        assert!(line_of(&screen).contains("Go to the project"));
+        let mut screen = HelpScreen::new();
+        let title = find_char(&mut screen, &mut ctx, 'g');
+        assert!(title.contains("g: 1/5"), "{title}");
+        assert!(line_of(&screen).contains("move the phase cursor"));
+    }
+
+    #[test]
+    fn reveal_offset_keeps_a_visible_line_and_moves_the_view_otherwise() {
+        let vp = ViewportMetrics {
+            total_lines: 100,
+            visible_height: 20,
+        };
+        assert_eq!(reveal_offset(10, 15, vp), 10, "inside the view");
+        assert_eq!(reveal_offset(10, 10, vp), 10, "on the top row");
+        // The last visible row (29) is under the more-indicator.
+        assert_eq!(reveal_offset(10, 29, vp), clamp_scroll(29, 100, 20));
+        assert_eq!(reveal_offset(10, 50, vp), clamp_scroll(50, 100, 20));
+        assert_eq!(reveal_offset(10, 5, vp), 5, "above the view");
+        assert_eq!(reveal_offset(10, 99, vp), clamp_scroll(99, 100, 20));
+        // At the last page nothing is below, so the last row is visible.
+        assert_eq!(reveal_offset(80, 99, vp), 80);
+        let none = ViewportMetrics {
+            total_lines: 100,
+            visible_height: 0,
+        };
+        assert_eq!(reveal_offset(10, 40, none), clamp_scroll(40, 100, 0));
+    }
+
+    #[test]
+    fn finding_a_key_scrolls_the_current_match_into_view() {
+        let (mut ctx, _rx) = ctx_with_project(std::path::Path::new("/tmp/x"));
+        let total = help_lines(true).len() as u16;
+        let mut screen = screen_with_viewport(total, 20);
+        for _ in 0..6 {
+            find_char(&mut screen, &mut ctx, 'x');
+            let at = screen.current_line(true).expect("a match");
+            let offset = screen.scroll_offset();
+            assert!(
+                (usize::from(offset)..usize::from(offset) + 20).contains(&at),
+                "line {at} outside the view at {offset}"
+            );
+            assert_eq!(offset, clamp_scroll(offset, total, 20));
+        }
     }
 }
