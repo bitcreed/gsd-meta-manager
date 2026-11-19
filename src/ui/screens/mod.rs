@@ -22,6 +22,7 @@ pub mod owner_file_view;
 pub mod owner_settle;
 pub mod preferences;
 pub mod queue_delete_confirm;
+pub mod settle_pending;
 pub mod settle_popup;
 
 /// The render-surface census and its behavioural probe (CR-01).
@@ -1410,6 +1411,18 @@ pub struct AppContext {
     /// popup pushed above the inbox can repaint it as its background, and `i`
     /// on the dashboard resets it so every visit starts on the first row.
     pub inbox_view: inbox::InboxViewState,
+    /// What each settle Yes left behind: the `settling…` badge on the settled row
+    /// until its checks leave the list (quick 261118-v6l).
+    ///
+    /// * **In memory only**: the app writes nothing to a project. It survives
+    ///   refreshes, screen switches and the inbox's `i` reset (which is why it is
+    ///   not in `inbox_view`), and is gone after a restart. It is not on
+    ///   `ProjectState` either, whose `PartialEq` drives `Updated:`.
+    /// * Alias-keyed: `App::prune_driver_maps` drops the entries of an
+    ///   unregistered alias.
+    /// * Written by `owner_settle::launch_and_track` (Yes) and by the App's refresh
+    ///   (`ProjectStateLoaded`) and tick; read by the inbox and the Owner block.
+    pub settle_pending: settle_pending::PendingSettles,
     /// Per-alias running-agents view, from the agents scan (AGENT-05, D-C01).
     ///
     /// * A **sibling map**, shaped like `driver_output` above, for the same
@@ -2797,6 +2810,7 @@ mod tests {
             owner_ack_busy: std::collections::HashSet::new(),
             owner_copy_busy: false,
             inbox_view: inbox::InboxViewState::default(),
+            settle_pending: Default::default(),
             agent_views: HashMap::new(),
             agents_scan_in_flight: false,
             sort_mode: SortMode::default(),

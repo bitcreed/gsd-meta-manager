@@ -8164,8 +8164,14 @@ impl DetailScreen {
                 .view_cache
                 .get(&self.alias)
                 .map_or(&default_view, |cache| &cache.owner_block);
-            let model =
-                owner_block::block_model(&self.alias, &state.milestone, digest, view, area.width);
+            let model = owner_block::block_model_with(
+                &self.alias,
+                &state.milestone,
+                digest,
+                view,
+                area.width,
+                Some((&ctx.settle_pending, std::time::Instant::now())),
+            );
             let mut height = owner_block::block_height(&model, area.height);
             if self.focus == DetailFocus::Pane
                 && area.width < roadmap_view::ROADMAP_SIDE_BY_SIDE_MIN_COLS
@@ -21100,6 +21106,7 @@ mod tests {
             owner_ack_busy: Default::default(),
             owner_copy_busy: false,
             inbox_view: Default::default(),
+            settle_pending: Default::default(),
             agent_views: HashMap::new(),
             agents_scan_in_flight: false,
             sort_mode: crate::ui::screens::SortMode::default(),

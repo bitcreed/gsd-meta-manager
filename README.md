@@ -466,7 +466,13 @@ to resume the UAT session, record each check as `result: skipped` with a
 it to the 999.x backlog. Move also asks for one todo naming phase M, so the check comes up again
 when phase M runs. If the project already has a live Claude session, `y` switches to it
 and copies the command (instruction included) for you to paste, by the same clipboard
-route as `y` on a row; nothing is typed into that session and no second one starts. The
+route as `y` on a row; nothing is typed into that session and no second one starts.
+After `y` the row stays where it was and shows a dim `settling… <outcome>` badge with a
+spinner and the time since `y`; it reads `recorded` once the source file changes on disk,
+and when the check leaves the list it shows `✓ test 2 skipped` (or `✓ moved to phase M`)
+for about two seconds before the row goes. The badge shows in the inbox and in the Owner
+block, and the state lives in memory only: it survives refreshes, is gone after a restart,
+and with no change on disk the badge just keeps counting. The
 app writes nothing: every change comes from the command GSD runs.
 
 `y` uses `wl-copy`, `xclip`/`xsel`, `pbcopy` or `clip.exe` when present, otherwise an OSC 52

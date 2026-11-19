@@ -558,7 +558,7 @@ impl SettleConfirmScreen {
                 return ScreenAction::Pop;
             }
         };
-        let focus = owner_settle::launch_settle(&fresh);
+        let focus = owner_settle::launch_and_track(ctx, &fresh);
         if fresh.draft.live_session.is_none() {
             ctx.status_message = Some((focus, std::time::Instant::now()));
             return ScreenAction::Pop;

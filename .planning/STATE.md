@@ -6,10 +6,10 @@ current_phase: 39
 current_phase_name: Check actions through GSD
 status: verifying
 stopped_at: Completed 39-03-PLAN.md
-last_updated: "2026-11-19T04:23:34.010Z"
+last_updated: "2026-11-19T05:08:35.234Z"
 last_activity: 2026-11-18
 last_activity_desc: Phase 39 execution started
-state_head: be39d8687e8eedb09d2f9299ace7700190ad3263
+state_head: dd086ffbf25f6a1151cf4f48be25c13d57424a5e
 progress:
   total_phases: 6
   completed_phases: 1
@@ -32,7 +32,7 @@ See: .planning/PROJECT.md (updated 2026-11-14)
 Phase: 39 (Check actions through GSD) — EXECUTING
 Plan: 3 of 3
 Status: Phase complete — ready for verification
-Last activity: 2026-11-18 - Completed quick task 261118-u4e: Enter opens the Owner source file at the right place (inbox + Owner block)
+Last activity: 2026-11-18 - Completed quick task 261118-v6l: Pending row state after settle: settling badge, recorded step, ✓ linger (inbox + Owner block)
 
 
 ## Deferred Verification
@@ -595,6 +595,7 @@ Older entries (Phase 19 T-19-* rows, Phase 21 round-13 gaps, Phase 26 risks, 31-
 | 261118-u5i | debug-sessions owner fixture: workstream `a` gets the phases/ dir gsd-core always scaffolds (audit-uat oracle no longer errors) | 2026-11-18 | 59930419 | [261118-u5i-debug-sessions-fixture-workstream-phases](./quick/261118-u5i-debug-sessions-fixture-workstream-phases/) |
 | 261118-tro | Compact the settle confirm popup: bold Runs summary, capped instruction text, d toggles verbatim full command | 2026-11-18 | 376614f9 | [261118-tro-compact-the-settle-confirm-popup-bold-ru](./quick/261118-tro-compact-the-settle-confirm-popup-bold-ru/) |
 | 261118-u4e | Enter opens the Owner source file at the right place (inbox + Owner block) | 2026-11-18 | be39d868 | [261118-u4e-enter-opens-the-owner-source-file-at-the](./quick/261118-u4e-enter-opens-the-owner-source-file-at-the/) |
+| 261118-v6l | Pending row state after settle: settling badge, recorded step, ✓ linger (inbox + Owner block) | 2026-11-18 | dd086ffb | [261118-v6l-pending-row-state-after-settle-settling-](./quick/261118-v6l-pending-row-state-after-settle-settling-/) |
 
 ## Deferred Items
 
