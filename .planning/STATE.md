@@ -32,7 +32,7 @@ See: .planning/PROJECT.md (updated 2026-11-14)
 Phase: 39 (Check actions through GSD) — EXECUTING
 Plan: 3 of 3
 Status: Phase complete — ready for verification
-Last activity: 2026-11-18 - Completed quick task 261118-v6l: Pending row state after settle: settling badge, recorded step, ✓ linger (inbox + Owner block)
+Last activity: 2026-11-19 - Completed quick task 261119-f5b: Owner-row action menu and context-aware footer (Owner block + inbox, shared)
 
 
 ## Deferred Verification
