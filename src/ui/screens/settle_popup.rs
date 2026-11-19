@@ -1,5 +1,6 @@
 //! The screens of settle (`x`, 39): the one-row chooser, the phase step of a Move,
-//! the reason field and the default-No confirm popup that shows the exact argv.
+//! the reason field and the default-No confirm popup: a summary cut from the exact
+//! argv, with the whole argv one `d` away.
 //!
 //! **No screen here writes a file or starts a process.** Yes hands the plan to
 //! `owner_settle::launch_settle` after `settle_recheck` found the row unchanged;
@@ -514,14 +515,17 @@ impl Screen for SettleReasonScreen {
 
 // ── The confirm popup ───────────────────────────────────────────────────────
 
-/// The popup in front of Yes: default No, Yellow accent, the exact argv drawn.
-/// Only Yes launches anything, and only after `settle_recheck` found the row as
-/// it was shown. A cut-off popup cannot be confirmed (the `confirm_popup`
-/// guarantee).
+/// The popup in front of Yes: default No, Yellow accent. It opens on a summary (project,
+/// target, outcome, the command that runs, the start of the instruction), every part
+/// cut from the exact argv Yes executes; `d` shows the whole argv and back. Only Yes
+/// launches anything, and only after `settle_recheck` found the row as it was shown. A
+/// cut-off view, either one, cannot be confirmed (the `confirm_popup` guarantee).
 pub struct SettleConfirmScreen {
     host: AckHost,
     plan: SettlePlan,
     popup: ConfirmPopup,
+    /// Whether `d` switched the popup to the full command.
+    full: bool,
 }
 
 impl SettleConfirmScreen {
@@ -530,6 +534,7 @@ impl SettleConfirmScreen {
             host,
             plan,
             popup: ConfirmPopup::default(),
+            full: false,
         }
     }
 
@@ -569,36 +574,56 @@ fn live_settle_lead(focus: &str, alias: &str) -> String {
     }
 }
 
-/// The popup body (D-10): BOLD labels, every dynamic value through `shown`, then
-/// the exact argv (the prompt element in double quotes, wrapped at `/` and spaces)
-/// and one consequence row. `inner_w` is the popup's inner width.
-pub(crate) fn settle_body(plan: &SettlePlan, inner_w: u16) -> Vec<Line<'static>> {
-    const LABEL_W: usize = 11;
-    let inner_w = usize::from(inner_w);
+/// Width of the label column of the popup's header rows.
+const LABEL_W: usize = 11;
+
+/// The one footer both views end with, as the popup shows it for a new session.
+const FOOTER_NEW: &str =
+    "Yes starts a new session \u{b7} GSD records it \u{b7} this app writes nothing";
+
+/// The footer when Claude already runs in the project.
+const FOOTER_LIVE: &str =
+    "Claude runs here \u{b7} Yes focuses it, copies the command \u{b7} no new session";
+
+/// `label` (BOLD, in the label column) and `value` wrapped at separators under it.
+fn field(label: &str, value: &str, inner_w: usize) -> Vec<Line<'static>> {
+    wrap_at_separators(value, inner_w.saturating_sub(LABEL_W))
+        .into_iter()
+        .enumerate()
+        .map(|(i, part)| {
+            let head = if i == 0 {
+                Span::styled(format!("{label:<LABEL_W$}"), bold())
+            } else {
+                Span::raw(" ".repeat(LABEL_W))
+            };
+            Line::from(vec![head, Span::raw(part)])
+        })
+        .collect()
+}
+
+/// `label` and `value` on ONE row: the value goes through `shown` first and is then cut
+/// to the column with an ellipsis, so the cut never splits an escape.
+fn one_row(label: &str, value: &str, inner_w: usize) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(format!("{label:<LABEL_W$}"), bold()),
+        Span::raw(fit_cells(&shown(value), inner_w.saturating_sub(LABEL_W))),
+    ])
+}
+
+/// What the popup's Target row says: `phase 01: tests 2, 3 in 01-UAT.md` for a phase,
+/// the check's own words for one check. Not yet through `shown`.
+fn target_label(plan: &SettlePlan) -> String {
     let target = &plan.draft.target;
-    let field = |label: &str, value: String| -> Vec<Line<'static>> {
-        wrap_at_separators(&value, inner_w.saturating_sub(LABEL_W))
-            .into_iter()
-            .enumerate()
-            .map(|(i, part)| {
-                let head = if i == 0 {
-                    Span::styled(format!("{label:<LABEL_W$}"), bold())
-                } else {
-                    Span::raw(" ".repeat(LABEL_W))
-                };
-                Line::from(vec![head, Span::raw(part)])
-            })
-            .collect()
-    };
     let refs = owner_settle::target_text(target);
-    let shown_target = match target.scope {
+    match target.scope {
         SettleScope::Phase => format!("phase {}: {refs}", target.phase()),
         SettleScope::Check(_) => refs,
-    };
-    let mut body: Vec<Line<'static>> = Vec::new();
-    body.extend(field("Project", shown(&target.alias)));
-    body.extend(field("Target", shown(&shown_target)));
-    let outcome = match &plan.choice.move_to {
+    }
+}
+
+/// What the popup's Outcome row says. Not yet through `shown`.
+fn outcome_label(plan: &SettlePlan) -> String {
+    match &plan.choice.move_to {
         Some(to) => {
             let name = to
                 .name
@@ -608,8 +633,168 @@ pub(crate) fn settle_body(plan: &SettlePlan, inner_w: u16) -> Vec<Line<'static>>
             format!("{} {}{name}", plan.choice.outcome.label(), to.number)
         }
         None => plan.choice.outcome.label().to_owned(),
+    }
+}
+
+/// D-06: a phase neither the roadmap nor the backlog lists is accepted, with this
+/// warning (Yellow) and a blank row after it. Empty for every other plan.
+fn unknown_phase_warning(plan: &SettlePlan, inner_w: usize) -> Vec<Line<'static>> {
+    let Some(to) = plan.choice.move_to.as_ref().filter(|to| !to.known) else {
+        return Vec::new();
     };
-    body.extend(field("Outcome", shown(&outcome)));
+    let warning = format!(
+        "Phase {} is not in the roadmap or backlog: GSD may create or reject it.",
+        shown(&to.number)
+    );
+    let mut rows: Vec<Line<'static>> = wrap_at_separators(&warning, inner_w)
+        .into_iter()
+        .map(|part| Line::from(Span::styled(part, Style::default().fg(Color::Yellow))))
+        .collect();
+    rows.push(Line::raw(""));
+    rows
+}
+
+/// The one short dim row both views end with, wrapped so a narrow popup still draws
+/// every word.
+fn footer(plan: &SettlePlan, inner_w: usize) -> Vec<Line<'static>> {
+    let text = if plan.draft.live_session.is_some() {
+        FOOTER_LIVE
+    } else {
+        FOOTER_NEW
+    };
+    wrap_at_separators(text, inner_w)
+        .into_iter()
+        .map(|part| Line::from(Span::styled(part, muted())))
+        .collect()
+}
+
+/// The facts of the argv the launcher executes that the summary draws, every one
+/// sliced from `settle_mux_argv(plan)` and already through `shown` (D-02, D-03).
+struct RunsSummary {
+    /// The program words and the slash command, e.g. `claude /gsd-verify-work 01`.
+    program: String,
+    /// `env -u (N session vars)`: `env`, then N = how many `-u` elements the argv
+    /// carries. `None` when the argv unsets nothing.
+    scrub: Option<String>,
+    /// The prompt after the slash command and its separating space.
+    instruction: String,
+}
+
+/// Read the summary out of the exact argv Yes launches. `Err` carries the escaped
+/// reason the argv could not be built.
+fn runs_summary(plan: &SettlePlan) -> Result<RunsSummary, String> {
+    let argv = settle_mux_argv(plan).map_err(|error| shown(&error.to_string()))?;
+    let elements = argv.as_slice();
+    let (prompt, head) = elements
+        .split_last()
+        .ok_or_else(|| "the command line is empty".to_owned())?;
+    let program_name = head.first().map(String::as_str).unwrap_or_default();
+    let unset = elements.iter().filter(|e| e.as_str() == "-u").count();
+    // The elements that are neither `-u` nor the variable it names.
+    let mut words: Vec<String> = Vec::new();
+    let mut operand = false;
+    for element in head.iter().skip(1) {
+        if operand {
+            operand = false;
+        } else if element == "-u" {
+            operand = true;
+        } else {
+            words.push(shown(element));
+        }
+    }
+    let scrub = if unset == 0 {
+        words.insert(0, shown(program_name));
+        None
+    } else {
+        Some(format!("{} -u ({unset} session vars)", shown(program_name)))
+    };
+    // The prompt is `{command} {instruction}`; when it is not (it always is), none of it
+    // is invented: the whole element is the instruction and no command is drawn.
+    let command = plan.draft.target.command.to_string();
+    let instruction = match prompt
+        .strip_prefix(command.as_str())
+        .and_then(|rest| rest.strip_prefix(' '))
+    {
+        Some(rest) => {
+            words.push(shown(&command));
+            rest
+        }
+        None => prompt.as_str(),
+    };
+    Ok(RunsSummary {
+        program: words.join(" "),
+        scrub,
+        instruction: shown(instruction),
+    })
+}
+
+/// The Runs row: the program words and the command in BOLD, then the dim `· env -u (N
+/// session vars)` after them when it fits the row, else on a row of its own.
+fn runs_lines(summary: &RunsSummary, inner_w: usize) -> Vec<Line<'static>> {
+    let room = inner_w.saturating_sub(LABEL_W);
+    let mut rows: Vec<Vec<Span<'static>>> = wrap_at_separators(&summary.program, room)
+        .into_iter()
+        .map(|part| vec![Span::styled(part, bold())])
+        .collect();
+    if let Some(scrub) = &summary.scrub {
+        let tail = format!(" \u{b7} {scrub}");
+        let used = rows
+            .last()
+            .map_or(0, |row| row.iter().map(Span::width).sum::<usize>());
+        if used + Span::raw(tail.as_str()).width() <= room {
+            if let Some(row) = rows.last_mut() {
+                row.push(Span::styled(tail, muted()));
+            }
+        } else {
+            rows.push(vec![Span::styled(fit_cells(scrub, room), muted())]);
+        }
+    }
+    rows.into_iter()
+        .enumerate()
+        .map(|(i, mut spans)| {
+            let head = if i == 0 {
+                Span::styled(format!("{:<LABEL_W$}", "Runs"), bold())
+            } else {
+                Span::raw(" ".repeat(LABEL_W))
+            };
+            spans.insert(0, head);
+            Line::from(spans)
+        })
+        .collect()
+}
+
+/// The popup's default body: a summary cut from the exact argv (D-01..D-03). BOLD
+/// labels, every dynamic value through `shown` before it is cut. `d` swaps it for
+/// [`settle_full_body`]. `inner_w` is the popup's inner width.
+pub(crate) fn settle_body(plan: &SettlePlan, inner_w: u16) -> Vec<Line<'static>> {
+    let inner_w = usize::from(inner_w);
+    let mut body: Vec<Line<'static>> = Vec::new();
+    body.extend(field("Project", &shown(&plan.draft.target.alias), inner_w));
+    body.push(one_row("Target", &target_label(plan), inner_w));
+    body.push(one_row("Outcome", &outcome_label(plan), inner_w));
+    if !plan.choice.reason.is_empty() {
+        body.push(one_row("Reason", &plan.choice.reason, inner_w));
+    }
+    body.push(Line::raw(""));
+    match runs_summary(plan) {
+        Ok(summary) => body.extend(runs_lines(&summary, inner_w)),
+        Err(message) => body.extend(field("Runs", &message, inner_w)),
+    }
+    body.push(Line::raw(""));
+    body.extend(unknown_phase_warning(plan, inner_w));
+    body.extend(footer(plan, inner_w));
+    body
+}
+
+/// The popup's `d` body: project, target and outcome wrapped, then the exact argv, every
+/// element through `shown`, the prompt element in double quotes, wrapped at `/` and
+/// spaces, nothing elided (D-04). `inner_w` is the popup's inner width.
+pub(crate) fn settle_full_body(plan: &SettlePlan, inner_w: u16) -> Vec<Line<'static>> {
+    let inner_w = usize::from(inner_w);
+    let mut body: Vec<Line<'static>> = Vec::new();
+    body.extend(field("Project", &shown(&plan.draft.target.alias), inner_w));
+    body.extend(field("Target", &shown(&target_label(plan)), inner_w));
+    body.extend(field("Outcome", &shown(&outcome_label(plan)), inner_w));
     body.push(Line::raw(""));
     let argv = match settle_mux_argv(plan) {
         Ok(argv) => {
@@ -638,29 +823,8 @@ pub(crate) fn settle_body(plan: &SettlePlan, inner_w: u16) -> Vec<Line<'static>>
         body.push(Line::raw(format!("{indent}{part}")));
     }
     body.push(Line::raw(""));
-    // D-06: a phase neither the roadmap nor the backlog lists is accepted, with this
-    // warning above the consequence row.
-    if let Some(to) = plan.choice.move_to.as_ref().filter(|to| !to.known) {
-        let warning = format!(
-            "Phase {} is not in the roadmap or backlog: GSD may create or reject it.",
-            shown(&to.number)
-        );
-        for part in wrap_at_separators(&warning, inner_w) {
-            body.push(Line::from(Span::styled(
-                part,
-                Style::default().fg(Color::Yellow),
-            )));
-        }
-        body.push(Line::raw(""));
-    }
-    let consequence = if plan.draft.live_session.is_some() {
-        "Claude already runs here: Yes switches to it and copies the command to paste; no second session."
-    } else {
-        "Yes starts a new session; GSD records it. This app writes nothing."
-    };
-    for part in wrap_at_separators(consequence, inner_w) {
-        body.push(Line::raw(part));
-    }
+    body.extend(unknown_phase_warning(plan, inner_w));
+    body.extend(footer(plan, inner_w));
     body
 }
 
@@ -678,10 +842,17 @@ impl Screen for SettleConfirmScreen {
     fn handle_key(
         &mut self,
         code: KeyCode,
-        _modifiers: KeyModifiers,
+        modifiers: KeyModifiers,
         ctx: &mut AppContext,
     ) -> ScreenAction {
         ctx.needs_redraw = true;
+        // `d` only changes what is drawn: it launches nothing and sets no status.
+        if code == KeyCode::Char('d')
+            && !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+        {
+            self.full = !self.full;
+            return ScreenAction::None;
+        }
         match self.popup.on_key(code) {
             ConfirmOutcome::Confirm => self.confirm(ctx),
             ConfirmOutcome::Cancel => ScreenAction::Pop,
@@ -692,14 +863,22 @@ impl Screen for SettleConfirmScreen {
     fn render(&self, frame: &mut Frame, area: Rect, ctx: &AppContext) {
         render_host(&self.host, frame, area, ctx);
         confirm_popup::dim_background(frame, area);
-        self.popup.record(confirm_popup::render_confirm_popup(
-            frame,
-            area,
-            "Settle via /gsd-verify-work",
-            settle_body(&self.plan, confirm_popup::body_room(area).0),
-            Color::Yellow,
-            self.popup.focus,
-        ));
+        let inner_w = confirm_popup::body_room(area).0;
+        let (body, hint) = if self.full {
+            (settle_full_body(&self.plan, inner_w), "d summary")
+        } else {
+            (settle_body(&self.plan, inner_w), "d full command")
+        };
+        self.popup
+            .record(confirm_popup::render_confirm_popup_hinted(
+                frame,
+                area,
+                "Settle via /gsd-verify-work",
+                body,
+                Color::Yellow,
+                self.popup.focus,
+                hint,
+            ));
     }
 
     fn handle_mouse(&mut self, input: MouseInput, ctx: &mut AppContext) -> ScreenAction {
@@ -1466,16 +1645,53 @@ mod tests {
             .collect()
     }
 
+    /// Draw `screen` once and hand back the dump.
+    fn draw_screen(screen: &SettleConfirmScreen, ctx: &AppContext, w: u16, h: u16) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+        terminal.draw(|f| screen.render(f, f.area(), ctx)).unwrap();
+        dump(&terminal, w, h)
+    }
+
+    /// The argv as the full view draws it: through `shown`, the prompt in quotes.
+    fn drawn_argv(plan: &SettlePlan) -> String {
+        let argv = settle_mux_argv(plan).unwrap();
+        let elements = argv.as_slice();
+        let last = elements.len() - 1;
+        elements
+            .iter()
+            .enumerate()
+            .map(|(i, e)| {
+                if i == last {
+                    format!("\"{}\"", shown(e))
+                } else {
+                    shown(e)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// How many `-u` the argv carries, and the variable names after them.
+    fn unset_in(plan: &SettlePlan) -> (usize, Vec<String>) {
+        let argv = settle_mux_argv(plan).unwrap();
+        let elements = argv.as_slice();
+        let names = elements
+            .windows(2)
+            .filter(|pair| pair[0] == "-u")
+            .map(|pair| pair[1].clone())
+            .collect::<Vec<_>>();
+        (elements.iter().filter(|e| *e == "-u").count(), names)
+    }
+
     #[test]
-    fn the_popup_fits_80x24_with_the_exact_argv() {
+    fn the_popup_fits_80x24_as_a_summary_and_as_the_exact_argv() {
         let (_dir, root) = temp_fixture("uat-pending");
-        let ctx = fixture_ctx(&root, ALIAS);
+        let mut ctx = fixture_ctx(&root, ALIAS);
         let plan = tracer_plan(&ctx, Outcome::WontDo, "no device here");
-        let argv = settle_mux_argv(&plan).unwrap();
-        let screen = SettleConfirmScreen::new(AckHost::Inbox, plan);
-        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
-        terminal.draw(|f| screen.render(f, f.area(), &ctx)).unwrap();
-        let text = dump(&terminal, 80, 24);
+        let (n, names) = unset_in(&plan);
+        assert!(n > 0, "the launcher unsets session variables");
+        let mut screen = SettleConfirmScreen::new(AckHost::Inbox, plan.clone());
+        let text = draw_screen(&screen, &ctx, 80, 24);
         assert!(!screen.popup.clipped(), "{text}");
         assert!(!text.contains("Cut off"), "{text}");
         for want in [
@@ -1483,34 +1699,87 @@ mod tests {
             "Project    alder-api",
             "Target     phase 01: tests 2, 3 in 01-UAT.md",
             "Outcome    Won't do",
-            "Yes starts a new session; GSD records it. This app writes nothing.",
+            "Reason     no device here",
+            &format!("Runs       claude /gsd-verify-work 01 \u{b7} env -u ({n} session vars)"),
+            "Yes starts a new session \u{b7} GSD records it \u{b7} this app writes nothing",
+            "d full command \u{b7} y/n \u{b7} \u{2190}/\u{2192} move \u{b7} Enter select \u{b7} Esc cancel",
             "[ Yes ]",
             "[ No ]",
         ] {
             assert!(text.contains(want), "{want:?} missing from\n{text}");
         }
+        for name in &names {
+            assert!(!text.contains(name.as_str()), "{name} drawn in\n{text}");
+        }
         assert_eq!(screen.popup.focus, confirm_popup::ConfirmFocus::No);
-        // The exact argv: every element on screen, in order, the prompt quoted.
-        let elements = argv.as_slice();
-        let last = elements.len() - 1;
-        let expected: String = elements
-            .iter()
-            .enumerate()
-            .map(|(i, e)| {
-                if i == last {
-                    format!("\"{e}\"")
-                } else {
-                    e.clone()
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(" ")
-            .split_whitespace()
-            .collect();
+
+        // `d`: the exact argv, every element on screen, in order, the prompt quoted.
+        assert!(matches!(
+            screen.handle_key(KeyCode::Char('d'), KeyModifiers::NONE, &mut ctx),
+            ScreenAction::None
+        ));
+        let full = draw_screen(&screen, &ctx, 80, 24);
+        assert!(!screen.popup.clipped(), "{full}");
+        let joined: String = drawn_argv(&plan).split_whitespace().collect();
         assert!(
-            squashed(&text).contains(&expected),
-            "the argv is not drawn whole in\n{text}"
+            squashed(&full).contains(&joined),
+            "the argv is not drawn whole in\n{full}"
         );
+        let argv = settle_mux_argv(&plan).unwrap();
+        for element in argv.as_slice() {
+            let element: String = shown(element).split_whitespace().collect();
+            assert!(squashed(&full).contains(&element), "{element} missing");
+        }
+        assert!(full.contains("d summary \u{b7} y/n"), "{full}");
+        assert!(!full.contains("d full command"), "{full}");
+        assert!(
+            full.contains("Yes starts a new session \u{b7} GSD records it"),
+            "{full}"
+        );
+    }
+
+    #[test]
+    fn d_toggles_the_full_command_and_launches_nothing() {
+        take_settle_launches();
+        let (_dir, root) = temp_fixture("uat-pending");
+        let before = tree(&root);
+        let mut ctx = fixture_ctx(&root, ALIAS);
+        let plan = tracer_plan(&ctx, Outcome::WontDo, "no device here");
+        let joined: String = drawn_argv(&plan).split_whitespace().collect();
+        let mut screen = SettleConfirmScreen::new(AckHost::Inbox, plan);
+        let compact = draw_screen(&screen, &ctx, 80, 24);
+        assert!(!squashed(&compact).contains(&joined));
+        // A chorded `d` is not the toggle.
+        for modifiers in [KeyModifiers::CONTROL, KeyModifiers::ALT] {
+            screen.handle_key(KeyCode::Char('d'), modifiers, &mut ctx);
+            assert_eq!(draw_screen(&screen, &ctx, 80, 24), compact);
+        }
+        assert!(matches!(
+            screen.handle_key(KeyCode::Char('d'), KeyModifiers::NONE, &mut ctx),
+            ScreenAction::None
+        ));
+        assert!(squashed(&draw_screen(&screen, &ctx, 80, 24)).contains(&joined));
+        assert!(matches!(
+            screen.handle_key(KeyCode::Char('d'), KeyModifiers::NONE, &mut ctx),
+            ScreenAction::None
+        ));
+        assert_eq!(draw_screen(&screen, &ctx, 80, 24), compact, "and back");
+        assert!(ctx.status_message.is_none(), "d sets no status");
+        assert!(take_settle_launches().is_empty(), "d launches nothing");
+        assert_eq!(tree(&root), before);
+
+        // The stack flow: `d`, then `y` from the (unclipped) full view launches once.
+        let mut stack = Stack::inbox();
+        to_popup(&mut stack, &mut ctx);
+        assert!(!stack.key(&mut ctx, KeyCode::Char('d')));
+        assert!(squashed(&stack.render(&ctx, 100, 30)).contains(&joined));
+        assert!(take_settle_launches().is_empty());
+        stack.key(&mut ctx, KeyCode::Char('y'));
+        assert_eq!(stack.depth(), 1);
+        let launches = take_settle_launches();
+        assert_eq!(launches.len(), 1);
+        assert_eq!(launches[0].prompt(), TRACER_PROMPT);
+        assert_eq!(tree(&root), before);
     }
 
     /// The tracer plans fit the 19 body rows an 80x24 terminal gives the popup.
@@ -1666,11 +1935,13 @@ mod tests {
         stack.keys(&mut ctx, "no device here");
         stack.key(&mut ctx, KeyCode::Enter);
         let text = stack.render(&ctx, 100, 30);
-        assert!(
-            text.contains("Claude already runs here: Yes switches to it and copies the command to")
-                && text.contains("paste; no second session."),
-            "{text}"
-        );
+        for want in [
+            "Claude runs here",
+            "Yes focuses it, copies the command",
+            "no new session",
+        ] {
+            assert!(text.contains(want), "{want:?} missing from\n{text}");
+        }
         stack.key(&mut ctx, KeyCode::Char('y'));
         let launches = take_settle_launches();
         assert_eq!(launches.len(), 1);
@@ -1699,7 +1970,7 @@ mod tests {
     }
 
     #[test]
-    fn the_popup_clips_at_60x20_and_cannot_confirm() {
+    fn a_cut_off_view_cannot_confirm_and_d_returns_to_the_summary() {
         take_settle_launches();
         let (_dir, root) = temp_fixture("uat-pending");
         let mut ctx = fixture_ctx(&root, ALIAS);
@@ -1707,30 +1978,53 @@ mod tests {
             AckHost::Inbox,
             tracer_plan(&ctx, Outcome::WontDo, "no device here"),
         );
-        let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
-        terminal.draw(|f| screen.render(f, f.area(), &ctx)).unwrap();
-        let text = dump(&terminal, 60, 20);
+        let key = |screen: &mut SettleConfirmScreen, ctx: &mut AppContext, code| {
+            screen.handle_key(code, KeyModifiers::NONE, ctx)
+        };
+        // The full view at 60x20 does not fit.
+        key(&mut screen, &mut ctx, KeyCode::Char('d'));
+        let text = draw_screen(&screen, &ctx, 60, 20);
         assert!(screen.popup.clipped(), "{text}");
         assert!(
             text.contains(confirm_popup::CLIPPED_HINT.trim_end()),
             "{text}"
         );
         assert!(matches!(
-            screen.handle_key(KeyCode::Char('y'), KeyModifiers::NONE, &mut ctx),
+            key(&mut screen, &mut ctx, KeyCode::Char('y')),
             ScreenAction::None
         ));
-        screen.handle_key(KeyCode::Left, KeyModifiers::NONE, &mut ctx);
+        key(&mut screen, &mut ctx, KeyCode::Left);
         assert!(matches!(
-            screen.handle_key(KeyCode::Enter, KeyModifiers::NONE, &mut ctx),
+            key(&mut screen, &mut ctx, KeyCode::Enter),
+            ScreenAction::None
+        ));
+        assert!(take_settle_launches().is_empty());
+        // `d` back to the summary, which fits 60x20 and confirms.
+        key(&mut screen, &mut ctx, KeyCode::Char('d'));
+        let text = draw_screen(&screen, &ctx, 60, 20);
+        assert!(!screen.popup.clipped(), "{text}");
+        assert!(!text.contains("Cut off"), "{text}");
+        // A summary the terminal cuts off cannot be confirmed either.
+        let text = draw_screen(&screen, &ctx, 60, 12);
+        assert!(screen.popup.clipped(), "{text}");
+        assert!(matches!(
+            key(&mut screen, &mut ctx, KeyCode::Char('y')),
             ScreenAction::None
         ));
         assert!(take_settle_launches().is_empty());
         for code in [KeyCode::Char('n'), KeyCode::Esc] {
             assert!(matches!(
-                screen.handle_key(code, KeyModifiers::NONE, &mut ctx),
+                key(&mut screen, &mut ctx, code),
                 ScreenAction::Pop
             ));
         }
+        // The summary at 60x20 launches through Yes.
+        draw_screen(&screen, &ctx, 60, 20);
+        assert!(matches!(
+            key(&mut screen, &mut ctx, KeyCode::Char('y')),
+            ScreenAction::Pop
+        ));
+        assert_eq!(take_settle_launches().len(), 1);
     }
 
     /// The popup flow with a live session in the project: `x w <reason> Enter y`.
