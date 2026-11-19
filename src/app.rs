@@ -2757,6 +2757,9 @@ impl App {
                 // A pending settle's spinner and timer move on their own (quick
                 // 261118-v6l, I-2): redraw on the tick, only while the inbox or the
                 // detail view (the two hosts of the badge) is on top.
+                if self.ctx.settle_pending.expire(std::time::Instant::now()) {
+                    self.needs_redraw = true;
+                }
                 if self.settle_pending_redraw_due() {
                     self.needs_redraw = true;
                 }
@@ -3037,6 +3040,15 @@ impl App {
                 };
                 if !self.ctx.owner_digest_storable(&alias) {
                     digest_changed |= self.ctx.owner_digest_failed.remove(&alias);
+                }
+                // The reparse is what a settle waits on (quick 261118-v6l, I-1): step
+                // this alias's pending badges from the file change and the digest.
+                if crate::ui::screens::settle_pending::on_refresh(
+                    &mut self.ctx,
+                    &alias,
+                    std::time::Instant::now(),
+                ) {
+                    self.needs_redraw = true;
                 }
                 if changed || digest_changed {
                     self.ctx.recompute_filtered_aliases();
@@ -5798,6 +5810,97 @@ mod tests {
         assert_eq!(second.test, first.test - 1, "one pending check was passed");
         let second_cell = you_cell_line(Some(&owner_numbers(second)), 21);
         assert_ne!(first_cell, second_cell, "the You cell text changes");
+    }
+
+    /// Quick 261118-v6l, I-1: a settle's badge steps on the watcher-driven reparse
+    /// alone (no key press), `launched` -> `recorded` -> done, and the tick drops the
+    /// done line after its linger and asks for a redraw.
+    #[tokio::test]
+    async fn a_reparse_steps_the_pending_settle_and_the_tick_expires_it() {
+        use crate::ui::screens::owner_settle::{
+            launch_and_track, resolve_draft, Outcome, SettleChoice, SettlePlan,
+        };
+        use crate::ui::screens::settle_pending::{Stage, LINGER};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path();
+        copy_owner_fixture("uat-pending", root);
+        let (mut app, mut rx) = obs_app(root);
+        app.update(planning_change(root));
+        deliver_reparse(&mut app, &mut rx).await;
+
+        let row = crate::ui::screens::inbox::stop_rows(&app.ctx).remove(0);
+        let draft = resolve_draft(&app.ctx, OBS_ALIAS, &row.src.key, None).expect("a draft");
+        let plan = SettlePlan {
+            draft,
+            choice: SettleChoice {
+                outcome: Outcome::WontDo,
+                reason: String::new(),
+                move_to: None,
+            },
+        };
+        launch_and_track(&mut app.ctx, &plan);
+        assert_eq!(app.ctx.settle_pending.len(), 1);
+        assert_eq!(app.ctx.settle_pending.entries()[0].stage, Stage::Launched);
+
+        // GSD records both checks; the watcher's reparse lands.
+        let uat = root.join(".planning/phases/01-alpha/01-UAT.md");
+        let text = std::fs::read_to_string(&uat).expect("read the UAT file");
+        let text = text
+            .replacen(
+                "result: pending",
+                "result: skipped\nreason: Deferred follow-up: will not do.",
+                1,
+            )
+            .replacen(
+                "result: [pending]",
+                "result: skipped\nreason: Deferred follow-up: will not do.",
+                1,
+            );
+        std::fs::write(&uat, text).expect("rewrite the UAT file");
+        app.ctx.last_refresh.remove(OBS_ALIAS);
+        app.needs_redraw = false;
+        app.update(planning_change(root));
+        deliver_reparse(&mut app, &mut rx).await;
+        assert!(matches!(
+            app.ctx.settle_pending.entries()[0].stage,
+            Stage::Done { .. }
+        ));
+        assert!(app.needs_redraw, "the step redraws without a key press");
+
+        // The tick: a done line inside its linger stays, one past it goes.
+        app.update(Action::Tick);
+        assert_eq!(app.ctx.settle_pending.len(), 1);
+        let past = std::time::Instant::now()
+            .checked_sub(LINGER + std::time::Duration::from_millis(1))
+            .expect("an instant two seconds ago");
+        app.ctx.settle_pending.entries_mut()[0].stage = Stage::Done { since: past };
+        app.needs_redraw = false;
+        app.update(Action::Tick);
+        assert!(app.ctx.settle_pending.is_empty());
+        assert!(app.needs_redraw);
+    }
+
+    /// The redraw gate: ticks repaint for a pending settle only while the inbox or
+    /// the detail view is on top.
+    #[tokio::test]
+    async fn the_tick_redraws_a_pending_settle_only_on_its_hosts() {
+        use crate::ui::screens::settle_pending::PendingSettle;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, _rx) = obs_app(dir.path());
+        app.ctx
+            .settle_pending
+            .insert(PendingSettle::for_alias_test(OBS_ALIAS));
+        app.needs_redraw = false;
+        app.update(Action::Tick);
+        assert!(!app.needs_redraw, "the dashboard is not a host");
+        app.screen_stack
+            .push(Box::new(crate::ui::screens::inbox::InboxScreen::new()));
+        app.update(Action::Tick);
+        assert!(app.needs_redraw, "the inbox repaints its spinner");
+        app.needs_redraw = false;
+        app.ctx.settle_pending = Default::default();
+        app.update(Action::Tick);
+        assert!(!app.needs_redraw, "nothing pending, nothing to repaint");
     }
 
     /// The project-wide state of `alias` as the inbox reads it.

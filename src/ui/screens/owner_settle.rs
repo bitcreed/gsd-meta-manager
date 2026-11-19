@@ -793,6 +793,16 @@ fn pending_for(ctx: &AppContext, plan: &SettlePlan) -> Option<settle_pending::Pe
     Some(entry)
 }
 
+/// Whether Yes started something worth waiting on (I-10): a live session always
+/// (the paste happens outside the app), a new session only when `status` is the
+/// launched line or reports a GUI terminal. The multiplexer's failures
+/// (`Failed to launch: ...`, `... no terminal emulator found ...`) are neither.
+pub(crate) fn launch_started(plan: &SettlePlan, status: &str) -> bool {
+    plan.draft.live_session.is_some()
+        || status == launched_status(plan)
+        || status.contains("opened in")
+}
+
 /// Yes: launch the plan (or focus the live session) and leave a pending entry on
 /// the context so the settled row shows `settling…` until its checks leave
 /// (quick 261118-v6l, I-10). A new session registers only when it started (the
@@ -802,10 +812,7 @@ fn pending_for(ctx: &AppContext, plan: &SettlePlan) -> Option<settle_pending::Pe
 pub(crate) fn launch_and_track(ctx: &mut AppContext, plan: &SettlePlan) -> String {
     let entry = pending_for(ctx, plan);
     let status = launch_settle(plan);
-    let started = plan.draft.live_session.is_some()
-        || status == launched_status(plan)
-        || status.contains("opened in");
-    if let Some(entry) = entry.filter(|_| started) {
+    if let Some(entry) = entry.filter(|_| launch_started(plan, &status)) {
         ctx.settle_pending.insert(entry);
     }
     status

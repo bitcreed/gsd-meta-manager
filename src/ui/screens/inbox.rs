@@ -220,6 +220,17 @@ impl InboxRow {
     }
 }
 
+/// The project's phase progress, `(done, total)`; `(0, 0)` without a state.
+fn alias_progress(ctx: &AppContext, alias: &str) -> (u32, u32) {
+    ctx.project_states
+        .get(alias)
+        .map(|state| {
+            let p = state.phase_progress();
+            (p.done, p.total)
+        })
+        .unwrap_or((0, 0))
+}
+
 /// Every current row of every registered project that has a digest, unsorted.
 ///
 /// Built from [`owner_block::inbox_sources`] (the triage model the CLI uses): a
@@ -235,14 +246,7 @@ pub(crate) fn inbox_rows(ctx: &AppContext) -> Vec<InboxRow> {
         let Some(digest) = ctx.owner_digest(alias) else {
             continue;
         };
-        let progress = ctx
-            .project_states
-            .get(alias.as_str())
-            .map(|state| {
-                let p = state.phase_progress();
-                (p.done, p.total)
-            })
-            .unwrap_or((0, 0));
+        let progress = alias_progress(ctx, alias);
         let phases_open = digest.closes_after.phases_open.len();
         for src in owner_block::inbox_sources(digest, fold_days).0 {
             rows.push(InboxRow {
@@ -289,26 +293,29 @@ fn by_progress(a: (u32, u32), b: (u32, u32)) -> Ordering {
 /// key, kind, file and workstream, so the order is **total**: every permutation
 /// of the same rows sorts to the same sequence.
 pub(crate) fn sort_groups(rows: &mut [InboxRow]) {
-    rows.sort_by(|a, b| {
-        let test = matches!(a.section, Section::TestCloses | Section::TestOpen);
-        a.section
-            .cmp(&b.section)
-            .then_with(|| {
-                if test {
-                    by_progress(a.progress, b.progress)
-                        .then_with(|| a.phases_open.cmp(&b.phases_open))
-                } else {
-                    Ordering::Equal
-                }
-            })
-            .then_with(|| by_age(a.src.group.age_days, b.src.group.age_days))
-            .then_with(|| a.alias.cmp(&b.alias))
-            .then_with(|| phase_key(&a.src.group.phase).cmp(&phase_key(&b.src.group.phase)))
-            .then_with(|| a.src.key.kind.cmp(b.src.key.kind))
-            .then_with(|| a.src.key.file.cmp(&b.src.key.file))
-            .then_with(|| a.src.key.workstream.cmp(&b.src.key.workstream))
-            .then_with(|| a.src.key.scope_label.cmp(&b.src.key.scope_label))
-    });
+    rows.sort_by(row_order);
+}
+
+/// The comparator [`sort_groups`] sorts by, named so a lingering row of a finished
+/// settle can be placed among the rows it left (quick 261118-v6l, I-8).
+fn row_order(a: &InboxRow, b: &InboxRow) -> Ordering {
+    let test = matches!(a.section, Section::TestCloses | Section::TestOpen);
+    a.section
+        .cmp(&b.section)
+        .then_with(|| {
+            if test {
+                by_progress(a.progress, b.progress).then_with(|| a.phases_open.cmp(&b.phases_open))
+            } else {
+                Ordering::Equal
+            }
+        })
+        .then_with(|| by_age(a.src.group.age_days, b.src.group.age_days))
+        .then_with(|| a.alias.cmp(&b.alias))
+        .then_with(|| phase_key(&a.src.group.phase).cmp(&phase_key(&b.src.group.phase)))
+        .then_with(|| a.src.key.kind.cmp(b.src.key.kind))
+        .then_with(|| a.src.key.file.cmp(&b.src.key.file))
+        .then_with(|| a.src.key.workstream.cmp(&b.src.key.workstream))
+        .then_with(|| a.src.key.scope_label.cmp(&b.src.key.scope_label))
 }
 
 /// The rows the screen lists, sorted and filtered: BLOCKED is not shown by
@@ -958,7 +965,8 @@ fn title_line(section: Section, heads: Option<&Grid>, width: usize) -> Line<'sta
 }
 
 /// One line of the body: a section title, a milestone sub-header, the row with
-/// that index (over the stop rows), or a line under an expanded row.
+/// that index (over the stop rows), a line under an expanded row, or a lingering
+/// row of a finished settle (an index over the ghosts, drawn only).
 #[derive(Debug, Clone, PartialEq)]
 enum BodyItem {
     Title(Section),
@@ -966,23 +974,122 @@ enum BodyItem {
     Sub(String),
     Row(usize),
     Extra(Line<'static>),
+    /// A row whose settle just finished: `✓ phase 01 skipped` for about two
+    /// seconds. Never a cursor stop (quick 261118-v6l, I-8).
+    Ghost(usize),
+}
+
+/// A row that is already gone from the digest and still drawn for [`LINGER`], with
+/// the settle that finished it.
+///
+/// [`LINGER`]: settle_pending::LINGER
+struct Ghost {
+    row: InboxRow,
+    entry: settle_pending::PendingSettle,
+}
+
+/// The lingering rows of every project with a finished settle, as inbox rows (I-8):
+/// each snapshot taken at Yes whose identity no current row has, kept when the lane
+/// filter shows its section. A row in an open fold never lingers (only the
+/// unfolded rows are snapshotted).
+fn ghost_rows(ctx: &AppContext) -> Vec<Ghost> {
+    let fold_days = ctx.config.preferences.owner_fold_days();
+    let mut aliases: Vec<&String> = ctx.config.projects.keys().collect();
+    aliases.sort();
+    let mut out = Vec::new();
+    for alias in aliases {
+        if !ctx.settle_pending.has_done(alias) {
+            continue;
+        }
+        let Some(digest) = ctx.owner_digest(alias) else {
+            continue;
+        };
+        let (current, folded) = owner_block::inbox_sources(digest, fold_days);
+        let live: std::collections::HashSet<GroupKey> = current
+            .iter()
+            .chain(&folded)
+            .map(|src| src.key.clone())
+            .collect();
+        let progress = alias_progress(ctx, alias);
+        let phases_open = digest.closes_after.phases_open.len();
+        for (src, entry) in ctx.settle_pending.lingering_inbox(alias, &live) {
+            let section = Section::of(src);
+            if !ctx.inbox_view.filter.shows(section) {
+                continue;
+            }
+            out.push(Ghost {
+                row: InboxRow {
+                    alias: alias.clone(),
+                    src: src.clone(),
+                    section,
+                    progress,
+                    phases_open,
+                    fold: None,
+                },
+                entry: entry.clone(),
+            });
+        }
+    }
+    out
+}
+
+/// The line of a lingering row: the row's cells without phrase, extras, age and
+/// command, DIM, then the `✓` badge (not dimmed) from the phrase column. Never the
+/// cursor, never expanded.
+fn ghost_line(ctx: &AppContext, ghost: &Ghost, grid: &Grid, width: usize) -> Line<'static> {
+    let Some(mut c) = cells_of(ctx, &ghost.row) else {
+        return Line::from("");
+    };
+    clear_phrase_cells(&mut c);
+    let mut line = row_line(&c, grid, width, false, false);
+    for span in &mut line.spans {
+        span.style = span.style.add_modifier(Modifier::DIM);
+    }
+    settle_pending::badged_row(
+        line,
+        grid.checks_x() + grid.checks_w + 2,
+        &ghost.entry,
+        std::time::Instant::now(),
+        width,
+    )
+}
+
+/// A section's title in front of its first row, unless it is already the last.
+fn push_title(plan: &mut Vec<BodyItem>, last: &mut Option<Section>, section: Section) {
+    if *last != Some(section) {
+        plan.push(BodyItem::Title(section));
+        *last = Some(section);
+    }
 }
 
 /// The body's lines over the stop rows: titles in front of each section, a
-/// sub-header in front of each Old debt milestone, `extra(row)` under a row.
+/// sub-header in front of each Old debt milestone, `extra(row)` under a row, and
+/// the lingering `ghosts` merged into the current rows in [`row_order`] (never into
+/// the folds), each with its section title when no stop row opens that section.
 fn build_plan(
     rows: &[InboxRow],
+    ghosts: &[Ghost],
     extra: &mut dyn FnMut(&InboxRow) -> Vec<Line<'static>>,
 ) -> Vec<BodyItem> {
     let mut plan = Vec::new();
     let mut last: Option<Section> = None;
     let mut last_label: Option<Option<String>> = None;
+    let mut waiting: Vec<usize> = (0..ghosts.len()).collect();
+    waiting.sort_by(|a, b| row_order(&ghosts[*a].row, &ghosts[*b].row));
+    let mut waiting = waiting.into_iter().peekable();
     for (index, row) in rows.iter().enumerate() {
-        if row.fold.is_none() {
-            if last != Some(row.section) {
-                plan.push(BodyItem::Title(row.section));
-                last = Some(row.section);
+        // A ghost sorts before the first current row it orders ahead of; the
+        // folds' rows come after every ghost.
+        while let Some(&g) = waiting.peek() {
+            if row.fold.is_none() && row_order(&ghosts[g].row, row) != Ordering::Less {
+                break;
             }
+            push_title(&mut plan, &mut last, ghosts[g].row.section);
+            plan.push(BodyItem::Ghost(g));
+            waiting.next();
+        }
+        if row.fold.is_none() {
+            push_title(&mut plan, &mut last, row.section);
         } else if row.fold == Some(Fold::OldDebt) {
             let label = owner_block::scope_label(&row.src.group.scope);
             if last_label.as_ref() != Some(&label) {
@@ -995,13 +1102,17 @@ fn build_plan(
         plan.push(BodyItem::Row(index));
         plan.extend(extra(row).into_iter().map(BodyItem::Extra));
     }
+    for g in waiting {
+        push_title(&mut plan, &mut last, ghosts[g].row.section);
+        plan.push(BodyItem::Ghost(g));
+    }
     plan
 }
 
 /// The body's lines with nothing expanded.
 #[cfg(test)]
 fn body_plan(rows: &[InboxRow]) -> Vec<BodyItem> {
-    build_plan(rows, &mut |_| Vec::new())
+    build_plan(rows, &[], &mut |_| Vec::new())
 }
 
 /// The group a key acts on for `row`, looked up by identity as the key is pressed:
@@ -1095,7 +1206,17 @@ fn scroll_to_item(
 
 /// [`build_plan`] with the expanded rows' lines at `width`.
 fn full_plan(ctx: &AppContext, rows: &[InboxRow], width: usize) -> Vec<BodyItem> {
-    build_plan(rows, &mut |row| {
+    full_plan_with(ctx, rows, &ghost_rows(ctx), width)
+}
+
+/// [`full_plan`] over lingering rows the caller already built.
+fn full_plan_with(
+    ctx: &AppContext,
+    rows: &[InboxRow],
+    ghosts: &[Ghost],
+    width: usize,
+) -> Vec<BodyItem> {
+    build_plan(rows, ghosts, &mut |row| {
         if ctx.inbox_view.expanded.contains(&row.key()) {
             expansion_for(ctx, row, width)
         } else {
@@ -2279,7 +2400,8 @@ impl Screen for InboxScreen {
         let cursor = cursor_pos(ctx, &rows);
         let has_stops = cursor.is_some();
         let on_fold = cursor.is_some_and(|at| at >= rows.len());
-        if rows.is_empty() {
+        let ghosts = ghost_rows(ctx);
+        if rows.is_empty() && ghosts.is_empty() {
             self.viewport.set(usize::from(body.height));
             frame.render_widget(
                 Paragraph::new(Line::from(Span::styled(
@@ -2304,9 +2426,14 @@ impl Screen for InboxScreen {
             .chain(rows.iter().filter(|row| row.fold.is_some()))
             .filter_map(|row| cells_of(ctx, row))
             .collect();
+        // The grid ignores lingering rows so nothing reflows when one goes; with no
+        // other row to size it they size it themselves.
+        if every.is_empty() {
+            every.extend(ghosts.iter().filter_map(|ghost| cells_of(ctx, &ghost.row)));
+        }
         every.shrink_to_fit();
         let grid = grid_for_inbox(&every, width);
-        let plan = full_plan(ctx, &rows, width);
+        let plan = full_plan_with(ctx, &rows, &ghosts, width);
         let height = usize::from(body.height);
         self.viewport.set(height);
         let offset = match cursor.filter(|at| *at < rows.len()) {
@@ -2327,6 +2454,7 @@ impl Screen for InboxScreen {
                 }
                 BodyItem::Sub(label) => owner_block::dim_line(2, label, width),
                 BodyItem::Extra(line) => line.clone(),
+                BodyItem::Ghost(index) => ghost_line(ctx, &ghosts[*index], &grid, width),
                 BodyItem::Row(index) => {
                     let row = &rows[*index];
                     match cells_of(ctx, row) {
