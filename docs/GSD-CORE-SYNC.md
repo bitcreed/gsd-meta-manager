@@ -1,18 +1,18 @@
 # gsd-core config sync record
 
-**Config surface synced against gsd-core `v1.21.0`**
-(`357508df233ccca0dcf4332b385d6bee9b113da9`, `package.json` 1.21.0, tagged
-2026-11-13) **on 2026-11-13. Conformance oracle / `GSD_CORE_SYNCED_VERSION`
-pinned at `1.21.0`**, the latest version published on npm.
+**Config surface synced against gsd-core `v1.22.0`**
+(`1f800effd5c33c155c57ad89ca7ec620f4b56035`, `package.json` 1.22.0, tagged
+2026-11-19) **on 2026-11-19. Conformance oracle / `GSD_CORE_SYNCED_VERSION`
+pinned at `1.22.0`**, the latest version published on npm.
 
 `src/state_reader/config_json.rs` carries the machine-readable copy of those
 values as three constants, which at this sync all name the same release:
 
 | Constant | Value | What it means |
 |---|---|---|
-| `GSD_CORE_SYNCED_VERSION` | `1.21.0` | The **conformance-oracle pin**: the latest gsd-core release published on npm at or below the synced commit. `scripts/install-conformance-oracle.sh` greps this declaration and runs `npm install @opengsd/gsd-core@<version>` — in the publish job (`.github/workflows/release.yml`) and inside `./scripts/pre-tag-check.sh --container`. The floor of the installed-GSD comparison's in-sync range. |
-| `GSD_CORE_SYNCED_COMMIT` | `v1.21.0` | The tree the config surface was diffed against, as `git describe --tags --always` spells it. |
-| `GSD_CORE_SYNCED_TREE_VERSION` | `1.21.0` | The `package.json` version of that tree. The ceiling of the installed-GSD comparison's in-sync range (quick task 260926-j0a). |
+| `GSD_CORE_SYNCED_VERSION` | `1.22.0` | The **conformance-oracle pin**: the latest gsd-core release published on npm at or below the synced commit. `scripts/install-conformance-oracle.sh` greps this declaration and runs `npm install @opengsd/gsd-core@<version>` — in the publish job (`.github/workflows/release.yml`) and inside `./scripts/pre-tag-check.sh --container`. The floor of the installed-GSD comparison's in-sync range. |
+| `GSD_CORE_SYNCED_COMMIT` | `v1.22.0` | The tree the config surface was diffed against, as `git describe --tags --always` spells it. |
+| `GSD_CORE_SYNCED_TREE_VERSION` | `1.22.0` | The `package.json` version of that tree. The ceiling of the installed-GSD comparison's in-sync range (quick task 260926-j0a). |
 
 This file is the human-readable half: the full key inventory, per-key status,
 and the exact commands that produced it, so the *next* sync starts from a
@@ -52,7 +52,13 @@ ported by quick task 261105-e7v — see
 exempted it and `review.context_window_tokens` from the secret-name heuristic,
 and aligned the `claude_orchestration.*` help texts with the deprecated
 `min_agent_sdk_version` — see
-[The v1.21.0 delta](#the-v1210-delta-quick-task-261113-fi0).
+[The v1.21.0 delta](#the-v1210-delta-quick-task-261113-fi0). The v1.22.0 sync
+(quick task 261119-ikn) modelled `workflow.cross_runtime_execution` as a typed
+row, kept `execute.models.<runtime>` pass-through, corrected the namespaced
+`commit_docs` / `search_gitignored` help, and ported two `.planning` reader
+fixes (real ATX phase headings, #5880; the phase-token VERIFICATION/UAT
+resolver, #5931) — see
+[The v1.22.0 delta](#the-v1220-delta-quick-task-261119-ikn).
 
 > **Keep this file, `config_json.rs`'s three constants and README.md's
 > `**GSD compatibility:**` note in step, in the SAME commit.** A record that
@@ -83,17 +89,17 @@ The sibling checkout is **read-only** for this purpose. Nothing below writes to
 it, and nothing below checks out a branch there.
 
 **Measure against a REF, never the working tree.** The local checkout's HEAD is
-whatever branch someone last worked on (at the time of writing: `next`, at
-`v1.20.1-97-gd668c307b` with `package.json` 1.20.1, i.e. 97 commits past the
-last tag it was described from, and without the `v1.21.0` tag) — not the sync
+whatever branch someone last worked on (at the time of writing: a fork docs branch at
+`v1.21.0-13-g4f9cb0d42` with `package.json` 1.21.0, i.e. 13 commits past the
+last release it was described from, carrying the `v1.22.0` tag) — not the sync
 target. A
 plain `cat "$CORE/docs/CONFIGURATION.md"` or `node -p require(package.json)`
 measures the wrong tree.
 
 ```bash
 CORE=~/projects/node/gsd-core
-REF=v1.22.0                          # the sync target: the next release tag
-PREV=v1.21.0                         # the previous GSD_CORE_SYNCED_COMMIT
+REF=v1.23.0                          # the sync target: the next release tag
+PREV=v1.22.0                         # the previous GSD_CORE_SYNCED_COMMIT
 
 # 1. The baseline constants.
 git -C "$CORE" describe --tags --always "$REF"   # -> GSD_CORE_SYNCED_COMMIT
@@ -134,7 +140,9 @@ S=$(mktemp -d) && git clone --bare --reference ~/projects/node/gsd-core \
 CORE="$S/core.git"        # then run steps 1-5; remove "$S" afterwards
 ```
 
-The v1.21.0 sync measured this way: the sibling checkout had no `v1.21.0` tag.
+The v1.21.0 sync measured this way (the sibling checkout had no `v1.21.0`
+tag); the v1.22.0 sync did not need a clone, because the sibling checkout
+carried the `v1.22.0` tag.
 
 **Step 5's needle is the DOTTED key, not the leaf name.** A leaf like `enabled`
 or `auto_update` matches dozens of unrelated commits across `src/`, and the
@@ -155,6 +163,125 @@ reproduced verbatim.
 `capabilities/<name>/capability.json` (like `workflow.ui_interaction_capture`)
 shows up in CONFIGURATION.md and in step 4's capability diff, but not in
 `config-schema.manifest.json`'s `validKeys`. Diff both.
+
+---
+
+## The v1.22.0 delta (quick task 261119-ikn)
+
+Measured on 2026-11-19 between `v1.21.0` and `v1.22.0`
+(`1f800effd5c33c155c57ad89ca7ec620f4b56035`), against the tags in the sibling
+checkout, read-only: 74 commits, 482 files. v1.21.0 is an ancestor of v1.22.0.
+
+| Measurement | v1.21.0 | v1.22.0 | Change |
+|---|---:|---:|---|
+| CONFIGURATION.md key cells (step 2) | 264 | 266 | **+2 / -0**: `workflow.cross_runtime_execution` (boolean, default `false`) and `execute.models.<runtime>` (string, target default), both first committed in e99b85854 (#6302 / PR #6307, 2026-11-18; first tag `v1.22.0`) |
+| `config-schema.manifest.json` | — | — | +1 `validKeys` entry (`workflow.cross_runtime_execution`) and +1 dynamic pattern (`topLevel: "execute"`, `^execute\.models\.[a-zA-Z0-9_-]+$`) |
+| `config-defaults.manifest.json`, `gsd-core/templates/config.json` | — | — | defaults gain `workflow.cross_runtime_execution: false`; the template has no diff |
+| `src/config.cts` | — | — | the new default; `planNewProjectConfig` now writes `agent_hint_routing: true` into new configs (#6211 / PR #6225); `config-get` resolves `commit_docs` and `search_gitignored` through the loader under either spelling (#5470 / PR #5502) |
+| `src/config-loader.cts` | — | — | new `CONFIG_KEY_ALIASES` table (#5470); the flat key is read first and the nested `<section>.<field>` only when the flat key is unset; no key or default semantics change |
+| `src/secrets.cts` | — | — | unchanged (no diff) |
+| Existing keys whose default changed | — | — | **none** |
+| `capabilities/*/capability.json` | 1.21.0 | 1.22.0 | 45 files, all 45 change only `version` |
+
+Step 3 (`comm -23`) at the tree after this sync: 172 against v1.21.0, 173
+against v1.22.0 (one more than before, for the new pass-through family
+`execute.models.<runtime>`; `workflow.cross_runtime_execution` is now a row).
+
+**How this build models the change.**
+
+- `workflow.cross_runtime_execution` is one typed, editable Bool row in
+  Execution directly after `workflow.agent_hint_routing`, since `v1.22.0`, built-in
+  default `false` (feat commit `51d0520c`; I-ikn-1). Upstream's `config-set`
+  accepts it and nothing dispatches on it yet, and the help says so. The
+  Modelled count and `DEFAULTS_OPTION_COUNT` go 139 -> 140, pinned by
+  `RESYNCED_KEYS_1_22_0`.
+- `execute.models.<runtime>` stays pass-through (I-ikn-2): it is templated by
+  runtime name, so a typed field per runtime is not expressible. The top-level
+  `execute` object shows as one read-only, unmasked row and is preserved on save.
+- `workflow.agent_hint_routing` needs no change (I-ikn-3): it is typed since
+  260916-vqw, its help still describes it, and its built-in default `true`
+  matches what new-project configs now write.
+- The namespaced `planning.commit_docs` and `planning.search_gitignored` help
+  texts now say the namespaced spelling is read only when the flat key is unset
+  (fix commit `6b3f8849`; I-ikn-4). This build has no resolver for an effective
+  value, so there was nothing else to port.
+
+**Reader ports.**
+
+- **Real ATX phase headings (#5880 / PR #6291).** gsd-core's `total_phases`
+  now counts only level 2-4 headings of at most three leading spaces outside
+  fenced code. This build reads `total_phases` from STATE.md, which upstream
+  writes, but its own phase list, goals and milestone scope followed the same
+  heading rule loosely, so a fenced or four-space-indented `### Phase 9:` became
+  a phase. They now follow upstream's tokenizer rule (fix commit `6de749e0`;
+  I-ikn-5).
+- **The VERIFICATION/UAT resolver (#3492 + #5931 / PR #6263).** A phase's own
+  report is chosen by the directory's phase token first, then the code-stripped
+  zero-padded spelling, so `XR-03-demo` and `5-demo` read `03-` / `05-UAT.md`
+  and `-VERIFICATION.md` even when a sibling sorts first. Bare `VERIFICATION.md`
+  is read only when no dashed report exists (fix commit `a8a4a2ca`; I-ikn-7).
+  The phase-scoped fallback of #3511 is not ported; see "Next sync".
+- **Decimal `02.1` vs `2.1` dedup (#5895 / PR #6252).** Already equivalent:
+  `phase_key` makes them one phase and keeps the first-seen spelling (I-ikn-6).
+
+**No gsdmm surface (I-ikn-8).**
+
+- `executor_runtime` plan frontmatter (#6302): `PlanMeta` reads no such field
+  and upstream dispatches nothing on it yet.
+- `resolve_model_ids: "omit"` (#3703 / PR #6217): not a CONFIGURATION.md key
+  cell; a project carrying it sees the generic pass-through row.
+- Requirements traceability Status read by leading word (#6238 / PR #6293):
+  this build reads no REQUIREMENTS.md traceability table.
+- `audit-uat` `files_scanned` (#6231 / PR #6294): no audit-uat here.
+- STATE.md over 3x its target as health warning W031 and the 240-char quick-row
+  warning (#5830 / PR #5882): this build writes no STATE.md.
+- `state record-session` keeps `total_plans` after a milestone close (#6279).
+- Verification scaffolds written without `status` (#5398): a status-less report
+  already reads as Missing here.
+- Lazy module loading (#5865 / PR #6098); the secret-read guard, symlinked
+  install, quick-batch and workstream-scoping fixes: upstream runtime or
+  installer behavior.
+
+**The gsd-tools invocation audit.** v1.22.0's `docs/CLI-SURFACE-MANIFEST.json`:
+94 declared verbs at both tags; `global.flags` (`cwd`, `default`, `json-errors`,
+`pick`, `project-dir`, `raw`, `ws`) and `global.rejected` (`--version`, `-v`)
+unchanged; `undeclared` identical (138 entries, still holding `smart-entry` and
+`init.manager`). Three verbs changed: `record-dispatch-isolation`
+(+`--executor-type`), `resolve-agent` (+`--phase`, `--plan`) and `resolve-model`
+(positionals 2 -> 1, +`--fallback-agent`); none is called here. Every invocation
+this project makes, run against the installed 1.22.0:
+
+| Where | Invocation | Result |
+|---|---|---|
+| `src/state_reader/queue_md.rs:186` | `smart-entry --json`; undeclared verb | exit 0, valid JSON with `actions` |
+| `tests/driver_router_conformance.rs:177` (`ORACLE_VERB` at :56), `scripts/install-conformance-oracle.sh:242` (`ORACLE_VERB` at :104) | `query init.manager`; undeclared verb | exit 0 |
+| `tests/launcher_live_isolation.rs:126` | `runtime-identity --raw` | exit 0, `{"packageName":"@opengsd/gsd-core","version":"1.22.0"}` |
+| `tests/driver_router_conformance.rs:137` | PATH probe `gsd-tools --version` | rejected, but the rejection predates v1.21.0 and the probe only checks that a binary spawns |
+| `tests/launcher_config_dir.rs:299` | `query init` inside a hook-command string fixture | never executed |
+
+Conclusion: no code change (I-ikn-9).
+
+**Other areas.**
+
+- **Routing.** `src/smart-entry.cts` has no diff; `src/init.cts` changes
+  planningDir scoping of MILESTONES.md / research_dir, a new `state_path` and the
+  shared 240-char cap. `tests/driver_router_conformance.rs` is green (8 passed)
+  against the installed 1.22.0 and against the npm-pinned 1.22.0 oracle that
+  `scripts/install-conformance-oracle.sh` provisions into a throwaway HOME (see
+  the 261119-ikn SUMMARY).
+- **The CLI.** `commands/gsd` has 72 files at both tags, 17 modified, none added
+  or removed, and no `argument-hint` line changed; the slash flags this app emits
+  (`--gaps`, `--gaps-only`, `--next`, `--advanced`, `--backlog`) are all still
+  present.
+- **Agents.** 64 files at both tags, 20 modified.
+- **Codex and installs.** The capabilities change only `version`; the
+  `<config home>/gsd-core/VERSION` root `src/state_reader/gsd_install.rs` reads
+  is unchanged.
+- **Secret-bearing keys.** `src/secrets.cts` and
+  `gsd-core/references/gsd-run-resolver.md` have no diff; the heuristic matches
+  stay 6 -> 6 (the same six, all already exempt); the new key names
+  `workflow.cross_runtime_execution` and `execute.models.<runtime>` trip no
+  marker; CONFIGURATION.md still has 6 "Masked in display" cells.
 
 ---
 
@@ -1109,7 +1236,7 @@ warning.
 Then, in priority order:
 
 1. **Re-measure the baseline trio** with step 1 against the next release tag
-   (`REF=v1.22.0`, `PREV=v1.21.0`). If `GSD_CORE_SYNCED_COMMIT` already
+   (`REF=v1.23.0`, `PREV=v1.22.0`). If `GSD_CORE_SYNCED_COMMIT` already
    matches the new REF, there is nothing else to do. If the target is an
    untagged tree past the last npm release, see "When the three disagree"
    above. After moving the oracle pin, re-run
@@ -1158,3 +1285,8 @@ Then, in priority order:
    generalises phase identity beyond `PhaseNum` — and so is not a sync task.
    **Owner:** next-milestone planning, as a dedicated phase. A sync task must
    not attempt it.
+9. **Phase-scoped report fallback (deferred at 261119-ikn).** Port gsd-core
+   #3511's scoping of `resolvePhaseArtifactFile`'s sorted-first tier
+   (`scopeToPhase`), so another phase's stray `NN-VERIFICATION.md` in a
+   directory can no longer become this phase's report.
+
