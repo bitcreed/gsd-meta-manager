@@ -771,11 +771,18 @@ fn plan_frontmatter_superseded(content: &str) -> bool {
 
 /// Read the `status` out of the phase directory's verification artifact.
 ///
-/// `names` is every `*-VERIFICATION.md` seen in the directory. **They are sorted
-/// and the first is read**, which is the tie-break GSD's own reader uses
-/// (`verification.cjs:302-303`), so a directory holding more than one artifact
-/// yields the same status on every read rather than whatever the filesystem
-/// happened to hand back first.
+/// `names` is every `VERIFICATION.md` / `*-VERIFICATION.md` seen in the
+/// directory; [`select_phase_report`] picks the phase's own report from them,
+/// a port of gsd-core's `resolvePhaseArtifactFile` (`src/verification.cts`):
+/// the report spelled with the directory's own phase token first (#3357 /
+/// #3492, so `03-CORRECTION-VERIFICATION.md` no longer outranks
+/// `03-VERIFICATION.md`), then the code-stripped zero-padded spelling the
+/// scaffolder writes (#5931 / PR #6263, gsd-core v1.22.0: `XR-03-demo` and
+/// `5-demo` read `03-` / `05-VERIFICATION.md`), then the sorted-first dashed
+/// report, then a bare `VERIFICATION.md`. The phase-scoped fallback of #3511 is
+/// not ported (quick task 261119-ikn, I-ikn-7). The pick is stable, so a
+/// directory holding several artifacts yields the same status on every read
+/// rather than whatever the filesystem happened to hand back first.
 ///
 /// No artifact, an unreadable file, no leading block, an UNTERMINATED leading
 /// block, or no `status` key yields [`VerificationStatus::Missing`]. A closed
@@ -788,15 +795,51 @@ fn plan_frontmatter_superseded(content: &str) -> bool {
 /// Unterminated is upstream's `extractFrontmatter` returning `{}`, i.e.
 /// `missing`: a body `status:` line is never frontmatter (the
 /// `DEFECT.FRONTMATTER-SCALAR-BROAD-GREP` class, one step further).
-fn read_verification_status(phase_dir: &Path, mut names: Vec<String>) -> VerificationStatus {
-    names.sort();
-    let Some(content) = names
-        .first()
+fn read_verification_status(phase_dir: &Path, names: Vec<String>) -> VerificationStatus {
+    let Some(content) = select_phase_report(phase_dir, &names, "VERIFICATION.md")
         .and_then(|name| std::fs::read_to_string(phase_dir.join(name)).ok())
     else {
         return VerificationStatus::Missing;
     };
     verification_status_of(&content)
+}
+
+/// Which of the directory's `<bare>` reports is the phase's own: a port of
+/// gsd-core's `resolvePhaseArtifactFile` (`src/verification.cts`, v1.22.0)
+/// without its #3511 phase-scoping tier. In order:
+///
+/// 1. the dashed candidates (`names` ending in `-<bare>`), sorted;
+/// 2. when any exist, `<token>-<bare>` for the directory's
+///    [`upstream_dir_token`] as written (`XR-03`, `5`), then for its
+///    [`upstream_normalize_phase_name`] (`03`, `05`) — the first one listed wins;
+/// 3. else the first sorted dashed candidate;
+/// 4. else the bare `<bare>` itself, when listed.
+///
+/// Only a name that the directory listing produced is returned: the token
+/// derived from the untrusted directory name is compared with listed names and
+/// never joined into a path on its own.
+fn select_phase_report<'a>(phase_dir: &Path, names: &'a [String], bare: &str) -> Option<&'a str> {
+    let suffix = format!("-{bare}");
+    let mut dashed: Vec<&'a str> = names
+        .iter()
+        .map(String::as_str)
+        .filter(|n| n.ends_with(&suffix))
+        .collect();
+    dashed.sort_unstable();
+    if let Some(first) = dashed.first().copied() {
+        if let Some(dir_name) = phase_dir.file_name().and_then(|n| n.to_str()) {
+            let token = upstream_dir_token(dir_name);
+            let normalized = upstream_normalize_phase_name(&token);
+            for spelling in [token, normalized] {
+                let wanted = format!("{spelling}{suffix}");
+                if let Some(hit) = dashed.iter().copied().find(|n| *n == wanted) {
+                    return Some(hit);
+                }
+            }
+        }
+        return Some(first);
+    }
+    names.iter().map(String::as_str).find(|n| *n == bare)
 }
 
 /// The verification status one document's content expresses. Split out of
@@ -848,13 +891,13 @@ fn leading_block(content: &str) -> LeadingBlock {
 
 /// Read the `status` out of the phase directory's UAT artifact.
 ///
-/// Same sorted-first tie-break and the same byte-zero-anchored parse
-/// [`read_verification_status`] uses, for the same reason: one directory, one
-/// answer, on every read. Every failure mode yields [`UatStatus::Missing`].
-fn read_uat_status(phase_dir: &Path, mut names: Vec<String>) -> UatStatus {
-    names.sort();
-    names
-        .first()
+/// Same selection ([`select_phase_report`]: the phase token's own `NN-UAT.md`
+/// first, then sorted-first, then a bare `UAT.md`; gsd-core #3492 / #5931) and
+/// the same byte-zero-anchored parse [`read_verification_status`] uses, for the
+/// same reason: one directory, one answer, on every read. Every failure mode
+/// yields [`UatStatus::Missing`].
+fn read_uat_status(phase_dir: &Path, names: Vec<String>) -> UatStatus {
+    select_phase_report(phase_dir, &names, "UAT.md")
         .and_then(|name| std::fs::read_to_string(phase_dir.join(name)).ok())
         .and_then(|content| leading_frontmatter_value(&content, "status"))
         .map(|raw| UatStatus::from_raw(&raw))
@@ -1489,27 +1532,39 @@ fn pad2(digits: &str) -> String {
     format!("{digits:0>2}")
 }
 
-/// gsd-core's `normalizePhaseName` (`phase-id.cts:546-569`) for the inputs the
-/// milestone-prefixed branch receives, which are those [`PhaseNum::parse`]
-/// accepts: the leading digit run and an `-N` segment are padded to two digits,
-/// a `.N` decimal tail is kept verbatim. Deliberately NOT
-/// [`PhaseNum::padded`], which renders `007` as `07` and `07.01` as `07.1`,
-/// unlike upstream.
+/// gsd-core's `normalizePhaseName` (`phase-id.cts:546-569`): an uppercase
+/// project-code prefix is stripped when a digit follows it; a milestone-prefixed
+/// id (`M-NN`, `M-N-N`, with an optional letter and decimal tail) has every
+/// numeric segment padded to two digits; a standard numeric id (`1`, `12A`,
+/// `12.1`) has its leading digit run padded; anything else (a custom id such as
+/// `PROJ-42`) is returned unchanged. Deliberately NOT [`PhaseNum::padded`],
+/// which renders `007` as `07` and `07.01` as `07.1`, unlike upstream.
 fn upstream_normalize_phase_name(phase: &str) -> String {
+    static PREFIX: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    static MILESTONE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    static STANDARD: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     let phase = phase.trim();
-    let (head, tail) = match phase.split_once('.') {
-        Some((head, tail)) => (head, Some(tail)),
-        None => (phase, None),
+    let prefix = PREFIX.get_or_init(|| regex::Regex::new(r"^[A-Z][A-Z0-9_]*-[0-9]").unwrap());
+    // Case-sensitive, as upstream's `stripProjectCodePrefix(str, false)`.
+    let stripped = match prefix.find(phase) {
+        Some(m) => &phase[m.end() - 1..],
+        None => phase,
     };
-    let mut out = match head.split_once('-') {
-        Some((major, sub)) => format!("{}-{}", pad2(major), pad2(sub)),
-        None => pad2(head),
-    };
-    if let Some(tail) = tail {
-        out.push('.');
-        out.push_str(tail);
+    let milestone = MILESTONE.get_or_init(|| {
+        regex::Regex::new(r"(?i)^([0-9]+)((?:-[0-9]+)+)([A-Z]?(?:\.[0-9]+)*)$").unwrap()
+    });
+    if let Some(caps) = milestone.captures(stripped) {
+        let subs: Vec<String> = caps[2][1..].split('-').map(pad2).collect();
+        return format!("{}-{}{}", pad2(&caps[1]), subs.join("-"), &caps[3]);
     }
-    out
+    let standard = STANDARD
+        .get_or_init(|| regex::Regex::new(r"(?i)^([0-9]+)([A-Z])?((?:\.[0-9]+)*)").unwrap());
+    if let Some(caps) = standard.captures(stripped) {
+        let letter = caps.get(2).map_or("", |m| m.as_str());
+        let decimal = caps.get(3).map_or("", |m| m.as_str());
+        return format!("{}{letter}{decimal}", pad2(&caps[1]));
+    }
+    phase.to_string()
 }
 
 /// gsd-core's `stripProjectCodePrefix` (`phase-id.cts:45,536-540`): a leading
@@ -2129,6 +2184,79 @@ mod tests {
             );
             assert_eq!(result.status, DiskStatus::Executed, "read {read}");
         }
+    }
+
+    #[test]
+    fn a_project_coded_or_unpadded_phase_dir_reads_its_own_reports() {
+        let base = tempdir().unwrap();
+        let coded = base.path().join("XR-03-demo");
+        fs::create_dir(&coded).unwrap();
+        let put = |dir: &Path, name: &str, status: &str| {
+            fs::write(dir.join(name), format!("---\nstatus: {status}\n---\n")).unwrap();
+        };
+        put(&coded, "03-CORRECTION-VERIFICATION.md", "gaps_found");
+        put(&coded, "03-VERIFICATION.md", "passed");
+        put(&coded, "03-HUMAN-UAT.md", "failed");
+        put(&coded, "03-UAT.md", "partial");
+        let result = infer_disk_status(&coded);
+        assert_eq!(result.verification_status, VerificationStatus::Passed);
+        assert_eq!(result.uat_status, UatStatus::Partial);
+
+        let unpadded = base.path().join("5-demo");
+        fs::create_dir(&unpadded).unwrap();
+        put(&unpadded, "05-CORRECTION-VERIFICATION.md", "gaps_found");
+        put(&unpadded, "05-VERIFICATION.md", "passed");
+        let result = infer_disk_status(&unpadded);
+        assert_eq!(result.verification_status, VerificationStatus::Passed);
+    }
+
+    #[test]
+    fn the_phase_token_report_outranks_a_sibling_that_sorts_first() {
+        let base = tempdir().unwrap();
+        let put = |dir: &Path, name: &str, status: &str| {
+            fs::write(dir.join(name), format!("---\nstatus: {status}\n---\n")).unwrap();
+        };
+        let plain = base.path().join("03-demo");
+        fs::create_dir(&plain).unwrap();
+        put(&plain, "03-CORRECTION-VERIFICATION.md", "gaps_found");
+        put(&plain, "03-VERIFICATION.md", "passed");
+        assert_eq!(
+            infer_disk_status(&plain).verification_status,
+            VerificationStatus::Passed
+        );
+
+        let coded = base.path().join("XR-03-demo");
+        fs::create_dir(&coded).unwrap();
+        put(&coded, "XR-03-VERIFICATION.md", "passed");
+        put(&coded, "03-VERIFICATION.md", "gaps_found");
+        assert_eq!(
+            infer_disk_status(&coded).verification_status,
+            VerificationStatus::Passed,
+            "the literal token wins over the normalized spelling"
+        );
+    }
+
+    #[test]
+    fn a_bare_report_is_read_only_when_no_dashed_report_exists() {
+        let base = tempdir().unwrap();
+        let put = |dir: &Path, name: &str, status: &str| {
+            fs::write(dir.join(name), format!("---\nstatus: {status}\n---\n")).unwrap();
+        };
+        let both = base.path().join("XR-03-demo");
+        fs::create_dir(&both).unwrap();
+        put(&both, "VERIFICATION.md", "gaps_found");
+        put(&both, "XR-03-VERIFICATION.md", "passed");
+        assert_eq!(
+            infer_disk_status(&both).verification_status,
+            VerificationStatus::Passed
+        );
+        let bare = base.path().join("04-demo");
+        fs::create_dir(&bare).unwrap();
+        put(&bare, "VERIFICATION.md", "passed");
+        assert_eq!(
+            infer_disk_status(&bare).verification_status,
+            VerificationStatus::Passed
+        );
     }
 
     #[test]
