@@ -538,6 +538,14 @@ impl SettleConfirmScreen {
         }
     }
 
+    /// The popup already switched to the full command, for the render-escape guard's
+    /// fixture states.
+    #[cfg(test)]
+    pub(crate) fn showing_full_command(mut self) -> Self {
+        self.full = true;
+        self
+    }
+
     /// Yes: the status line says why nothing launched, or what launched. With a
     /// live session in the project it is focused (never typed into) and the
     /// prompt goes to the clipboard for the owner to paste there (D-11); the
@@ -935,9 +943,11 @@ crate::ui::screens::adjudicate_screen!(
     crate::ui::screens::RENDERS_ATTACKER_INFLUENCED_IDENTITY,
     "Draws the registered alias, the phase token, the check file and check names, \
      the workstream and the owner's reason (all read out of `.planning/` or typed) \
-     in the whole argv, each element through `shown`, over the inbox or the detail \
-     view as its background. Fixture states: one popup with hostile values at the \
-     sizes the guard renders.",
+     in the summary (the header rows, the Runs row and the capped instruction, all \
+     cut from the argv after `shown`) and, behind `d`, in the whole argv, each \
+     element through `shown`, over the inbox or the detail view as its background. \
+     Fixture states: the summary and the full-command view with hostile values at \
+     the sizes the guard renders.",
 );
 
 impl Screen for SettleConfirmScreen {
