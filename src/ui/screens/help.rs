@@ -116,6 +116,9 @@ pub struct HelpScreen {
     /// What the last render pass could show. Zero before the first pass, which
     /// yields a max scroll of zero — the correct pre-first-render floor.
     viewport: Cell<ViewportMetrics>,
+    /// What the last key press found (quick 261118-tki): the marked rows and the
+    /// title hint. `None` until a key other than a scroll key or a closer is pressed.
+    highlight: Option<Highlight>,
 }
 
 impl Default for HelpScreen {
@@ -129,6 +132,7 @@ impl HelpScreen {
         Self {
             scroll_offset: 0,
             viewport: Cell::new(ViewportMetrics::default()),
+            highlight: None,
         }
     }
 
@@ -711,6 +715,23 @@ impl Screen for HelpScreen {
                 ctx.needs_redraw = true;
                 ScreenAction::None
             }
+            // Every other key is a find (quick 261118-tki): mark the rows whose key
+            // column lists it. Keys that are not a plain char are consumed for now.
+            KeyCode::Char(c) => {
+                let key = HelpKey {
+                    code: KeyCode::Char(c),
+                    ctrl: false,
+                };
+                let lines = help_lines(ctx.experimental);
+                let entries = help_entries(&lines);
+                self.highlight = if matching_entries(&entries, key).is_empty() {
+                    None
+                } else {
+                    Some(Highlight::Found { key, current: 0 })
+                };
+                ctx.needs_redraw = true;
+                ScreenAction::None
+            }
             _ => ScreenAction::None, // Consume all other keys
         }
     }
@@ -720,8 +741,23 @@ impl Screen for HelpScreen {
         let popup_area = centered_rect(area, POPUP_WIDTH_PCT, POPUP_HEIGHT_PCT);
         frame.render_widget(Clear, popup_area);
 
-        let help_text = help_lines(ctx.experimental);
-        let block = Block::default().borders(Borders::ALL).title(" Help ");
+        let mut help_text = help_lines(ctx.experimental);
+        let mut title = " Help ".to_string();
+        if let Some(Highlight::Found { key, current }) = self.highlight {
+            let entries = help_entries(&help_text);
+            let matched = matching_entries(&entries, key);
+            if !matched.is_empty() {
+                let current = current.min(matched.len() - 1);
+                title = format!(
+                    " Help  {}: {}/{} ",
+                    key_label(key),
+                    current + 1,
+                    matched.len()
+                );
+                help_text = apply_highlight(help_text, &entries, &matched, current);
+            }
+        }
+        let block = Block::default().borders(Borders::ALL).title(title);
         let inner = block.inner(popup_area);
 
         // Record for the key handler, which cannot see this pass.
@@ -759,6 +795,168 @@ impl Screen for HelpScreen {
 /// the one arithmetic shape this file must not grow a copy of.
 pub(super) fn more_below(offset: u16, total_lines: u16, visible_height: u16) -> bool {
     offset.saturating_add(visible_height) < total_lines
+}
+
+/// The marker a row carries when it is the current match (ASCII, so the
+/// `src/ui` glyph scan never sees it). It replaces the row's two-space indent.
+const CURRENT_MATCH_MARKER: &str = "> ";
+/// The marker every other matching row carries.
+const MATCH_MARKER: &str = "* ";
+
+/// A key as the help body names it, or as a key press reports it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct HelpKey {
+    code: KeyCode,
+    ctrl: bool,
+}
+
+impl HelpKey {
+    fn plain(c: char) -> Self {
+        Self {
+            code: KeyCode::Char(c),
+            ctrl: false,
+        }
+    }
+}
+
+/// The headings whose rows never name a key: their first column holds filter
+/// syntax, a counter label or a glyph. Every other heading is a key section.
+const NON_KEY_SECTIONS: [&str; 6] = [
+    "Filter Syntax",
+    "Owner Work",
+    "Dashboard Badges",
+    "Work State",
+    "Driver Run States",
+    "Driver Item States",
+];
+
+/// The keys one key-column label lists, or the first piece that is not a key.
+fn key_tokens(label: &str) -> Result<Vec<HelpKey>, String> {
+    if label.trim() == "/" {
+        return Ok(vec![HelpKey::plain('/')]);
+    }
+    let mut keys = Vec::new();
+    for word in label.split_whitespace().filter(|w| *w != "/") {
+        for piece in word.split('/').filter(|p| !p.is_empty()) {
+            let mut chars = piece.chars();
+            match (chars.next(), chars.next()) {
+                (Some(c), None) => keys.push(HelpKey::plain(c)),
+                _ => return Err(piece.to_string()),
+            }
+        }
+    }
+    Ok(keys)
+}
+
+/// One key-section row of the help body (with its continuation rows).
+#[derive(Clone, Debug)]
+struct HelpEntry {
+    /// The first and last line of the entry.
+    first: usize,
+    last: usize,
+    keys: Vec<HelpKey>,
+}
+
+fn line_text(line: &Line<'static>) -> String {
+    line.spans.iter().map(|s| s.content.as_ref()).collect()
+}
+
+/// The key rows of a help body, read from the key column only (never from a
+/// description). Indexed by chars: `row()` pads by chars.
+fn help_entries(lines: &[Line<'static>]) -> Vec<HelpEntry> {
+    let mut entries: Vec<HelpEntry> = Vec::new();
+    let mut key_section = false;
+    let mut open = false;
+    for (i, line) in lines.iter().enumerate() {
+        let text = line_text(line);
+        if text.is_empty() {
+            open = false;
+        } else if !text.starts_with("  ") {
+            key_section = !NON_KEY_SECTIONS.contains(&text.as_str());
+            open = false;
+        } else if key_section {
+            let label: String = text.chars().skip(2).take(13).collect();
+            let label = label.trim();
+            if label.is_empty() {
+                if let (true, Some(entry)) = (open, entries.last_mut()) {
+                    entry.last = i;
+                }
+            } else {
+                entries.push(HelpEntry {
+                    first: i,
+                    last: i,
+                    keys: key_tokens(label).unwrap_or_default(),
+                });
+                open = true;
+            }
+        } else {
+            open = false;
+        }
+    }
+    entries
+}
+
+/// The indexes of the entries that list `key`, in body order.
+fn matching_entries(entries: &[HelpEntry], key: HelpKey) -> Vec<usize> {
+    entries
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| e.keys.contains(&key))
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// What the last key press found.
+#[derive(Clone, Copy, Debug)]
+enum Highlight {
+    /// `current` indexes the matching entries, in body order.
+    Found { key: HelpKey, current: usize },
+}
+
+/// `lines` with every row of every matched entry marked: `> ` plus
+/// REVERSED|BOLD on the current one, `* ` plus BOLD on the others. The marker
+/// replaces the two-space indent, so the key column stays aligned and the line
+/// count does not change. Style and marker carry the meaning, never color.
+fn apply_highlight(
+    lines: Vec<Line<'static>>,
+    entries: &[HelpEntry],
+    matched: &[usize],
+    current: usize,
+) -> Vec<Line<'static>> {
+    let mut out = lines;
+    for (pos, &entry) in matched.iter().enumerate() {
+        let (marker, style) = if pos == current {
+            (
+                CURRENT_MATCH_MARKER,
+                Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD),
+            )
+        } else {
+            (MATCH_MARKER, Style::default().add_modifier(Modifier::BOLD))
+        };
+        let e = &entries[entry];
+        for line in out.iter_mut().take(e.last + 1).skip(e.first) {
+            let text = line_text(line);
+            let rest = text.strip_prefix("  ").unwrap_or(&text);
+            *line = Line::from(Span::styled(format!("{marker}{rest}"), style));
+        }
+    }
+    out
+}
+
+/// A key's name for the popup title: fixed names and ASCII-graphic chars only,
+/// so no control or wide char from a key press ever reaches a cell (T-tki-01).
+fn key_label(key: HelpKey) -> String {
+    let base = match key.code {
+        KeyCode::Char(' ') => "Space".to_string(),
+        KeyCode::Char(c) if c.is_ascii_graphic() => c.to_string(),
+        KeyCode::Char(c) => format!("U+{:04X}", u32::from(c)),
+        _ => "that key".to_string(),
+    };
+    if key.ctrl {
+        format!("Ctrl+{base}")
+    } else {
+        base
+    }
 }
 
 #[cfg(test)]
@@ -2071,5 +2269,117 @@ mod tests {
         }
         // The shipped flag glyph stays: the legacy predicate paints it either way.
         assert!(off.contains(BADGE_NEEDS_HUMAN.trim()));
+    }
+
+    // ── Quick 261118-tki: pressing a key highlights the rows that list it ──
+
+    fn plain_keys(chars: &str) -> Vec<HelpKey> {
+        chars.chars().map(HelpKey::plain).collect()
+    }
+
+    fn text_of(line: &Line<'static>) -> String {
+        line_text(line)
+    }
+
+    #[test]
+    fn key_tokens_reads_plain_char_labels() {
+        assert_eq!(key_tokens("v o A y x"), Ok(plain_keys("voAyx")));
+        assert_eq!(key_tokens("j/k g/G"), Ok(plain_keys("jkgG")));
+        assert_eq!(key_tokens("/"), Ok(plain_keys("/")));
+        assert_eq!(key_tokens("[ / ]"), Ok(plain_keys("[]")));
+        assert_eq!(key_tokens("?"), Ok(plain_keys("?")));
+        assert!(key_tokens("Click value").is_err());
+    }
+
+    #[test]
+    fn help_entries_find_the_s_rows_and_the_e_continuation() {
+        let lines = help_lines(true);
+        let entries = help_entries(&lines);
+        let s = HelpKey::plain('s');
+        let matched = matching_entries(&entries, s);
+        assert_eq!(matched.len(), 2);
+        assert_eq!(
+            text_of(&lines[entries[matched[0]].first]),
+            row("s", SORT_ROW).spans[0].content
+        );
+        assert_eq!(
+            text_of(&lines[entries[matched[1]].first]),
+            row(
+                "s",
+                "Start a new run: name it, edit it, check it, launch it"
+            )
+            .spans[0]
+                .content
+        );
+        // The Driver `e` entry spans its three continuation rows.
+        let e = entries
+            .iter()
+            .find(|e| {
+                text_of(&lines[e.first])
+                    == row("e", "Edit this run's DIRECTION.md in $EDITOR").spans[0].content
+            })
+            .expect("the driver e row");
+        assert_eq!(e.last - e.first, 3);
+    }
+
+    #[test]
+    fn apply_highlight_marks_exactly_the_matched_rows() {
+        let lines = help_lines(true);
+        let entries = help_entries(&lines);
+        let matched = matching_entries(&entries, HelpKey::plain('s'));
+        let marked = apply_highlight(lines.clone(), &entries, &matched, 0);
+        assert_eq!(marked.len(), lines.len());
+        let changed: Vec<usize> = (0..lines.len())
+            .filter(|&i| marked[i] != lines[i])
+            .collect();
+        assert_eq!(changed.len(), 2);
+        assert_eq!(
+            text_of(&marked[changed[0]]),
+            format!("{CURRENT_MATCH_MARKER}{:<13} {SORT_ROW}", "s")
+        );
+        assert_eq!(
+            text_of(&marked[changed[1]]),
+            format!(
+                "{MATCH_MARKER}{:<13} Start a new run: name it, edit it, check it, launch it",
+                "s"
+            )
+        );
+    }
+
+    #[test]
+    fn pressing_s_marks_its_rows_and_counts_them_in_the_title_at_100x30() {
+        use ratatui::{backend::TestBackend, Terminal};
+        let (mut ctx, _rx) = ctx_with_project(std::path::Path::new("/tmp/x"));
+        assert!(ctx.experimental, "the fixture default");
+        let mut screen = HelpScreen::new();
+        Screen::handle_key(
+            &mut screen,
+            KeyCode::Char('s'),
+            KeyModifiers::NONE,
+            &mut ctx,
+        );
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).expect("backend");
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                Screen::render(&screen, frame, area, &ctx);
+            })
+            .expect("draw");
+        let buffer = terminal.backend().buffer().clone();
+        let rows: Vec<String> = (0..30)
+            .map(|y| {
+                (0..100)
+                    .map(|x| buffer.cell((x, y)).expect("cell").symbol().to_owned())
+                    .collect::<String>()
+            })
+            .collect();
+        assert!(rows.iter().any(|r| r.contains("s: 1/2")), "{rows:#?}");
+        let at = rows
+            .iter()
+            .position(|r| r.contains("> s") && r.contains("Toggle sort"))
+            .unwrap_or_else(|| panic!("no current-match row:\n{}", rows.join("\n")));
+        let x = rows[at].find("> s").expect("marker") as u16;
+        let cell = buffer.cell((x, at as u16)).expect("cell");
+        assert!(cell.modifier.contains(Modifier::REVERSED));
     }
 }
