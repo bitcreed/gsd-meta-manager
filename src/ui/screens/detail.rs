@@ -12355,7 +12355,7 @@ fn build_defaults_entries(
     // because they are different JSON paths and a project may carry either.
     let (v, k) = opt_bool(config.planning.as_ref().and_then(|p| p.commit_docs));
     push(cat, "planning.commit_docs", v, k, false, ConfigHelp::new(
-        "The namespaced form of the switch above — gsd-core reads this path, and a project may carry either one.",
+        "The namespaced form of the switch above; gsd-core reads it only when the flat key is unset, so the flat key wins when both are set.",
     ).since("v1.01.0"));
     let (v, k) = opt_bool(pwf.and_then(|w| w.skip_discuss));
     push(cat, "skip_discuss", v, k, false, ConfigHelp::new(
@@ -12663,7 +12663,7 @@ fn build_defaults_entries(
     ));
     let (v, k) = opt_bool(config.planning.as_ref().and_then(|p| p.search_gitignored));
     push(cat, "planning.search_gitignored", v, k, false, ConfigHelp::new(
-        "The namespaced form of the switch above — gsd-core reads this path, and a project may carry either one.",
+        "The namespaced form of the switch above; gsd-core reads it only when the flat key is unset, so the flat key wins when both are set.",
     ).since("v1.01.0"));
     let (v, k) = opt_str(config.project_code.as_deref());
     push(cat, "project_code", v, k, false, ConfigHelp::new(
@@ -17807,6 +17807,24 @@ mod tests {
             .expect("the unset hooks.secret_read_exempt row");
         assert_eq!(row.value, "(unset)");
         assert_ne!(row.category, PASSTHROUGH_CATEGORY);
+    }
+
+    /// gsd-core 1.22.0 (#5470): the namespaced `commit_docs` / `search_gitignored`
+    /// spellings are read only when the flat key is unset.
+    #[test]
+    fn namespaced_commit_docs_and_search_gitignored_help_says_the_flat_key_wins() {
+        let entries = all_config_entries();
+        for key in ["planning.commit_docs", "planning.search_gitignored"] {
+            let e = entries
+                .iter()
+                .find(|e| e.key.as_ref() == key)
+                .unwrap_or_else(|| panic!("no row for {key}"));
+            let text = e.help.summary.to_lowercase();
+            assert!(
+                text.contains("flat") && text.contains("unset"),
+                "{key}: {text}"
+            );
+        }
     }
 
     /// `workflow.cross_runtime_execution` (gsd-core 1.22.0, #6302): one typed,

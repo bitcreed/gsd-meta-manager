@@ -895,6 +895,8 @@ gsd-core v1.22.0 registers `workflow.cross_runtime_execution` (#6302) as an opt-
 | `workflow.compact_content` | v1.14.0 |
 | `response_language` | |
 
+`commit_docs` / `planning.commit_docs` and `search_gitignored` / `planning.search_gitignored` are modelled as distinct paths. Upstream reads the flat key first and the namespaced one only when the flat key is unset, which gsd-core v1.22.0 documents (#5470); the namespaced rows' help says so (261119-ikn).
+
 ### Features
 
 | Key | since |
