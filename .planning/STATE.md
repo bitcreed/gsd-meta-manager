@@ -6,10 +6,10 @@ current_phase: 39
 current_phase_name: Check actions through GSD
 status: verifying
 stopped_at: Completed 39-03-PLAN.md
-last_updated: "2026-11-19T05:08:35.234Z"
+last_updated: "2026-11-19T19:08:53.318Z"
 last_activity: 2026-11-18
 last_activity_desc: Phase 39 execution started
-state_head: dd086ffbf25f6a1151cf4f48be25c13d57424a5e
+state_head: dd15c1a2a5e3d0adeaab6baf6ecb0d80e64076cd
 progress:
   total_phases: 6
   completed_phases: 1
@@ -596,6 +596,7 @@ Older entries (Phase 19 T-19-* rows, Phase 21 round-13 gaps, Phase 26 risks, 31-
 | 261118-tro | Compact the settle confirm popup: bold Runs summary, capped instruction text, d toggles verbatim full command | 2026-11-18 | 376614f9 | [261118-tro-compact-the-settle-confirm-popup-bold-ru](./quick/261118-tro-compact-the-settle-confirm-popup-bold-ru/) |
 | 261118-u4e | Enter opens the Owner source file at the right place (inbox + Owner block) | 2026-11-18 | be39d868 | [261118-u4e-enter-opens-the-owner-source-file-at-the](./quick/261118-u4e-enter-opens-the-owner-source-file-at-the/) |
 | 261118-v6l | Pending row state after settle: settling badge, recorded step, ✓ linger (inbox + Owner block) | 2026-11-18 | dd086ffb | [261118-v6l-pending-row-state-after-settle-settling-](./quick/261118-v6l-pending-row-state-after-settle-settling-/) |
+| 261119-f5b | Owner-row action menu and context-aware footer (Owner block + inbox, shared) | 2026-11-19 | dd15c1a2 | [261119-f5b-owner-row-action-menu-and-context-aware-](./quick/261119-f5b-owner-row-action-menu-and-context-aware-/) |
 
 ## Deferred Items
 
