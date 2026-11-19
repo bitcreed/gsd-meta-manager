@@ -31,6 +31,7 @@ use std::path::{Path, PathBuf};
 use super::ack_confirm::AckHost;
 use super::owner_actions::active_workstream_is_set;
 use super::owner_block::{self, GroupKey};
+use super::settle_pending;
 use super::settle_popup::SettleChooserScreen;
 
 /// The prefix of the reason gsd-core treats as a non-blocking deferral (RESEARCH
@@ -708,6 +709,106 @@ pub(crate) fn launch_settle(plan: &SettlePlan) -> String {
             None => launched_status(plan),
         }
     }
+}
+
+/// What the badge says the settle is (I-5): the outcome, and for one check the
+/// check first (`test 2 won't do`).
+fn pending_words(plan: &SettlePlan) -> String {
+    let outcome = match (&plan.choice.outcome, &plan.choice.move_to) {
+        (Outcome::WontDo, _) => "won't do".to_owned(),
+        (Outcome::DeferPermanently, _) => "defer permanently".to_owned(),
+        (Outcome::Move, Some(to)) => format!("move to phase {}", to.number),
+        (Outcome::Move, None) => "move".to_owned(),
+    };
+    match plan.draft.target.scope {
+        SettleScope::Check(_) => format!("{} {outcome}", plan.draft.target.short()),
+        SettleScope::Phase => outcome,
+    }
+}
+
+/// What the check line says once the checks are gone: GSD records Won't do and
+/// Deferred permanently as `result: skipped`, so both read `skipped`.
+fn pending_done_words(plan: &SettlePlan) -> String {
+    match (&plan.choice.outcome, &plan.choice.move_to) {
+        (Outcome::Move, Some(to)) => format!("moved to phase {}", to.number),
+        _ => format!("{} skipped", plan.draft.target.short()),
+    }
+}
+
+/// The pending entry for `plan`, built from the digest as it is before the launch
+/// (quick 261118-v6l, I-12: the fingerprints are taken first so a fast write is
+/// never missed). `None` without a digest or without a group behind the row.
+fn pending_for(ctx: &AppContext, plan: &SettlePlan) -> Option<settle_pending::PendingSettle> {
+    let target = &plan.draft.target;
+    let digest = ctx.owner_digest(&target.alias)?;
+    let fold_days = ctx.config.preferences.owner_fold_days();
+    let groups = groups_behind(digest, &target.key, fold_days);
+    let mut files: Vec<String> = Vec::new();
+    let mut checks: Vec<(String, String)> = Vec::new();
+    for group in &groups {
+        for item in &group.items {
+            let wanted = match &target.scope {
+                SettleScope::Phase => true,
+                SettleScope::Check(id) => item.id == *id && checks.is_empty(),
+            };
+            if wanted {
+                checks.push((item.id.clone(), item.name.clone()));
+                if !files.contains(&group.file) {
+                    files.push(group.file.clone());
+                }
+            }
+        }
+        if matches!(target.scope, SettleScope::Phase) && !files.contains(&group.file) {
+            files.push(group.file.clone());
+        }
+    }
+    if checks.is_empty() {
+        return None;
+    }
+    let fingerprints = files
+        .iter()
+        .map(|file| settle_pending::fingerprint(&plan.draft.cwd, file))
+        .collect();
+    let mut entry = settle_pending::PendingSettle {
+        alias: target.alias.clone(),
+        root: plan.draft.cwd.clone(),
+        lane: target.key.lane,
+        scope_label: target.key.scope_label.clone(),
+        workstream: target.key.workstream.clone(),
+        phase: target.key.phase.clone(),
+        files,
+        checks,
+        words: pending_words(plan),
+        done_words: pending_done_words(plan),
+        started: std::time::Instant::now(),
+        stage: settle_pending::Stage::Launched,
+        fingerprints,
+        inbox_rows: Vec::new(),
+        block_rows: Vec::new(),
+    };
+    entry.snapshot_rows(
+        owner_block::inbox_sources(digest, fold_days).0,
+        owner_block::current_sources(digest),
+    );
+    Some(entry)
+}
+
+/// Yes: launch the plan (or focus the live session) and leave a pending entry on
+/// the context so the settled row shows `settling…` until its checks leave
+/// (quick 261118-v6l, I-10). A new session registers only when it started (the
+/// status is the launched line or reports a GUI terminal); a live session always
+/// registers, because the paste happens outside the app. Returns the status line
+/// of [`launch_settle`] unchanged.
+pub(crate) fn launch_and_track(ctx: &mut AppContext, plan: &SettlePlan) -> String {
+    let entry = pending_for(ctx, plan);
+    let status = launch_settle(plan);
+    let started = plan.draft.live_session.is_some()
+        || status == launched_status(plan)
+        || status.contains("opened in");
+    if let Some(entry) = entry.filter(|_| started) {
+        ctx.settle_pending.insert(entry);
+    }
+    status
 }
 
 /// The real action behind Yes: focus the live session or launch a new one. The

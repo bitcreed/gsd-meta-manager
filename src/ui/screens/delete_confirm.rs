@@ -267,6 +267,7 @@ mod tests {
             owner_ack_busy: Default::default(),
             owner_copy_busy: false,
             inbox_view: Default::default(),
+            settle_pending: Default::default(),
             agent_views: HashMap::new(),
             agents_scan_in_flight: false,
             sort_mode: crate::ui::screens::SortMode::default(),

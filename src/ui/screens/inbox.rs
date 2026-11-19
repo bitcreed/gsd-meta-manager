@@ -26,6 +26,7 @@ use super::owner::{owner_numbers, OWNER_SEP};
 use super::owner_actions;
 use super::owner_block::{self, blanks, cells, pad, Fold, GroupKey, RowCells, RowSrc, SubStop};
 use super::owner_settle;
+use super::settle_pending;
 use super::{AppContext, Screen, ScreenAction};
 use crate::inbox::phase_key;
 use crate::state_reader::owner_items::{
@@ -614,6 +615,15 @@ fn cells_of(ctx: &AppContext, row: &InboxRow) -> Option<Cells> {
         cells,
         checks_n,
     })
+}
+
+/// The cells a pending settle's badge takes the place of: phrase, extras, age and
+/// command (quick 261118-v6l, I-6).
+fn clear_phrase_cells(c: &mut Cells) {
+    c.cells.phrase.clear();
+    c.cells.extras.clear();
+    c.cells.age = None;
+    c.cells.command.clear();
 }
 
 /// The column widths of one frame.
@@ -2320,12 +2330,30 @@ impl Screen for InboxScreen {
                 BodyItem::Row(index) => {
                     let row = &rows[*index];
                     match cells_of(ctx, row) {
-                        Some(c) => {
+                        Some(mut c) => {
                             let expanded = ctx.inbox_view.expanded.contains(&row.key());
                             // D-04: a selected item takes the cursor from its row.
                             let on_row =
                                 cursor == Some(*index) && ctx.inbox_view.sub_stop().is_none();
+                            let pending = ctx.settle_pending.for_row(&row.alias, &row.src);
+                            if pending.is_some() {
+                                clear_phrase_cells(&mut c);
+                            }
                             let mut line = row_line(&c, &grid, width, on_row, expanded);
+                            if let Some(entry) = pending {
+                                line = settle_pending::badged_row(
+                                    line,
+                                    grid.checks_x() + grid.checks_w + 2,
+                                    entry,
+                                    std::time::Instant::now(),
+                                    width,
+                                );
+                                if on_row {
+                                    for span in &mut line.spans {
+                                        span.style = span.style.patch(owner_block::cursor_style());
+                                    }
+                                }
+                            }
                             if row.fold == Some(Fold::Acknowledged) {
                                 for span in &mut line.spans {
                                     span.style = span.style.add_modifier(Modifier::DIM);

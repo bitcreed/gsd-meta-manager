@@ -1,7 +1,7 @@
 //! The settle modules write nothing and start nothing (39 D-13a, OWN-31, SC5).
 //!
 //! `x` on a check or a phase launches `/gsd-verify-work N <instruction>`; GSD files
-//! the outcome. The claim "the app writes no GSD file" therefore reduces to: the two
+//! the outcome. The claim "the app writes no GSD file" therefore reduces to: the
 //! settle modules contain no write API and no process API outside their test code.
 //! Launching goes through `crate::multiplexer`, the clipboard through
 //! `owner_actions`; neither is spelled in these files.
@@ -17,9 +17,10 @@
 use std::path::Path;
 
 /// The files the claim covers.
-const SETTLE_FILES: [&str; 2] = [
+const SETTLE_FILES: [&str; 3] = [
     "src/ui/screens/owner_settle.rs",
     "src/ui/screens/settle_popup.rs",
+    "src/ui/screens/settle_pending.rs",
 ];
 
 /// Write and spawn markers, by the shape they take in source.
@@ -41,7 +42,7 @@ const WRITE_OR_SPAWN: [&str; 15] = [
     ".status()",
 ];
 
-/// The fewest executable non-test lines the two files together must show.
+/// The fewest executable non-test lines the settle files together must show.
 const EXECUTABLE_FLOOR: usize = 400;
 
 /// The executable (non-comment, non-`#[cfg(test)]`) lines of `lines`, with their

@@ -993,6 +993,7 @@ impl App {
             owner_ack_busy: std::collections::HashSet::new(),
             owner_copy_busy: false,
             inbox_view: crate::ui::screens::inbox::InboxViewState::default(),
+            settle_pending: Default::default(),
             agent_views: HashMap::new(),
             agents_scan_in_flight: false,
             sort_mode: crate::ui::screens::SortMode::default(),
@@ -1169,6 +1170,16 @@ impl App {
             self.ctx.detail_sub_view_per_project.get(&alias),
             self.ctx.view_cache.get(&alias),
         )
+    }
+
+    /// Whether a pending settle's badge is on screen: any entry exists and the top
+    /// screen is the inbox or the detail view (quick 261118-v6l, I-2).
+    fn settle_pending_redraw_due(&self) -> bool {
+        !self.ctx.settle_pending.is_empty()
+            && self.screen_stack.last().is_some_and(|top| {
+                top.name() == "inbox"
+                    || top.name() == crate::ui::screens::detail::DetailScreen::NAME
+            })
     }
 
     /// Re-list the selected project's launcher runs **if the Driver tab is the
@@ -2743,6 +2754,13 @@ impl App {
                     self.needs_redraw = true;
                 }
 
+                // A pending settle's spinner and timer move on their own (quick
+                // 261118-v6l, I-2): redraw on the tick, only while the inbox or the
+                // detail view (the two hosts of the badge) is on top.
+                if self.settle_pending_redraw_due() {
+                    self.needs_redraw = true;
+                }
+
                 // The trailing edge of the 500 ms re-parse dedup (WR-06): a write
                 // the dedup dropped is re-parsed on the first tick after its window.
                 self.flush_pending_reparses(std::time::Instant::now());
@@ -3847,6 +3865,10 @@ impl App {
         self.ctx
             .owner_digests
             .retain(|alias, _| registered.contains_key(alias));
+        // A settle's pending badge describes a row of a registered project only
+        // (quick 261118-v6l); the entries are memory-only and small, but a removed
+        // project's `settling…` must not outlive the project.
+        self.ctx.settle_pending.retain_registered(&registered);
         // The unreadable marks follow their digests: an unregistered alias has
         // nothing to be unreadable about (37-04).
         self.ctx
@@ -6918,6 +6940,9 @@ mod tests {
                 crate::state_reader::owner_items::OwnerDigest::default(),
             );
             app.ctx.owner_digest_failed.insert(alias.to_string());
+            app.ctx
+                .settle_pending
+                .insert(crate::ui::screens::settle_pending::PendingSettle::for_alias_test(alias));
             // Keyed alias THEN milestone. This fixture used to insert the alias
             // as the map's only key, which is how it passed while the real map
             // was keyed by milestone and the prune emptied it every pass.
@@ -6995,6 +7020,8 @@ mod tests {
             owner_ack_busy: _,
             // One flag, not a map: the copy's answer clears it.
             owner_copy_busy: _,
+            // Alias-keyed (quick 261118-v6l): pruned with the registry, asserted below.
+            settle_pending,
         } = &app.ctx;
 
         assert!(!view_cache.contains_key(GONE), "view_cache leaked");
@@ -7002,6 +7029,18 @@ mod tests {
         assert!(!archive_cache.has_alias(GONE), "archive_cache leaked");
         assert!(!owner_digests.contains_key(GONE), "owner_digests leaked");
         assert!(!owner_digest_failed.contains(GONE), "failed set leaked");
+        assert_eq!(
+            settle_pending.len(),
+            1,
+            "settle_pending: the gone alias's entry is dropped, the registered one kept"
+        );
+        assert!(
+            settle_pending
+                .entries()
+                .iter()
+                .all(|e| e.alias == OBS_ALIAS),
+            "settle_pending leaked"
+        );
         assert!(owner_digest_failed.contains(OBS_ALIAS));
 
         // The control arm for all of them at once: the registered alias kept
