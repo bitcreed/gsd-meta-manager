@@ -265,7 +265,7 @@ Options:
 | `c`              | Create a new project: enter a name, then a path (`Tab` completes it), then confirm with `y` / `Enter` |
 | `d`              | Remove the selected project from the registry after a `y` / `n` confirm; project files are not deleted |
 | `Tab`            | Switch the terminal to the selected project's Claude / Codex session |
-| `?`              | Show / hide the help overlay (`j` / `k` and `PgUp` / `PgDn` scroll it; `Esc` also closes it) |
+| `?`              | Show / hide the help overlay (`↑` / `↓` and `PgUp` / `PgDn` scroll it; `Esc` also closes it). Any other key highlights the rows that list it; pressing it again moves to the next one, and the title shows e.g. `x: 2/4`, or `no help entry for <key>` |
 | `M`              | Toggle mouse capture    |
 | `q`              | Quit (dashboard); back to the dashboard (detail view) |
 | `Ctrl+C`         | Force quit from any screen |

@@ -166,7 +166,7 @@ keystrokes:
   selected row's value opens it. A Queue double-click does nothing — `Enter`
   there marks the action done. `M` turns the mouse off and on; while it is on,
   use Shift+drag to select text (terminal-dependent)
-- `?` — show the help overlay
+- `?` — show the help overlay (a key pressed there highlights the rows that list it)
 - `q` — quit (on the dashboard)
 
 ### Reading the Waves pane
