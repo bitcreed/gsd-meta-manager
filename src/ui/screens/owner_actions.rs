@@ -955,13 +955,12 @@ pub(crate) fn resolve_launcher() -> Option<GsdToolsCmd> {
     }
 }
 
-/// Everything `A` needs before it may open the popup, or the status line that
-/// says why not (D-14, D-15). Reads one small pointer file on the key press.
-pub(crate) fn ack_request(
-    ctx: &AppContext,
+/// What every acknowledge reads: the project's path, its state and its Owner
+/// digest, or the status line that says which one is missing.
+fn ack_inputs<'a>(
+    ctx: &'a AppContext,
     alias: &str,
-    group: &OwnerGroup,
-) -> Result<AckRequest, String> {
+) -> Result<(&'a Path, &'a ProjectState, &'a OwnerDigest), String> {
     let project = ctx
         .config
         .projects
@@ -972,13 +971,31 @@ pub(crate) fn ack_request(
     let digest = ctx
         .owner_digest(alias)
         .ok_or_else(|| format!("Cannot acknowledge: {alias} has no owner data yet"))?;
-    let target = ack_target_for(
-        alias,
-        state,
-        digest,
-        group,
-        active_workstream_is_set(&project.path),
-    )?;
+    Ok((project.path.as_path(), state, digest))
+}
+
+/// Why `A` would refuse `group` of `alias`, from the digest and state alone: the
+/// pure part of [`ack_request`], the same lookups and the same [`ack_target_for`]
+/// with the pointer file and the launcher left out. `None` when only those could
+/// still refuse. The row action model calls it from a render pass (OWN-12), so the
+/// footer and the menu cannot list a key this refuses.
+pub(crate) fn ack_refusal(ctx: &AppContext, alias: &str, group: &OwnerGroup) -> Option<String> {
+    let (_, state, digest) = match ack_inputs(ctx, alias) {
+        Ok(inputs) => inputs,
+        Err(message) => return Some(message),
+    };
+    ack_target_for(alias, state, digest, group, false).err()
+}
+
+/// Everything `A` needs before it may open the popup, or the status line that
+/// says why not (D-14, D-15). Reads one small pointer file on the key press.
+pub(crate) fn ack_request(
+    ctx: &AppContext,
+    alias: &str,
+    group: &OwnerGroup,
+) -> Result<AckRequest, String> {
+    let (path, state, digest) = ack_inputs(ctx, alias)?;
+    let target = ack_target_for(alias, state, digest, group, active_workstream_is_set(path))?;
     let launcher = resolve_launcher().ok_or_else(|| {
         "gsd-tools.cjs not found. Install: npx -y @opengsd/gsd-core@latest --claude --local"
             .to_owned()
@@ -990,7 +1007,7 @@ pub(crate) fn ack_request(
     argv.extend(ack_args(&target));
     Ok(AckRequest {
         alias: alias.to_owned(),
-        cwd: project.path.clone(),
+        cwd: path.to_path_buf(),
         program: launcher.program,
         argv,
         target,

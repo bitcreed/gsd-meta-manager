@@ -1426,7 +1426,7 @@ fn footer_line(ctx: &AppContext, width: usize) -> Line<'static> {
             Some(_) if open => Enter::CloseFold,
             Some(_) => Enter::OpenFold,
         };
-        let actions = owner_row_actions::fold_line_actions(Host::Inbox, fold, open);
+        let actions = owner_row_actions::fold_line_actions(fold, open);
         return owner_row_actions::footer_spans(
             Host::Inbox,
             &actions,
@@ -2624,6 +2624,17 @@ mod tests {
     }
 
     /// The UI-SPEC "Fixture fleet": nine synthetic projects.
+    /// The fleet with a milestone version on every project, as a real one has:
+    /// `A` refuses a project without (the footer then does not list it).
+    fn inbox_fleet_ctx_with_milestones() -> AppContext {
+        let mut ctx = inbox_fleet_ctx();
+        let aliases: Vec<String> = ctx.project_states.keys().cloned().collect();
+        for alias in aliases {
+            fixture::known_milestone(&mut ctx, &alias);
+        }
+        ctx
+    }
+
     pub(crate) fn inbox_fleet_ctx() -> AppContext {
         let aliases = [
             "alder-api",
@@ -3002,7 +3013,7 @@ mod tests {
 
     #[test]
     fn the_inbox_renders_sections_in_order_at_100x30() {
-        let ctx = inbox_fleet_ctx();
+        let ctx = inbox_fleet_ctx_with_milestones();
         let text = render_inbox_text(&ctx, 100, 30);
         let line = |needle: &str| {
             text.iter()
@@ -3482,7 +3493,7 @@ mod tests {
     /// at the widths the screen is laid out for.
     #[test]
     fn footer_ladder_matches_the_ui_spec() {
-        let ctx = inbox_fleet_ctx();
+        let ctx = inbox_fleet_ctx_with_milestones();
         let footer = |w: usize| line_text(&footer_line(&ctx, w));
         let wide = "  [j/k]move  [Enter]actions  [v]run /gsd-verify-work 24  [x]settle  [o]pen  [A]ck  [y]copy  [g]oto  [Space]expand  [Esc]back  [?]help";
         let w100 = "  [Enter]actions  [v]run /gsd-verify-work 24  [x]settle  [o]pen  [A]ck  [y]copy  [g]oto  [?]help";
@@ -6405,6 +6416,7 @@ mod tests {
     /// open, a project path that is not on disk (nothing launches).
     fn actions_ctx() -> AppContext {
         let mut ctx = ctx_with_aliases(&[fixture::ALIAS]);
+        fixture::known_milestone(&mut ctx, fixture::ALIAS);
         owe(&mut ctx, fixture::ALIAS, fixture::digest());
         ctx.inbox_view.filter = LaneFilter::All;
         ctx.inbox_view.open_folds.insert(Fold::OldDebt);

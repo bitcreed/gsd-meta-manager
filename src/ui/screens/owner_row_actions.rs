@@ -14,7 +14,9 @@
 //! ready and the key prints the refusal, as before). Every refusal text the model
 //! shows is the text the hotkey prints: they come from the same pure helpers
 //! (`owner_actions::run_plan`, `open_files_refusal`, `merged_ack_refusal`,
-//! `owner_settle::settle_group_refusal`, [`settle_pending_refusal`]).
+//! `owner_actions::ack_refusal` and `owner_settle::settle_refusal`, which run the
+//! very target builders the keys run, minus their one file read,
+//! [`settle_pending_refusal`]).
 //!
 //! **Hidden or blocked.** An action that never applies to the row's kind is absent
 //! from the result; one that applies but cannot run right now is present as
@@ -237,7 +239,8 @@ pub(crate) fn row_actions(
     }
 
     // x: the lane and scope rule `settle_target_for` applies hides it; a pending
-    // settle and an unreadable file block it.
+    // settle, an unreadable file and every other pure refusal of the target builder
+    // (unsafe token, unlisted check, no state) block it with the text the key prints.
     let fold_days = ctx.config.preferences.owner_fold_days();
     let groups = ctx
         .owner_digest(alias)
@@ -247,16 +250,17 @@ pub(crate) fn row_actions(
         .iter()
         .find_map(|group| owner_settle::settle_group_refusal(group).err());
     if !groups.is_empty() && !refusal.is_some_and(|refusal| !refusal.unreadable) {
-        let availability = match (settle_pending_refusal(ctx, alias, src), refusal) {
-            (Some(message), _) => Availability::Blocked(message.to_owned()),
-            (None, Some(refusal)) => Availability::Blocked(refusal.message.to_owned()),
-            (None, None) => Availability::Ready,
+        let item = match sub_stop {
+            Some(SubStop::Item(id)) => Some(id.as_str()),
+            _ => None,
+        };
+        let availability = match settle_pending_refusal(ctx, alias, src) {
+            Some(message) => Availability::Blocked(message.to_owned()),
+            None => availability_of(owner_settle::settle_refusal(ctx, alias, &src.key, item)),
         };
         let detail = match &availability {
             Availability::Blocked(message) => message.clone(),
-            Availability::Ready if matches!(sub_stop, Some(SubStop::Item(_))) => {
-                "this check, asks first".to_owned()
-            }
+            Availability::Ready if item.is_some() => "this check, asks first".to_owned(),
             Availability::Ready => "whole phase, asks first".to_owned(),
         };
         out.push(action(
@@ -304,13 +308,18 @@ pub(crate) fn row_actions(
             Kind::Handoff | Kind::Checkpoint | Kind::Deferred
         )
     {
+        let availability = availability_of(owner_actions::ack_refusal(ctx, alias, &group));
+        let detail = match &availability {
+            Availability::Blocked(message) => message.clone(),
+            Availability::Ready => format!("{} via gsd-core, asks first", shown(file_name)),
+        };
         out.push(action(
             ActionId::Acknowledge,
             "A",
             "acknowledge",
             "ck",
-            format!("{} via gsd-core, asks first", shown(file_name)),
-            Availability::Ready,
+            detail,
+            availability,
         ));
     }
 
@@ -358,9 +367,10 @@ fn offered(host: Host, id: ActionId) -> bool {
 }
 
 /// The actions of the fold line when the sub-cursor rests on `fold` (`open`: the
-/// fold is open): Old debt copies its checklist (the inbox's the fleet's, the Owner
-/// block's this project's), Space opens or closes every fold the line can open.
-pub(crate) fn fold_line_actions(_host: Host, fold: Option<Fold>, open: bool) -> Vec<RowAction> {
+/// fold is open): Old debt copies its checklist, Space opens or closes every fold
+/// the line can open. Both screens offer the same: the inbox/Owner-block split of
+/// what `y` copies (the fleet's, this project's) lives in the copy path, not here.
+pub(crate) fn fold_line_actions(fold: Option<Fold>, open: bool) -> Vec<RowAction> {
     let mut out = Vec::new();
     if fold == Some(Fold::OldDebt) {
         out.push(action(
@@ -416,8 +426,8 @@ pub(crate) enum Chrome {
 ///
 /// Tokens left to right, `[key]` BOLD: `[j/k]move` (priority 3), on the fold line
 /// `[←/→]fold`, the Enter token (1), every ready action of `actions` in model order
-/// (1; `[v]` carries its command until the line must shrink), Space on a check or
-/// file line (2), the screen's own `[Esc]` (2) and, in the Owner block, `[q]uit`
+/// (1; `[v]` carries its command until the line must shrink), Space on a group row,
+/// check or file line (2), the screen's own `[Esc]` (2) and, in the Owner block, `[q]uit`
 /// (3); `[?]help` is appended after fitting and never dropped. The fit order is
 /// [`fit_footer`]'s: priority 3, priority 2, short labels, priority 1.
 pub(crate) fn footer_spans(
@@ -543,6 +553,32 @@ impl ActionMenu {
         })
     }
 
+    /// Keep the selection on an entry the menu shows (review WR-02): the same
+    /// action while it is listed and ready, else the ready entry nearest to it in
+    /// action order (the earlier one on a tie), else, with nothing ready, the same
+    /// action while it is listed, else the nearest listed one. Called before every
+    /// key and every frame, so the marker is always drawn and Enter runs the entry
+    /// it marks, whatever a refresh did to the row since the last key.
+    pub(crate) fn reconcile(&mut self, actions: &[RowAction]) {
+        let ready = actions.iter().any(RowAction::is_ready);
+        let pool = |action: &&RowAction| action.is_ready() || !ready;
+        if actions
+            .iter()
+            .filter(pool)
+            .any(|action| action.id == self.selected)
+        {
+            return;
+        }
+        let from = self.selected as i16;
+        if let Some(near) = actions
+            .iter()
+            .filter(pool)
+            .min_by_key(|action| (i16::abs(action.id as i16 - from), action.id as i16))
+        {
+            self.selected = near.id;
+        }
+    }
+
     /// The selected entry.
     pub(crate) fn selected(&self) -> ActionId {
         self.selected
@@ -559,6 +595,7 @@ impl ActionMenu {
         modifiers: KeyModifiers,
     ) -> MenuKey {
         let plain = owner_actions::is_plain_action_key(modifiers);
+        self.reconcile(actions);
         match code {
             KeyCode::Esc => MenuKey::Close,
             KeyCode::Char('q') if plain => MenuKey::Close,
@@ -582,8 +619,8 @@ impl ActionMenu {
         }
     }
 
-    /// Move the selection over the ready entries; a selection that is no longer
-    /// among them (a refresh blocked it) lands on the nearest end.
+    /// Move the selection over the ready entries ([`reconcile`](Self::reconcile)
+    /// has already put it on one); with none ready it stays.
     fn step(&mut self, actions: &[RowAction], forward: bool) {
         let ready: Vec<ActionId> = actions
             .iter()
@@ -629,11 +666,18 @@ fn wrap_words(text: &str, room: usize) -> Vec<String> {
 
 /// The menu's text lines inside a box `inner` cells wide: one per ready entry
 /// (the detail cut to the line), several per blocked one (its reason wrapped under
-/// the detail column, so the whole reason is always readable at 80 columns).
-fn menu_lines(actions: &[RowAction], selected: ActionId, inner: usize) -> Vec<Line<'static>> {
+/// the detail column, so the whole reason is always readable at 80 columns), and
+/// the line range of the selected entry.
+fn menu_lines(
+    actions: &[RowAction],
+    selected: ActionId,
+    inner: usize,
+) -> (Vec<Line<'static>>, std::ops::Range<usize>) {
     let mut out = Vec::new();
+    let mut at = 0..0;
     for action in actions {
         let pick = action.id == selected;
+        let first = out.len();
         let marker = if pick { "> " } else { "  " };
         let lead = format!(
             "{marker}{:<6}{:<16}",
@@ -671,14 +715,34 @@ fn menu_lines(actions: &[RowAction], selected: ActionId, inner: usize) -> Vec<Li
                 }
             }
         }
+        if pick {
+            at = first..out.len();
+        }
     }
-    out
+    (out, at)
+}
+
+/// The first line of the window of `rows` lines that keeps the whole `selected`
+/// range in view (review WR-03): none when everything fits, else the least
+/// scroll that shows the range's end, never past its start (an entry taller than
+/// the window shows its head).
+fn scroll_to(selected: &std::ops::Range<usize>, total: usize, rows: usize) -> usize {
+    if total <= rows {
+        return 0;
+    }
+    selected
+        .end
+        .saturating_sub(rows)
+        .min(selected.start)
+        .min(total - rows)
 }
 
 /// Draw the menu over `area` (the whole frame): `Clear`, a bordered box titled
 /// ` Actions ` with ` [Enter]run  [Esc]close ` under it, one entry per action.
 /// It sits below `anchor` (the cursor row), flipped above when it does not fit,
-/// clamped to the frame and centered when no anchor was recorded. Draw it LAST.
+/// clamped to the frame and centered when no anchor was recorded; when the frame is
+/// shorter than the entries they scroll so the selected one stays in view. Draw it
+/// LAST.
 pub(crate) fn render_menu(
     frame: &mut Frame,
     area: Rect,
@@ -697,11 +761,13 @@ pub(crate) fn render_menu(
         .unwrap_or(0);
     let width = (longest + 4).clamp(30, 76).min(max_width.max(8));
     let inner = width.saturating_sub(2);
-    let lines = menu_lines(actions, selected, inner);
+    let (lines, at) = menu_lines(actions, selected, inner);
     let width = u16::try_from(width).unwrap_or(u16::MAX).min(area.width);
     let height = u16::try_from(lines.len() + 2)
         .unwrap_or(u16::MAX)
         .min(area.height);
+    // A frame shorter than the menu scrolls the entries, never the box.
+    let scroll = scroll_to(&at, lines.len(), usize::from(height.saturating_sub(2)));
     let (x, y) = match anchor {
         Some(row) => {
             let x = (area.x + 2)
@@ -732,7 +798,8 @@ pub(crate) fn render_menu(
     let block = Block::bordered()
         .title(" Actions ")
         .title_bottom(" [Enter]run  [Esc]close ");
-    frame.render_widget(Paragraph::new(lines).block(block), rect);
+    let scroll = u16::try_from(scroll).unwrap_or(u16::MAX);
+    frame.render_widget(Paragraph::new(lines).block(block).scroll((scroll, 0)), rect);
 }
 
 /// One digest that holds every row kind the action table names, for the model,
@@ -746,6 +813,14 @@ pub(crate) mod fixture {
 
     /// The alias the module's own tests register the digest under.
     pub(crate) const ALIAS: &str = "dune-app";
+
+    /// Give `alias` a milestone version, as every real project state has one: `A`
+    /// refuses a project with none ("no known milestone version").
+    pub(crate) fn known_milestone(ctx: &mut crate::ui::screens::AppContext, alias: &str) {
+        if let Some(state) = ctx.project_states.get_mut(alias) {
+            state.milestone = "v1.0".to_owned();
+        }
+    }
 
     fn run(verb: RunVerb, phase: Option<&str>, workstream: Option<&str>) -> Option<RunCommand> {
         Some(RunCommand {
@@ -838,6 +913,7 @@ pub(crate) mod fixture {
 mod tests {
     use super::fixture::{digest, ALIAS};
     use super::*;
+    use crate::state_reader::owner_items::OwnerDigest;
     use crate::ui::screens::inbox::{self, InboxRow, LaneFilter};
     use crate::ui::screens::owner_block::{GroupKey, OwnerBlockState, Stop};
     use crate::ui::screens::settle_pending::{PendingSettle, Stage};
@@ -847,6 +923,7 @@ mod tests {
     /// A context over the fixture digest with every lane listed and both folds open.
     fn ctx() -> AppContext {
         let mut ctx = ctx_with_aliases(&[ALIAS]);
+        fixture::known_milestone(&mut ctx, ALIAS);
         owe(&mut ctx, ALIAS, digest());
         ctx.inbox_view.filter = LaneFilter::All;
         ctx.inbox_view.open_folds.insert(Fold::OldDebt);
@@ -1145,23 +1222,14 @@ mod tests {
                 assert_eq!(Some(action), get(&b, action.id), "{sub:?}");
             }
         }
-        // The fold line: Old debt and Acknowledged offer the same actions.
-        for fold in [Fold::OldDebt, Fold::Acknowledged, Fold::Stale] {
-            for open in [false, true] {
-                assert_eq!(
-                    fold_line_actions(Host::OwnerBlock, Some(fold), open),
-                    fold_line_actions(Host::Inbox, Some(fold), open),
-                    "{fold:?}"
-                );
-            }
-        }
+        // The fold line takes no host: both screens offer the same fold actions.
         assert_eq!(INBOX_ONLY, [ActionId::GoToProject]);
         assert!(OWNER_BLOCK_ONLY.is_empty());
     }
 
     #[test]
     fn the_fold_line_offers_copy_on_old_debt_only() {
-        let copy_ids = |fold| ids(&fold_line_actions(Host::Inbox, fold, false));
+        let copy_ids = |fold| ids(&fold_line_actions(fold, false));
         assert_eq!(
             copy_ids(Some(Fold::OldDebt)),
             [ActionId::Copy, ActionId::Toggle]
@@ -1326,7 +1394,7 @@ mod tests {
             250,
         ));
         assert!(line.contains("[Space]collapse"), "{line}");
-        let folds = fold_line_actions(Host::OwnerBlock, Some(Fold::OldDebt), true);
+        let folds = fold_line_actions(Some(Fold::OldDebt), true);
         let line = text(&footer_spans(
             Host::OwnerBlock,
             &folds,
@@ -1597,6 +1665,201 @@ mod tests {
             assert!(line.chars().count() <= 40);
         }
         assert!(lines.iter().any(|l| l.contains("Space")));
+    }
+
+    /// A context whose digest `edit` has changed, before any row is derived.
+    fn ctx_edited(edit: impl FnOnce(&mut OwnerDigest, &mut AppContext)) -> AppContext {
+        let mut ctx = ctx();
+        let mut d = digest();
+        edit(&mut d, &mut ctx);
+        owe(&mut ctx, ALIAS, d);
+        ctx
+    }
+
+    /// The row of the TEST group of phase `phase` as the Owner block lists it.
+    fn row_of<'a>(rows: &'a [(GroupKey, RowSrc)], phase: &str) -> &'a RowSrc {
+        find(rows, |s| s.key.phase == phase && s.group.lane == Lane::Test)
+    }
+
+    /// Quick 261119-f5b review WR-01: `x` and `A` are blocked, with the text the key
+    /// prints, for every pure refusal their target builders can make, so the footer
+    /// never lists them as ready on such a row.
+    #[test]
+    fn x_and_a_are_blocked_with_the_key_text_for_every_pure_refusal() {
+        // An unsafe phase token (the group's own phase).
+        let ctx = ctx_edited(|d, _| {
+            for group in &mut d.groups {
+                if group.phase == "24" {
+                    group.phase = "24; rm -rf".to_owned();
+                }
+            }
+        });
+        let rows = owner_rows(&ctx);
+        let row = row_of(&rows, "24; rm -rf");
+        let a = of_owner(&ctx, row, None, false);
+        let refusal = "Refused: 24; rm -rf is not a safe phase token; nothing started";
+        blocked(&a, ActionId::Settle, refusal);
+        blocked(&a, ActionId::Acknowledge, refusal);
+        assert_eq!(
+            owner_settle::resolve_draft(&ctx, ALIAS, &row.key, None).err(),
+            Some(refusal.to_owned()),
+            "the key prints the model's text"
+        );
+        assert_eq!(
+            owner_actions::ack_request(&ctx, ALIAS, &row.group).err(),
+            Some(refusal.to_owned())
+        );
+        let footer = text(&footer_spans(
+            Host::Inbox,
+            &of_inbox(&ctx, row, None, false),
+            Enter::Actions,
+            false,
+            Chrome::Back,
+            250,
+        ));
+        assert!(
+            !footer.contains("[x]") && !footer.contains("[A]"),
+            "{footer}"
+        );
+
+        // An unsafe workstream name.
+        let ctx = ctx_edited(|d, _| {
+            for group in &mut d.groups {
+                if group.phase == "24" {
+                    group.workstream = Some("bad ws!".to_owned());
+                }
+            }
+        });
+        let rows = owner_rows(&ctx);
+        let row = row_of(&rows, "24");
+        let a = of_owner(&ctx, row, None, false);
+        let refusal = "Refused: bad ws! is not a safe workstream name; nothing started";
+        blocked(&a, ActionId::Settle, refusal);
+        blocked(&a, ActionId::Acknowledge, refusal);
+        assert_eq!(
+            owner_settle::resolve_draft(&ctx, ALIAS, &row.key, None).err(),
+            Some(refusal.to_owned())
+        );
+        assert_eq!(
+            owner_actions::ack_request(&ctx, ALIAS, &row.group).err(),
+            Some(refusal.to_owned())
+        );
+
+        // No known milestone version: only `A` needs it.
+        let ctx = ctx_edited(|_, ctx| {
+            if let Some(state) = ctx.project_states.get_mut(ALIAS) {
+                state.milestone = String::new();
+            }
+        });
+        let rows = owner_rows(&ctx);
+        let row = row_of(&rows, "24");
+        let a = of_owner(&ctx, row, None, false);
+        let refusal = "Cannot acknowledge: dune-app has no known milestone version";
+        blocked(&a, ActionId::Acknowledge, refusal);
+        ready(&a, ActionId::Settle, "whole phase, asks first");
+        assert_eq!(
+            owner_actions::ack_request(&ctx, ALIAS, &row.group).err(),
+            Some(refusal.to_owned())
+        );
+
+        // A check that is no longer listed refuses `x` on its own line.
+        let ctx = self::ctx();
+        let rows = owner_rows(&ctx);
+        let row = row_of(&rows, "24");
+        let gone = SubStop::Item("check 99".to_owned());
+        let a = of_owner(&ctx, row, Some(&gone), true);
+        blocked(
+            &a,
+            ActionId::Settle,
+            "Check is no longer listed; nothing started",
+        );
+        assert_eq!(
+            owner_settle::resolve_draft(&ctx, ALIAS, &row.key, Some("check 99")).err(),
+            Some("Check is no longer listed; nothing started".to_owned())
+        );
+    }
+
+    /// Review WR-02: a selection that vanished is reconciled to a visible entry (the
+    /// same id when it is still there, else the nearest by action order), so Enter
+    /// runs the entry the marker shows.
+    #[test]
+    fn a_vanished_selection_is_reconciled_to_a_visible_entry() {
+        let ctx = ctx();
+        let (mut menu, _) = menu_on(&ctx, |s| s.key.phase == "24");
+        assert_eq!(menu.selected(), ActionId::Run);
+        // A refresh left the row without `v` (a CONTEXT-questions row has no command).
+        let (_, without_run) = menu_on(&ctx, |s| s.group.kind == Kind::ContextQuestions);
+        assert!(get(&without_run, ActionId::Run).is_none());
+        assert_eq!(
+            press(&mut menu, &without_run, KeyCode::Enter),
+            MenuKey::Run(KeyCode::Char('o')),
+            "Enter runs the nearest visible entry, never nothing"
+        );
+        assert_eq!(menu.selected(), ActionId::Open);
+
+        // The same id is kept while it is listed and ready.
+        let (_, with_run) = menu_on(&ctx, |s| s.key.phase == "24");
+        menu.reconcile(&with_run);
+        assert_eq!(menu.selected(), ActionId::Open, "still listed: kept");
+
+        // Nearest by action order, the earlier one on a tie: `g` is not offered by
+        // the Owner block, `y` and Space are equally near.
+        menu.selected = ActionId::GoToProject;
+        menu.reconcile(&with_run);
+        assert_eq!(menu.selected(), ActionId::Copy);
+
+        // A selection that is listed but not ready moves to a ready entry.
+        let (_, bad) = menu_on(&ctx, |s| s.key.phase == "28");
+        menu.selected = ActionId::Run;
+        menu.reconcile(&bad);
+        assert_eq!(menu.selected(), ActionId::Open, "v is blocked there");
+        // With nothing ready the listed entry stays.
+        let all_blocked: Vec<RowAction> = bad
+            .iter()
+            .filter(|a| a.id == ActionId::Run)
+            .cloned()
+            .collect();
+        menu.selected = ActionId::Run;
+        menu.reconcile(&all_blocked);
+        assert_eq!(menu.selected(), ActionId::Run);
+    }
+
+    /// Review WR-03: on a frame shorter than the menu the entry window scrolls so the
+    /// selected entry is always drawn, and the hint under the box stays.
+    #[test]
+    fn a_short_frame_scrolls_the_menu_to_keep_the_selection_visible() {
+        let ctx = ctx();
+        let rows = owner_rows(&ctx);
+        let test = find(&rows, |s| s.key.phase == "24");
+        let actions = of_inbox(&ctx, test, None, false);
+        assert_eq!(actions.len(), 7);
+        for height in [5_u16, 7, 9] {
+            for action in &actions {
+                let anchor = Rect::new(0, 1, 80, 1);
+                let (lines, _) = draw(&actions, action.id, Some(anchor), 80, height);
+                let want = format!("> {}", action.key_label);
+                assert!(
+                    lines.iter().any(|line| line.contains(&want)),
+                    "{want} hidden at height {height}: {lines:#?}"
+                );
+                assert!(
+                    lines
+                        .iter()
+                        .any(|line| line.contains("[Enter]run  [Esc]close")),
+                    "the hint stays at height {height}: {lines:#?}"
+                );
+            }
+        }
+        // A tall blocked entry (a wrapped reason) is shown whole when it is selected.
+        let merged = inbox_rows(&ctx)
+            .into_iter()
+            .find(|row| row.src.parts.len() > 1)
+            .expect("merged row");
+        let actions = of_inbox(&ctx, &merged.src, None, false);
+        let (lines, _) = draw(&actions, ActionId::Acknowledge, None, 80, 6);
+        let flat = lines.join("\n");
+        assert!(flat.contains("> A"), "{flat}");
+        assert!(flat.contains("then A)"), "the whole reason: {flat}");
     }
 
     /// The model is pure: its non-test source reaches no file, process or launcher.

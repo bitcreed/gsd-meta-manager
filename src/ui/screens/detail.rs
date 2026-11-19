@@ -2767,7 +2767,7 @@ impl DetailScreen {
                 } else {
                     Enter::OpenFold
                 };
-                let actions = row_actions::fold_line_actions(Host::OwnerBlock, fold, open);
+                let actions = row_actions::fold_line_actions(fold, open);
                 row_actions::footer_spans(Host::OwnerBlock, &actions, enter, true, chrome, width)
             }
             owner_block::Stop::Row(key) => {

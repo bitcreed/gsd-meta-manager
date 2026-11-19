@@ -494,14 +494,12 @@ fn at_yes(message: String) -> String {
     }
 }
 
-/// The draft for the row `key` of `alias` under the current registry, state,
-/// digest, pointer file and session list.
-pub(crate) fn resolve_draft(
-    ctx: &AppContext,
+/// What every settle draft reads: the project's path, its state and its Owner
+/// digest, or the status line that says which one is missing.
+fn settle_inputs<'a>(
+    ctx: &'a AppContext,
     alias: &str,
-    key: &GroupKey,
-    item: Option<&str>,
-) -> Result<SettleDraft, String> {
+) -> Result<(&'a Path, &'a ProjectState, &'a OwnerDigest), String> {
     let project = ctx
         .config
         .projects
@@ -514,6 +512,46 @@ pub(crate) fn resolve_draft(
     let digest = ctx
         .owner_digest(alias)
         .ok_or_else(|| format!("Cannot settle: {alias} has no owner data yet"))?;
+    Ok((project.path.as_path(), state, digest))
+}
+
+/// Why `x` would refuse the row `key` (and, for one check, `item`) of `alias`,
+/// from the digest and state alone: the pure part of [`resolve_draft`], the same
+/// lookups and the same [`settle_target_for`] with the one file read (the
+/// `active-workstream` pointer) left out. `None` when only that read or the Yes
+/// recheck could still refuse. The row action model calls it from a render pass
+/// (OWN-12), so the footer and the menu cannot list a key this refuses.
+pub(crate) fn settle_refusal(
+    ctx: &AppContext,
+    alias: &str,
+    key: &GroupKey,
+    item: Option<&str>,
+) -> Option<String> {
+    let (_, state, digest) = match settle_inputs(ctx, alias) {
+        Ok(inputs) => inputs,
+        Err(message) => return Some(message),
+    };
+    settle_target_for(
+        alias,
+        state,
+        digest,
+        key,
+        item,
+        ctx.config.preferences.owner_fold_days(),
+        false,
+    )
+    .err()
+}
+
+/// The draft for the row `key` of `alias` under the current registry, state,
+/// digest, pointer file and session list.
+pub(crate) fn resolve_draft(
+    ctx: &AppContext,
+    alias: &str,
+    key: &GroupKey,
+    item: Option<&str>,
+) -> Result<SettleDraft, String> {
+    let (path, state, digest) = settle_inputs(ctx, alias)?;
     let target = settle_target_for(
         alias,
         state,
@@ -521,18 +559,18 @@ pub(crate) fn resolve_draft(
         key,
         item,
         ctx.config.preferences.owner_fold_days(),
-        active_workstream_is_set(&project.path),
+        active_workstream_is_set(path),
     )?;
     // Exact path equality (T-37-06): a sibling directory that merely shares the
     // project path as a string prefix is a different project.
     let live_session = ctx
         .active_sessions
         .iter()
-        .find(|session| session.working_dir == project.path)
+        .find(|session| session.working_dir == path)
         .cloned();
     Ok(SettleDraft {
         target,
-        cwd: project.path.clone(),
+        cwd: path.to_path_buf(),
         live_session,
     })
 }
