@@ -1716,6 +1716,15 @@ pub(crate) fn move_cursor(view: &mut OwnerBlockState, stops: &[Stop], mv: Move) 
     Moved::Within
 }
 
+/// Enter the block on its first stop: from the tab bar above it, or as the
+/// Phases tab's only focusable level when the phase list is empty (quick
+/// 261118-tm6).
+pub(crate) fn enter_first(view: &mut OwnerBlockState, stops: &[Stop]) {
+    if !stops.is_empty() {
+        set_cursor(view, stops, 0);
+    }
+}
+
 /// Enter the block on its last stop (D-20).
 pub(crate) fn enter_last(view: &mut OwnerBlockState, stops: &[Stop]) {
     if !stops.is_empty() {

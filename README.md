@@ -282,7 +282,7 @@ bar has focus it is also reversed and the content is dimmed.
 |-------------------|--------|
 | `1`-`8`           | Jump straight into a tab's content |
 | `←` `→`           | Tab bar: previous / next tab; stops at the first / last tab. Inside Sessions or Docs: previous / next sub-tab (Sessions / Agents, Files / Milestones), stopping at the ends. On the Phases tab, `→` focuses the Waves pane; with a Backlog item open, `←` closes it. Inside any other tab: switch tab and return to the tab bar |
-| `↓` / `j` / `Enter` / `Space` | Tab bar: enter the tab's content (no action is taken) |
+| `↓` / `j` / `Enter` / `Space` | Tab bar: enter the tab's content (no action is taken; on the Phases tab with an Owner block: its first row, and down past its last row to the phase list) |
 | `↑` / `k`         | From the first row of the content: back to the tab bar (on the Phases tab with an Owner block: into the block, and up from its first row to the tab bar) |
 | `[` `]`           | Sessions / Docs: previous / next sub-tab (on the Roadmap list: previous / next phase in the same wave) |
 | `Esc`             | Close an open pane or level first; otherwise go to the tab bar; at the tab bar, back to the dashboard |
@@ -306,8 +306,8 @@ Tab-specific keys:
 | Waves pane | `Enter` / `Space` | Fold / unfold a wave (or a merged `w1–w10 ✓` row); on a plan, jump to its agent in Sessions › Agents |
 | Waves pane | `e` | Edit the plan's PLAN.md in `$EDITOR` at its objective |
 | Waves pane | `←` / `Esc` | Back to the phase list (`q` still leaves the detail view; a digit, `[` or `]` leaves the pane and acts as usual) |
-| Phases | `↑` / `k` from the first phase | Enter the Owner block |
-| Owner block | `j` `k` `g` `G` `PgUp` `PgDn` `Enter` `Space` `←` `→` `Esc` | Move, expand a group or fold, switch fold, back to the phase list |
+| Phases | `↑` / `k` from the first phase | Enter the Owner block (with no phases the block holds the keyboard from the start) |
+| Owner block | `j` `k` `g` `G` `PgUp` `PgDn` `Enter` `Space` `←` `→` `Esc` | Move, expand a group or fold, switch fold, back to the phase list (to the tab bar when there are no phases) |
 | Backlog | `Enter` | Open / close the item's content pane |
 | Backlog | `j` `k` `PgUp` `PgDn` | Scroll the open content pane |
 | Backlog | `e` | With the pane open, edit the item where it lives (e.g. its ROADMAP.md section) in `$EDITOR`; otherwise enqueue it |
@@ -406,8 +406,10 @@ projects with owner work right after those waiting on a human, and `/y` filters 
 **Project detail, Phases tab.** An Owner block above the phase list names what closes
 the milestone (`closes after: test 12 (ph 21 22 24) · unblock 5 (ph 20 23) · …`) and
 lists one row per group: `TEST`, `DECIDE`, `FIX`, `BLOCKED`, each with its phase, checks,
-age and the command that handles it. `↑` from the first phase enters the block; `Enter`
-expands a group to its checks and source file; `Esc` returns to the phase list. Old debt,
+age and the command that handles it. `↓` from the tab bar and `↑` from the first phase
+enter the block, and `↓` past its last row reaches the phase list; with no phases the block
+holds the keyboard from the start. `Enter` expands a group to its checks and source file;
+`Esc` returns to the phase list (to the tab bar when there are no phases). Old debt,
 acknowledged files and pending todos are collapsed folds under the rows. On a group row
 `v`, `o`, `A`, `y` and `x` work as in the inbox screen below, and `j` walks into an
 expanded group's checks (the first five), so `x` can settle one check.

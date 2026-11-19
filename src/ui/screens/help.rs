@@ -377,7 +377,7 @@ pub(super) fn help_lines(experimental: bool) -> Vec<Line<'static>> {
         row("Enter / Space", "Owner block: expand or collapse the selected group or fold (detail view)"),
         row("Left / Right", "Owner block: move between the folds on the fold line (detail view)"),
         row("v o A y x", "Owner block: run, open, acknowledge, copy or settle the selected group or check, as in the inbox (detail view)"),
-        row("Esc", "Owner block: back to the phase list (detail view)"),
+        row("Esc", "Owner block: back to the phase list, or the tab bar when it is empty (detail view)"),
         Line::from(""),
         // ── The mouse (quick 260926-dyf, D-07). Every description is unique
         // in this body. Ends with one blank row.
@@ -1236,7 +1236,7 @@ mod tests {
                 "v o A y x",
                 "Owner block: run, open, acknowledge, copy or settle the selected group or check, as in the inbox (detail view)",
             ),
-            ("Esc", "Owner block: back to the phase list (detail view)"),
+            ("Esc", "Owner block: back to the phase list, or the tab bar when it is empty (detail view)"),
         ];
         let lines: Vec<&str> = text.lines().collect();
         for (key, description) in rows {
