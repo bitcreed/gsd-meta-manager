@@ -6,10 +6,10 @@ current_phase: 39
 current_phase_name: Check actions through GSD
 status: verifying
 stopped_at: Completed 39-03-PLAN.md
-last_updated: "2026-11-19T03:33:46.377Z"
-last_activity: 2026-11-17
+last_updated: "2026-11-19T03:45:41.340Z"
+last_activity: 2026-11-18
 last_activity_desc: Phase 39 execution started
-state_head: c86bcc020da58f0240b6d82e50fea8c59b0c2d52
+state_head: c102198c5c3ecdf170d1f580c998721103e679e6
 progress:
   total_phases: 6
   completed_phases: 1
@@ -32,7 +32,7 @@ See: .planning/PROJECT.md (updated 2026-11-14)
 Phase: 39 (Check actions through GSD) — EXECUTING
 Plan: 3 of 3
 Status: Phase complete — ready for verification
-Last activity: 2026-11-18 - Completed quick task 261118-tm6: Owner block focus on the Phases tab: reachable by Down, visible when phases are empty
+Last activity: 2026-11-18 - Completed quick task 261118-tki: Help overlay key highlight (press a key to highlight the rows that list it)
 
 
 ## Deferred Verification
@@ -591,6 +591,7 @@ Older entries (Phase 19 T-19-* rows, Phase 21 round-13 gaps, Phase 26 risks, 31-
 | 261113-fi0 | Sync against gsd-core v1.21.0 | 2026-11-13 | 1ac9832 | [261113-fi0-sync-against-gsd-core-v1-21-0](./quick/261113-fi0-sync-against-gsd-core-v1-21-0/) |
 | 261116-kft | Route Config-tab config.json saves through gsd-tools config-set; drop the .planning/.lock replica (defaults.json still direct: no gsd-core writer) | 2026-11-16 | c924939 | [261116-kft-route-config-json-writes-through-gsd-too](./quick/261116-kft-route-config-json-writes-through-gsd-too/) |
 | 261118-tm6 | Owner block focus on the Phases tab: reachable by Down, visible when phases are empty | 2026-11-18 | c86bcc02 | [261118-tm6-owner-block-focus-on-the-phases-tab-reac](./quick/261118-tm6-owner-block-focus-on-the-phases-tab-reac/) |
+| 261118-tki | Help overlay: pressing a key highlights the rows that list it, cycles matches | 2026-11-18 | c102198c | [261118-tki-help-overlay-key-highlight](./quick/261118-tki-help-overlay-key-highlight/) |
 
 ## Deferred Items
 
