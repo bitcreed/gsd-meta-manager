@@ -32,7 +32,7 @@ See: .planning/PROJECT.md (updated 2026-11-14)
 Phase: 39 (Check actions through GSD) — EXECUTING
 Plan: 3 of 3
 Status: Phase complete — ready for verification
-Last activity: 2026-11-18 - Completed quick task 261118-tki: Help overlay key highlight (press a key to highlight the rows that list it)
+Last activity: 2026-11-18 - Completed quick task 261118-u5i: debug-sessions owner fixture workstream gets the phases/ dir gsd-core scaffolds
 
 
 ## Deferred Verification
@@ -592,6 +592,7 @@ Older entries (Phase 19 T-19-* rows, Phase 21 round-13 gaps, Phase 26 risks, 31-
 | 261116-kft | Route Config-tab config.json saves through gsd-tools config-set; drop the .planning/.lock replica (defaults.json still direct: no gsd-core writer) | 2026-11-16 | c924939 | [261116-kft-route-config-json-writes-through-gsd-too](./quick/261116-kft-route-config-json-writes-through-gsd-too/) |
 | 261118-tm6 | Owner block focus on the Phases tab: reachable by Down, visible when phases are empty | 2026-11-18 | c86bcc02 | [261118-tm6-owner-block-focus-on-the-phases-tab-reac](./quick/261118-tm6-owner-block-focus-on-the-phases-tab-reac/) |
 | 261118-tki | Help overlay: pressing a key highlights the rows that list it, cycles matches | 2026-11-18 | c102198c | [261118-tki-help-overlay-key-highlight](./quick/261118-tki-help-overlay-key-highlight/) |
+| 261118-u5i | debug-sessions owner fixture: workstream `a` gets the phases/ dir gsd-core always scaffolds (audit-uat oracle no longer errors) | 2026-11-18 | 59930419 | [261118-u5i-debug-sessions-fixture-workstream-phases](./quick/261118-u5i-debug-sessions-fixture-workstream-phases/) |
 
 ## Deferred Items
 
