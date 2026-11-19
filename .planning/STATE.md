@@ -591,6 +591,9 @@ Older entries (Phase 19 T-19-* rows, Phase 21 round-13 gaps, Phase 26 risks, 31-
 | 261113-fi0 | Sync against gsd-core v1.21.0 | 2026-11-13 | 1ac9832 | [261113-fi0-sync-against-gsd-core-v1-21-0](./quick/261113-fi0-sync-against-gsd-core-v1-21-0/) |
 | 261116-kft | Route Config-tab config.json saves through gsd-tools config-set; drop the .planning/.lock replica (defaults.json still direct: no gsd-core writer) | 2026-11-16 | c924939 | [261116-kft-route-config-json-writes-through-gsd-too](./quick/261116-kft-route-config-json-writes-through-gsd-too/) |
 | 261118-tm6 | Owner block focus on the Phases tab: reachable by Down, visible when phases are empty | 2026-11-18 | c86bcc02 | [261118-tm6-owner-block-focus-on-the-phases-tab-reac](./quick/261118-tm6-owner-block-focus-on-the-phases-tab-reac/) |
+| 261118-tki | Help overlay: pressing a key highlights the rows that list it, cycles matches | 2026-11-18 | c102198c | [261118-tki-help-overlay-key-highlight](./quick/261118-tki-help-overlay-key-highlight/) |
+| 261118-u5i | debug-sessions owner fixture: workstream `a` gets the phases/ dir gsd-core always scaffolds (audit-uat oracle no longer errors) | 2026-11-18 | 59930419 | [261118-u5i-debug-sessions-fixture-workstream-phases](./quick/261118-u5i-debug-sessions-fixture-workstream-phases/) |
+| 261118-tro | Compact the settle confirm popup: bold Runs summary, capped instruction text, d toggles verbatim full command | 2026-11-18 | 376614f9 | [261118-tro-compact-the-settle-confirm-popup-bold-ru](./quick/261118-tro-compact-the-settle-confirm-popup-bold-ru/) |
 | 261118-u4e | Enter opens the Owner source file at the right place (inbox + Owner block) | 2026-11-18 | be39d868 | [261118-u4e-enter-opens-the-owner-source-file-at-the](./quick/261118-u4e-enter-opens-the-owner-source-file-at-the/) |
 
 ## Deferred Items
