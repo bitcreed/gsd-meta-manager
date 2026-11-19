@@ -35,6 +35,37 @@
 //! States` legend are removed, with the flag on and off. Every legend row is a glyph
 //! plus a text label, so no meaning is carried by colour alone, and there is no
 //! spinner and no animation anywhere on this surface.
+//!
+//! ## Finding a key (quick 261118-tki)
+//!
+//! Pressing a key in the overlay marks every row whose **key column** lists it.
+//! The current match carries `> ` and REVERSED|BOLD, every other match `* ` and
+//! BOLD, and the popup title reads ` Help  x: 2/4 `. Pressing the same key again
+//! moves to the next match and wraps from the last back to the first. A key no
+//! row lists gives ` Help  no help entry for <key> ` and marks nothing.
+//!
+//! Matching reads key-column tokens only, never a description (so `n` does not
+//! match every row that says "next"), and is case-sensitive (`g` and `G` differ).
+//! The token grammar of [`key_tokens`]: whitespace-separated words, `/` between
+//! alternatives (`j/k`, `q / Esc`), single chars, the names Enter, Esc, Tab, Up,
+//! Down, Left, Right, Home, End, Space, PgUp, PgDn and Shift+Tab, `Shift+<letter>`,
+//! `Ctrl+<char>` and a digit range such as `1-8`.
+//!
+//! Rows under [`NON_KEY_SECTIONS`] (legends and filter syntax) are never matched,
+//! and inside key sections the labels in [`NON_KEY_LABELS`] (mouse gestures, the
+//! inbox's pseudo-keys) name no key. Any other heading is a key section by
+//! default, and a coverage test fails on any key row that is neither tokenizable
+//! nor exempt, so a new row cannot silently become unfindable.
+//!
+//! **Keys that can never highlight:** `?` and Esc close the overlay, Ctrl+C is
+//! taken by `app.rs` before any screen sees it, and Up, Down, PgUp and PgDn
+//! scroll. Rows such as `Up` or `PgUp / PgDn` are therefore found through their
+//! other tokens or not at all. `j` and `k` highlight like any other key.
+//!
+//! The markers are ASCII, and marker plus style carry the meaning, never color
+//! alone. The key's name in the title is built from fixed names and ASCII-graphic
+//! chars only; any other char is shown as `U+XXXX`. Every scroll a match causes
+//! goes through [`clamp_scroll`] via `reveal_offset`.
 
 use super::detail::{
     clamp_scroll, ViewportMetrics, PAGE_SCROLL_LINES, WAVES_GLYPH_DONE, WAVES_GLYPH_RUNNING,
@@ -624,10 +655,16 @@ pub(super) fn help_lines(experimental: bool) -> Vec<Line<'static>> {
     }
     lines.push(Line::from(""));
 
-    lines.push(Line::from(Span::styled(
-        "Press ? or Esc to close   j/k, PgUp/PgDn scroll".to_string(),
-        Style::default().add_modifier(Modifier::DIM),
-    )));
+    // Two lines, each within the 62-cell inner width of the 80x24 popup.
+    for hint in [
+        "Press ? or Esc to close   Up/Down, PgUp/PgDn scroll",
+        "Any other key: highlight its rows (again: next match)",
+    ] {
+        lines.push(Line::from(Span::styled(
+            hint.to_string(),
+            Style::default().add_modifier(Modifier::DIM),
+        )));
+    }
 
     wrap_owner_sections(lines)
 }
@@ -707,7 +744,10 @@ crate::ui::screens::adjudicate_screen!(
      state. It `Clear`s its popup area and paints no background, so nothing \
      attacker-influenced reaches a cell. Checked, not claimed: the fixture \
      registers the hostile identity and puts a hostile project state behind \
-     it, and the probe asserts the clean stem is absent from the buffer.",
+     it, and the probe asserts the clean stem is absent from the buffer. The \
+     title also names the key the user pressed: `key_label` builds that name \
+     from fixed names and ASCII-graphic chars only, and shows any other char \
+     as its U+XXXX code.",
 );
 
 impl Screen for HelpScreen {
@@ -724,7 +764,7 @@ impl Screen for HelpScreen {
                 ScreenAction::Pop
             }
             // Down-direction: add the delta, **then** clamp (UIFIX-04).
-            KeyCode::Char('j') | KeyCode::Down => {
+            KeyCode::Down => {
                 self.scroll_offset = clamp_scroll(
                     self.scroll_offset.saturating_add(1),
                     vp.total_lines,
@@ -745,7 +785,7 @@ impl Screen for HelpScreen {
             // Up-direction: clamp **first**, subtract second. The other order is
             // the UIFIX-04 defect — an offset parked past the end swallows the
             // first press and the viewport appears frozen.
-            KeyCode::Char('k') | KeyCode::Up => {
+            KeyCode::Up => {
                 self.scroll_offset =
                     clamp_scroll(self.scroll_offset, vp.total_lines, vp.visible_height)
                         .saturating_sub(1);
@@ -1836,8 +1876,53 @@ mod tests {
         let mut screen = screen_with_viewport(200, 20);
 
         press(&mut screen, &mut ctx, KeyCode::PageUp);
-        press(&mut screen, &mut ctx, KeyCode::Char('k'));
+        press(&mut screen, &mut ctx, KeyCode::Up);
         assert_eq!(screen.scroll_offset(), 0, "u16 must not wrap under zero");
+    }
+
+    #[test]
+    fn j_and_k_highlight_rows_instead_of_scrolling() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut ctx, _rx) = ctx_with_project(dir.path());
+        let mut screen = screen_with_viewport(200, 20);
+
+        let title = find_char(&mut screen, &mut ctx, 'j');
+        assert!(title.contains("j: 1/7"), "{title}");
+        assert_eq!(screen.scroll_offset(), 0, "the first `j` row is visible");
+        // The arrows still scroll.
+        press(&mut screen, &mut ctx, KeyCode::Down);
+        assert_eq!(screen.scroll_offset(), 1);
+        let title = find_char(&mut screen, &mut ctx, 'k');
+        assert!(title.starts_with("\u{250c} Help  k: "), "{title}");
+    }
+
+    #[test]
+    fn esc_and_question_mark_close_the_overlay_while_a_highlight_is_active() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut ctx, _rx) = ctx_with_project(dir.path());
+        for closer in [KeyCode::Esc, KeyCode::Char('?')] {
+            let mut screen = HelpScreen::new();
+            press(&mut screen, &mut ctx, KeyCode::Char('s'));
+            assert!(screen.highlight.is_some());
+            let action = Screen::handle_key(&mut screen, closer, KeyModifiers::NONE, &mut ctx);
+            assert!(matches!(action, ScreenAction::Pop), "{closer:?}");
+        }
+    }
+
+    #[test]
+    fn the_closing_hint_names_the_scroll_keys_and_the_find() {
+        let lines = body();
+        let tail: Vec<&str> = lines.lines().rev().take(2).collect();
+        assert_eq!(
+            tail,
+            [
+                "Any other key: highlight its rows (again: next match)",
+                "Press ? or Esc to close   Up/Down, PgUp/PgDn scroll",
+            ]
+        );
+        for line in &tail {
+            assert!(line.chars().count() <= 62, "{line}");
+        }
     }
 
     #[test]
