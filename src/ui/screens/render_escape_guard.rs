@@ -2606,6 +2606,13 @@ fn fixture_for(type_name: &str) -> Option<Fixture> {
                         plan(),
                     )),
                 ),
+                one_state(
+                    "popup in the full-command view",
+                    probe_ctx(identity),
+                    Box::new(
+                        SettleConfirmScreen::new(AckHost::Inbox, plan()).showing_full_command(),
+                    ),
+                ),
             ]
         }),
 

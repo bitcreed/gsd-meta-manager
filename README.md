@@ -451,9 +451,13 @@ in every lane) and lapses by itself when the file changes. This app never writes
 `x` settles what you could not or will not test. On a TEST or BLOCKED row it settles the
 whole phase; after `Enter` and `j` onto one check it settles that check. A one-row chooser
 offers three outcomes: `w` won't do, `p` deferred permanently, `m` move to another phase
-(you pick phase M; an optional reason follows). A default-No popup then shows the exact
-argv, and only `y` launches `/gsd-verify-work N <instruction>` in the project (`--ws NAME`
-for a workstream), in a new session through your multiplexer. The instruction asks GSD
+(you pick phase M; an optional reason follows). A default-No popup then sums the settle
+up: project, target, outcome, your reason, the command it runs in bold with how many
+session variables `env -u` clears, and the start of the instruction with its key facts in
+bold. `d` switches to the full command, every argv element verbatim, and back. Only `y`
+launches `/gsd-verify-work N <instruction>` in the project (`--ws NAME` for a workstream),
+in a new session through your multiplexer; a view the terminal cuts off cannot be
+confirmed, so enlarge it or press `d` for the one that fits. The instruction asks GSD
 to resume the UAT session, record each check as `result: skipped` with a
 `Deferred follow-up:` reason (which gsd-core counts as non-blocking), and not to promote
 it to the 999.x backlog. Move also asks for one todo naming phase M, so the check comes up again

@@ -17,7 +17,10 @@
 //!   [`render_confirm_popup`] reports it in [`PopupLayout::clipped`], the popup's hint
 //!   row then reads [`CLIPPED_HINT`], and until the next render says otherwise `y`,
 //!   Enter on Yes and a click on Yes do nothing. `n`, `Esc` and a click on No still
-//!   cancel. A decision whose text is cut off is never confirmable.
+//!   cancel. A decision whose text is cut off is never confirmable;
+//! - a caller may prepend one short key fragment to the hint row
+//!   ([`render_confirm_popup_hinted`], e.g. `d full command`). It is dropped when it
+//!   would not fit beside the base hint, so [`CLIPPED_HINT`] is never truncated.
 //!
 //! This module draws only text its caller hands it. Callers pass prompt bodies
 //! that are already escaped through `crate::text::render_for_terminal`, so the
@@ -209,6 +212,9 @@ fn button(label: &'static str, focused: bool, accent: Color) -> Span<'static> {
     Span::styled(label, style)
 }
 
+/// The bottom row of a popup that fits, in place of nothing.
+const KEY_HINT: &str = "y/n \u{b7} \u{2190}/\u{2192} move \u{b7} Enter select \u{b7} Esc cancel";
+
 const YES_LABEL: &str = "[ Yes ]";
 const NO_LABEL: &str = "[ No ]";
 const BUTTON_GAP: u16 = 3;
@@ -237,6 +243,23 @@ pub fn render_confirm_popup(
     body: Vec<Line<'static>>,
     accent: Color,
     focus: ConfirmFocus,
+) -> PopupLayout {
+    render_confirm_popup_hinted(frame, area, title, body, accent, focus, "")
+}
+
+/// [`render_confirm_popup`] with one short key fragment (`d full command`) in front of
+/// the hint row. The row reads `{extra_hint} \u{b7} {base}` when both fit the popup's
+/// inner width, and the base alone otherwise, so the base (above all
+/// [`CLIPPED_HINT`]) is never cut. An empty fragment draws exactly what
+/// [`render_confirm_popup`] always drew.
+pub fn render_confirm_popup_hinted(
+    frame: &mut Frame,
+    area: Rect,
+    title: &str,
+    body: Vec<Line<'static>>,
+    accent: Color,
+    focus: ConfirmFocus,
+    extra_hint: &str,
 ) -> PopupLayout {
     let inner_w = popup_width(area).saturating_sub(2);
     let body_rows = wrapped_rows(&body, inner_w);
@@ -281,13 +304,18 @@ pub fn render_confirm_popup(
     // has no room for its buttons at all. A clipped popup cannot be confirmed, and says
     // so where the key hint would be.
     let clipped = body_rows > body_h || rects.is_none();
-    let hint = if clipped {
-        Span::styled(CLIPPED_HINT, Style::default().fg(Color::Yellow))
+    let (base, style) = if clipped {
+        (CLIPPED_HINT, Style::default().fg(Color::Yellow))
     } else {
-        Span::styled(
-            "y/n \u{b7} \u{2190}/\u{2192} move \u{b7} Enter select \u{b7} Esc cancel",
-            Style::default().fg(Color::DarkGray),
-        )
+        (KEY_HINT, Style::default().fg(Color::DarkGray))
+    };
+    let joined = format!("{extra_hint} \u{b7} {base}");
+    let hint = if !extra_hint.is_empty()
+        && Span::raw(joined.as_str()).width() <= usize::from(inner.width)
+    {
+        Span::styled(joined, style)
+    } else {
+        Span::styled(base, style)
     };
     frame.render_widget(
         Paragraph::new(Line::from(hint)).alignment(Alignment::Center),
@@ -546,6 +574,54 @@ mod tests {
         );
         assert!(!hint.contains("y/n"), "{hint}");
         assert!(CLIPPED_HINT.starts_with("Cut off: enlarge the terminal to confirm"));
+    }
+
+    fn draw_hinted(body: Vec<Line<'static>>, w: u16, h: u16, extra: &str) -> (Vec<String>, bool) {
+        let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
+        let mut layout = PopupLayout::default();
+        t.draw(|f| {
+            layout = render_confirm_popup_hinted(
+                f,
+                f.area(),
+                "T",
+                body.clone(),
+                Color::Red,
+                ConfirmFocus::No,
+                extra,
+            );
+        })
+        .unwrap();
+        (rows_of(&t, w, h), layout.clipped)
+    }
+
+    #[test]
+    fn a_key_fragment_leads_the_hint_row_only_when_it_fits() {
+        let key_hint = "y/n \u{b7} \u{2190}/\u{2192} move \u{b7} Enter select \u{b7} Esc cancel";
+        // Room for both: the fragment leads.
+        let (rows, clipped) = draw_hinted(vec![Line::from("short")], 80, 24, "d full command");
+        let text = rows.join("\n");
+        assert!(!clipped);
+        assert!(
+            text.contains(&format!("d full command \u{b7} {key_hint}")),
+            "{text}"
+        );
+        // 60x20: the 54-cell inner row cannot hold both, so the base stays whole.
+        let (rows, clipped) = draw_hinted(vec![Line::from("short")], 60, 20, "d full command");
+        let text = rows.join("\n");
+        assert!(!clipped);
+        assert!(text.contains(key_hint), "{text}");
+        assert!(!text.contains("d full command"), "{text}");
+        // A clipped body keeps CLIPPED_HINT whole behind the fragment.
+        let (rows, clipped) = draw_hinted(six_lines(), 80, 6, "d summary");
+        let text = rows.join("\n");
+        assert!(clipped);
+        assert!(
+            text.contains(&format!("d summary \u{b7} {CLIPPED_HINT}")),
+            "{text}"
+        );
+        // No fragment: the plain hint row, as always.
+        let (rows, _) = draw_hinted(vec![Line::from("short")], 80, 24, "");
+        assert!(rows.join("\n").contains(key_hint));
     }
 
     #[test]
