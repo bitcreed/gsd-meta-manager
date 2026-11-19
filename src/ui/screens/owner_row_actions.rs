@@ -24,14 +24,18 @@
 //! [`OWNER_BLOCK_ONLY`] name every action only one screen offers, each with its
 //! reason; a test asserts the difference between the two screens equals them.
 
-use super::detail::{fit_footer, fit_spans, shown, FooterToken};
+use super::detail::{fit_cells, fit_footer, fit_spans, shown, FooterToken};
 use super::owner_actions;
-use super::owner_block::{self, Fold, RowSrc, SubStop};
+use super::owner_block::{self, Fold, GroupKey, RowSrc, SubStop};
 use super::owner_settle;
 use super::AppContext;
 use crate::state_reader::owner_items::{Kind, Lane, OwnerGroup};
-use crossterm::event::KeyCode;
-use ratatui::text::Line;
+use crossterm::event::{KeyCode, KeyModifiers};
+use ratatui::layout::Rect;
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Clear, Paragraph};
+use ratatui::Frame;
 
 /// The screen a row is listed on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -385,10 +389,8 @@ pub(crate) fn fold_line_actions(_host: Host, fold: Option<Fold>, open: bool) -> 
 /// What Enter does under the cursor, as the footer words it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Enter {
-    /// A collapsed row: Enter expands it.
-    Expand,
-    /// An expanded row: Enter collapses it.
-    Collapse,
+    /// A group or debug row: Enter opens its action menu.
+    Actions,
     /// A check or `file PATH` line: Enter opens the file there.
     View,
     /// The fold line over a closed fold.
@@ -439,8 +441,7 @@ pub(crate) fn footer_spans(
         ));
     }
     let word = match enter {
-        Enter::Expand => Some("expand"),
-        Enter::Collapse => Some("collapse"),
+        Enter::Actions => Some("actions"),
         Enter::View => Some("view"),
         Enter::OpenFold => Some("open"),
         Enter::CloseFold => Some("close"),
@@ -454,9 +455,10 @@ pub(crate) fn footer_spans(
         ));
     }
     for action in actions.iter().filter(|action| action.is_ready()) {
-        // Space is named only where Enter does not already do its job (a check or
-        // file line: Enter views there and Space collapses).
-        if action.id == ActionId::Toggle && enter != Enter::View {
+        // Space is named on rows and sub-stops (Enter opens the menu or the file
+        // there, so Space is the one expand/collapse key); on the fold line Enter
+        // itself opens or closes, so the fold's Space entry is not repeated.
+        if action.id == ActionId::Toggle && !matches!(enter, Enter::Actions | Enter::View) {
             continue;
         }
         let hint = &action.footer;
@@ -494,6 +496,243 @@ pub(crate) fn footer_spans(
         tokens.push(FooterToken::owned("[q]".to_owned(), "uit  ".to_owned(), 3));
     }
     fit_spans(fit_footer(tokens, width), width)
+}
+
+// ---------------------------------------------------------------------------
+// The action menu (Enter on a group or debug row)
+// ---------------------------------------------------------------------------
+
+/// The open action menu of a screen: which row it belongs to and which entry is
+/// selected. Its entries are NOT kept: every frame and every key recomputes them
+/// from [`row_actions`], so the menu never shows a stale command or a reason that
+/// no longer applies, and running an entry is the host's own hotkey path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ActionMenu {
+    /// The project the row belongs to.
+    pub(crate) alias: String,
+    /// The row's identity (never an index: a refresh may move it).
+    pub(crate) key: GroupKey,
+    selected: ActionId,
+}
+
+/// What the screen does with a key the open menu looked at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MenuKey {
+    /// Swallowed: the menu stays as it is (or moved its selection).
+    Stay,
+    /// The menu closes and nothing else happens.
+    Close,
+    /// The menu closes and the host handles this key as if it had been typed.
+    Run(KeyCode),
+}
+
+impl ActionMenu {
+    /// Open the menu on the row `key` of `alias`: `v` is preselected when ready,
+    /// else the first ready entry (I-6). `None` when the row has no entry at all.
+    pub(crate) fn open(alias: &str, key: GroupKey, actions: &[RowAction]) -> Option<Self> {
+        let selected = actions
+            .iter()
+            .find(|action| action.id == ActionId::Run && action.is_ready())
+            .or_else(|| actions.iter().find(|action| action.is_ready()))
+            .or_else(|| actions.first())?
+            .id;
+        Some(Self {
+            alias: alias.to_owned(),
+            key,
+            selected,
+        })
+    }
+
+    /// The selected entry.
+    pub(crate) fn selected(&self) -> ActionId {
+        self.selected
+    }
+
+    /// One key while the menu is open. `j`/`k`/Down/Up walk the ready entries
+    /// (clamped); Enter runs the selected one; a plain letter, or Space, that names
+    /// an entry runs THAT entry, ready or blocked (a blocked one's hotkey prints its
+    /// reason, I-5); Esc and `q` close; everything else is swallowed.
+    pub(crate) fn key(
+        &mut self,
+        actions: &[RowAction],
+        code: KeyCode,
+        modifiers: KeyModifiers,
+    ) -> MenuKey {
+        let plain = owner_actions::is_plain_action_key(modifiers);
+        match code {
+            KeyCode::Esc => MenuKey::Close,
+            KeyCode::Char('q') if plain => MenuKey::Close,
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.step(actions, true);
+                MenuKey::Stay
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.step(actions, false);
+                MenuKey::Stay
+            }
+            KeyCode::Enter => actions
+                .iter()
+                .find(|action| action.id == self.selected)
+                .map_or(MenuKey::Stay, |action| MenuKey::Run(action.key)),
+            KeyCode::Char(_) if plain => actions
+                .iter()
+                .find(|action| action.key == code)
+                .map_or(MenuKey::Stay, |action| MenuKey::Run(action.key)),
+            _ => MenuKey::Stay,
+        }
+    }
+
+    /// Move the selection over the ready entries; a selection that is no longer
+    /// among them (a refresh blocked it) lands on the nearest end.
+    fn step(&mut self, actions: &[RowAction], forward: bool) {
+        let ready: Vec<ActionId> = actions
+            .iter()
+            .filter(|action| action.is_ready())
+            .map(|action| action.id)
+            .collect();
+        let at = ready.iter().position(|id| *id == self.selected);
+        let to = match (at, forward) {
+            (Some(at), true) => (at + 1).min(ready.len().saturating_sub(1)),
+            (Some(at), false) => at.saturating_sub(1),
+            (None, true) => 0,
+            (None, false) => ready.len().saturating_sub(1),
+        };
+        if let Some(id) = ready.get(to) {
+            self.selected = *id;
+        }
+    }
+}
+
+/// Cells the key and label columns of an entry take: the marker, the key padded
+/// to six and the label padded to sixteen.
+const MENU_LEAD: usize = 2 + 6 + 16;
+
+/// `text` broken at spaces into lines of at most `room` cells (a word wider than
+/// that is cut by the caller's `fit_cells`).
+fn wrap_words(text: &str, room: usize) -> Vec<String> {
+    let mut rows: Vec<String> = Vec::new();
+    let mut row = String::new();
+    for word in text.split_whitespace() {
+        let wide =
+            owner_block::cells(&row) + usize::from(!row.is_empty()) + owner_block::cells(word);
+        if !row.is_empty() && wide > room {
+            rows.push(std::mem::take(&mut row));
+        }
+        if !row.is_empty() {
+            row.push(' ');
+        }
+        row.push_str(word);
+    }
+    rows.push(row);
+    rows
+}
+
+/// The menu's text lines inside a box `inner` cells wide: one per ready entry
+/// (the detail cut to the line), several per blocked one (its reason wrapped under
+/// the detail column, so the whole reason is always readable at 80 columns).
+fn menu_lines(actions: &[RowAction], selected: ActionId, inner: usize) -> Vec<Line<'static>> {
+    let mut out = Vec::new();
+    for action in actions {
+        let pick = action.id == selected;
+        let marker = if pick { "> " } else { "  " };
+        let lead = format!(
+            "{marker}{:<6}{:<16}",
+            fit_cells(action.key_label, 6),
+            fit_cells(action.label, 16)
+        );
+        let mut style = Style::default();
+        if !action.is_ready() {
+            style = style.add_modifier(Modifier::DIM);
+        }
+        if pick {
+            style = style
+                .add_modifier(Modifier::BOLD)
+                .fg(Color::Cyan)
+                .remove_modifier(Modifier::DIM);
+        }
+        let room = inner.saturating_sub(MENU_LEAD);
+        match &action.availability {
+            Availability::Ready => out.push(Line::from(Span::styled(
+                fit_cells(&format!("{lead}{}", action.detail), inner),
+                style,
+            ))),
+            Availability::Blocked(reason) => {
+                let rows = wrap_words(&format!("({})", shown(reason)), room.max(8));
+                for (n, row) in rows.into_iter().enumerate() {
+                    let head = if n == 0 {
+                        lead.clone()
+                    } else {
+                        " ".repeat(MENU_LEAD)
+                    };
+                    out.push(Line::from(Span::styled(
+                        fit_cells(&format!("{head}{row}"), inner),
+                        style,
+                    )));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Draw the menu over `area` (the whole frame): `Clear`, a bordered box titled
+/// ` Actions ` with ` [Enter]run  [Esc]close ` under it, one entry per action.
+/// It sits below `anchor` (the cursor row), flipped above when it does not fit,
+/// clamped to the frame and centered when no anchor was recorded. Draw it LAST.
+pub(crate) fn render_menu(
+    frame: &mut Frame,
+    area: Rect,
+    anchor: Option<Rect>,
+    actions: &[RowAction],
+    selected: ActionId,
+) {
+    if actions.is_empty() || area.width < 8 || area.height < 3 {
+        return;
+    }
+    let max_width = usize::from(area.width.saturating_sub(2)).clamp(1, 76);
+    let longest = actions
+        .iter()
+        .map(|action| MENU_LEAD + owner_block::cells(&shown(&action.detail)))
+        .max()
+        .unwrap_or(0);
+    let width = (longest + 4).clamp(30, 76).min(max_width.max(8));
+    let inner = width.saturating_sub(2);
+    let lines = menu_lines(actions, selected, inner);
+    let width = u16::try_from(width).unwrap_or(u16::MAX).min(area.width);
+    let height = u16::try_from(lines.len() + 2)
+        .unwrap_or(u16::MAX)
+        .min(area.height);
+    let (x, y) = match anchor {
+        Some(row) => {
+            let x = (area.x + 2)
+                .max(row.x + 2)
+                .min(area.right().saturating_sub(width));
+            let below = row.y.saturating_add(1);
+            let y = if below + height <= area.bottom() {
+                below
+            } else if row.y >= area.y + height {
+                row.y - height
+            } else {
+                area.bottom().saturating_sub(height)
+            };
+            (x, y)
+        }
+        None => (
+            area.x + (area.width - width) / 2,
+            area.y + (area.height - height) / 2,
+        ),
+    };
+    let rect = Rect {
+        x,
+        y: y.max(area.y),
+        width,
+        height,
+    };
+    frame.render_widget(Clear, rect);
+    let block = Block::bordered()
+        .title(" Actions ")
+        .title_bottom(" [Enter]run  [Esc]close ");
+    frame.render_widget(Paragraph::new(lines).block(block), rect);
 }
 
 /// One digest that holds every row kind the action table names, for the model,
@@ -603,6 +842,7 @@ mod tests {
     use crate::ui::screens::owner_block::{GroupKey, OwnerBlockState, Stop};
     use crate::ui::screens::settle_pending::{PendingSettle, Stage};
     use crate::ui::screens::tests::{ctx_with_aliases, owe};
+    use ratatui::style::{Color, Modifier};
 
     /// A context over the fixture digest with every lane listed and both folds open.
     fn ctx() -> AppContext {
@@ -987,14 +1227,14 @@ mod tests {
         let footer = text(&footer_spans(
             Host::Inbox,
             &a,
-            Enter::Expand,
+            Enter::Actions,
             false,
             Chrome::Back,
             250,
         ));
         assert_eq!(
             footer,
-            "  [j/k]move  [Enter]expand  [o]pen  [A]ck  [y]copy  [g]oto  [Esc]back  [?]help"
+            "  [j/k]move  [Enter]actions  [o]pen  [A]ck  [y]copy  [g]oto  [Space]expand  [Esc]back  [?]help"
         );
         assert!(
             !footer.contains("[v]") && !footer.contains("[x]"),
@@ -1014,13 +1254,13 @@ mod tests {
             text(&footer_spans(
                 Host::OwnerBlock,
                 &a,
-                Enter::Expand,
+                Enter::Actions,
                 false,
                 Chrome::Phases,
                 w,
             ))
         };
-        let full = "  [j/k]move  [Enter]expand  [v]run /gsd-verify-work 24  [x]settle  [o]pen  [A]ck  [y]copy  [Esc]phases  [q]uit  [?]help";
+        let full = "  [j/k]move  [Enter]actions  [v]run /gsd-verify-work 24  [x]settle  [o]pen  [A]ck  [y]copy  [Space]expand  [Esc]phases  [q]uit  [?]help";
         assert_eq!(at(250), full);
         let no_q = full.replace("[q]uit  ", "");
         assert_eq!(at(no_q.chars().count()), no_q, "[q]uit goes first");
@@ -1028,8 +1268,10 @@ mod tests {
         assert_eq!(at(no_jk.chars().count()), no_jk, "then [j/k]");
         let no_esc = no_jk.replace("[Esc]phases  ", "");
         assert_eq!(at(no_esc.chars().count()), no_esc, "then [Esc]");
-        let short = no_esc.replace(" /gsd-verify-work 24", "");
-        assert_eq!(at(no_esc.chars().count() - 1), short, "then v's command");
+        let no_space = no_esc.replace("[Space]expand  ", "");
+        assert_eq!(at(no_space.chars().count()), no_space, "then [Space]");
+        let short = no_space.replace(" /gsd-verify-work 24", "");
+        assert_eq!(at(no_space.chars().count() - 1), short, "then v's command");
         assert_eq!(
             at(short.chars().count() - 1),
             short.replace("[y]copy  ", ""),
@@ -1061,6 +1303,29 @@ mod tests {
         assert!(line.contains("[Enter]view"), "{line}");
         assert!(line.contains("[Space]collapse"), "{line}");
         assert!(line.contains("[Esc]tab bar"), "{line}");
+        // A row names Space beside Enter's menu; the fold line's Enter already
+        // opens and closes, so its Space entry is not repeated.
+        let a = of_owner(&ctx, test, None, false);
+        let line = text(&footer_spans(
+            Host::OwnerBlock,
+            &a,
+            Enter::Actions,
+            false,
+            Chrome::Phases,
+            250,
+        ));
+        assert!(line.contains("[Enter]actions"), "{line}");
+        assert!(line.contains("[Space]expand"), "{line}");
+        let a = of_owner(&ctx, test, None, true);
+        let line = text(&footer_spans(
+            Host::OwnerBlock,
+            &a,
+            Enter::Actions,
+            false,
+            Chrome::Phases,
+            250,
+        ));
+        assert!(line.contains("[Space]collapse"), "{line}");
         let folds = fold_line_actions(Host::OwnerBlock, Some(Fold::OldDebt), true);
         let line = text(&footer_spans(
             Host::OwnerBlock,
@@ -1086,6 +1351,252 @@ mod tests {
             line,
             "  [j/k]move  [\u{2190}/\u{2192}]fold  [Esc]back  [?]help"
         );
+    }
+
+    // -----------------------------------------------------------------
+    // The action menu (quick 261119-f5b)
+    // -----------------------------------------------------------------
+
+    fn menu_on(ctx: &AppContext, pick: impl Fn(&RowSrc) -> bool) -> (ActionMenu, Vec<RowAction>) {
+        let rows = owner_rows(ctx);
+        let (key, src) = rows
+            .iter()
+            .find(|(_, src)| pick(src))
+            .expect("the fixture row");
+        let actions = of_owner(ctx, src, None, false);
+        let menu = ActionMenu::open(ALIAS, key.clone(), &actions).expect("a menu");
+        (menu, actions)
+    }
+
+    fn press(menu: &mut ActionMenu, actions: &[RowAction], code: KeyCode) -> MenuKey {
+        menu.key(actions, code, KeyModifiers::NONE)
+    }
+
+    /// `v` is preselected when ready, else the first ready entry.
+    #[test]
+    fn the_menu_preselects_v_else_the_first_ready_entry() {
+        let ctx = ctx();
+        let (menu, _) = menu_on(&ctx, |s| s.key.phase == "24");
+        assert_eq!(menu.selected(), ActionId::Run);
+        // No command: the first ready entry is `o`.
+        let (menu, actions) = menu_on(&ctx, |s| s.group.kind == Kind::ContextQuestions);
+        assert_eq!(ids(&actions)[0], ActionId::Open);
+        assert_eq!(menu.selected(), ActionId::Open);
+        // v blocked (unreadable): the first ready entry, `o`.
+        let (menu, actions) = menu_on(&ctx, |s| s.key.phase == "28");
+        assert!(!get(&actions, ActionId::Run).expect("v").is_ready());
+        assert_eq!(menu.selected(), ActionId::Open);
+    }
+
+    /// j/k walk the ready entries only and clamp; Enter runs the selection.
+    #[test]
+    fn the_menu_walks_ready_entries_and_enter_runs_the_selection() {
+        let ctx = ctx();
+        // The unreadable TEST row: v and x blocked, o A y Space ready.
+        let (mut menu, actions) = menu_on(&ctx, |s| s.key.phase == "28");
+        assert_eq!(menu.selected(), ActionId::Open);
+        assert_eq!(
+            press(&mut menu, &actions, KeyCode::Char('k')),
+            MenuKey::Stay
+        );
+        assert_eq!(menu.selected(), ActionId::Open, "clamped at the top");
+        for (code, want) in [
+            (KeyCode::Char('j'), ActionId::Acknowledge),
+            (KeyCode::Down, ActionId::Copy),
+            (KeyCode::Char('j'), ActionId::Toggle),
+            (KeyCode::Char('j'), ActionId::Toggle),
+            (KeyCode::Up, ActionId::Copy),
+        ] {
+            assert_eq!(press(&mut menu, &actions, code), MenuKey::Stay);
+            assert_eq!(menu.selected(), want, "{code:?}");
+        }
+        assert_eq!(
+            press(&mut menu, &actions, KeyCode::Enter),
+            MenuKey::Run(KeyCode::Char('y'))
+        );
+    }
+
+    /// A letter or Space naming an entry runs THAT entry, ready or blocked; Esc and
+    /// q close; every other key is swallowed.
+    #[test]
+    fn the_menu_letters_run_and_everything_else_is_swallowed() {
+        let ctx = ctx();
+        let (mut menu, actions) = menu_on(&ctx, |s| s.key.phase == "28");
+        for (code, want) in [
+            (KeyCode::Char('v'), KeyCode::Char('v')),
+            (KeyCode::Char('x'), KeyCode::Char('x')),
+            (KeyCode::Char('o'), KeyCode::Char('o')),
+            (KeyCode::Char('A'), KeyCode::Char('A')),
+            (KeyCode::Char('y'), KeyCode::Char('y')),
+            (KeyCode::Char(' '), KeyCode::Char(' ')),
+        ] {
+            assert_eq!(press(&mut menu, &actions, code), MenuKey::Run(want));
+        }
+        assert_eq!(press(&mut menu, &actions, KeyCode::Esc), MenuKey::Close);
+        assert_eq!(
+            press(&mut menu, &actions, KeyCode::Char('q')),
+            MenuKey::Close
+        );
+        for code in [
+            KeyCode::Char('1'),
+            KeyCode::Char('a'),
+            KeyCode::Char('?'),
+            KeyCode::Char('g'),
+            KeyCode::Char('h'),
+            KeyCode::Char('l'),
+            KeyCode::Char('D'),
+            KeyCode::Char('['),
+            KeyCode::Tab,
+            KeyCode::Left,
+            KeyCode::Right,
+            KeyCode::Home,
+        ] {
+            assert_eq!(press(&mut menu, &actions, code), MenuKey::Stay, "{code:?}");
+        }
+        // A chorded letter (the Ctrl-V paste reflex) is swallowed, never run, and
+        // Ctrl-q does not close.
+        for code in ['v', 'x', 'o', 'y', 'q'] {
+            assert_eq!(
+                menu.key(&actions, KeyCode::Char(code), KeyModifiers::CONTROL),
+                MenuKey::Stay,
+                "Ctrl-{code}"
+            );
+        }
+        // The Owner block has no `g` entry; the inbox does.
+        let inbox = of_inbox(&ctx, &owner_rows(&ctx)[0].1.clone(), None, false);
+        assert_eq!(
+            menu.key(&inbox, KeyCode::Char('g'), KeyModifiers::NONE),
+            MenuKey::Run(KeyCode::Char('g'))
+        );
+    }
+
+    fn draw(
+        actions: &[RowAction],
+        selected: ActionId,
+        anchor: Option<Rect>,
+        w: u16,
+        h: u16,
+    ) -> (Vec<String>, ratatui::buffer::Buffer) {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let mut terminal = Terminal::new(TestBackend::new(w, h)).expect("terminal");
+        terminal
+            .draw(|frame| render_menu(frame, frame.area(), anchor, actions, selected))
+            .expect("draw");
+        let buffer = terminal.backend().buffer().clone();
+        let rows = (0..h)
+            .map(|y| {
+                (0..w)
+                    .map(|x| buffer[(x, y)].symbol().to_owned())
+                    .collect::<String>()
+            })
+            .collect();
+        (rows, buffer)
+    }
+
+    /// At 80x24 the TEST row's seven entries fit inside the frame unclipped, the
+    /// selection carries `> `, and the box hangs below the anchor row.
+    #[test]
+    fn the_menu_fits_80x24_with_every_entry_and_the_selection_marker() {
+        let ctx = ctx();
+        let rows = owner_rows(&ctx);
+        let test = find(&rows, |s| s.key.phase == "24");
+        let actions = of_inbox(&ctx, test, None, false);
+        assert_eq!(actions.len(), 7);
+        let anchor = Rect::new(0, 5, 80, 1);
+        let (lines, _) = draw(&actions, ActionId::Run, Some(anchor), 80, 24);
+        let top = lines
+            .iter()
+            .position(|line| line.contains("Actions"))
+            .expect("title");
+        assert_eq!(top, 6, "below the anchor row: {lines:#?}");
+        let body: Vec<&String> = lines[top + 1..top + 8].iter().collect();
+        for (line, want) in body.iter().zip([
+            "> v     run             /gsd-verify-work 24",
+            "  x     settle          whole phase, asks first",
+            "  o     open            24-UAT.md, read-only",
+            "  A     acknowledge     24-UAT.md via gsd-core, asks first",
+            "  y     copy checklist  as gsd-meta-manager inbox prints it",
+            "  g     go to project   dune-app: Phases tab, same group",
+            "  Space expand          checks and source file",
+        ]) {
+            assert!(line.contains(want), "{line:?} lacks {want:?}");
+        }
+        assert!(
+            lines[top + 8].contains("[Enter]run  [Esc]close"),
+            "{lines:#?}"
+        );
+        // Nothing above the box or beside it is touched.
+        assert!(lines[..top].iter().all(|line| line.trim().is_empty()));
+    }
+
+    /// A blocked entry is DIM, shows its whole reason in text (wrapped under the
+    /// detail column) and is skipped by selection; near the bottom the box flips
+    /// above the row.
+    #[test]
+    fn a_blocked_entry_is_dim_with_its_whole_reason_and_the_menu_flips_above() {
+        let ctx = ctx();
+        let inbox = inbox_rows(&ctx);
+        let merged = inbox
+            .iter()
+            .find(|row| row.src.parts.len() > 1)
+            .expect("merged row");
+        let actions = of_inbox(&ctx, &merged.src, None, false);
+        let anchor = Rect::new(0, 21, 80, 1);
+        let (lines, buffer) = draw(&actions, ActionId::Run, Some(anchor), 80, 24);
+        let flat = lines.join("\n");
+        let top = lines
+            .iter()
+            .position(|line| line.contains("Actions"))
+            .expect("title");
+        assert!(top + actions.len() + 2 <= 21 + 1, "flipped above: {top}");
+        // The full reason survives at 80 columns, across wrapped lines.
+        let squashed: String = flat
+            .split_whitespace()
+            .filter(|word| !word.starts_with('\u{2502}') || word.len() > 3)
+            .collect::<Vec<_>>()
+            .join(" ");
+        for word in ["behind", "Owner", "block,", "then", "A)"] {
+            assert!(squashed.contains(word), "{word} lost: {flat}");
+        }
+        // Its row carries DIM.
+        let row = lines
+            .iter()
+            .position(|line| line.contains("(2 files behind"))
+            .expect("blocked row");
+        let at = lines[row].find('(').expect("paren");
+        let x = u16::try_from(lines[row][..at].chars().count()).expect("x");
+        let cell = &buffer[(x, u16::try_from(row).expect("row"))];
+        assert!(cell.modifier.contains(Modifier::DIM), "{cell:?}");
+        // The selected entry is BOLD Cyan and not dim.
+        let row = lines
+            .iter()
+            .position(|line| line.contains("> v"))
+            .expect("selected row");
+        let at = lines[row].find("> v").expect("marker");
+        let x = u16::try_from(lines[row][..at].chars().count()).expect("x");
+        let cell = &buffer[(x + 2, u16::try_from(row).expect("row"))];
+        assert_eq!(cell.fg, Color::Cyan);
+        assert!(cell.modifier.contains(Modifier::BOLD));
+    }
+
+    /// Without an anchor the box is centered; on a frame narrower than the box it
+    /// shrinks to fit and still draws every key.
+    #[test]
+    fn the_menu_centers_without_an_anchor_and_shrinks_on_a_narrow_frame() {
+        let ctx = ctx();
+        let rows = owner_rows(&ctx);
+        let test = find(&rows, |s| s.key.phase == "24");
+        let actions = of_owner(&ctx, test, None, false);
+        let (lines, _) = draw(&actions, ActionId::Run, None, 80, 24);
+        let top = lines.iter().position(|l| l.contains("Actions")).expect("t");
+        let height = actions.len() + 2;
+        assert_eq!(top, (24 - height) / 2);
+        let (lines, _) = draw(&actions, ActionId::Run, None, 40, 24);
+        for line in &lines {
+            assert!(line.chars().count() <= 40);
+        }
+        assert!(lines.iter().any(|l| l.contains("Space")));
     }
 
     /// The model is pure: its non-test source reaches no file, process or launcher.

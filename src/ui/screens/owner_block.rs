@@ -2049,6 +2049,26 @@ pub(crate) fn toggle(view: &mut OwnerBlockState, folds: &[Fold]) -> bool {
     }
 }
 
+/// Expand (`expand`) or collapse the group under the cursor (Right/`l` and
+/// Left/`h`, quick 261119-f5b). Collapsing from a check or `file PATH` line puts
+/// the cursor back on the row, as [`toggle`] does; a row already in the asked
+/// state, and the fold line, change nothing. Returns whether anything changed.
+pub(crate) fn set_expanded(view: &mut OwnerBlockState, expand: bool) -> bool {
+    let Some(Stop::Row(key)) = view.cursor.clone() else {
+        return false;
+    };
+    if view.expanded.contains(&key) == expand {
+        return false;
+    }
+    view.set_sub_stop(None);
+    if expand {
+        view.expanded.insert(key);
+    } else {
+        view.expanded.remove(&key);
+    }
+    true
+}
+
 /// Move the fold sub-cursor to the next or previous selectable fold (Todos is
 /// not one); it stays at the ends.
 pub(crate) fn fold_step(view: &mut OwnerBlockState, folds: &[Fold], forward: bool) {

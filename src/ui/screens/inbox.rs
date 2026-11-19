@@ -25,7 +25,7 @@ use super::driver::DRY_RUN_LOADING;
 use super::owner::{owner_numbers, OWNER_SEP};
 use super::owner_actions;
 use super::owner_block::{self, blanks, cells, pad, Fold, GroupKey, RowCells, RowSrc, SubStop};
-use super::owner_row_actions::{self, Chrome, Enter, Host};
+use super::owner_row_actions::{self, ActionMenu, Chrome, Enter, Host, MenuKey, RowAction};
 use super::owner_settle;
 use super::settle_pending;
 use super::{AppContext, Screen, ScreenAction};
@@ -1446,10 +1446,10 @@ fn footer_line(ctx: &AppContext, width: usize) -> Line<'static> {
         sub.as_ref(),
         expanded,
     );
-    let enter = match (&sub, expanded) {
-        (Some(_), _) => Enter::View,
-        (None, true) => Enter::Collapse,
-        (None, false) => Enter::Expand,
+    let enter = if sub.is_some() {
+        Enter::View
+    } else {
+        Enter::Actions
     };
     owner_row_actions::footer_spans(Host::Inbox, &actions, enter, false, Chrome::Back, width)
 }
@@ -1664,6 +1664,12 @@ pub struct InboxScreen {
     /// The width of the last frame: expansion lines are cut to it, and the
     /// scroll counts them.
     width: Cell<usize>,
+    /// The open action menu (Enter on a group or debug row, quick 261119-f5b).
+    /// Only the target and the selection live here; the entries are recomputed from
+    /// the shared model every frame and every key.
+    menu: Option<ActionMenu>,
+    /// The cursor row's cells in the last frame: where the menu hangs from.
+    anchor: Cell<Option<Rect>>,
 }
 
 /// The rows under the body.
@@ -1679,6 +1685,22 @@ struct Pinned {
 }
 
 impl InboxScreen {
+    /// The open action menu, on top of everything else (drawn last).
+    fn render_menu(&self, frame: &mut Frame, area: Rect, ctx: &AppContext) {
+        let Some(menu) = &self.menu else {
+            return;
+        };
+        if let Some(actions) = Self::menu_actions(menu, ctx) {
+            owner_row_actions::render_menu(
+                frame,
+                area,
+                self.anchor.get(),
+                &actions,
+                menu.selected(),
+            );
+        }
+    }
+
     /// The rule row, the pinned fold line and the footer under the body.
     fn render_pinned(&self, frame: &mut Frame, ctx: &AppContext, pinned: Pinned, width: usize) {
         if pinned.rule.height > 0 {
@@ -1704,7 +1726,63 @@ impl InboxScreen {
         Self {
             viewport: Cell::new(0),
             width: Cell::new(80),
+            menu: None,
+            anchor: Cell::new(None),
         }
+    }
+
+    /// The entries of the open menu, `None` when its row no longer resolves or the
+    /// cursor left it (a refresh dropped it, I-9): the menu is then dropped.
+    fn menu_actions(menu: &ActionMenu, ctx: &AppContext) -> Option<Vec<RowAction>> {
+        let rows = stop_rows(ctx);
+        let row = cursor_pos(ctx, &rows).and_then(|at| rows.get(at))?;
+        if row.alias != menu.alias || row.src.key != menu.key {
+            return None;
+        }
+        let expanded = ctx.inbox_view.expanded.contains(&row.key());
+        Some(owner_row_actions::row_actions(
+            ctx,
+            Host::Inbox,
+            &row.alias,
+            &row.src,
+            None,
+            expanded,
+        ))
+    }
+
+    /// Enter on a group or debug row: open its action menu.
+    fn open_menu(&mut self, ctx: &mut AppContext, row: &InboxRow) {
+        let expanded = ctx.inbox_view.expanded.contains(&row.key());
+        let actions =
+            owner_row_actions::row_actions(ctx, Host::Inbox, &row.alias, &row.src, None, expanded);
+        self.menu = ActionMenu::open(&row.alias, row.src.key.clone(), &actions);
+        ctx.needs_redraw = true;
+    }
+
+    /// `Right` / `l` expand and `Left` / `h` collapse the row under the cursor (a
+    /// collapse from a check or `file PATH` line puts the cursor back on the row,
+    /// as Space does); on the fold line they step between the folds (I-3, I-4).
+    fn expand_key(&self, ctx: &mut AppContext, expand: bool) {
+        let rows = stop_rows(ctx);
+        let Some(at) = cursor_pos(ctx, &rows) else {
+            return;
+        };
+        let Some(row) = rows.get(at) else {
+            self.fold_step(ctx, expand);
+            return;
+        };
+        let key = row.key();
+        let open = ctx.inbox_view.expanded.contains(&key);
+        if open != expand {
+            ctx.inbox_view.set_sub_stop(None);
+            if expand {
+                ctx.inbox_view.expanded.insert(key);
+            } else {
+                ctx.inbox_view.expanded.remove(&key);
+            }
+            self.follow(ctx, &rows, at);
+        }
+        ctx.needs_redraw = true;
     }
 
     /// Scroll so the row at stop `at` (with its expansion) is in view; the fold
@@ -1832,15 +1910,20 @@ impl InboxScreen {
     /// `Enter` (quick 261118-u4e, I-2, I-3): on a check line of the cursor row,
     /// open that file in the read-only viewer at the check; on a `file PATH` line,
     /// open that file at the group's place (its first listed check, else the phase
-    /// heading, else the top); everywhere else it is
+    /// heading, else the top); on a group or debug row it opens the action menu
+    /// (quick 261119-f5b) and on the fold line it is
     /// [`toggle_key`](Self::toggle_key). A stop that a refresh made vanish falls
     /// back to the row's file (`o`). Opens the in-app viewer only, never an editor
     /// (T-37-16).
-    fn enter_key(&self, ctx: &mut AppContext) -> ScreenAction {
+    fn enter_key(&mut self, ctx: &mut AppContext) -> ScreenAction {
         let rows = stop_rows(ctx);
         let row = cursor_pos(ctx, &rows).and_then(|at| rows.get(at));
         let (Some(row), Some(stop)) = (row, ctx.inbox_view.sub_stop()) else {
-            self.toggle_key(ctx);
+            // A group or debug row opens its action menu; the fold line toggles.
+            match row.cloned() {
+                Some(row) => self.open_menu(ctx, &row),
+                None => self.toggle_key(ctx),
+            }
             return ScreenAction::None;
         };
         let digest = ctx.owner_digest(&row.alias);
@@ -2149,8 +2232,12 @@ crate::ui::screens::adjudicate_screen!(
      name, file-status phrase, workstream name and tally from the owner digests \
      read out of `.planning/` (`row_cells`, which escapes them through `shown`), \
      the header numbers, and the status line (`shown`, because it composes \
-     authored copy with a project's phase token or workstream in one string). \
-     Fixture states: the inbox over a hostile digest, and with a status message.",
+     authored copy with a project's phase token or workstream in one string), \
+     and, since quick 261119-f5b, the Enter action menu over a row (its entries \
+     carry the run command, the source file's name, the alias and the reason an \
+     action is blocked, all through `shown()`). \
+     Fixture states: the inbox over a hostile digest, with a status message, and \
+     with the action menu open over a hostile row.",
 );
 
 impl Screen for InboxScreen {
@@ -2160,6 +2247,23 @@ impl Screen for InboxScreen {
         modifiers: KeyModifiers,
         ctx: &mut AppContext,
     ) -> ScreenAction {
+        // An open action menu owns every key (quick 261119-f5b): a letter or Enter
+        // closes it and is handled below as if typed, so a menu entry runs the exact
+        // hotkey path; Esc and `q` only close it. A menu whose row vanished is
+        // dropped and the key acts normally.
+        if let Some(mut menu) = self.menu.take() {
+            if let Some(actions) = Self::menu_actions(&menu, ctx) {
+                ctx.needs_redraw = true;
+                return match menu.key(&actions, code, modifiers) {
+                    MenuKey::Stay => {
+                        self.menu = Some(menu);
+                        ScreenAction::None
+                    }
+                    MenuKey::Close => ScreenAction::None,
+                    MenuKey::Run(key) => self.handle_key(key, KeyModifiers::NONE, ctx),
+                };
+            }
+        }
         // The side-effecting letters act only unchorded (WR-01): Ctrl-V is the
         // paste reflex and arrives as `Char('v')` with CONTROL.
         let plain = owner_actions::is_plain_action_key(modifiers);
@@ -2181,19 +2285,20 @@ impl Screen for InboxScreen {
             KeyCode::Char('y') if plain => self.copy_key(ctx),
             KeyCode::Char('x') if plain => self.settle_key(ctx),
             KeyCode::Char('g') if plain => self.goto_key(ctx),
-            // Enter expands, or opens the file on a check line; Space always
-            // toggles, so a check line can still collapse its group (I-3).
+            // Enter opens the row's action menu, or the file on a check line, or
+            // toggles the fold; Space always toggles, so a check line can still
+            // collapse its group (I-3).
             KeyCode::Enter => self.enter_key(ctx),
             KeyCode::Char(' ') => {
                 self.toggle_key(ctx);
                 ScreenAction::None
             }
-            KeyCode::Left => {
-                self.fold_step(ctx, false);
+            KeyCode::Left | KeyCode::Char('h') => {
+                self.expand_key(ctx, false);
                 ScreenAction::None
             }
-            KeyCode::Right => {
-                self.fold_step(ctx, true);
+            KeyCode::Right | KeyCode::Char('l') => {
+                self.expand_key(ctx, true);
                 ScreenAction::None
             }
             KeyCode::Char(key) if LaneFilter::of_key(key).is_some() => {
@@ -2239,6 +2344,7 @@ impl Screen for InboxScreen {
         }
         let width = usize::from(area.width);
         self.width.set(width);
+        self.anchor.set(None);
         let spacer = u16::from(area.height >= 7);
         // The spacer goes first on a short screen, then the fold line (UI-SPEC).
         let fold_height = u16::from(area.height >= 6 && !fold_totals(ctx).is_empty());
@@ -2277,6 +2383,7 @@ impl Screen for InboxScreen {
                 hint: None,
             };
             self.render_pinned(frame, ctx, pinned, width);
+            self.render_menu(frame, area, ctx);
             return;
         }
         let mut every: Vec<Cells> = inbox_rows(ctx)
@@ -2306,6 +2413,15 @@ impl Screen for InboxScreen {
         };
         let mut lines: Vec<Line<'static>> = Vec::with_capacity(height);
         for (line_index, item) in plan.iter().enumerate().skip(offset).take(height) {
+            if let (BodyItem::Row(index), Some(at)) = (item, cursor) {
+                if *index == at {
+                    self.anchor.set(Some(Rect {
+                        y: body.y + u16::try_from(line_index - offset).unwrap_or(0),
+                        height: 1,
+                        ..body
+                    }));
+                }
+            }
             lines.push(match item {
                 BodyItem::Title(section) => {
                     title_line(*section, (line_index == 0).then_some(&grid), width)
@@ -2369,6 +2485,7 @@ impl Screen for InboxScreen {
             hint,
         };
         self.render_pinned(frame, ctx, pinned, width);
+        self.render_menu(frame, area, ctx);
     }
 
     fn name(&self) -> &str {
@@ -2925,7 +3042,7 @@ mod tests {
         // while there is room; the lower-priority hints are the first to go.
         assert_eq!(
             text[29].trim_end(),
-            "  [Enter]expand  [v]run /gsd-verify-work 24  [x]settle  [o]pen  [A]ck  [y]copy  [g]oto  [?]help"
+            "  [Enter]actions  [v]run /gsd-verify-work 24  [x]settle  [o]pen  [A]ck  [y]copy  [g]oto  [?]help"
         );
         // The first row is Cyan + BOLD, every cell of it.
         let buffer = draw(&ctx, 100, 30);
@@ -3331,7 +3448,7 @@ mod tests {
         let ctx = inbox_fleet_ctx();
         let footer = |w: usize| line_text(&footer_line(&ctx, w));
         assert!(
-            footer(250).ends_with("[g]oto  [Esc]back  [?]help"),
+            footer(250).ends_with("[g]oto  [Space]expand  [Esc]back  [?]help"),
             "{}",
             footer(250)
         );
@@ -3367,9 +3484,9 @@ mod tests {
     fn footer_ladder_matches_the_ui_spec() {
         let ctx = inbox_fleet_ctx();
         let footer = |w: usize| line_text(&footer_line(&ctx, w));
-        let wide = "  [j/k]move  [Enter]expand  [v]run /gsd-verify-work 24  [x]settle  [o]pen  [A]ck  [y]copy  [g]oto  [Esc]back  [?]help";
-        let w100 = "  [Enter]expand  [v]run /gsd-verify-work 24  [x]settle  [o]pen  [A]ck  [y]copy  [g]oto  [?]help";
-        let w80 = "  [Enter]expand  [v]run  [x]settle  [o]pen  [A]ck  [y]copy  [g]oto  [?]help";
+        let wide = "  [j/k]move  [Enter]actions  [v]run /gsd-verify-work 24  [x]settle  [o]pen  [A]ck  [y]copy  [g]oto  [Space]expand  [Esc]back  [?]help";
+        let w100 = "  [Enter]actions  [v]run /gsd-verify-work 24  [x]settle  [o]pen  [A]ck  [y]copy  [g]oto  [?]help";
+        let w80 = "  [Enter]actions  [v]run  [x]settle  [o]pen  [A]ck  [y]copy  [g]oto  [?]help";
         assert_eq!(footer(140), wide);
         assert_eq!(footer(100), w100);
         assert_eq!(footer(80), w80);
@@ -4394,11 +4511,11 @@ mod tests {
     }
 
     #[test]
-    fn enter_expands_a_group_with_its_run_line() {
+    fn space_expands_a_group_with_its_run_line() {
         let mut ctx = inbox_fleet_ctx();
         let mut screen = open_inbox_and(&mut ctx, &[]);
         let size = (100, 30);
-        keys_on(&mut *screen, &mut ctx, &[KeyCode::Enter], size);
+        keys_on(&mut *screen, &mut ctx, &[KeyCode::Char(' ')], size);
         let text = render_with(&*screen, &ctx, size.0, size.1);
         let (at, row) = line_of(&text, "dune-app");
         assert!(row.starts_with(">\u{25be} dune-app"), "{row:?}");
@@ -4446,12 +4563,12 @@ mod tests {
         assert!(line_of(&text, "dune-app")
             .1
             .starts_with(" \u{25be} dune-app"));
-        // `Enter` and `Space` toggle on the row (Enter on a check line opens the
-        // file instead, quick 261118-u4e); collapsing shows nothing under it.
+        // `Space` toggles on the row (Enter opens the action menu there and the
+        // file on a check line, quick 261118-u4e); collapsing shows nothing under it.
         keys_on(&mut *screen, &mut ctx, &[KeyCode::Char('k'); 7], size);
         assert_eq!(item_of(&ctx), None);
         assert!(ctx.inbox_view.file_cursor.is_none());
-        keys_on(&mut *screen, &mut ctx, &[KeyCode::Enter], size);
+        keys_on(&mut *screen, &mut ctx, &[KeyCode::Char(' ')], size);
         let text = render_with(&*screen, &ctx, size.0, size.1);
         assert!(!text.join("\n").contains("check 0"));
         keys_on(&mut *screen, &mut ctx, &[KeyCode::Char(' ')], size);
@@ -4492,7 +4609,7 @@ mod tests {
         let mut screen = open_inbox_and(&mut ctx, &[]);
         let size = (100, 40);
         keys_on(&mut *screen, &mut ctx, &[KeyCode::Char('4')], size);
-        keys_on(&mut *screen, &mut ctx, &[KeyCode::Enter], size);
+        keys_on(&mut *screen, &mut ctx, &[KeyCode::Char(' ')], size);
         let text = render_with(&*screen, &ctx, size.0, size.1).join("\n");
         assert!(text.contains("file phases/23/23-UAT.md"), "{text}");
         assert!(text.contains("file phases/23/23-VERIFICATION.md"));
@@ -4504,7 +4621,7 @@ mod tests {
             size,
         );
         put_cursor_on(&mut ctx, "cedar-web", "07");
-        keys_on(&mut *screen, &mut ctx, &[KeyCode::Enter], size);
+        keys_on(&mut *screen, &mut ctx, &[KeyCode::Char(' ')], size);
         let text = render_with(&*screen, &ctx, size.0, size.1).join("\n");
         assert!(text.contains("file phases/07/07-CONTEXT.md"), "{text}");
         assert!(!text.contains("run /"), "a DECIDE question has no command");
@@ -4520,7 +4637,7 @@ mod tests {
             &mut *screen,
             &mut ctx,
             &[
-                KeyCode::Enter,
+                KeyCode::Char(' '),
                 // Five item lines, the file line, then the next row (D-04).
                 KeyCode::Char('j'),
                 KeyCode::Char('j'),
@@ -4529,7 +4646,7 @@ mod tests {
                 KeyCode::Char('j'),
                 KeyCode::Char('j'),
                 KeyCode::Char('j'),
-                KeyCode::Enter,
+                KeyCode::Char(' '),
                 KeyCode::End,
                 KeyCode::Enter,
             ],
@@ -4641,7 +4758,7 @@ mod tests {
         assert_eq!(last_alias(&ctx), "holly-pics");
         // Expanding a fold row shows its lines; `j` walks them (D-04) and then
         // returns to the fold line.
-        keys_on(&mut *screen, &mut ctx, &[KeyCode::Enter], size);
+        keys_on(&mut *screen, &mut ctx, &[KeyCode::Char(' ')], size);
         for _ in 0..8 {
             if ctx.inbox_view.cursor == Some(InboxStop::FoldLine) {
                 break;
@@ -5693,7 +5810,7 @@ mod tests {
         let press = |screen: &mut InboxScreen, ctx: &mut AppContext, code| {
             screen.handle_key(code, KeyModifiers::NONE, ctx);
         };
-        press(&mut screen, &mut ctx, KeyCode::Enter);
+        press(&mut screen, &mut ctx, KeyCode::Char(' '));
         for n in 1..=5 {
             press(&mut screen, &mut ctx, KeyCode::Char('j'));
             assert_eq!(item_of(&ctx), Some(format!("01-UAT.md#{n}")));
@@ -5989,7 +6106,7 @@ mod tests {
         let row = stop_rows(&ctx).remove(0);
         let mut screen = InboxScreen::new();
         let size = (100, 30);
-        let keys = [KeyCode::Enter, KeyCode::Char('j'), KeyCode::Char('j')];
+        let keys = [KeyCode::Char(' '), KeyCode::Char('j'), KeyCode::Char('j')];
         keys_on(&mut screen, &mut ctx, &keys, size);
         keys_on(&mut screen, &mut ctx, &[KeyCode::Char('j')], size);
         assert_eq!(item_of(&ctx), Some("01-UAT.md#3".to_owned()));
@@ -6050,7 +6167,7 @@ mod tests {
         let row = stop_rows(&ctx).remove(0);
         let mut screen = InboxScreen::new();
         let size = (100, 30);
-        keys_on(&mut screen, &mut ctx, &[KeyCode::Enter], size);
+        keys_on(&mut screen, &mut ctx, &[KeyCode::Char(' ')], size);
         keys_on(&mut screen, &mut ctx, &[KeyCode::Char('j'); 6], size);
         assert_eq!(item_of(&ctx), None);
         assert!(ctx.inbox_view.file_cursor.is_some());
@@ -6353,7 +6470,7 @@ mod tests {
         let rows = stop_rows(&ctx);
         assert!(rows.len() >= 10, "{}", rows.len());
         for row in &rows {
-            // Collapsed: Enter expands.
+            // Collapsed: Enter opens the menu, Space expands.
             park(&mut ctx, row, false, None);
             let footer = line_text(&footer_line(&ctx, 250));
             let keys = drawn_keys(&footer);
@@ -6364,12 +6481,15 @@ mod tests {
                 row.src.key
             );
             assert!(keys.contains(&"Enter".to_owned()), "{footer}");
-            assert!(footer.contains("[Enter]expand"), "{footer}");
+            assert!(footer.contains("[Enter]actions"), "{footer}");
+            assert!(footer.contains("[Space]expand"), "{footer}");
             assert!(footer.ends_with("[?]help"), "{footer}");
-            // Expanded: Enter collapses; a check and a file line view.
+            // Expanded: Enter still opens the menu, Space collapses; a check and a
+            // file line view.
             park(&mut ctx, row, true, None);
             let footer = line_text(&footer_line(&ctx, 250));
-            assert!(footer.contains("[Enter]collapse"), "{footer}");
+            assert!(footer.contains("[Enter]actions"), "{footer}");
+            assert!(footer.contains("[Space]collapse"), "{footer}");
             let stops = owner_block::inbox_sub_stops(&row.src);
             for sub in stops.iter().take(1).chain(stops.last()) {
                 park(&mut ctx, row, true, Some(sub.clone()));
@@ -6412,11 +6532,11 @@ mod tests {
         park(&mut ctx, &test, false, None);
         assert_eq!(
             line_text(&footer_line(&ctx, 100)),
-            "  [Enter]expand  [v]run /gsd-verify-work 24  [x]settle  [o]pen  [A]ck  [y]copy  [g]oto  [?]help"
+            "  [Enter]actions  [v]run /gsd-verify-work 24  [x]settle  [o]pen  [A]ck  [y]copy  [g]oto  [?]help"
         );
         assert_eq!(
             line_text(&footer_line(&ctx, 80)),
-            "  [Enter]expand  [v]run  [x]settle  [o]pen  [A]ck  [y]copy  [g]oto  [?]help"
+            "  [Enter]actions  [v]run  [x]settle  [o]pen  [A]ck  [y]copy  [g]oto  [?]help"
         );
     }
 
@@ -6520,5 +6640,373 @@ mod tests {
         assert_eq!(launches.len(), 1);
         assert_eq!(launches[0].command.to_string(), "/gsd-verify-work 24");
         assert_eq!(status(&ctx), "Launched /gsd-verify-work 24 in dune-app");
+    }
+
+    // -----------------------------------------------------------------
+    // The Enter action menu (quick 261119-f5b)
+    // -----------------------------------------------------------------
+
+    /// Everything a key sequence left behind that a menu entry must reproduce.
+    #[derive(Debug, PartialEq)]
+    struct Left {
+        action: String,
+        status: String,
+        runs: Vec<String>,
+        settles: usize,
+        copies: Vec<String>,
+        expanded: usize,
+        cursor: Option<InboxStop>,
+    }
+
+    fn tag(action: &ScreenAction) -> String {
+        match action {
+            ScreenAction::None => "none".to_owned(),
+            ScreenAction::Push(screen) => format!("push:{}", screen.name()),
+            ScreenAction::WriteOsc52(text) => format!("osc52:{text}"),
+            ScreenAction::Pop => "pop".to_owned(),
+            _ => "other".to_owned(),
+        }
+    }
+
+    /// A context parked on the TEST row of phase 24, collapsed, nothing pending.
+    fn parked_24() -> (AppContext, InboxRow) {
+        let mut ctx = actions_ctx();
+        if let Some(state) = ctx.project_states.get_mut(fixture::ALIAS) {
+            state.milestone = "v2.0".to_owned();
+        }
+        let row = stop_rows(&ctx)
+            .into_iter()
+            .find(|row| row.src.key.phase == "24" && row.fold.is_none())
+            .expect("TEST 24");
+        park(&mut ctx, &row, false, None);
+        (ctx, row)
+    }
+
+    /// Press `keys` one frame at a time on a fresh context and report what is left.
+    fn left_by(keys: &[KeyCode]) -> Left {
+        owner_actions::take_run_launches();
+        owner_settle::take_settle_launches();
+        owner_actions::force_launcher(Some(owner_actions::test_launcher()));
+        owner_actions::force_clipboard(Some(wayland_probes()));
+        let copies_before = owner_actions::seam_ran().len();
+        let (mut ctx, _) = parked_24();
+        let mut screen = InboxScreen::new();
+        let mut last = ScreenAction::None;
+        for code in keys {
+            let _ = render_with(&screen, &ctx, 100, 30);
+            last = screen.handle_key(*code, KeyModifiers::NONE, &mut ctx);
+        }
+        let copies = owner_actions::seam_ran()
+            .into_iter()
+            .skip(copies_before)
+            .map(|(_, text, _)| text)
+            .collect();
+        owner_actions::force_clipboard(None);
+        owner_actions::force_launcher(None);
+        Left {
+            action: tag(&last),
+            status: status(&ctx),
+            runs: owner_actions::take_run_launches()
+                .iter()
+                .map(|plan| plan.command.to_string())
+                .collect(),
+            settles: owner_settle::take_settle_launches().len(),
+            copies,
+            expanded: ctx.inbox_view.expanded.len(),
+            cursor: ctx.inbox_view.cursor.clone(),
+        }
+    }
+
+    /// Quick 261119-f5b: Enter opens the menu on a group row, expands nothing and
+    /// draws its box; Esc closes only the menu.
+    #[test]
+    fn enter_opens_the_menu_without_expanding_and_esc_closes_only_it() {
+        let (mut ctx, row) = parked_24();
+        let mut screen = InboxScreen::new();
+        let size = (80, 24);
+        let action = keys_on(&mut screen, &mut ctx, &[KeyCode::Enter], size).remove(0);
+        assert!(matches!(action, ScreenAction::None));
+        assert!(screen.menu.is_some());
+        assert!(!ctx.inbox_view.expanded.contains(&row.key()));
+        let text = render_with(&screen, &ctx, size.0, size.1);
+        let joined = text.join("\n");
+        assert!(joined.contains(" Actions "), "{joined}");
+        assert!(joined.contains("> v     run             /gsd-verify-work 24"));
+        for want in [
+            "x     settle",
+            "o     open",
+            "A     acknowledge",
+            "g     go to project",
+        ] {
+            assert!(joined.contains(want), "{want}: {joined}");
+        }
+        // Every drawn row stays inside the 80 columns.
+        assert!(text.iter().all(|line| line.chars().count() <= 80));
+        let action = keys_on(&mut screen, &mut ctx, &[KeyCode::Esc], size).remove(0);
+        assert!(matches!(action, ScreenAction::None), "Esc did not pop");
+        assert!(screen.menu.is_none());
+        assert!(!render_with(&screen, &ctx, size.0, size.1)
+            .join("\n")
+            .contains(" Actions "));
+        // `q` closes the menu too and does not leave the screen.
+        keys_on(&mut screen, &mut ctx, &[KeyCode::Enter], size);
+        let action = keys_on(&mut screen, &mut ctx, &[KeyCode::Char('q')], size).remove(0);
+        assert!(matches!(action, ScreenAction::None));
+        assert!(screen.menu.is_none());
+    }
+
+    /// A menu entry is the hotkey: for every action the letter in the menu leaves
+    /// exactly what the typed key leaves (action variant, pushed screen, status,
+    /// launches, clipboard, expansion), and so does `j`..`Enter` onto it.
+    #[test]
+    fn a_menu_entry_is_the_hotkey_path() {
+        let menu = KeyCode::Enter;
+        for letter in ['v', 'x', 'o', 'A', 'y', 'g', ' '] {
+            let hotkey = left_by(&[KeyCode::Char(letter)]);
+            let via_letter = left_by(&[menu, KeyCode::Char(letter)]);
+            assert_eq!(hotkey, via_letter, "{letter:?} through the menu");
+        }
+        // `v` records the plan and `y` copies, so the comparison is not vacuous.
+        let v = left_by(&[menu, KeyCode::Char('v')]);
+        assert_eq!(v.runs, ["/gsd-verify-work 24"]);
+        assert_eq!(v.status, "Launched /gsd-verify-work 24 in dune-app");
+        assert_eq!(left_by(&[menu, KeyCode::Char('y')]).copies.len(), 1);
+        assert_eq!(
+            left_by(&[menu, KeyCode::Char('x')]).action,
+            "push:settle_chooser"
+        );
+        assert_eq!(
+            left_by(&[menu, KeyCode::Char('A')]).action,
+            "push:ack_confirm"
+        );
+        assert_eq!(left_by(&[menu, KeyCode::Char('g')]).action, "push:detail");
+        assert_eq!(left_by(&[menu, KeyCode::Char(' ')]).expanded, 1);
+        // j/k + Enter reaches the same entries: v x o A y g Space in order.
+        let down = |n: usize| {
+            let mut keys = vec![menu];
+            keys.extend(std::iter::repeat_n(KeyCode::Char('j'), n));
+            keys.push(KeyCode::Enter);
+            keys
+        };
+        for (n, letter) in ['v', 'x', 'o', 'A', 'y', 'g', ' '].into_iter().enumerate() {
+            assert_eq!(
+                left_by(&down(n)),
+                left_by(&[KeyCode::Char(letter)]),
+                "{n} x j then Enter is {letter:?}"
+            );
+        }
+        // `k` walks back up.
+        assert_eq!(
+            left_by(&[
+                menu,
+                KeyCode::Down,
+                KeyCode::Down,
+                KeyCode::Up,
+                KeyCode::Enter
+            ]),
+            left_by(&[KeyCode::Char('x')])
+        );
+    }
+
+    /// `x` through the menu opens the settle chooser (nothing launches before the
+    /// flow ends) and the menu is not on the popup's backdrop.
+    #[test]
+    fn the_menu_closes_before_a_popup_draws_its_backdrop() {
+        let (mut ctx, _) = parked_24();
+        let mut screen = InboxScreen::new();
+        let size = (100, 30);
+        keys_on(&mut screen, &mut ctx, &[KeyCode::Enter], size);
+        let action = keys_on(&mut screen, &mut ctx, &[KeyCode::Char('x')], size).remove(0);
+        let ScreenAction::Push(chooser) = action else {
+            panic!("x opens the settle chooser");
+        };
+        assert_eq!(chooser.name(), "settle_chooser");
+        assert!(screen.menu.is_none());
+        assert!(owner_settle::take_settle_launches().is_empty());
+        let text = render_with(&*chooser, &ctx, size.0, size.1).join("\n");
+        assert!(!text.contains(" Actions "), "{text}");
+        assert!(!render_with(&screen, &ctx, size.0, size.1)
+            .join("\n")
+            .contains(" Actions "));
+    }
+
+    /// A blocked entry's letter closes the menu and prints exactly the reason the
+    /// menu drew; `j`/`k` never land on it.
+    #[test]
+    fn a_blocked_menu_entry_prints_the_reason_the_menu_drew() {
+        let mut ctx = actions_ctx();
+        let row = stop_rows(&ctx)
+            .into_iter()
+            .find(|row| row.src.parts.len() > 1)
+            .expect("the merged row");
+        park(&mut ctx, &row, false, None);
+        let mut screen = InboxScreen::new();
+        let size = (80, 24);
+        keys_on(&mut screen, &mut ctx, &[KeyCode::Enter], size);
+        let text = render_with(&screen, &ctx, size.0, size.1).join("\n");
+        assert!(text.contains("(2 files behind this row"), "{text}");
+        // Down from `v` skips the blocked `o` and `A`: v, x, then y.
+        let menu_at = |screen: &InboxScreen| screen.menu.as_ref().map(ActionMenu::selected);
+        assert_eq!(menu_at(&screen), Some(ActionId::Run));
+        keys_on(&mut screen, &mut ctx, &[KeyCode::Char('j')], size);
+        assert_eq!(menu_at(&screen), Some(ActionId::Settle));
+        keys_on(&mut screen, &mut ctx, &[KeyCode::Char('j')], size);
+        assert_eq!(menu_at(&screen), Some(ActionId::Copy));
+        // The letter of a blocked entry runs the hotkey, which prints the reason.
+        let reason = "2 files behind this row: press g to pick a file in the Owner block, then A";
+        let action = keys_on(&mut screen, &mut ctx, &[KeyCode::Char('A')], size).remove(0);
+        assert!(matches!(action, ScreenAction::None));
+        assert!(screen.menu.is_none(), "the menu closed");
+        assert_eq!(status(&ctx), reason);
+    }
+
+    /// An open menu swallows everything that would act under it.
+    #[test]
+    fn an_open_menu_swallows_filters_help_and_navigation() {
+        let (mut ctx, row) = parked_24();
+        let mut screen = InboxScreen::new();
+        let size = (100, 30);
+        keys_on(&mut screen, &mut ctx, &[KeyCode::Enter], size);
+        let before = (
+            ctx.inbox_view.filter,
+            ctx.inbox_view.cursor.clone(),
+            ctx.inbox_view.expanded.clone(),
+        );
+        for code in [
+            KeyCode::Char('1'),
+            KeyCode::Char('2'),
+            KeyCode::Char('4'),
+            KeyCode::Char('a'),
+            KeyCode::Char('?'),
+            KeyCode::Tab,
+            KeyCode::Left,
+            KeyCode::Right,
+            KeyCode::Char('h'),
+            KeyCode::Char('l'),
+            KeyCode::Home,
+            KeyCode::End,
+            KeyCode::PageDown,
+            KeyCode::Char('z'),
+        ] {
+            let action = keys_on(&mut screen, &mut ctx, &[code], size).remove(0);
+            assert!(matches!(action, ScreenAction::None), "{code:?}");
+            assert!(screen.menu.is_some(), "{code:?} left the menu open");
+        }
+        assert_eq!(
+            before,
+            (
+                ctx.inbox_view.filter,
+                ctx.inbox_view.cursor.clone(),
+                ctx.inbox_view.expanded.clone()
+            )
+        );
+        assert!(ctx.status_message.is_none());
+        assert!(!ctx.inbox_view.expanded.contains(&row.key()));
+        // Ctrl-V (the paste reflex) neither runs `v` nor closes the menu.
+        let action = screen.handle_key(KeyCode::Char('v'), KeyModifiers::CONTROL, &mut ctx);
+        assert!(matches!(action, ScreenAction::None));
+        assert!(screen.menu.is_some());
+        assert!(owner_actions::take_run_launches().is_empty());
+    }
+
+    /// A refresh that drops the menu's row closes it silently; the next key acts
+    /// as if no menu had been open.
+    #[test]
+    fn a_refresh_that_drops_the_target_closes_the_menu_silently() {
+        let (mut ctx, _) = parked_24();
+        let mut screen = InboxScreen::new();
+        let size = (100, 30);
+        keys_on(&mut screen, &mut ctx, &[KeyCode::Enter], size);
+        assert!(screen.menu.is_some());
+        ctx.owner_digests
+            .insert(fixture::ALIAS.to_owned(), OwnerDigest::default());
+        // No frame in between: the key itself finds the target gone. `q` is then
+        // the screen's own pop, not a menu close.
+        let action = screen.handle_key(KeyCode::Char('q'), KeyModifiers::NONE, &mut ctx);
+        assert!(matches!(action, ScreenAction::Pop));
+        assert!(screen.menu.is_none());
+        assert!(!render_with(&screen, &ctx, size.0, size.1)
+            .join("\n")
+            .contains(" Actions "));
+    }
+
+    /// Right/`l` expand, Left/`h` collapse a row (from a check line too); on the
+    /// fold line they step between folds (I-3, I-4).
+    #[test]
+    fn right_and_left_expand_and_collapse_rows_and_step_folds() {
+        for (expand, collapse) in [
+            (KeyCode::Right, KeyCode::Left),
+            (KeyCode::Char('l'), KeyCode::Char('h')),
+        ] {
+            let (mut ctx, row) = parked_24();
+            let mut screen = InboxScreen::new();
+            let size = (100, 30);
+            // Left on a collapsed row, Right on an expanded one: nothing happens.
+            keys_on(&mut screen, &mut ctx, &[collapse], size);
+            assert!(ctx.inbox_view.expanded.is_empty(), "{collapse:?}");
+            keys_on(&mut screen, &mut ctx, &[expand], size);
+            assert!(ctx.inbox_view.expanded.contains(&row.key()), "{expand:?}");
+            keys_on(&mut screen, &mut ctx, &[expand], size);
+            assert!(ctx.inbox_view.expanded.contains(&row.key()));
+            // From a check line, collapse puts the cursor back on the row.
+            keys_on(&mut screen, &mut ctx, &[KeyCode::Char('j')], size);
+            assert!(ctx.inbox_view.sub_stop().is_some());
+            keys_on(&mut screen, &mut ctx, &[collapse], size);
+            assert!(ctx.inbox_view.expanded.is_empty());
+            assert_eq!(ctx.inbox_view.sub_stop(), None);
+            assert_eq!(ctx.inbox_view.cursor, Some(InboxStop::Row(row.key())));
+            // On the fold line they step folds and never expand anything.
+            keys_on(&mut screen, &mut ctx, &[KeyCode::End], size);
+            assert_eq!(ctx.inbox_view.cursor, Some(InboxStop::FoldLine));
+            keys_on(&mut screen, &mut ctx, &[expand], size);
+            let first = ctx.inbox_view.fold_cursor;
+            keys_on(&mut screen, &mut ctx, &[collapse], size);
+            assert_ne!(ctx.inbox_view.fold_cursor, None);
+            assert!(ctx.inbox_view.expanded.is_empty());
+            let _ = first;
+        }
+    }
+
+    /// Enter on the fold line still opens and closes the fold, and never opens a
+    /// menu.
+    #[test]
+    fn enter_on_the_fold_line_toggles_the_fold_not_a_menu() {
+        let (mut ctx, _) = parked_24();
+        let mut screen = InboxScreen::new();
+        let size = (100, 30);
+        keys_on(&mut screen, &mut ctx, &[KeyCode::End], size);
+        let was_open = ctx.inbox_view.open_folds.len();
+        keys_on(&mut screen, &mut ctx, &[KeyCode::Enter], size);
+        assert!(screen.menu.is_none());
+        assert_ne!(ctx.inbox_view.open_folds.len(), was_open);
+    }
+
+    /// For every row kind of the fixture the menu at 80x24 stays inside the frame,
+    /// shows each entry's key and label unclipped, and its footer row is intact.
+    #[test]
+    fn the_menu_fits_80x24_on_every_row() {
+        let mut ctx = actions_ctx();
+        let size = (80, 24);
+        for row in stop_rows(&ctx) {
+            park(&mut ctx, &row, false, None);
+            let mut screen = InboxScreen::new();
+            keys_on(&mut screen, &mut ctx, &[KeyCode::Enter], size);
+            let actions =
+                row_actions::row_actions(&ctx, Host::Inbox, &row.alias, &row.src, None, false);
+            let text = render_with(&screen, &ctx, size.0, size.1);
+            assert!(text.iter().all(|line| line.chars().count() <= 80));
+            let joined = text.join("\n");
+            assert!(joined.contains(" Actions "), "{:?}: {joined}", row.src.key);
+            assert!(joined.contains("[Enter]run  [Esc]close"), "{joined}");
+            for action in &actions {
+                let want = format!("{:<6}{:<16}", action.key_label, action.label);
+                assert!(
+                    joined.contains(&want),
+                    "{:?} {:?} lacks {want:?}: {joined}",
+                    row.src.key,
+                    action.id
+                );
+            }
+        }
     }
 }

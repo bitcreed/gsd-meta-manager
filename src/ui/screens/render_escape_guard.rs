@@ -1754,6 +1754,20 @@ const DETAIL_TAB_ARRIVAL: &[(&str, bool, &str)] = &[
          columns every column draws.",
     ),
     (
+        "Phases tab with the Owner action menu open",
+        false,
+        "Not a counted arrival, and why: this state is the \"Phases tab with an Owner \
+         block\" picture with the action menu drawn OVER it (quick 261119-f5b), and \
+         the overlay covers rows whose cells carried the identity, so the strictly-\
+         more-than-baseline count cannot hold even though the menu itself draws it: \
+         every entry's detail (the run command with the phase token and workstream, \
+         the source file's name, the alias) and the reason of a blocked action reach \
+         cells through `shown()`. The state is still probed: the clean stem \
+         reaches the buffer (plain containment), so assertions 2 and 4 demand the \
+         escaped form and no raw hostile one, and assertion 3 demands no invisible \
+         character, over the overlay's cells.",
+    ),
+    (
         "Phases tab with an expanded Owner block",
         true,
         "The Phases tab drawn with `hostile_owner_digest` under the probed alias, \
@@ -2100,6 +2114,29 @@ const DETAIL_SUB_STATES: &[(&str, SubStateArrange)] = &[
                     view.expanded.insert(key);
                 }
             }
+            ctx.owner_digests.insert(identity.to_string(), digest);
+            ctx.view_cache
+                .entry(identity.to_string())
+                .or_default()
+                .owner_block = view;
+        },
+    ),
+    // Quick 261119-f5b: the Owner block focused with its action menu open on the
+    // first row of the hostile digest. Only `DetailScreen`'s builder opens the
+    // menu (it reads the parked cursor); the screens that paint the detail body
+    // through `render_main_only` draw the same block without the overlay.
+    (
+        "Phases tab with the Owner action menu open",
+        |identity, ctx| {
+            use crate::ui::screens::owner_block::{skeleton, OwnerBlockState, Stop};
+            ctx.detail_sub_view_per_project
+                .insert(identity.to_string(), crate::app::DetailSubView::Pipeline);
+            let digest = hostile_owner_digest(identity);
+            let mut view = OwnerBlockState::default();
+            view.cursor = skeleton(&digest, &view)
+                .stops
+                .into_iter()
+                .find(|stop| matches!(stop, Stop::Row(_)));
             ctx.owner_digests.insert(identity.to_string(), digest);
             ctx.view_cache
                 .entry(identity.to_string())
@@ -2673,7 +2710,25 @@ fn fixture_for(type_name: &str) -> Option<Fixture> {
                 format!("Acknowledge failed: {identity}"),
                 std::time::Instant::now(),
             ));
+            // Quick 261119-f5b: Enter on the first (hostile) row opens its action
+            // menu, whose entries draw the command, the file name, the alias and
+            // the reasons of blocked actions.
+            let mut menu_open = probe_ctx(identity);
+            menu_open
+                .owner_digests
+                .insert(identity.to_string(), hostile_owner_digest(identity));
+            let mut menu_screen = super::inbox::InboxScreen::new();
+            let _ = menu_screen.handle_key(
+                crossterm::event::KeyCode::Enter,
+                crossterm::event::KeyModifiers::NONE,
+                &mut menu_open,
+            );
             vec![
+                one_state(
+                    "inbox with the action menu open over a hostile row",
+                    menu_open,
+                    Box::new(menu_screen),
+                ),
                 one_state(
                     "inbox after a failed acknowledge",
                     acknowledge_failed,
@@ -2731,8 +2786,22 @@ fn fixture_for(type_name: &str) -> Option<Fixture> {
         }),
 
         "DetailScreen" => Some(|identity| {
-            states_over_sub_views(identity, &|identity, _ctx| {
-                Box::new(super::detail::DetailScreen::new(identity.to_string()))
+            states_over_sub_views(identity, &|identity, ctx| {
+                let screen = super::detail::DetailScreen::new(identity.to_string());
+                // The state "Phases tab with the Owner action menu open" parks the
+                // Owner block's cursor on a row; only then is the menu opened, and
+                // only where the block is drawn at all (the chrome baseline has no
+                // project state, so it is measured without the overlay too).
+                let parked = ctx.project_states.contains_key(identity)
+                    && ctx
+                        .view_cache
+                        .get(identity)
+                        .is_some_and(|cache| cache.owner_block.cursor.is_some());
+                Box::new(if parked {
+                    screen.with_owner_menu_open(ctx)
+                } else {
+                    screen
+                })
             })
         }),
 

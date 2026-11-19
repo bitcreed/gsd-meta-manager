@@ -1199,7 +1199,7 @@ mod tests {
         (row.src.key, id)
     }
 
-    /// 39-02 SC1 tracer: in the detail Owner block `Enter`, `j`, `x`, `w`, a reason,
+    /// 39-02 SC1 tracer: in the detail Owner block `Space`, `j`, `x`, `w`, a reason,
     /// Enter and `y` settle ONE check, and the copy of the tree stays identical.
     #[test]
     fn the_owner_block_check_flow_launches_one_check_and_writes_nothing() {
@@ -1210,7 +1210,7 @@ mod tests {
         let (key, id) = uat_row_and_first_item(&ctx);
         assert_eq!(id, "01-UAT.md#2");
         let mut stack = Stack::detail(&mut ctx, ALIAS, &key);
-        stack.key(&mut ctx, KeyCode::Enter);
+        stack.key(&mut ctx, KeyCode::Char(' '));
         stack.key(&mut ctx, KeyCode::Char('j'));
         let view = &ctx.view_cache[ALIAS].owner_block;
         assert_eq!(view.item_cursor.as_deref(), Some("01-UAT.md#2"));
@@ -1248,6 +1248,49 @@ mod tests {
         assert_eq!(tree(&root), before, "the copy is byte-identical");
     }
 
+    /// Quick 261119-f5b: `x` picked in the Enter action menu runs the hotkey path,
+    /// so the chooser, the reason field and the default-No confirm all still stand
+    /// between the menu and a launch, in the inbox and in the Owner block.
+    #[test]
+    fn x_through_the_menu_still_asks_and_the_default_is_no() {
+        for host in ["inbox", "owner block"] {
+            take_settle_launches();
+            let (_dir, root) = temp_fixture("uat-pending");
+            let before = tree(&root);
+            let mut ctx = fixture_ctx(&root, ALIAS);
+            let (key, _) = uat_row_and_first_item(&ctx);
+            let mut stack = if host == "inbox" {
+                Stack::inbox()
+            } else {
+                Stack::detail(&mut ctx, ALIAS, &key)
+            };
+            stack.key(&mut ctx, KeyCode::Enter); // the menu
+            assert_eq!(stack.depth(), 1, "{host}: the menu is not a screen");
+            assert!(stack.render(&ctx, 100, 30).contains(" Actions "), "{host}");
+            // j to the `x` entry, Enter runs it.
+            stack.key(&mut ctx, KeyCode::Char('j'));
+            stack.key(&mut ctx, KeyCode::Enter);
+            assert_eq!(stack.name(), "settle_chooser", "{host}");
+            assert!(
+                !stack.render(&ctx, 100, 30).contains(" Actions "),
+                "{host}: no menu behind the chooser"
+            );
+            stack.key(&mut ctx, KeyCode::Char('w'));
+            stack.keys(&mut ctx, "no device here");
+            stack.key(&mut ctx, KeyCode::Enter);
+            assert_eq!(stack.name(), "settle_confirm", "{host}");
+            assert!(
+                take_settle_launches().is_empty(),
+                "{host}: nothing before Yes"
+            );
+            // Enter is the default No: the popup closes and nothing launches.
+            stack.key(&mut ctx, KeyCode::Enter);
+            assert_eq!(stack.depth(), 1, "{host}: the popup closed");
+            assert!(take_settle_launches().is_empty(), "{host}: default No");
+            assert_eq!(tree(&root), before, "{host}: nothing written");
+        }
+    }
+
     #[test]
     fn the_owner_block_row_flow_settles_the_phase() {
         take_settle_launches();
@@ -1255,6 +1298,7 @@ mod tests {
         let mut ctx = fixture_ctx(&root, ALIAS);
         let (key, _) = uat_row_and_first_item(&ctx);
         let mut stack = Stack::detail(&mut ctx, ALIAS, &key);
+        // Enter opens the action menu on the row; `x` there is the hotkey.
         stack.key(&mut ctx, KeyCode::Enter);
         // On the row, no item selected: the phase target.
         stack.key(&mut ctx, KeyCode::Char('x'));
@@ -1283,7 +1327,7 @@ mod tests {
         let before = tree(&root);
         let mut ctx = fixture_ctx(&root, ALIAS);
         let mut stack = Stack::inbox();
-        stack.key(&mut ctx, KeyCode::Enter);
+        stack.key(&mut ctx, KeyCode::Char(' '));
         stack.key(&mut ctx, KeyCode::Char('j'));
         stack.key(&mut ctx, KeyCode::Char('j'));
         assert_eq!(ctx.inbox_view.item_cursor.as_deref(), Some("01-UAT.md#3"));
@@ -1397,7 +1441,7 @@ mod tests {
         let mut ctx = fixture_ctx(&root, ALIAS);
         let (key, id) = uat_row_and_first_item(&ctx);
         let mut stack = Stack::detail(&mut ctx, ALIAS, &key);
-        stack.key(&mut ctx, KeyCode::Enter);
+        stack.key(&mut ctx, KeyCode::Char(' '));
         stack.key(&mut ctx, KeyCode::Char('j'));
         stack.key(&mut ctx, KeyCode::Char('x'));
         stack.key(&mut ctx, KeyCode::Char('w'));
@@ -2482,7 +2526,7 @@ mod tests {
         ctx.active_sessions.push(session_in(&root));
         let (key, _) = uat_row_and_first_item(&ctx);
         let mut stack = Stack::detail(&mut ctx, ALIAS, &key);
-        stack.key(&mut ctx, KeyCode::Enter);
+        stack.key(&mut ctx, KeyCode::Char(' '));
         stack.key(&mut ctx, KeyCode::Char('j'));
         stack.key(&mut ctx, KeyCode::Char('x'));
         stack.key(&mut ctx, KeyCode::Char('w'));
@@ -2550,7 +2594,7 @@ mod tests {
                         Stack::detail(&mut ctx, PRICING, &row.src.key)
                     };
                     if check {
-                        stack.key(&mut ctx, KeyCode::Enter);
+                        stack.key(&mut ctx, KeyCode::Char(' '));
                         stack.key(&mut ctx, KeyCode::Char('j'));
                     }
                     assert!(stack.key(&mut ctx, KeyCode::Char('x')), "{label}: x");

@@ -3,6 +3,7 @@ use super::enqueue::EnqueueScreen;
 use super::help::HelpScreen;
 use super::owner_actions;
 use super::owner_block;
+use super::owner_row_actions;
 use super::queue_delete_confirm::QueueDeleteConfirmScreen;
 use super::{AppContext, Screen, ScreenAction};
 use crate::action::Action;
@@ -859,6 +860,13 @@ pub struct DetailScreen {
     /// Body rows the Owner block showed in the last frame: the page `PgUp` and
     /// `PgDn` move the cursor by; `0` before the first frame (a one-stop page).
     owner_viewport_rows: Cell<u16>,
+    /// The open Owner row action menu (Enter on a group or debug row, quick
+    /// 261119-f5b): the row it belongs to and the selected entry. The entries are
+    /// recomputed from the shared row action model every frame and every key.
+    menu: Option<owner_row_actions::ActionMenu>,
+    /// The cursor row's cells in the last Phases-tab frame: where the menu hangs
+    /// from (`None` when the row is scrolled out of the window).
+    menu_anchor: Cell<Option<Rect>>,
     /// Which level of the view has the keyboard: the tab bar or the tab's
     /// content (quick 260926-1t1). Content on every opening.
     focus: DetailFocus,
@@ -1247,6 +1255,8 @@ impl DetailScreen {
             owner_landing: Cell::new(false),
             owner_offset: Cell::new(0),
             owner_viewport_rows: Cell::new(0),
+            menu: None,
+            menu_anchor: Cell::new(None),
             focus: DetailFocus::Content,
             regions: std::cell::RefCell::default(),
             phase_list_offset: Cell::new(0),
@@ -2252,6 +2262,7 @@ impl DetailScreen {
         let mut acknowledge = false;
         let mut copy = false;
         let mut settle = false;
+        let mut menu_row: Option<owner_block::GroupKey> = None;
         // The side-effecting letters act only unchorded (WR-01).
         let plain = owner_actions::is_plain_action_key(modifiers);
         match code {
@@ -2279,13 +2290,31 @@ impl DetailScreen {
                 owner_block::move_cursor(view, &sk.stops, Move::By(-page));
             }
             // Enter on a check or `file PATH` line opens the file there (quick
-            // 261118-u4e); Space, and Enter on a row or the fold line, toggle.
+            // 261118-u4e); on a group or debug row it opens the action menu (quick
+            // 261119-f5b); on the fold line, and Space anywhere, it toggles.
             KeyCode::Enter if view.sub_stop().is_some() => open_sub = true,
-            KeyCode::Enter | KeyCode::Char(' ') => {
+            KeyCode::Enter => match view.cursor.clone() {
+                Some(owner_block::Stop::Row(key)) => menu_row = Some(key),
+                _ => {
+                    owner_block::toggle(view, &sk.folds);
+                }
+            },
+            KeyCode::Char(' ') => {
                 owner_block::toggle(view, &sk.folds);
             }
-            KeyCode::Left if on_fold_line => owner_block::fold_step(view, &sk.folds, false),
-            KeyCode::Right if on_fold_line => owner_block::fold_step(view, &sk.folds, true),
+            KeyCode::Left | KeyCode::Char('h') if on_fold_line => {
+                owner_block::fold_step(view, &sk.folds, false)
+            }
+            KeyCode::Right | KeyCode::Char('l') if on_fold_line => {
+                owner_block::fold_step(view, &sk.folds, true)
+            }
+            // Right/`l` expand and Left/`h` collapse the row (I-3, I-4).
+            KeyCode::Left | KeyCode::Char('h') => {
+                owner_block::set_expanded(view, false);
+            }
+            KeyCode::Right | KeyCode::Char('l') => {
+                owner_block::set_expanded(view, true);
+            }
             // An empty phase list is no level to return to (quick 261118-tm6):
             // `Esc` goes up to the tab bar instead.
             KeyCode::Esc => {
@@ -2305,6 +2334,9 @@ impl DetailScreen {
             Moved::PastLast => self.focus = DetailFocus::Content,
             Moved::PastFirst => self.focus = DetailFocus::TabBar,
             Moved::Within => {}
+        }
+        if let Some(key) = menu_row {
+            self.open_owner_menu(ctx, &key);
         }
         if run {
             return Some(self.owner_run(ctx, &mut owner_actions::launch_real));
@@ -2326,6 +2358,89 @@ impl DetailScreen {
         }
         ctx.needs_redraw = true;
         Some(ScreenAction::None)
+    }
+
+    /// The entries of the open menu, `None` when it no longer applies: the Owner
+    /// block lost the keyboard or the Phases tab, its row vanished from the digest,
+    /// or the cursor left it (I-9).
+    fn owner_menu_actions(
+        &self,
+        menu: &owner_row_actions::ActionMenu,
+        current_view: &DetailSubView,
+        ctx: &AppContext,
+    ) -> Option<Vec<owner_row_actions::RowAction>> {
+        if self.focus != DetailFocus::Owner
+            || *current_view != DetailSubView::Pipeline
+            || menu.alias != self.alias
+        {
+            return None;
+        }
+        let digest = ctx.owner_digest(&self.alias)?;
+        let view = ctx
+            .view_cache
+            .get(&self.alias)
+            .map(|cache| &cache.owner_block)?;
+        let sk = owner_block::skeleton(digest, view);
+        let at = owner_block::resolve_cursor(view, &sk.stops)?;
+        let owner_block::Stop::Row(key) = &sk.stops[at] else {
+            return None;
+        };
+        if *key != menu.key || view.sub_stop().is_some() {
+            return None;
+        }
+        let src = owner_block::row_src_for(digest, key)?;
+        Some(owner_row_actions::row_actions(
+            ctx,
+            owner_row_actions::Host::OwnerBlock,
+            &self.alias,
+            &src,
+            None,
+            view.expanded.contains(key),
+        ))
+    }
+
+    /// The screen with the Owner block focused and its action menu open on the row
+    /// the view's cursor rests on: the render-escape probe's menu state.
+    #[cfg(test)]
+    pub(crate) fn with_owner_menu_open(mut self, ctx: &mut AppContext) -> Self {
+        self.focus = DetailFocus::Owner;
+        let key =
+            ctx.view_cache
+                .get(&self.alias)
+                .and_then(|cache| match &cache.owner_block.cursor {
+                    Some(owner_block::Stop::Row(key)) => Some(key.clone()),
+                    _ => None,
+                });
+        if let Some(key) = key {
+            self.open_owner_menu(ctx, &key);
+        }
+        self
+    }
+
+    /// Enter on a group or debug row: open its action menu.
+    fn open_owner_menu(&mut self, ctx: &mut AppContext, key: &owner_block::GroupKey) {
+        let actions = {
+            let Some(digest) = ctx.owner_digest(&self.alias) else {
+                return;
+            };
+            let Some(src) = owner_block::row_src_for(digest, key) else {
+                return;
+            };
+            let expanded = ctx
+                .view_cache
+                .get(&self.alias)
+                .is_some_and(|cache| cache.owner_block.expanded.contains(key));
+            owner_row_actions::row_actions(
+                ctx,
+                owner_row_actions::Host::OwnerBlock,
+                &self.alias,
+                &src,
+                None,
+                expanded,
+            )
+        };
+        self.menu = owner_row_actions::ActionMenu::open(&self.alias, key.clone(), &actions);
+        ctx.needs_redraw = true;
     }
 
     /// `x` on the Owner block (39-02, D-03, D-04, D-05): the settle chooser for the
@@ -2669,10 +2784,10 @@ impl DetailScreen {
                     sub.as_ref(),
                     expanded,
                 );
-                let enter = match (&sub, expanded) {
-                    (Some(_), _) => Enter::View,
-                    (None, true) => Enter::Collapse,
-                    (None, false) => Enter::Expand,
+                let enter = if sub.is_some() {
+                    Enter::View
+                } else {
+                    Enter::Actions
                 };
                 row_actions::footer_spans(Host::OwnerBlock, &actions, enter, false, chrome, width)
             }
@@ -4553,7 +4668,11 @@ crate::ui::screens::adjudicate_screen!(
      through `shown()`); the state \"Phases tab with an Owner block\" probes it \
      with a hostile digest. Since 36-04 the block also draws expansion lines \
      and open-fold rows, probed by the state \"Phases tab with an expanded Owner \
-     block\".",
+     block\". Since quick 261119-f5b it also draws the Owner row action menu \
+     (an overlay whose entries carry the row's run command, the source file's \
+     name, the project alias and the reason an action is blocked, all through \
+     `shown()`), probed by the state \"Phases tab with the Owner action menu \
+     open\".",
 );
 
 impl Screen for DetailScreen {
@@ -4575,6 +4694,27 @@ impl Screen for DetailScreen {
             ctx.experimental,
         );
         let current_idx = tab_index(&current_view);
+
+        // An open Owner row action menu owns every key (quick 261119-f5b),
+        // above every other arm: a letter or Enter closes it and is handled as if
+        // typed (the exact hotkey path), Esc and `q` only close it, nothing pops,
+        // moves focus or switches tab under it. A menu whose row vanished or whose
+        // level lost the keyboard is dropped and the key acts normally.
+        if let Some(mut menu) = self.menu.take() {
+            if let Some(actions) = self.owner_menu_actions(&menu, &current_view, ctx) {
+                ctx.needs_redraw = true;
+                return match menu.key(&actions, code, modifiers) {
+                    owner_row_actions::MenuKey::Stay => {
+                        self.menu = Some(menu);
+                        ScreenAction::None
+                    }
+                    owner_row_actions::MenuKey::Close => ScreenAction::None,
+                    owner_row_actions::MenuKey::Run(key) => {
+                        self.handle_key(key, KeyModifiers::NONE, ctx)
+                    }
+                };
+            }
+        }
 
         // The Roadmap tab's cursor keys (D-A10).
         let on_roadmap = current_view == DetailSubView::RoadmapViz;
@@ -7092,6 +7232,19 @@ impl Screen for DetailScreen {
             )
         };
         frame.render_widget(footer, footer_area);
+
+        // The Owner row action menu, on top of everything (quick 261119-f5b).
+        if let Some(menu) = &self.menu {
+            if let Some(actions) = self.owner_menu_actions(menu, &sub_view, ctx) {
+                owner_row_actions::render_menu(
+                    frame,
+                    area,
+                    self.menu_anchor.get(),
+                    &actions,
+                    menu.selected(),
+                );
+            }
+        }
     }
 
     fn name(&self) -> &str {
@@ -7121,6 +7274,14 @@ impl Screen for DetailScreen {
         );
         if self.config_text_entry_active(&current_view, ctx) {
             return ScreenAction::None;
+        }
+        // An open Owner action menu swallows every click and wheel step (quick
+        // 261119-f5b, I-8): nothing under it switches tab, focus or selection.
+        if let Some(menu) = self.menu.take() {
+            if self.owner_menu_actions(&menu, &current_view, ctx).is_some() {
+                self.menu = Some(menu);
+                return ScreenAction::None;
+            }
         }
         // As for a key: the event meets the focus the last frame drew.
         self.take_owner_landing(&current_view, ctx);
@@ -8238,6 +8399,7 @@ impl DetailScreen {
         self.owner_block_rows.set(0);
         self.owner_block_stops.set(false);
         self.owner_landing.set(false);
+        self.menu_anchor.set(None);
         if let (Some(state), Some(digest)) = (
             ctx.project_states.get(&self.alias),
             ctx.owner_digest(&self.alias),
@@ -8315,6 +8477,17 @@ impl DetailScreen {
                     Layout::vertical([Constraint::Length(height), Constraint::Min(0)]).split(area);
                 owner_block::render_owner_block(frame, parts[0], &model, cursor, offset);
                 self.record_owner_block(parts[0]);
+                // The cursor row's cells: the action menu hangs from them.
+                if let Some(line) = cursor
+                    .and_then(|c| model.stop_lines.get(c.stop).copied().flatten())
+                    .filter(|line| *line >= offset && *line < offset + window)
+                {
+                    self.menu_anchor.set(Some(Rect {
+                        y: parts[0].y + 1 + u16::try_from(line - offset).unwrap_or(0),
+                        height: 1,
+                        ..parts[0]
+                    }));
+                }
                 self.render_phases_body(frame, parts[1], ctx);
                 return;
             }
@@ -37556,7 +37729,7 @@ mod tests {
             "first row focused:\n{drawn}"
         );
         let footer = drawn.lines().last().unwrap_or_default();
-        assert!(footer.contains("[Enter]expand"), "{footer}");
+        assert!(footer.contains("[Enter]actions"), "{footer}");
         assert!(footer.contains("[Esc]tab bar"), "{footer}");
         // The first `j` moves inside the block, from the first stop.
         let mut screen = screen;
@@ -37636,12 +37809,20 @@ mod tests {
         let action = key(&mut screen, &mut ctx, KeyCode::Char('e'));
         assert!(matches!(action, ScreenAction::None));
         assert_eq!(screen.focus, DetailFocus::Owner);
-        for code in [KeyCode::Left, KeyCode::Right] {
-            // Off the fold line `←`/`→` are swallowed too.
+        for (expand, collapse) in [
+            (KeyCode::Right, KeyCode::Left),
+            (KeyCode::Char('l'), KeyCode::Char('h')),
+        ] {
+            // Off the fold line `→`/`l` expand the row and `←`/`h` collapse it
+            // (quick 261119-f5b); neither leaves the block.
             key(&mut screen, &mut ctx, KeyCode::Char('k'));
-            let action = key(&mut screen, &mut ctx, code);
+            let action = key(&mut screen, &mut ctx, expand);
+            assert!(matches!(action, ScreenAction::None));
+            assert_eq!(owner_view_of(&ctx).expanded.len(), 1, "{expand:?}");
+            let action = key(&mut screen, &mut ctx, collapse);
             assert!(matches!(action, ScreenAction::None));
             assert_eq!(screen.focus, DetailFocus::Owner);
+            assert!(owner_view_of(&ctx).expanded.is_empty(), "{collapse:?}");
             key(&mut screen, &mut ctx, KeyCode::Char('j'));
         }
         let after = owner_view_of(&ctx);
@@ -38186,9 +38367,17 @@ mod tests {
             owner_view_of(&ctx).sub_stop(),
             Some(SubStop::File(file.clone()))
         );
-        // Enter on the row still toggles; Space on a sub-row collapses the group.
+        // Enter on the row opens its action menu and changes no expansion; Space
+        // collapses it, and so does Space on a sub-row.
         set(&mut ctx, None);
         let action = key(&mut screen, &mut ctx, KeyCode::Enter);
+        assert!(matches!(action, ScreenAction::None));
+        assert!(screen.menu.is_some(), "Enter on a row opens the menu");
+        assert!(owner_view_of(&ctx).expanded.contains(&wanted));
+        key(&mut screen, &mut ctx, KeyCode::Esc);
+        assert!(screen.menu.is_none());
+        assert_eq!(screen.focus, DetailFocus::Owner, "Esc only closed the menu");
+        let action = key(&mut screen, &mut ctx, KeyCode::Char(' '));
         assert!(matches!(action, ScreenAction::None));
         assert!(!owner_view_of(&ctx).expanded.contains(&wanted));
         set(&mut ctx, Some(SubStop::Item("check 1".to_owned())));
@@ -38402,7 +38591,7 @@ mod tests {
     }
 
     #[test]
-    fn enter_expands_and_collapses_a_group() {
+    fn space_expands_and_collapses_a_group() {
         let mut ctx = owner_ctx(Some(detailed_sample()));
         let mut screen = owner_screen(&ctx);
         key(&mut screen, &mut ctx, KeyCode::Up);
@@ -38411,7 +38600,12 @@ mod tests {
         assert!(matches!(owner_view_of(&ctx).cursor, Some(Stop::Row(k)) if k == key_24()));
         let collapsed = owner_draw(&screen, &ctx);
         assert!(!collapsed.contains("check 0"), "{collapsed}");
-        let action = key(&mut screen, &mut ctx, KeyCode::Enter);
+        // Enter opens the menu and expands nothing; Space expands.
+        key(&mut screen, &mut ctx, KeyCode::Enter);
+        assert!(screen.menu.is_some());
+        assert!(owner_view_of(&ctx).expanded.is_empty());
+        key(&mut screen, &mut ctx, KeyCode::Esc);
+        let action = key(&mut screen, &mut ctx, KeyCode::Char(' '));
         assert!(matches!(action, ScreenAction::None));
         assert!(owner_view_of(&ctx).expanded.contains(&key_24()));
         let model = super::owner_block::block_model(
@@ -38454,8 +38648,8 @@ mod tests {
             text.contains("3 check 0") && text.contains("expected: the clock face"),
             "{text}"
         );
-        // Collapse, then Space expands again.
-        key(&mut screen, &mut ctx, KeyCode::Enter);
+        // Space collapses, then Space expands again.
+        key(&mut screen, &mut ctx, KeyCode::Char(' '));
         assert!(owner_view_of(&ctx).expanded.is_empty());
         key(&mut screen, &mut ctx, KeyCode::Char(' '));
         assert!(owner_view_of(&ctx).expanded.contains(&key_24()));
@@ -38472,7 +38666,7 @@ mod tests {
         key(&mut screen, &mut ctx, KeyCode::Up);
         key(&mut screen, &mut ctx, KeyCode::Char('g'));
         key(&mut screen, &mut ctx, KeyCode::Char('j'));
-        key(&mut screen, &mut ctx, KeyCode::Enter);
+        key(&mut screen, &mut ctx, KeyCode::Char(' '));
         // Walk past the expansion (five items, the file line, then the next row;
         // D-04, quick 261118-u4e) so its tail (overflow, file) is in the window.
         for _ in 0..7 {
@@ -38588,7 +38782,7 @@ mod tests {
         );
         assert_eq!(
             footer(&screen, &ctx).trim_end(),
-            "  [j/k]move  [Enter]expand  [v]run /gsd-verify-work 24  [x]settle  [o]pen  [A]ck  [y]copy  [Esc]phases  [q]uit  [?]help"
+            "  [Enter]actions  [v]run /gsd-verify-work 24  [x]settle  [o]pen  [A]ck  [y]copy  [Space]expand  [Esc]phases  [?]help"
         );
         // Without a block the lead stays `tab bar`.
         let ctx = owner_ctx(None);
@@ -38685,7 +38879,7 @@ mod tests {
         key(&mut screen, &mut ctx, KeyCode::Up);
         key(&mut screen, &mut ctx, KeyCode::Char('g'));
         key(&mut screen, &mut ctx, KeyCode::Char('j'));
-        key(&mut screen, &mut ctx, KeyCode::Enter);
+        key(&mut screen, &mut ctx, KeyCode::Char(' '));
         // Another group expanded, then the cursor moved to the debug row (`j`
         // walks the expanded row's item lines first, D-04).
         for _ in 0..12 {
@@ -38699,7 +38893,7 @@ mod tests {
             matches!(on, Some(Stop::Row(ref k)) if k.kind == "debug"),
             "{on:?}"
         );
-        key(&mut screen, &mut ctx, KeyCode::Enter);
+        key(&mut screen, &mut ctx, KeyCode::Char(' '));
         // The refresh drops the cursor's group and every group but two.
         let mut digest = detailed_sample();
         digest.groups.retain(|g| g.phase == "24" || g.phase == "21");
@@ -38958,14 +39152,19 @@ mod tests {
                 "{key:?}: {footer}"
             );
             assert!(!keys.contains(&"g".to_owned()), "{footer}");
-            assert!(footer.contains("[Enter]expand"), "{footer}");
+            assert!(footer.contains("[Enter]actions"), "{footer}");
+            assert!(footer.contains("[Space]expand"), "{footer}");
             assert!(footer.ends_with("[?]help"), "{footer}");
             assert!(
                 footer.contains("[Esc]phases") && footer.contains("[q]uit"),
                 "{footer}"
             );
             park_owner(&mut ctx, key, true, None);
-            assert!(owner_footer(&screen, &ctx, 250).contains("[Enter]collapse"));
+            let open = owner_footer(&screen, &ctx, 250);
+            assert!(
+                open.contains("[Enter]actions") && open.contains("[Space]collapse"),
+                "{open}"
+            );
             let stops = owner_block::row_sub_stops(src);
             for sub in stops.iter().take(1).chain(stops.last()) {
                 park_owner(&mut ctx, key, true, Some(sub.clone()));
@@ -39007,11 +39206,11 @@ mod tests {
         park_owner(&mut ctx, &key_24(), false, None);
         assert_eq!(
             owner_footer(&screen, &ctx, 100),
-            "  [Enter]expand  [v]run /gsd-verify-work 24  [x]settle  [o]pen  [A]ck  [y]copy  [Esc]phases  [?]help"
+            "  [Enter]actions  [v]run /gsd-verify-work 24  [x]settle  [o]pen  [A]ck  [y]copy  [?]help"
         );
         assert_eq!(
             owner_footer(&screen, &ctx, 80),
-            "  [Enter]expand  [v]run  [x]settle  [o]pen  [A]ck  [y]copy  [?]help"
+            "  [Enter]actions  [v]run  [x]settle  [o]pen  [A]ck  [y]copy  [?]help"
         );
     }
 
@@ -39111,5 +39310,385 @@ mod tests {
             ctx.status_message.as_ref().map(|(m, _)| m.as_str()),
             Some("Select a check or a group row to settle it")
         );
+    }
+
+    // ── The Enter action menu (quick 261119-f5b) ───────────────────────────────
+
+    use crate::ui::screens::owner_row_actions::ActionMenu;
+
+    /// Everything a key sequence left behind that a menu entry must reproduce.
+    #[derive(Debug, PartialEq)]
+    struct Left {
+        action: String,
+        status: String,
+        runs: Vec<String>,
+        settles: usize,
+        copies: Vec<String>,
+        expanded: usize,
+        focus: DetailFocus,
+        cursor: Option<Stop>,
+    }
+
+    fn tag(action: &ScreenAction) -> String {
+        match action {
+            ScreenAction::None => "none".to_owned(),
+            ScreenAction::Push(screen) => format!("push:{}", screen.name()),
+            ScreenAction::WriteOsc52(text) => format!("osc52:{text}"),
+            ScreenAction::Pop => "pop".to_owned(),
+            _ => "other".to_owned(),
+        }
+    }
+
+    /// The Owner block with the cursor parked on the TEST row of phase 24.
+    fn parked_24() -> (DetailScreen, AppContext) {
+        let (mut screen, mut ctx) = actions_ctx();
+        park_owner(&mut ctx, &key_24(), false, None);
+        owner_draw(&screen, &ctx);
+        screen.menu = None;
+        (screen, ctx)
+    }
+
+    fn left_by(keys: &[KeyCode]) -> Left {
+        owner_actions::take_run_launches();
+        owner_settle::take_settle_launches();
+        owner_actions::force_launcher(Some(owner_actions::test_launcher()));
+        owner_actions::force_clipboard(Some(crate::clipboard::ClipboardProbes {
+            os: "linux",
+            wayland_display: true,
+            display: true,
+            on_path: vec!["wl-copy"],
+        }));
+        let copies_before = owner_actions::seam_ran().len();
+        let (mut screen, mut ctx) = parked_24();
+        let mut last = ScreenAction::None;
+        for code in keys {
+            last = key(&mut screen, &mut ctx, *code);
+        }
+        let copies = owner_actions::seam_ran()
+            .into_iter()
+            .skip(copies_before)
+            .map(|(_, text, _)| text)
+            .collect();
+        owner_actions::force_clipboard(None);
+        owner_actions::force_launcher(None);
+        Left {
+            action: tag(&last),
+            status: ctx
+                .status_message
+                .as_ref()
+                .map(|(m, _)| m.clone())
+                .unwrap_or_default(),
+            runs: owner_actions::take_run_launches()
+                .iter()
+                .map(|plan| plan.command.to_string())
+                .collect(),
+            settles: owner_settle::take_settle_launches().len(),
+            copies,
+            expanded: owner_view_of(&ctx).expanded.len(),
+            focus: screen.focus,
+            cursor: owner_view_of(&ctx).cursor,
+        }
+    }
+
+    /// Enter on a group row opens the menu, expands nothing, draws it inside the
+    /// frame; Esc and `q` close only the menu.
+    #[test]
+    fn owner_enter_opens_the_menu_and_esc_or_q_close_only_it() {
+        let (mut screen, mut ctx) = parked_24();
+        let action = key(&mut screen, &mut ctx, KeyCode::Enter);
+        assert!(matches!(action, ScreenAction::None));
+        assert!(screen.menu.is_some());
+        assert!(owner_view_of(&ctx).expanded.is_empty());
+        let drawn = render_detail_to_text_at(&screen, &ctx, 80, 24);
+        assert!(drawn.contains(" Actions "), "{drawn}");
+        assert!(drawn.contains("> v     run             /gsd-verify-work 24"));
+        assert!(drawn.contains("Space expand"), "{drawn}");
+        assert!(!drawn.contains("go to project"), "g is inbox-only: {drawn}");
+        assert!(drawn.lines().all(|line| line.chars().count() <= 80));
+        let action = key(&mut screen, &mut ctx, KeyCode::Esc);
+        assert!(matches!(action, ScreenAction::None));
+        assert!(screen.menu.is_none());
+        assert_eq!(screen.focus, DetailFocus::Owner, "Esc only closed the menu");
+        key(&mut screen, &mut ctx, KeyCode::Enter);
+        let action = key(&mut screen, &mut ctx, KeyCode::Char('q'));
+        assert!(matches!(action, ScreenAction::None), "q did not pop");
+        assert!(screen.menu.is_none());
+        assert_eq!(screen.focus, DetailFocus::Owner);
+    }
+
+    /// A menu entry is the hotkey: the letter in the menu, and `j`..`Enter` onto
+    /// the entry, leave exactly what the typed key leaves.
+    #[test]
+    fn owner_menu_entries_are_the_hotkey_path() {
+        let menu = KeyCode::Enter;
+        let letters = ['v', 'x', 'o', 'A', 'y', ' '];
+        for letter in letters {
+            assert_eq!(
+                left_by(&[KeyCode::Char(letter)]),
+                left_by(&[menu, KeyCode::Char(letter)]),
+                "{letter:?} through the menu"
+            );
+        }
+        let v = left_by(&[menu, KeyCode::Char('v')]);
+        assert_eq!(v.runs, ["/gsd-verify-work 24"]);
+        assert_eq!(left_by(&[menu, KeyCode::Char('y')]).copies.len(), 1);
+        assert_eq!(
+            left_by(&[menu, KeyCode::Char('x')]).action,
+            "push:settle_chooser"
+        );
+        assert_eq!(
+            left_by(&[menu, KeyCode::Char('A')]).action,
+            "push:ack_confirm"
+        );
+        assert_eq!(left_by(&[menu, KeyCode::Char(' ')]).expanded, 1);
+        // v x o A y Space in order; the Owner block has no `g`.
+        for (n, letter) in letters.into_iter().enumerate() {
+            let mut keys = vec![menu];
+            keys.extend(std::iter::repeat_n(KeyCode::Char('j'), n));
+            keys.push(KeyCode::Enter);
+            assert_eq!(
+                left_by(&keys),
+                left_by(&[KeyCode::Char(letter)]),
+                "{n} x j then Enter is {letter:?}"
+            );
+        }
+        assert_eq!(
+            left_by(&[
+                menu,
+                KeyCode::Down,
+                KeyCode::Down,
+                KeyCode::Up,
+                KeyCode::Enter
+            ]),
+            left_by(&[KeyCode::Char('x')])
+        );
+    }
+
+    /// `x` through the menu opens the chooser and the popup's backdrop shows no
+    /// menu.
+    #[test]
+    fn owner_menu_closes_before_a_popup_draws_its_backdrop() {
+        owner_settle::take_settle_launches();
+        let (mut screen, mut ctx) = parked_24();
+        key(&mut screen, &mut ctx, KeyCode::Enter);
+        let ScreenAction::Push(chooser) = key(&mut screen, &mut ctx, KeyCode::Char('x')) else {
+            panic!("x opens the settle chooser");
+        };
+        assert_eq!(chooser.name(), "settle_chooser");
+        assert!(screen.menu.is_none());
+        assert!(owner_settle::take_settle_launches().is_empty());
+        let backdrop = render_detail_to_text_at(&screen, &ctx, 100, 30);
+        assert!(!backdrop.contains(" Actions "), "{backdrop}");
+    }
+
+    /// A blocked entry's letter prints the reason the menu drew and j/k skip it.
+    #[test]
+    fn owner_blocked_menu_entry_prints_the_reason_the_menu_drew() {
+        let (mut screen, mut ctx) = actions_ctx();
+        let (key28, _) = row_keys(&ctx)
+            .into_iter()
+            .find(|(key, _)| key.phase == "28")
+            .expect("the unreadable row");
+        park_owner(&mut ctx, &key28, false, None);
+        owner_draw(&screen, &ctx);
+        key(&mut screen, &mut ctx, KeyCode::Enter);
+        let drawn = render_detail_to_text_at(&screen, &ctx, 80, 24);
+        assert!(
+            drawn.contains("(No command: the source file is unreadable)"),
+            "{drawn}"
+        );
+        // v and x are blocked: the menu preselects `o`, and k stays there.
+        let selected = |screen: &DetailScreen| screen.menu.as_ref().map(ActionMenu::selected);
+        assert_eq!(selected(&screen), Some(ActionId::Open));
+        key(&mut screen, &mut ctx, KeyCode::Char('k'));
+        assert_eq!(selected(&screen), Some(ActionId::Open));
+        let action = key(&mut screen, &mut ctx, KeyCode::Char('v'));
+        assert!(matches!(action, ScreenAction::None));
+        assert!(screen.menu.is_none());
+        assert_eq!(
+            ctx.status_message.as_ref().map(|(m, _)| m.as_str()),
+            Some("No command: the source file is unreadable")
+        );
+    }
+
+    /// While the menu is open nothing pops, switches tab or hands focus away, and
+    /// the mouse does nothing under it.
+    #[test]
+    fn owner_open_menu_swallows_keys_and_mouse() {
+        let (mut screen, mut ctx) = parked_24();
+        key(&mut screen, &mut ctx, KeyCode::Enter);
+        let tab_before = ctx.detail_sub_view_per_project.get(TEST_ALIAS).cloned();
+        let selected_before = ctx
+            .view_cache
+            .get(TEST_ALIAS)
+            .map_or(0, |c| c.pipeline_selected);
+        let cursor_before = owner_view_of(&ctx).cursor;
+        for code in [
+            KeyCode::Char('1'),
+            KeyCode::Char('4'),
+            KeyCode::Char('D'),
+            KeyCode::Char('['),
+            KeyCode::Char(']'),
+            KeyCode::Tab,
+            KeyCode::Char('?'),
+            KeyCode::Char('M'),
+            KeyCode::Char('g'),
+            KeyCode::Char('G'),
+            KeyCode::Left,
+            KeyCode::Right,
+            KeyCode::Char('h'),
+            KeyCode::Char('l'),
+            KeyCode::PageDown,
+            KeyCode::Char('e'),
+        ] {
+            let action = key(&mut screen, &mut ctx, code);
+            assert!(matches!(action, ScreenAction::None), "{code:?}");
+            assert!(screen.menu.is_some(), "{code:?} closed the menu");
+            assert_eq!(screen.focus, DetailFocus::Owner, "{code:?}");
+        }
+        assert_eq!(owner_view_of(&ctx).cursor, cursor_before);
+        assert!(owner_view_of(&ctx).expanded.is_empty());
+        // A Ctrl-V neither runs `v` nor closes the menu.
+        let action = screen.handle_key(KeyCode::Char('v'), KeyModifiers::CONTROL, &mut ctx);
+        assert!(matches!(action, ScreenAction::None));
+        assert!(screen.menu.is_some());
+        assert!(owner_actions::take_run_launches().is_empty());
+        // Clicks and wheel steps are swallowed wherever they land.
+        for column in [2u16, 12, 30, 50, 70] {
+            for row in [1u16, 4, 8, 14, 20] {
+                for input in [
+                    MouseInput::Click {
+                        column,
+                        row,
+                        double: false,
+                    },
+                    MouseInput::Click {
+                        column,
+                        row,
+                        double: true,
+                    },
+                    MouseInput::Wheel {
+                        column,
+                        row,
+                        down: true,
+                    },
+                ] {
+                    let action = screen.handle_mouse(input, &mut ctx);
+                    assert!(matches!(action, ScreenAction::None));
+                    assert!(screen.menu.is_some());
+                    assert_eq!(screen.focus, DetailFocus::Owner);
+                }
+            }
+        }
+        assert_eq!(
+            ctx.detail_sub_view_per_project.get(TEST_ALIAS).cloned(),
+            tab_before
+        );
+        assert_eq!(
+            ctx.view_cache
+                .get(TEST_ALIAS)
+                .map_or(0, |c| c.pipeline_selected),
+            selected_before
+        );
+        assert_eq!(owner_view_of(&ctx).cursor, cursor_before);
+    }
+
+    /// A refresh that drops the target closes the menu silently; the next key acts
+    /// as if no menu had been open.
+    #[test]
+    fn owner_refresh_that_drops_the_target_closes_the_menu_silently() {
+        let (mut screen, mut ctx) = parked_24();
+        key(&mut screen, &mut ctx, KeyCode::Enter);
+        assert!(screen.menu.is_some());
+        ctx.owner_digests.insert(
+            TEST_ALIAS.to_string(),
+            crate::state_reader::owner_items::OwnerDigest::default(),
+        );
+        // `q` is then the Owner block's own pop, not a menu close.
+        let action = screen.handle_key(KeyCode::Char('q'), KeyModifiers::NONE, &mut ctx);
+        assert!(matches!(action, ScreenAction::Pop));
+        assert!(screen.menu.is_none());
+        // Focus leaving the block drops it as well.
+        let (mut screen, mut ctx) = parked_24();
+        key(&mut screen, &mut ctx, KeyCode::Enter);
+        screen.focus = DetailFocus::TabBar;
+        key(&mut screen, &mut ctx, KeyCode::Char('x'));
+        assert!(screen.menu.is_none());
+        assert!(!render_detail_to_text_at(&screen, &ctx, 100, 30).contains(" Actions "));
+    }
+
+    /// Right/`l` expand, Left/`h` collapse (also from a check line); on the fold
+    /// line they step folds. Enter on the fold line toggles it, never a menu.
+    #[test]
+    fn owner_right_and_left_expand_collapse_and_step_folds() {
+        for (expand, collapse) in [
+            (KeyCode::Right, KeyCode::Left),
+            (KeyCode::Char('l'), KeyCode::Char('h')),
+        ] {
+            let (mut screen, mut ctx) = parked_24();
+            key(&mut screen, &mut ctx, collapse);
+            assert!(owner_view_of(&ctx).expanded.is_empty(), "{collapse:?}");
+            key(&mut screen, &mut ctx, expand);
+            assert!(
+                owner_view_of(&ctx).expanded.contains(&key_24()),
+                "{expand:?}"
+            );
+            key(&mut screen, &mut ctx, expand);
+            assert!(owner_view_of(&ctx).expanded.contains(&key_24()));
+            key(&mut screen, &mut ctx, KeyCode::Char('j'));
+            assert!(owner_view_of(&ctx).sub_stop().is_some());
+            key(&mut screen, &mut ctx, collapse);
+            let view = owner_view_of(&ctx);
+            assert!(view.expanded.is_empty());
+            assert_eq!(view.sub_stop(), None);
+            assert_eq!(view.cursor, Some(Stop::Row(key_24())));
+            // The fold line: Left/Right step the folds; nothing expands.
+            ctx.view_cache
+                .entry(TEST_ALIAS.to_string())
+                .or_default()
+                .owner_block
+                .cursor = Some(Stop::FoldLine);
+            key(&mut screen, &mut ctx, collapse);
+            let first = owner_view_of(&ctx).fold_cursor;
+            key(&mut screen, &mut ctx, expand);
+            assert_ne!(owner_view_of(&ctx).fold_cursor, first, "{expand:?} stepped");
+            assert!(owner_view_of(&ctx).expanded.is_empty());
+            let open_before = owner_view_of(&ctx).open_folds.clone();
+            key(&mut screen, &mut ctx, KeyCode::Enter);
+            assert!(screen.menu.is_none());
+            assert_ne!(
+                owner_view_of(&ctx).open_folds,
+                open_before,
+                "Enter toggled the fold"
+            );
+        }
+    }
+
+    /// Every row kind of the fixture: the menu at 80x24 stays inside the frame and
+    /// draws each entry's key and label unclipped.
+    #[test]
+    fn owner_menu_fits_80x24_on_every_row() {
+        let (mut screen, mut ctx) = actions_ctx();
+        for (row_key, src) in row_keys(&ctx) {
+            park_owner(&mut ctx, &row_key, false, None);
+            owner_draw(&screen, &ctx);
+            screen.menu = None;
+            key(&mut screen, &mut ctx, KeyCode::Enter);
+            assert!(screen.menu.is_some(), "{row_key:?}");
+            let actions =
+                row_actions::row_actions(&ctx, Host::OwnerBlock, TEST_ALIAS, &src, None, false);
+            let drawn = render_detail_to_text_at(&screen, &ctx, 80, 24);
+            assert!(drawn.lines().all(|line| line.chars().count() <= 80));
+            assert!(drawn.contains(" Actions "), "{row_key:?}: {drawn}");
+            for action in &actions {
+                let want = format!("{:<6}{:<16}", action.key_label, action.label);
+                assert!(
+                    drawn.contains(&want),
+                    "{row_key:?} {:?} lacks {want:?}: {drawn}",
+                    action.id
+                );
+            }
+            screen.menu = None;
+        }
     }
 }

@@ -838,14 +838,14 @@ mod tests {
         }
     }
 
-    /// One check from the inbox: `Enter`, `j` selects test 2, then the popup flow.
+    /// One check from the inbox: `Space`, `j` selects test 2, then the popup flow.
     #[test]
     fn a_single_check_badges_its_row_and_its_done_line_stays_on_the_live_row() {
         take_settle_launches();
         let (_dir, root) = temp_fixture("uat-pending");
         let mut ctx = fixture_ctx(&root, ALIAS);
         let mut stack = Stack(vec![Box::new(InboxScreen::new())]);
-        stack.key(&mut ctx, KeyCode::Enter);
+        stack.key(&mut ctx, KeyCode::Char(' '));
         stack.key(&mut ctx, KeyCode::Char('j'));
         assert_eq!(ctx.inbox_view.item_cursor.as_deref(), Some("01-UAT.md#2"));
         stack.open_popup(&mut ctx);
