@@ -802,6 +802,31 @@ pub(crate) fn render_menu(
     frame.render_widget(Paragraph::new(lines).block(block).scroll((scroll, 0)), rect);
 }
 
+/// Draw the open menu of a screen from `actions`, the entries of its row now
+/// (`None`: the row vanished, the cursor left it or the block lost the keyboard).
+/// The one place a render pass touches the menu: a menu with no row is cleared
+/// from `slot` right here, so it can neither draw again when the row comes back
+/// nor swallow or misdirect the next key (review WR-04), and a live one has its
+/// selection reconciled first, so the marker is always on a shown entry (WR-02).
+pub(crate) fn render_open_menu(
+    frame: &mut Frame,
+    area: Rect,
+    anchor: Option<Rect>,
+    slot: &std::cell::RefCell<Option<ActionMenu>>,
+    actions: Option<Vec<RowAction>>,
+) {
+    let mut slot = slot.borrow_mut();
+    let Some(menu) = slot.as_mut() else {
+        return;
+    };
+    let Some(actions) = actions else {
+        *slot = None;
+        return;
+    };
+    menu.reconcile(&actions);
+    render_menu(frame, area, anchor, &actions, menu.selected());
+}
+
 /// One digest that holds every row kind the action table names, for the model,
 /// footer and menu tests of both hosts.
 #[cfg(test)]

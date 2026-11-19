@@ -40,7 +40,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::cmp::Ordering;
 use std::collections::HashSet;
 
@@ -1667,7 +1667,7 @@ pub struct InboxScreen {
     /// The open action menu (Enter on a group or debug row, quick 261119-f5b).
     /// Only the target and the selection live here; the entries are recomputed from
     /// the shared model every frame and every key.
-    menu: Option<ActionMenu>,
+    menu: RefCell<Option<ActionMenu>>,
     /// The cursor row's cells in the last frame: where the menu hangs from.
     anchor: Cell<Option<Rect>>,
 }
@@ -1687,18 +1687,12 @@ struct Pinned {
 impl InboxScreen {
     /// The open action menu, on top of everything else (drawn last).
     fn render_menu(&self, frame: &mut Frame, area: Rect, ctx: &AppContext) {
-        let Some(menu) = &self.menu else {
-            return;
-        };
-        if let Some(actions) = Self::menu_actions(menu, ctx) {
-            owner_row_actions::render_menu(
-                frame,
-                area,
-                self.anchor.get(),
-                &actions,
-                menu.selected(),
-            );
-        }
+        let actions = self
+            .menu
+            .borrow()
+            .as_ref()
+            .and_then(|menu| Self::menu_actions(menu, ctx));
+        owner_row_actions::render_open_menu(frame, area, self.anchor.get(), &self.menu, actions);
     }
 
     /// The rule row, the pinned fold line and the footer under the body.
@@ -1726,7 +1720,7 @@ impl InboxScreen {
         Self {
             viewport: Cell::new(0),
             width: Cell::new(80),
-            menu: None,
+            menu: RefCell::new(None),
             anchor: Cell::new(None),
         }
     }
@@ -1755,7 +1749,7 @@ impl InboxScreen {
         let expanded = ctx.inbox_view.expanded.contains(&row.key());
         let actions =
             owner_row_actions::row_actions(ctx, Host::Inbox, &row.alias, &row.src, None, expanded);
-        self.menu = ActionMenu::open(&row.alias, row.src.key.clone(), &actions);
+        *self.menu.get_mut() = ActionMenu::open(&row.alias, row.src.key.clone(), &actions);
         ctx.needs_redraw = true;
     }
 
@@ -2251,12 +2245,12 @@ impl Screen for InboxScreen {
         // closes it and is handled below as if typed, so a menu entry runs the exact
         // hotkey path; Esc and `q` only close it. A menu whose row vanished is
         // dropped and the key acts normally.
-        if let Some(mut menu) = self.menu.take() {
+        if let Some(mut menu) = self.menu.get_mut().take() {
             if let Some(actions) = Self::menu_actions(&menu, ctx) {
                 ctx.needs_redraw = true;
                 return match menu.key(&actions, code, modifiers) {
                     MenuKey::Stay => {
-                        self.menu = Some(menu);
+                        *self.menu.get_mut() = Some(menu);
                         ScreenAction::None
                     }
                     MenuKey::Close => ScreenAction::None,
@@ -6738,7 +6732,7 @@ mod tests {
         let size = (80, 24);
         let action = keys_on(&mut screen, &mut ctx, &[KeyCode::Enter], size).remove(0);
         assert!(matches!(action, ScreenAction::None));
-        assert!(screen.menu.is_some());
+        assert!(screen.menu.borrow().is_some());
         assert!(!ctx.inbox_view.expanded.contains(&row.key()));
         let text = render_with(&screen, &ctx, size.0, size.1);
         let joined = text.join("\n");
@@ -6756,7 +6750,7 @@ mod tests {
         assert!(text.iter().all(|line| line.chars().count() <= 80));
         let action = keys_on(&mut screen, &mut ctx, &[KeyCode::Esc], size).remove(0);
         assert!(matches!(action, ScreenAction::None), "Esc did not pop");
-        assert!(screen.menu.is_none());
+        assert!(screen.menu.borrow().is_none());
         assert!(!render_with(&screen, &ctx, size.0, size.1)
             .join("\n")
             .contains(" Actions "));
@@ -6764,7 +6758,7 @@ mod tests {
         keys_on(&mut screen, &mut ctx, &[KeyCode::Enter], size);
         let action = keys_on(&mut screen, &mut ctx, &[KeyCode::Char('q')], size).remove(0);
         assert!(matches!(action, ScreenAction::None));
-        assert!(screen.menu.is_none());
+        assert!(screen.menu.borrow().is_none());
     }
 
     /// A menu entry is the hotkey: for every action the letter in the menu leaves
@@ -6833,7 +6827,7 @@ mod tests {
             panic!("x opens the settle chooser");
         };
         assert_eq!(chooser.name(), "settle_chooser");
-        assert!(screen.menu.is_none());
+        assert!(screen.menu.borrow().is_none());
         assert!(owner_settle::take_settle_launches().is_empty());
         let text = render_with(&*chooser, &ctx, size.0, size.1).join("\n");
         assert!(!text.contains(" Actions "), "{text}");
@@ -6858,7 +6852,8 @@ mod tests {
         let text = render_with(&screen, &ctx, size.0, size.1).join("\n");
         assert!(text.contains("(2 files behind this row"), "{text}");
         // Down from `v` skips the blocked `o` and `A`: v, x, then y.
-        let menu_at = |screen: &InboxScreen| screen.menu.as_ref().map(ActionMenu::selected);
+        let menu_at =
+            |screen: &InboxScreen| screen.menu.borrow().as_ref().map(ActionMenu::selected);
         assert_eq!(menu_at(&screen), Some(ActionId::Run));
         keys_on(&mut screen, &mut ctx, &[KeyCode::Char('j')], size);
         assert_eq!(menu_at(&screen), Some(ActionId::Settle));
@@ -6868,7 +6863,7 @@ mod tests {
         let reason = "2 files behind this row: press g to pick a file in the Owner block, then A";
         let action = keys_on(&mut screen, &mut ctx, &[KeyCode::Char('A')], size).remove(0);
         assert!(matches!(action, ScreenAction::None));
-        assert!(screen.menu.is_none(), "the menu closed");
+        assert!(screen.menu.borrow().is_none(), "the menu closed");
         assert_eq!(status(&ctx), reason);
     }
 
@@ -6902,7 +6897,10 @@ mod tests {
         ] {
             let action = keys_on(&mut screen, &mut ctx, &[code], size).remove(0);
             assert!(matches!(action, ScreenAction::None), "{code:?}");
-            assert!(screen.menu.is_some(), "{code:?} left the menu open");
+            assert!(
+                screen.menu.borrow().is_some(),
+                "{code:?} left the menu open"
+            );
         }
         assert_eq!(
             before,
@@ -6917,7 +6915,7 @@ mod tests {
         // Ctrl-V (the paste reflex) neither runs `v` nor closes the menu.
         let action = screen.handle_key(KeyCode::Char('v'), KeyModifiers::CONTROL, &mut ctx);
         assert!(matches!(action, ScreenAction::None));
-        assert!(screen.menu.is_some());
+        assert!(screen.menu.borrow().is_some());
         assert!(owner_actions::take_run_launches().is_empty());
     }
 
@@ -6929,17 +6927,75 @@ mod tests {
         let mut screen = InboxScreen::new();
         let size = (100, 30);
         keys_on(&mut screen, &mut ctx, &[KeyCode::Enter], size);
-        assert!(screen.menu.is_some());
+        assert!(screen.menu.borrow().is_some());
         ctx.owner_digests
             .insert(fixture::ALIAS.to_owned(), OwnerDigest::default());
         // No frame in between: the key itself finds the target gone. `q` is then
         // the screen's own pop, not a menu close.
         let action = screen.handle_key(KeyCode::Char('q'), KeyModifiers::NONE, &mut ctx);
         assert!(matches!(action, ScreenAction::Pop));
-        assert!(screen.menu.is_none());
+        assert!(screen.menu.borrow().is_none());
         assert!(!render_with(&screen, &ctx, size.0, size.1)
             .join("\n")
             .contains(" Actions "));
+    }
+
+    /// Review WR-04: a frame over a menu whose row vanished clears the menu, so it
+    /// never draws again when the row comes back and the next key is not swallowed.
+    #[test]
+    fn a_frame_clears_a_menu_whose_row_vanished_for_good() {
+        let (mut ctx, _) = parked_24();
+        let mut screen = InboxScreen::new();
+        let size = (100, 30);
+        keys_on(&mut screen, &mut ctx, &[KeyCode::Enter], size);
+        assert!(screen.menu.borrow().is_some());
+        let digest = ctx.owner_digests[fixture::ALIAS].clone();
+        ctx.owner_digests
+            .insert(fixture::ALIAS.to_owned(), OwnerDigest::default());
+        let drawn = render_with(&screen, &ctx, size.0, size.1).join("\n");
+        assert!(!drawn.contains(" Actions "), "{drawn}");
+        assert!(screen.menu.borrow().is_none(), "the frame dropped the menu");
+        // The row comes back under the cursor: no menu, no stale selection.
+        ctx.owner_digests.insert(fixture::ALIAS.to_owned(), digest);
+        let drawn = render_with(&screen, &ctx, size.0, size.1).join("\n");
+        assert!(!drawn.contains(" Actions "), "{drawn}");
+        // A hotkey acts on the row at once: `y` copies, nothing is swallowed.
+        owner_actions::take_run_launches();
+        let action = screen.handle_key(KeyCode::Char('q'), KeyModifiers::NONE, &mut ctx);
+        assert!(matches!(action, ScreenAction::Pop), "q is the screen's own");
+    }
+
+    /// Review WR-02: when a refresh removed the selected entry, the frame draws the
+    /// marker on the nearest ready entry and Enter runs that one.
+    #[test]
+    fn enter_runs_the_marked_entry_after_the_selected_one_vanished() {
+        let (mut ctx, _) = parked_24();
+        let mut screen = InboxScreen::new();
+        let size = (100, 30);
+        keys_on(&mut screen, &mut ctx, &[KeyCode::Enter], size);
+        assert_eq!(
+            screen.menu.borrow().as_ref().map(ActionMenu::selected),
+            Some(ActionId::Run)
+        );
+        // The group loses its command: `v` leaves the menu.
+        let mut digest = ctx.owner_digests[fixture::ALIAS].clone();
+        for group in &mut digest.groups {
+            if group.phase == "24" {
+                group.run = None;
+                group.command = None;
+            }
+        }
+        ctx.owner_digests.insert(fixture::ALIAS.to_owned(), digest);
+        let drawn = render_with(&screen, &ctx, size.0, size.1).join("\n");
+        assert!(
+            drawn.contains("> x     settle"),
+            "the marker is drawn: {drawn}"
+        );
+        let action = screen.handle_key(KeyCode::Enter, KeyModifiers::NONE, &mut ctx);
+        let ScreenAction::Push(popup) = action else {
+            panic!("Enter runs the marked entry, `x`");
+        };
+        assert_eq!(popup.name(), "settle_chooser");
     }
 
     /// Right/`l` expand, Left/`h` collapse a row (from a check line too); on the
@@ -6989,7 +7045,7 @@ mod tests {
         keys_on(&mut screen, &mut ctx, &[KeyCode::End], size);
         let was_open = ctx.inbox_view.open_folds.len();
         keys_on(&mut screen, &mut ctx, &[KeyCode::Enter], size);
-        assert!(screen.menu.is_none());
+        assert!(screen.menu.borrow().is_none());
         assert_ne!(ctx.inbox_view.open_folds.len(), was_open);
     }
 

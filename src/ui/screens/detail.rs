@@ -863,7 +863,7 @@ pub struct DetailScreen {
     /// The open Owner row action menu (Enter on a group or debug row, quick
     /// 261119-f5b): the row it belongs to and the selected entry. The entries are
     /// recomputed from the shared row action model every frame and every key.
-    menu: Option<owner_row_actions::ActionMenu>,
+    menu: std::cell::RefCell<Option<owner_row_actions::ActionMenu>>,
     /// The cursor row's cells in the last Phases-tab frame: where the menu hangs
     /// from (`None` when the row is scrolled out of the window).
     menu_anchor: Cell<Option<Rect>>,
@@ -1255,7 +1255,7 @@ impl DetailScreen {
             owner_landing: Cell::new(false),
             owner_offset: Cell::new(0),
             owner_viewport_rows: Cell::new(0),
-            menu: None,
+            menu: std::cell::RefCell::new(None),
             menu_anchor: Cell::new(None),
             focus: DetailFocus::Content,
             regions: std::cell::RefCell::default(),
@@ -2439,7 +2439,8 @@ impl DetailScreen {
                 expanded,
             )
         };
-        self.menu = owner_row_actions::ActionMenu::open(&self.alias, key.clone(), &actions);
+        *self.menu.get_mut() =
+            owner_row_actions::ActionMenu::open(&self.alias, key.clone(), &actions);
         ctx.needs_redraw = true;
     }
 
@@ -4700,12 +4701,12 @@ impl Screen for DetailScreen {
         // typed (the exact hotkey path), Esc and `q` only close it, nothing pops,
         // moves focus or switches tab under it. A menu whose row vanished or whose
         // level lost the keyboard is dropped and the key acts normally.
-        if let Some(mut menu) = self.menu.take() {
+        if let Some(mut menu) = self.menu.get_mut().take() {
             if let Some(actions) = self.owner_menu_actions(&menu, &current_view, ctx) {
                 ctx.needs_redraw = true;
                 return match menu.key(&actions, code, modifiers) {
                     owner_row_actions::MenuKey::Stay => {
-                        self.menu = Some(menu);
+                        *self.menu.get_mut() = Some(menu);
                         ScreenAction::None
                     }
                     owner_row_actions::MenuKey::Close => ScreenAction::None,
@@ -7234,17 +7235,18 @@ impl Screen for DetailScreen {
         frame.render_widget(footer, footer_area);
 
         // The Owner row action menu, on top of everything (quick 261119-f5b).
-        if let Some(menu) = &self.menu {
-            if let Some(actions) = self.owner_menu_actions(menu, &sub_view, ctx) {
-                owner_row_actions::render_menu(
-                    frame,
-                    area,
-                    self.menu_anchor.get(),
-                    &actions,
-                    menu.selected(),
-                );
-            }
-        }
+        let actions = self
+            .menu
+            .borrow()
+            .as_ref()
+            .and_then(|menu| self.owner_menu_actions(menu, &sub_view, ctx));
+        owner_row_actions::render_open_menu(
+            frame,
+            area,
+            self.menu_anchor.get(),
+            &self.menu,
+            actions,
+        );
     }
 
     fn name(&self) -> &str {
@@ -7277,9 +7279,9 @@ impl Screen for DetailScreen {
         }
         // An open Owner action menu swallows every click and wheel step (quick
         // 261119-f5b, I-8): nothing under it switches tab, focus or selection.
-        if let Some(menu) = self.menu.take() {
+        if let Some(menu) = self.menu.get_mut().take() {
             if self.owner_menu_actions(&menu, &current_view, ctx).is_some() {
-                self.menu = Some(menu);
+                *self.menu.get_mut() = Some(menu);
                 return ScreenAction::None;
             }
         }
@@ -38372,10 +38374,13 @@ mod tests {
         set(&mut ctx, None);
         let action = key(&mut screen, &mut ctx, KeyCode::Enter);
         assert!(matches!(action, ScreenAction::None));
-        assert!(screen.menu.is_some(), "Enter on a row opens the menu");
+        assert!(
+            screen.menu.borrow().is_some(),
+            "Enter on a row opens the menu"
+        );
         assert!(owner_view_of(&ctx).expanded.contains(&wanted));
         key(&mut screen, &mut ctx, KeyCode::Esc);
-        assert!(screen.menu.is_none());
+        assert!(screen.menu.borrow().is_none());
         assert_eq!(screen.focus, DetailFocus::Owner, "Esc only closed the menu");
         let action = key(&mut screen, &mut ctx, KeyCode::Char(' '));
         assert!(matches!(action, ScreenAction::None));
@@ -38602,7 +38607,7 @@ mod tests {
         assert!(!collapsed.contains("check 0"), "{collapsed}");
         // Enter opens the menu and expands nothing; Space expands.
         key(&mut screen, &mut ctx, KeyCode::Enter);
-        assert!(screen.menu.is_some());
+        assert!(screen.menu.borrow().is_some());
         assert!(owner_view_of(&ctx).expanded.is_empty());
         key(&mut screen, &mut ctx, KeyCode::Esc);
         let action = key(&mut screen, &mut ctx, KeyCode::Char(' '));
@@ -39341,10 +39346,10 @@ mod tests {
 
     /// The Owner block with the cursor parked on the TEST row of phase 24.
     fn parked_24() -> (DetailScreen, AppContext) {
-        let (mut screen, mut ctx) = actions_ctx();
+        let (screen, mut ctx) = actions_ctx();
         park_owner(&mut ctx, &key_24(), false, None);
         owner_draw(&screen, &ctx);
-        screen.menu = None;
+        *screen.menu.borrow_mut() = None;
         (screen, ctx)
     }
 
@@ -39397,7 +39402,7 @@ mod tests {
         let (mut screen, mut ctx) = parked_24();
         let action = key(&mut screen, &mut ctx, KeyCode::Enter);
         assert!(matches!(action, ScreenAction::None));
-        assert!(screen.menu.is_some());
+        assert!(screen.menu.borrow().is_some());
         assert!(owner_view_of(&ctx).expanded.is_empty());
         let drawn = render_detail_to_text_at(&screen, &ctx, 80, 24);
         assert!(drawn.contains(" Actions "), "{drawn}");
@@ -39407,12 +39412,12 @@ mod tests {
         assert!(drawn.lines().all(|line| line.chars().count() <= 80));
         let action = key(&mut screen, &mut ctx, KeyCode::Esc);
         assert!(matches!(action, ScreenAction::None));
-        assert!(screen.menu.is_none());
+        assert!(screen.menu.borrow().is_none());
         assert_eq!(screen.focus, DetailFocus::Owner, "Esc only closed the menu");
         key(&mut screen, &mut ctx, KeyCode::Enter);
         let action = key(&mut screen, &mut ctx, KeyCode::Char('q'));
         assert!(matches!(action, ScreenAction::None), "q did not pop");
-        assert!(screen.menu.is_none());
+        assert!(screen.menu.borrow().is_none());
         assert_eq!(screen.focus, DetailFocus::Owner);
     }
 
@@ -39475,7 +39480,7 @@ mod tests {
             panic!("x opens the settle chooser");
         };
         assert_eq!(chooser.name(), "settle_chooser");
-        assert!(screen.menu.is_none());
+        assert!(screen.menu.borrow().is_none());
         assert!(owner_settle::take_settle_launches().is_empty());
         let backdrop = render_detail_to_text_at(&screen, &ctx, 100, 30);
         assert!(!backdrop.contains(" Actions "), "{backdrop}");
@@ -39498,13 +39503,14 @@ mod tests {
             "{drawn}"
         );
         // v and x are blocked: the menu preselects `o`, and k stays there.
-        let selected = |screen: &DetailScreen| screen.menu.as_ref().map(ActionMenu::selected);
+        let selected =
+            |screen: &DetailScreen| screen.menu.borrow().as_ref().map(ActionMenu::selected);
         assert_eq!(selected(&screen), Some(ActionId::Open));
         key(&mut screen, &mut ctx, KeyCode::Char('k'));
         assert_eq!(selected(&screen), Some(ActionId::Open));
         let action = key(&mut screen, &mut ctx, KeyCode::Char('v'));
         assert!(matches!(action, ScreenAction::None));
-        assert!(screen.menu.is_none());
+        assert!(screen.menu.borrow().is_none());
         assert_eq!(
             ctx.status_message.as_ref().map(|(m, _)| m.as_str()),
             Some("No command: the source file is unreadable")
@@ -39543,7 +39549,7 @@ mod tests {
         ] {
             let action = key(&mut screen, &mut ctx, code);
             assert!(matches!(action, ScreenAction::None), "{code:?}");
-            assert!(screen.menu.is_some(), "{code:?} closed the menu");
+            assert!(screen.menu.borrow().is_some(), "{code:?} closed the menu");
             assert_eq!(screen.focus, DetailFocus::Owner, "{code:?}");
         }
         assert_eq!(owner_view_of(&ctx).cursor, cursor_before);
@@ -39551,7 +39557,7 @@ mod tests {
         // A Ctrl-V neither runs `v` nor closes the menu.
         let action = screen.handle_key(KeyCode::Char('v'), KeyModifiers::CONTROL, &mut ctx);
         assert!(matches!(action, ScreenAction::None));
-        assert!(screen.menu.is_some());
+        assert!(screen.menu.borrow().is_some());
         assert!(owner_actions::take_run_launches().is_empty());
         // Clicks and wheel steps are swallowed wherever they land.
         for column in [2u16, 12, 30, 50, 70] {
@@ -39575,7 +39581,7 @@ mod tests {
                 ] {
                     let action = screen.handle_mouse(input, &mut ctx);
                     assert!(matches!(action, ScreenAction::None));
-                    assert!(screen.menu.is_some());
+                    assert!(screen.menu.borrow().is_some());
                     assert_eq!(screen.focus, DetailFocus::Owner);
                 }
             }
@@ -39599,7 +39605,7 @@ mod tests {
     fn owner_refresh_that_drops_the_target_closes_the_menu_silently() {
         let (mut screen, mut ctx) = parked_24();
         key(&mut screen, &mut ctx, KeyCode::Enter);
-        assert!(screen.menu.is_some());
+        assert!(screen.menu.borrow().is_some());
         ctx.owner_digests.insert(
             TEST_ALIAS.to_string(),
             crate::state_reader::owner_items::OwnerDigest::default(),
@@ -39607,14 +39613,72 @@ mod tests {
         // `q` is then the Owner block's own pop, not a menu close.
         let action = screen.handle_key(KeyCode::Char('q'), KeyModifiers::NONE, &mut ctx);
         assert!(matches!(action, ScreenAction::Pop));
-        assert!(screen.menu.is_none());
+        assert!(screen.menu.borrow().is_none());
         // Focus leaving the block drops it as well.
         let (mut screen, mut ctx) = parked_24();
         key(&mut screen, &mut ctx, KeyCode::Enter);
         screen.focus = DetailFocus::TabBar;
         key(&mut screen, &mut ctx, KeyCode::Char('x'));
-        assert!(screen.menu.is_none());
+        assert!(screen.menu.borrow().is_none());
         assert!(!render_detail_to_text_at(&screen, &ctx, 100, 30).contains(" Actions "));
+    }
+
+    /// Review WR-04: a frame over a menu whose row vanished (or whose block lost the
+    /// keyboard) clears the menu, so it never draws again when the row or the focus
+    /// comes back and the next key is not swallowed.
+    #[test]
+    fn owner_frame_clears_a_menu_whose_row_vanished_for_good() {
+        let (mut screen, mut ctx) = parked_24();
+        key(&mut screen, &mut ctx, KeyCode::Enter);
+        assert!(screen.menu.borrow().is_some());
+        let digest = ctx.owner_digests[TEST_ALIAS].clone();
+        ctx.owner_digests.insert(
+            TEST_ALIAS.to_string(),
+            crate::state_reader::owner_items::OwnerDigest::default(),
+        );
+        assert!(!render_detail_to_text_at(&screen, &ctx, 100, 30).contains(" Actions "));
+        assert!(screen.menu.borrow().is_none(), "the frame dropped the menu");
+        ctx.owner_digests.insert(TEST_ALIAS.to_string(), digest);
+        assert!(!render_detail_to_text_at(&screen, &ctx, 100, 30).contains(" Actions "));
+        let action = screen.handle_key(KeyCode::Char('q'), KeyModifiers::NONE, &mut ctx);
+        assert!(matches!(action, ScreenAction::Pop), "q is the screen's own");
+        // Focus leaving the block, then returning, does not bring the menu back.
+        let (mut screen, mut ctx) = parked_24();
+        key(&mut screen, &mut ctx, KeyCode::Enter);
+        screen.focus = DetailFocus::TabBar;
+        assert!(!render_detail_to_text_at(&screen, &ctx, 100, 30).contains(" Actions "));
+        assert!(screen.menu.borrow().is_none());
+        screen.focus = DetailFocus::Owner;
+        assert!(!render_detail_to_text_at(&screen, &ctx, 100, 30).contains(" Actions "));
+    }
+
+    /// Review WR-02: when a refresh removed the selected entry, the frame draws the
+    /// marker on the nearest ready entry and Enter runs that one.
+    #[test]
+    fn owner_enter_runs_the_marked_entry_after_the_selected_one_vanished() {
+        let (mut screen, mut ctx) = parked_24();
+        key(&mut screen, &mut ctx, KeyCode::Enter);
+        assert_eq!(
+            screen.menu.borrow().as_ref().map(ActionMenu::selected),
+            Some(ActionId::Run)
+        );
+        let mut digest = ctx.owner_digests[TEST_ALIAS].clone();
+        for group in &mut digest.groups {
+            if group.phase == "24" {
+                group.run = None;
+                group.command = None;
+            }
+        }
+        ctx.owner_digests.insert(TEST_ALIAS.to_string(), digest);
+        let drawn = render_detail_to_text_at(&screen, &ctx, 100, 30);
+        assert!(
+            drawn.contains("> x     settle"),
+            "the marker is drawn: {drawn}"
+        );
+        let ScreenAction::Push(popup) = key(&mut screen, &mut ctx, KeyCode::Enter) else {
+            panic!("Enter runs the marked entry, `x`");
+        };
+        assert_eq!(popup.name(), "settle_chooser");
     }
 
     /// Right/`l` expand, Left/`h` collapse (also from a check line); on the fold
@@ -39655,7 +39719,7 @@ mod tests {
             assert!(owner_view_of(&ctx).expanded.is_empty());
             let open_before = owner_view_of(&ctx).open_folds.clone();
             key(&mut screen, &mut ctx, KeyCode::Enter);
-            assert!(screen.menu.is_none());
+            assert!(screen.menu.borrow().is_none());
             assert_ne!(
                 owner_view_of(&ctx).open_folds,
                 open_before,
@@ -39672,9 +39736,9 @@ mod tests {
         for (row_key, src) in row_keys(&ctx) {
             park_owner(&mut ctx, &row_key, false, None);
             owner_draw(&screen, &ctx);
-            screen.menu = None;
+            *screen.menu.borrow_mut() = None;
             key(&mut screen, &mut ctx, KeyCode::Enter);
-            assert!(screen.menu.is_some(), "{row_key:?}");
+            assert!(screen.menu.borrow().is_some(), "{row_key:?}");
             let actions =
                 row_actions::row_actions(&ctx, Host::OwnerBlock, TEST_ALIAS, &src, None, false);
             let drawn = render_detail_to_text_at(&screen, &ctx, 80, 24);
@@ -39688,7 +39752,7 @@ mod tests {
                     action.id
                 );
             }
-            screen.menu = None;
+            *screen.menu.borrow_mut() = None;
         }
     }
 }
