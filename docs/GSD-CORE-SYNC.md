@@ -789,22 +789,22 @@ in another value, is displayed like any other value (T-jnf-07, accepted).
 
 ## Modelled
 
-Every key `build_defaults_entries` pushes a row for, in display order. **139
+Every key `build_defaults_entries` pushes a row for, in display order. **140
 rows**: **51** carry a `since` measured at the 1.14.0 re-sync (260916-vqw
 measured 57; six were retired at 261012-jqb), **2** carry `v1.15.0` (added by
 260926-gtk, measured against the v1.15.0 tag at 261012-jqb), **7** carry a
 `since` measured when quick task 260926-jnf promoted them, **2** carry
 `v1.16.0` (261012-jqb), **1** carries `v1.6.0`, measured at 261019-guw, **1**
 carries `v1.19.0` (261027-184), **2** carry `v1.10.0`, measured when quick task
-261103-f5i promoted them, **1** carries `v1.21.0` (261113-fi0), and the **72** without one predate this record
+261103-f5i promoted them, **1** carries `v1.21.0` (261113-fi0), **1** carries `v1.22.0` (261119-ikn), and the **72** without one predate this record
 and were not retro-measured.
 
-`DEFAULTS_OPTION_COUNT` in `src/ui/screens/detail.rs` pins this count at 139
+`DEFAULTS_OPTION_COUNT` in `src/ui/screens/detail.rs` pins this count at 140
 (132 -> 139 at 260926-jnf, 139 -> 135 at 261012-jqb, 135 -> 136 at 261027-184,
-136 -> 138 at 261103-f5i, 138 -> 139 at 261113-fi0),
+136 -> 138 at 261103-f5i, 138 -> 139 at 261113-fi0, 139 -> 140 at 261119-ikn),
 `RESYNCED_KEYS` / `RESYNCED_KEYS_1_15_0` / `RESYNCED_KEYS_1_16_0` /
 `RESYNCED_KEYS_1_19_0` / `PROMOTED_PLANNER_KEYS_1_20_0` /
-`RESYNCED_KEYS_1_21_0` / `PROMOTED_TOP_LEVEL_KEYS` pin the seven key lists,
+`RESYNCED_KEYS_1_21_0` / `RESYNCED_KEYS_1_22_0` / `PROMOTED_TOP_LEVEL_KEYS` pin the eight key lists,
 `REMOVED_KEYS_1_16_0` pins the six retired ones, and three coverage assertions
 refuse a row with no `ConfigHelp`.
 
@@ -868,6 +868,7 @@ refuse a row with no `ConfigHelp`.
 | `workflow.security_block_on` | |
 | `workflow.security_enforcement` | v1.01.0 |
 | `workflow.agent_hint_routing` | v1.11.0 |
+| `workflow.cross_runtime_execution` | v1.22.0 |
 | `workflow.code_review_point` | v1.13.0 |
 | `workflow.code_review_depth_overrides` | v1.12.0 |
 | `workflow.human_verify_mode` | v1.01.0 |
@@ -879,6 +880,8 @@ refuse a row with no `ConfigHelp`.
 | `workflow.cross_ai_execution` | v1.01.0 |
 | `workflow.cross_ai_command` | v1.01.0 |
 | `workflow.cross_ai_timeout` | v1.01.0 |
+
+gsd-core v1.22.0 registers `workflow.cross_runtime_execution` (#6302) as an opt-in gate (default `false`) that nothing reads until its cross-runtime dispatch ships (261119-ikn).
 
 ### Docs & Output
 
@@ -1059,7 +1062,7 @@ a name nobody here has seen, is handled by the same mechanism without an edit.
 |---|---|
 | `review.models.<cli>`, `review.effort.<slug>`, `review.context_window_tokens.<slug>`, `review.reviewer_instances.<name>.*` | Templated by CLI / reviewer-lane slug / instance name; a typed field per unknown name is not expressible. The effort family is owned by each lane's capability manifest (`effortConfigKey`). `review.context_window_tokens` (gsd-core 1.20.0, #4559) is a per-reviewer-slug object (10 capability-registered slugs at v1.20.0) that derives the default cap of `review.max_prompt_tokens*`; it round-trips losslessly through `ReviewConfig`'s flatten `extra`. |
 | `review.default_reviewers`, `review.*_host`, `review.max_prompt_tokens*`, `review.parallel_lanes` | Would be typeable; deferred because the whole `review.*` block is one editing surface and splitting it half-and-half reads worse than leaving it whole. |
-| `model_policy.*`, `model_profile_overrides.<runtime>.<tier>` | Keyed by runtime and tier; templated. |
+| `model_policy.*`, `model_profile_overrides.<runtime>.<tier>`, `execute.models.<runtime>` | Keyed by runtime and tier; templated. gsd-core v1.22.0 (#6302) registers `execute.models.<runtime>` (the model id handed to a foreign executor of that runtime) and nothing reads it yet; the whole top-level `execute` object shows as one read-only row, unmasked, and is preserved on save. |
 | `effort.*`, `fast_mode.*` | Both carry `agent_overrides.<agent-id>` and `routing_tier_defaults.*`; templated. |
 | `dynamic_routing.tier_models.<tier>` | Templated by tier name. |
 | `models.<phase_type>`, `granularities.<phase_type>` | Templated by phase type. |

@@ -12274,6 +12274,11 @@ fn build_defaults_entries(
     push(cat, "workflow.agent_hint_routing", v, k, false, ConfigHelp::new(
         "Sends a plan whose frontmatter names a specialist subagent to that one instead of the generic executor.",
     ).since("v1.11.0"));
+    // gsd-core v1.22.0 (#6302, quick task 261119-ikn).
+    let (v, k) = opt_bool(pwf.and_then(|w| w.cross_runtime_execution));
+    push(cat, "workflow.cross_runtime_execution", v, k, false, ConfigHelp::new(
+        "Opt-in gate for running a plan that names executor_runtime on another vendor's CLI; gsd-core 1.22.0 registers it, but nothing dispatches on it yet.",
+    ).since("v1.22.0"));
     let (v, k) = opt_enum(
         pwf.and_then(|w| w.code_review_point.as_deref()),
         &["execute:post", "execute:wave:post"],
@@ -12933,6 +12938,7 @@ fn builtin_default_for_key(key: &str) -> Option<&'static str> {
         | "skip_discuss"
         | "text_mode"
         | "workflow.compact_content"
+        | "workflow.cross_runtime_execution"
         | "graphify.auto_update"
         | "auto_advance"
         | "auto_chain_active"
@@ -13739,6 +13745,13 @@ fn set_config_value(
                     .workflow
                     .get_or_insert_with(WorkflowConfig::default)
                     .agent_hint_routing = Some(b);
+                return true;
+            }
+            "workflow.cross_runtime_execution" => {
+                config
+                    .workflow
+                    .get_or_insert_with(WorkflowConfig::default)
+                    .cross_runtime_execution = Some(b);
                 return true;
             }
             "workflow.auto_prune_state" => {
@@ -14666,6 +14679,13 @@ fn clear_config_value(config: &mut crate::state_reader::config_json::GsdConfig, 
                 .agent_hint_routing = None;
             true
         }
+        "workflow.cross_runtime_execution" => {
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .cross_runtime_execution = None;
+            true
+        }
         "workflow.auto_prune_state" => {
             config
                 .workflow
@@ -15313,6 +15333,11 @@ fn mutate_config_entry(
                     wf.agent_hint_routing = Some(!wf.agent_hint_routing.unwrap_or(false));
                     true
                 }
+                "workflow.cross_runtime_execution" => {
+                    let wf = config.workflow.get_or_insert_with(WorkflowConfig::default);
+                    wf.cross_runtime_execution = Some(!wf.cross_runtime_execution.unwrap_or(false));
+                    true
+                }
                 "workflow.auto_prune_state" => {
                     let wf = config.workflow.get_or_insert_with(WorkflowConfig::default);
                     wf.auto_prune_state = Some(!wf.auto_prune_state.unwrap_or(false));
@@ -15899,6 +15924,7 @@ mod tests {
                 "security_block_on": "high",
                 "compact_content": true,
                 "agent_hint_routing": true,
+                "cross_runtime_execution": true,
                 "auto_prune_state": false,
                 "build_command": "cargo build",
                 "code_review_depth_overrides": [{ "paths": ["src/auth"], "depth": "deep" }],
@@ -15999,7 +16025,7 @@ mod tests {
     /// carrying such a key would make this number a property of the fixture
     /// rather than of the tab. [`populated_gsd_config`] is therefore kept free
     /// of unmodelled keys, and the pass-through rows have their own fixture.
-    const DEFAULTS_OPTION_COUNT: usize = 139;
+    const DEFAULTS_OPTION_COUNT: usize = 140;
 
     #[test]
     fn every_config_entry_carries_a_non_empty_summary() {
@@ -17415,6 +17441,13 @@ mod tests {
     /// `NON_SECRET_CONFIG_KEYS`.
     const RESYNCED_KEYS_1_21_0: &[(&str, &str)] = &[("hooks.secret_read_exempt", "readonly")];
 
+    /// MEASURED key-cell diff v1.21.0..v1.22.0 of upstream `docs/CONFIGURATION.md`
+    /// (+2 / -0), first commit e99b85854 (#6302 / PR #6307):
+    /// `workflow.cross_runtime_execution` (a boolean, typed here). The other
+    /// cell, `execute.models.<runtime>`, is templated by runtime name and stays
+    /// pass-through.
+    const RESYNCED_KEYS_1_22_0: &[(&str, &str)] = &[("workflow.cross_runtime_execution", "bool")];
+
     /// The real top-level gsd-core keys that were still pass-through after the
     /// release-1.15.0 re-sync, promoted to typed rows by quick task
     /// 260926-jnf — MEASURED against `upstream/release-1.15.0` (the 260926-gtk
@@ -17601,6 +17634,12 @@ mod tests {
              gsd-core and update docs/GSD-CORE-SYNC.md in the SAME commit"
         );
         assert_eq!(
+            RESYNCED_KEYS_1_22_0.len(),
+            1,
+            "the v1.22.0 delta was MEASURED at +2 cells, of which 1 is a typed key; \
+             re-measure against gsd-core and update docs/GSD-CORE-SYNC.md in the SAME commit"
+        );
+        assert_eq!(
             PROMOTED_PLANNER_KEYS_1_20_0.len(),
             2,
             "quick task 261103-f5i promoted exactly 2 planner keys; re-measure \
@@ -17770,6 +17809,101 @@ mod tests {
         assert_ne!(row.category, PASSTHROUGH_CATEGORY);
     }
 
+    /// `workflow.cross_runtime_execution` (gsd-core 1.22.0, #6302): one typed,
+    /// editable Bool row that sits right after `workflow.agent_hint_routing`
+    /// and survives a save.
+    #[test]
+    fn workflow_cross_runtime_execution_is_one_typed_bool_row_that_round_trips() {
+        use crate::state_reader::config_json::{parse_gsd_config, serialize_gsd_config};
+        let mut config =
+            parse_gsd_config(r#"{"workflow":{"cross_runtime_execution":true}}"#).unwrap();
+        let entries = build_defaults_entries(&config);
+        let idx: Vec<usize> = entries
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| e.key.as_ref() == "workflow.cross_runtime_execution")
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(
+            idx.len(),
+            1,
+            "exactly one workflow.cross_runtime_execution row"
+        );
+        let row = &entries[idx[0]];
+        assert!(matches!(row.kind, ConfigValueKind::Bool), "{:?}", row.kind);
+        assert_eq!(row.category, "Execution");
+        assert_ne!(row.category, PASSTHROUGH_CATEGORY);
+        assert_eq!(row.value, "true");
+        assert_eq!(row.help.since, "v1.22.0");
+        let hint = entries
+            .iter()
+            .position(|e| e.key.as_ref() == "workflow.agent_hint_routing")
+            .unwrap();
+        assert_eq!(idx[0], hint + 1);
+        assert!(mutate_config_entry(
+            &mut config,
+            "workflow.cross_runtime_execution",
+            &ConfigValueKind::Bool
+        ));
+        let saved: serde_json::Value =
+            serde_json::from_str(&serialize_gsd_config(&config).unwrap()).unwrap();
+        assert_eq!(
+            saved.pointer("/workflow/cross_runtime_execution"),
+            Some(&serde_json::Value::Bool(false))
+        );
+
+        let empty = parse_gsd_config("{}").unwrap();
+        let entries = build_defaults_entries(&empty);
+        let row = entries
+            .iter()
+            .find(|e| e.key.as_ref() == "workflow.cross_runtime_execution")
+            .expect("the unset row");
+        assert_ne!(row.category, PASSTHROUGH_CATEGORY);
+        assert_eq!(
+            builtin_default_for_key("workflow.cross_runtime_execution"),
+            Some("false")
+        );
+    }
+
+    /// `execute.models.<runtime>` (gsd-core 1.22.0, #6302) is templated by
+    /// runtime name, so the top-level `execute` object stays one read-only
+    /// pass-through row, shown in the clear and preserved on save.
+    #[test]
+    fn execute_models_is_an_unmasked_pass_through_row() {
+        use crate::state_reader::config_json::{parse_gsd_config, serialize_gsd_config};
+        use crate::state_reader::config_secrets::MASKED_SECRET;
+        let mut config =
+            parse_gsd_config(r#"{"execute":{"models":{"codex":"gpt-5.5-codex"}}}"#).unwrap();
+        let entries = build_defaults_entries(&config);
+        let rows: Vec<&ConfigEntry> = entries
+            .iter()
+            .filter(|e| e.category == PASSTHROUGH_CATEGORY && e.key.as_ref() == "execute")
+            .collect();
+        assert_eq!(rows.len(), 1, "exactly one pass-through `execute` row");
+        assert!(matches!(rows[0].kind, ConfigValueKind::ReadOnly));
+        assert!(
+            rows[0].value.contains("gpt-5.5-codex"),
+            "{:?}",
+            rows[0].value
+        );
+        assert!(
+            !rows[0].value.contains(MASKED_SECRET),
+            "{:?}",
+            rows[0].value
+        );
+        assert!(mutate_config_entry(
+            &mut config,
+            "research",
+            &ConfigValueKind::Bool
+        ));
+        let saved: serde_json::Value =
+            serde_json::from_str(&serialize_gsd_config(&config).unwrap()).unwrap();
+        assert_eq!(
+            saved.pointer("/execute/models/codex"),
+            Some(&serde_json::Value::String("gpt-5.5-codex".into()))
+        );
+    }
+
     /// The sync record carries the secret-key provenance a future sync diffs
     /// against: every explicit secret key and every measured exemption.
     #[test]
@@ -17817,6 +17951,7 @@ mod tests {
             .chain(RESYNCED_KEYS_1_19_0)
             .chain(PROMOTED_PLANNER_KEYS_1_20_0)
             .chain(RESYNCED_KEYS_1_21_0)
+            .chain(RESYNCED_KEYS_1_22_0)
             .chain(PROMOTED_TOP_LEVEL_KEYS)
         {
             let matching: Vec<&ConfigEntry> = entries
@@ -17871,6 +18006,7 @@ mod tests {
             .chain(RESYNCED_KEYS_1_19_0)
             .chain(PROMOTED_PLANNER_KEYS_1_20_0)
             .chain(RESYNCED_KEYS_1_21_0)
+            .chain(RESYNCED_KEYS_1_22_0)
             .chain(PROMOTED_TOP_LEVEL_KEYS)
         {
             let entry = entries

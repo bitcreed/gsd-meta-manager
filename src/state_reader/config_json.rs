@@ -649,6 +649,11 @@ pub struct WorkflowConfig {
     // --- gsd-core re-sync at 1.15.0 (quick task 260926-gtk) ---
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ui_interaction_capture: Option<bool>,
+    // --- gsd-core v1.22.0 (#6302, quick task 261119-ikn) ---
+    /// Opt-in gate for dispatching a plan that declares `executor_runtime:` to
+    /// another runtime's CLI. Registered upstream with nothing reading it yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cross_runtime_execution: Option<bool>,
     /// See [`ExtraKeys`].
     #[serde(flatten)]
     pub extra: ExtraKeys,
@@ -1516,6 +1521,7 @@ mod tests {
         let content = r#"{
             "workflow": {
                 "agent_hint_routing": false,
+                "cross_runtime_execution": true,
                 "auto_prune_state": true,
                 "build_command": "cargo build",
                 "code_review_depth_overrides": [{ "paths": ["src/auth"], "depth": "deep" }],
@@ -1555,6 +1561,7 @@ mod tests {
         );
 
         assert_eq!(wf.agent_hint_routing, Some(false));
+        assert_eq!(wf.cross_runtime_execution, Some(true));
         assert_eq!(wf.auto_prune_state, Some(true));
         assert_eq!(wf.build_command.as_deref(), Some("cargo build"));
         assert!(wf.code_review_depth_overrides.as_ref().unwrap().is_array());
@@ -1592,6 +1599,7 @@ mod tests {
         let reparsed = parse_gsd_config(&serialized).expect("re-parses");
         let rwf = reparsed.workflow.as_ref().unwrap();
         assert_eq!(rwf.agent_hint_routing, Some(false));
+        assert_eq!(rwf.cross_runtime_execution, Some(true));
         assert_eq!(rwf.smart_zone_tokens, Some(125000));
         assert_eq!(rwf.human_verify_mode.as_deref(), Some("mid-flight"));
         assert_eq!(
@@ -1614,6 +1622,7 @@ mod tests {
         let config = parse_gsd_config(r#"{"workflow": {"research": true}}"#).unwrap();
         let wf = config.workflow.as_ref().unwrap();
         assert!(wf.agent_hint_routing.is_none());
+        assert!(wf.cross_runtime_execution.is_none());
         assert!(wf.build_command.is_none());
         assert!(wf.code_review_point.is_none());
         assert!(wf.compact_content.is_none());
@@ -1621,6 +1630,7 @@ mod tests {
         assert!(wf.worktree_skip_hooks.is_none());
         let serialized = serialize_gsd_config(&config).unwrap();
         assert!(!serialized.contains("agent_hint_routing"));
+        assert!(!serialized.contains("cross_runtime_execution"));
         assert!(!serialized.contains("smart_zone_tokens"));
     }
 
