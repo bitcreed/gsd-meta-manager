@@ -845,6 +845,13 @@ pub struct DetailScreen {
     /// Whether the block the last frame drew has a cursor stop: only then does `↑`
     /// enter it, so only then does the footer name it.
     owner_block_stops: Cell<bool>,
+    /// Whether the last frame drew the Owner block as focused while `focus` is
+    /// still `Content` (quick 261118-tm6): the phase list was empty, so the block
+    /// is the tab's only focusable level. The render cannot write `focus`, so it
+    /// records this instead and the next key or mouse event makes it real
+    /// ([`Self::take_owner_landing`]) before acting — the key lands on the cursor
+    /// the frame showed, never on an invisible list.
+    owner_landing: Cell<bool>,
     /// First visible body row of the Owner block, kept across frames so the
     /// window follows the cursor by whole rows. Render-written, as `waves_offset`
     /// is: the render cannot mutate the view cache.
@@ -1237,6 +1244,7 @@ impl DetailScreen {
             waves_viewport_rows: Cell::new(0),
             owner_block_rows: Cell::new(0),
             owner_block_stops: Cell::new(false),
+            owner_landing: Cell::new(false),
             owner_offset: Cell::new(0),
             owner_viewport_rows: Cell::new(0),
             focus: DetailFocus::Content,
@@ -2273,13 +2281,22 @@ impl DetailScreen {
             }
             KeyCode::Left if on_fold_line => owner_block::fold_step(view, &sk.folds, false),
             KeyCode::Right if on_fold_line => owner_block::fold_step(view, &sk.folds, true),
+            // An empty phase list is no level to return to (quick 261118-tm6):
+            // `Esc` goes up to the tab bar instead.
             KeyCode::Esc => {
-                self.focus = DetailFocus::Content;
+                self.focus = if self.phase_list_empty(ctx) {
+                    DetailFocus::TabBar
+                } else {
+                    DetailFocus::Content
+                };
             }
             // `e`, `←`/`→` off the fold line and every other key.
             _ => {}
         }
         match moved {
+            // Below the last stop is the phase list; an empty one is nothing to
+            // land on, so the cursor stays (quick 261118-tm6).
+            Moved::PastLast if self.phase_list_empty(ctx) => {}
             Moved::PastLast => self.focus = DetailFocus::Content,
             Moved::PastFirst => self.focus = DetailFocus::TabBar,
             Moved::Within => {}
@@ -2509,9 +2526,35 @@ impl DetailScreen {
         ScreenAction::None
     }
 
-    /// `↑`/`k` from the first phase row: enter the Owner block on its last stop
-    /// when the last frame drew one (D-20). `false` leaves everything as it was.
-    fn enter_owner_block(&mut self, ctx: &mut AppContext) -> bool {
+    /// Whether the Phases tab's phase list has no row (its "No phases found"
+    /// state, or no state at all): no cursor to draw, so never a focus target
+    /// (quick 261118-tm6).
+    fn phase_list_empty(&self, ctx: &AppContext) -> bool {
+        ctx.project_states
+            .get(&self.alias)
+            .is_none_or(|s| s.scoped_phase_count() == 0)
+    }
+
+    /// Make the last frame's empty-list landing real (quick 261118-tm6): the
+    /// frame drew the Owner block's first stop as the cursor while `focus` was
+    /// `Content`, so the keyboard moves there before the event acts. A landing
+    /// the event can no longer honor (another tab, another level, the block
+    /// gone) is simply dropped.
+    fn take_owner_landing(&mut self, current_view: &DetailSubView, ctx: &mut AppContext) {
+        if !self.owner_landing.replace(false)
+            || self.focus != DetailFocus::Content
+            || *current_view != DetailSubView::Pipeline
+        {
+            return;
+        }
+        self.enter_owner_block(ctx, true);
+    }
+
+    /// Enter the Owner block when the last frame drew one with a cursor stop:
+    /// on its last stop from the first phase row below it (`↑`/`k`, D-20), on
+    /// its first from the tab bar above it or as an empty list's landing
+    /// (quick 261118-tm6). `false` leaves everything as it was.
+    fn enter_owner_block(&mut self, ctx: &mut AppContext, first: bool) -> bool {
         if self.owner_block_rows.get() == 0 {
             return false;
         }
@@ -2529,7 +2572,11 @@ impl DetailScreen {
         if sk.stops.is_empty() {
             return false;
         }
-        owner_block::enter_last(view, &sk.stops);
+        if first {
+            owner_block::enter_first(view, &sk.stops);
+        } else {
+            owner_block::enter_last(view, &sk.stops);
+        }
         self.focus = DetailFocus::Owner;
         ctx.needs_redraw = true;
         true
@@ -4411,6 +4458,9 @@ impl Screen for DetailScreen {
             return ScreenAction::ToggleMouseCapture;
         }
 
+        // The key acts on the cursor the last frame drew (quick 261118-tm6).
+        self.take_owner_landing(&current_view, ctx);
+
         // The tab-bar level (quick 260926-1t1, D-01, D-02). AFTER both Config
         // intercepts, so an arrow or a `q` typed into a value or the filter is
         // still text (T-1t1-02); BEFORE the main match, so no content arm —
@@ -4430,8 +4480,13 @@ impl Screen for DetailScreen {
                 // Descend with NO other state change ([inferred I-3]: Space
                 // too — on Queue it would otherwise mark an item done).
                 // On Config the level below the tab bar is the scope strip
-                // (quick 260929-g9u, D-01).
+                // (quick 260929-g9u, D-01); on Phases it is the Owner block's
+                // first stop when the last frame drew one (quick 261118-tm6).
                 KeyCode::Down | KeyCode::Char('j') | KeyCode::Enter | KeyCode::Char(' ') => {
+                    if current_view == DetailSubView::Pipeline && self.enter_owner_block(ctx, true)
+                    {
+                        return ScreenAction::None;
+                    }
                     self.focus = if current_view == DetailSubView::Defaults {
                         DetailFocus::ScopeStrip
                     } else {
@@ -4809,7 +4864,8 @@ impl Screen for DetailScreen {
                 if self.content_at_first_row(&current_view, ctx) {
                     // The vertical order is tab bar, Owner block, phase list:
                     // from the first phase `↑` enters the block when one is drawn.
-                    if current_view == DetailSubView::Pipeline && self.enter_owner_block(ctx) {
+                    if current_view == DetailSubView::Pipeline && self.enter_owner_block(ctx, false)
+                    {
                         return ScreenAction::None;
                     }
                     self.focus = if current_view == DetailSubView::Defaults {
@@ -6861,11 +6917,13 @@ impl Screen for DetailScreen {
             Paragraph::new(Line::from(tab_bar_footer_spans(ctx.experimental)))
         } else if self.focus == DetailFocus::Pane && sub_view == DetailSubView::Pipeline {
             Paragraph::new(Line::from(waves_pane_footer_spans()))
-        } else if self.focus == DetailFocus::Owner
+        } else if (self.focus == DetailFocus::Owner || self.owner_landing.get())
             && sub_view == DetailSubView::Pipeline
             && self.owner_block_rows.get() > 0
         {
-            Paragraph::new(Line::from(owner_block_footer_spans()))
+            Paragraph::new(Line::from(owner_block_footer_spans(
+                self.phase_list_empty(ctx),
+            )))
         } else if self.focus == DetailFocus::ScopeStrip && sub_view == DetailSubView::Defaults {
             Paragraph::new(Line::from(config_scope_footer_spans()))
         } else if backlog_focused {
@@ -6913,6 +6971,8 @@ impl Screen for DetailScreen {
         if self.config_text_entry_active(&current_view, ctx) {
             return ScreenAction::None;
         }
+        // As for a key: the event meets the focus the last frame drew.
+        self.take_owner_landing(&current_view, ctx);
         match input {
             MouseInput::Click {
                 double: true,
@@ -8026,6 +8086,7 @@ impl DetailScreen {
     fn render_pipeline_tab(&self, frame: &mut Frame, area: Rect, ctx: &AppContext) {
         self.owner_block_rows.set(0);
         self.owner_block_stops.set(false);
+        self.owner_landing.set(false);
         if let (Some(state), Some(digest)) = (
             ctx.project_states.get(&self.alias),
             ctx.owner_digest(&self.alias),
@@ -8046,25 +8107,36 @@ impl DetailScreen {
             if height > 0 {
                 self.owner_block_rows.set(height);
                 self.owner_block_stops.set(!model.stops.is_empty());
-                let cursor = (self.focus == DetailFocus::Owner)
-                    .then(|| owner_block::resolve_cursor(view, &model.stops))
-                    .flatten()
-                    .map(|stop| owner_block::Cursor {
-                        stop,
-                        fold: owner_block::resolved_fold(view, &model.folds),
-                        item_line: model
-                            .stops
-                            .get(stop)
-                            .zip(view.item_cursor.as_deref())
-                            .and_then(|(at, id)| match at {
-                                owner_block::Stop::Row(key) => model
-                                    .item_lines
-                                    .iter()
-                                    .find(|(k, i, _)| k == key && i == id)
-                                    .map(|(_, _, line)| *line),
-                                owner_block::Stop::FoldLine => None,
-                            }),
-                    });
+                // An empty phase list has no cursor to draw, so the block is the
+                // focused level, drawn on its first stop (quick 261118-tm6); the
+                // next event makes that real (`take_owner_landing`).
+                let landing = self.focus == DetailFocus::Content
+                    && !model.stops.is_empty()
+                    && state.scoped_phase_count() == 0;
+                self.owner_landing.set(landing);
+                let cursor = if landing {
+                    Some(0)
+                } else {
+                    (self.focus == DetailFocus::Owner)
+                        .then(|| owner_block::resolve_cursor(view, &model.stops))
+                        .flatten()
+                };
+                let cursor = cursor.map(|stop| owner_block::Cursor {
+                    stop,
+                    fold: owner_block::resolved_fold(view, &model.folds),
+                    item_line: model
+                        .stops
+                        .get(stop)
+                        .zip(view.item_cursor.as_deref().filter(|_| !landing))
+                        .and_then(|(at, id)| match at {
+                            owner_block::Stop::Row(key) => model
+                                .item_lines
+                                .iter()
+                                .find(|(k, i, _)| k == key && i == id)
+                                .map(|(_, _, line)| *line),
+                            owner_block::Stop::FoldLine => None,
+                        }),
+                });
                 let window = owner_block::window_rows(&model, height);
                 let mut offset = owner_block::follow_offset(
                     &model,
@@ -8206,13 +8278,21 @@ impl DetailScreen {
         // `List`: it is the rect the phase rows occupy, the click target.
         let list_block = Block::default().borders(Borders::RIGHT).title(" Phases ");
         let list_inner = list_block.inner(left_area);
-        let list = List::new(items)
-            .highlight_style(
-                Style::default()
-                    .add_modifier(Modifier::BOLD)
-                    .fg(Color::Cyan),
-            )
-            .highlight_symbol("> ");
+        // One cursor on screen (quick 261118-tm6): while the Owner block has the
+        // keyboard the list keeps its selection (the right pane still shows that
+        // phase) but draws no `> ` marker, so the block's is the only one.
+        let owner_has_focus = self.focus == DetailFocus::Owner || self.owner_landing.get();
+        let list = if owner_has_focus {
+            List::new(items).highlight_symbol("  ")
+        } else {
+            List::new(items)
+                .highlight_style(
+                    Style::default()
+                        .add_modifier(Modifier::BOLD)
+                        .fg(Color::Cyan),
+                )
+                .highlight_symbol("> ")
+        };
 
         // Seeded with the offset the previous frame left, and stored back
         // (quick 260926-dyf, [inferred I-12]).
@@ -12129,9 +12209,12 @@ fn waves_pane_footer_spans() -> Vec<Span<'static>> {
 }
 
 /// The Phases tab's footer while its Owner block has the keyboard (36-04, D-20):
-/// only the keys that level handles, as the Waves pane's footer does.
-fn owner_block_footer_spans() -> Vec<Span<'static>> {
+/// only the keys that level handles, as the Waves pane's footer does. `Esc`
+/// names where it goes: the tab bar when the phase list is empty (quick
+/// 261118-tm6).
+fn owner_block_footer_spans(no_phases: bool) -> Vec<Span<'static>> {
     let b = Style::default().add_modifier(Modifier::BOLD);
+    let esc = if no_phases { "tab bar  " } else { "phases  " };
     vec![
         Span::raw("  "),
         Span::styled("[j/k]", b),
@@ -12141,7 +12224,7 @@ fn owner_block_footer_spans() -> Vec<Span<'static>> {
         Span::styled("[\u{2190}/\u{2192}]", b),
         Span::raw("folds  "),
         Span::styled("[Esc]", b),
-        Span::raw("phases  "),
+        Span::raw(esc),
         Span::styled("[q]", b),
         Span::raw("uit  "),
         Span::styled("[?]", b),
@@ -37218,6 +37301,123 @@ mod tests {
         assert_eq!(owner_view_of(&ctx).cursor, Some(Stop::FoldLine));
         let action = screen.handle_key(KeyCode::Char('q'), KeyModifiers::NONE, &mut ctx);
         assert!(matches!(action, ScreenAction::Pop));
+    }
+
+    /// Quick 261118-tm6 (owner report): the vertical order is tab bar, Owner
+    /// block, phase list, so `↓` from the tab bar reaches the block first, and
+    /// walking down through it reaches the phase list.
+    #[test]
+    fn tab_bar_down_on_the_phases_tab_enters_the_owner_block_first() {
+        for descend in [
+            KeyCode::Down,
+            KeyCode::Char('j'),
+            KeyCode::Enter,
+            KeyCode::Char(' '),
+        ] {
+            let mut ctx = owner_ctx(Some(sample()));
+            let mut screen = owner_screen(&ctx);
+            screen.focus = DetailFocus::TabBar;
+            owner_draw(&screen, &ctx);
+            key(&mut screen, &mut ctx, descend);
+            assert_eq!(screen.focus, DetailFocus::Owner, "{descend:?}");
+            assert!(
+                matches!(owner_view_of(&ctx).cursor, Some(Stop::Row(k)) if k.phase == "21"),
+                "{descend:?}: the first stop"
+            );
+            key(&mut screen, &mut ctx, KeyCode::Char('G'));
+            key(&mut screen, &mut ctx, KeyCode::Down);
+            assert_eq!(screen.focus, DetailFocus::Content, "{descend:?}");
+            assert_eq!(ctx.view_cache[TEST_ALIAS].pipeline_selected, 0);
+        }
+        // No block drawn: the tab bar descends to the phase list as before.
+        let mut ctx = owner_ctx(None);
+        let mut screen = owner_screen(&ctx);
+        screen.focus = DetailFocus::TabBar;
+        owner_draw(&screen, &ctx);
+        key(&mut screen, &mut ctx, KeyCode::Down);
+        assert_eq!(screen.focus, DetailFocus::Content);
+    }
+
+    /// `owner_ctx` with an empty phase list.
+    fn no_phases_owner_ctx() -> AppContext {
+        let mut ctx = owner_ctx(Some(sample()));
+        ctx.project_states.insert(
+            TEST_ALIAS.to_string(),
+            crate::state_reader::ProjectState::default(),
+        );
+        ctx
+    }
+
+    /// The drawn row holding `needle`.
+    fn drawn_row<'a>(text: &'a str, needle: &str) -> &'a str {
+        text.lines()
+            .find(|l| l.contains(needle))
+            .unwrap_or_else(|| panic!("no row with {needle:?}:\n{text}"))
+    }
+
+    /// Quick 261118-tm6 (owner report): with "No phases found" the list has
+    /// nothing to focus, so the Owner block holds the keyboard visibly from the
+    /// first frame and the first key acts on the cursor that frame drew.
+    #[test]
+    fn with_no_phases_the_owner_block_holds_visible_focus() {
+        let mut ctx = no_phases_owner_ctx();
+        let screen = DetailScreen::new(TEST_ALIAS.to_string());
+        let drawn = owner_draw(&screen, &ctx);
+        assert!(drawn.contains("No phases found"), "{drawn}");
+        let first = drawn_row(&drawn, "21");
+        assert!(
+            first.trim_start().starts_with("> "),
+            "first row focused:\n{drawn}"
+        );
+        let footer = drawn.lines().last().unwrap_or_default();
+        assert!(footer.contains("[Enter]expand"), "{footer}");
+        assert!(footer.contains("[Esc]tab bar"), "{footer}");
+        // The first `j` moves inside the block, from the first stop.
+        let mut screen = screen;
+        key(&mut screen, &mut ctx, KeyCode::Char('j'));
+        assert_eq!(screen.focus, DetailFocus::Owner);
+        let second = owner_block::skeleton(&sample(), &owner_view_of(&ctx)).stops[1].clone();
+        assert_eq!(owner_view_of(&ctx).cursor, Some(second));
+        // Past the last stop there is no list to land on: the cursor stays.
+        key(&mut screen, &mut ctx, KeyCode::Char('G'));
+        key(&mut screen, &mut ctx, KeyCode::Down);
+        assert_eq!(screen.focus, DetailFocus::Owner);
+        assert_eq!(owner_view_of(&ctx).cursor, Some(Stop::FoldLine));
+        // `Esc` goes to the tab bar, and `↓` comes straight back to the block.
+        key(&mut screen, &mut ctx, KeyCode::Esc);
+        assert_eq!(screen.focus, DetailFocus::TabBar);
+        key(&mut screen, &mut ctx, KeyCode::Down);
+        assert_eq!(screen.focus, DetailFocus::Owner);
+        // `↑` from the first stop also reaches the tab bar.
+        key(&mut screen, &mut ctx, KeyCode::Char('g'));
+        key(&mut screen, &mut ctx, KeyCode::Up);
+        assert_eq!(screen.focus, DetailFocus::TabBar);
+    }
+
+    /// Quick 261118-tm6: `↑` on an empty list acts on the block the frame showed
+    /// focused (its first stop leaves upward), not a jump onto its last stop.
+    #[test]
+    fn with_no_phases_up_leaves_the_block_it_showed_focused() {
+        let mut ctx = no_phases_owner_ctx();
+        let mut screen = owner_screen(&ctx);
+        key(&mut screen, &mut ctx, KeyCode::Up);
+        assert_eq!(screen.focus, DetailFocus::TabBar);
+    }
+
+    /// Quick 261118-tm6: one cursor on screen. While the Owner block has the
+    /// keyboard the phase list drops its `> ` marker; back on the list it shows.
+    #[test]
+    fn only_the_focused_level_draws_a_cursor_marker() {
+        let mut ctx = owner_ctx(Some(sample()));
+        let mut screen = owner_screen(&ctx);
+        let on_list = owner_draw(&screen, &ctx);
+        assert!(drawn_row(&on_list, "One").contains("> "), "{on_list}");
+        key(&mut screen, &mut ctx, KeyCode::Up);
+        assert_eq!(screen.focus, DetailFocus::Owner);
+        let on_block = owner_draw(&screen, &ctx);
+        let list_row = drawn_row(&on_block, "One");
+        let list_cell = list_row.split('\u{2502}').next().unwrap_or(list_row);
+        assert!(!list_cell.contains("> "), "{on_block}");
     }
 
     #[test]
