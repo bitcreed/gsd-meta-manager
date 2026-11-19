@@ -2197,7 +2197,8 @@ impl DetailScreen {
     /// D-21), `A` opens the acknowledge popup (37-06), `y` copies the group's
     /// checklist (37-07), `x` opens the settle chooser for the selected group, or
     /// for the one check under the item sub-cursor (39-02, D-04, D-05; `j`/`k`
-    /// walk the drawn items of an expanded row), and `e` is swallowed so it never
+    /// walk the drawn items and file lines of an expanded row; Enter on one opens
+    /// the file there, quick 261118-u4e), and `e` is swallowed so it never
     /// reaches Content (where it would enqueue).
     fn handle_owner_block_key(
         &mut self,
@@ -2247,6 +2248,7 @@ impl DetailScreen {
         let mut moved = Moved::Within;
         let mut run = false;
         let mut open = false;
+        let mut open_sub = false;
         let mut acknowledge = false;
         let mut copy = false;
         let mut settle = false;
@@ -2276,6 +2278,9 @@ impl DetailScreen {
             KeyCode::PageUp => {
                 owner_block::move_cursor(view, &sk.stops, Move::By(-page));
             }
+            // Enter on a check or `file PATH` line opens the file there (quick
+            // 261118-u4e); Space, and Enter on a row or the fold line, toggle.
+            KeyCode::Enter if view.sub_stop().is_some() => open_sub = true,
             KeyCode::Enter | KeyCode::Char(' ') => {
                 owner_block::toggle(view, &sk.folds);
             }
@@ -2306,6 +2311,9 @@ impl DetailScreen {
         }
         if open {
             return Some(self.owner_open(ctx));
+        }
+        if open_sub {
+            return Some(self.owner_open_sub(ctx));
         }
         if acknowledge {
             return Some(self.owner_ack(ctx));
@@ -2476,6 +2484,66 @@ impl DetailScreen {
                     let files = owner_block::files_for(digest, key);
                     owner_actions::open_target(ctx, &self.alias, &files)
                 }
+            }
+        };
+        ctx.needs_redraw = true;
+        match outcome {
+            Ok(action) => action,
+            Err(message) => {
+                ctx.status_message = Some((message, std::time::Instant::now()));
+                ScreenAction::None
+            }
+        }
+    }
+
+    /// Enter on a check or `file PATH` line of the Owner block (quick 261118-u4e,
+    /// I-2): the file in the read-only viewer at that check, or at the group's
+    /// place for a file line, through [`owner_actions::open_at`], the function
+    /// the inbox's Enter calls. A sub-stop that no longer resolves falls back to
+    /// `o`. Opens the in-app viewer only, never an editor (T-37-16).
+    fn owner_open_sub(&mut self, ctx: &mut AppContext) -> ScreenAction {
+        let outcome = {
+            let Some(digest) = ctx.owner_digest(&self.alias) else {
+                return ScreenAction::None;
+            };
+            let view = ctx
+                .view_cache
+                .get(&self.alias)
+                .map(|cache| cache.owner_block.clone())
+                .unwrap_or_default();
+            let sk = owner_block::skeleton(digest, &view);
+            let Some(at) = owner_block::resolve_cursor(&view, &sk.stops) else {
+                return ScreenAction::None;
+            };
+            let resolved = match (&sk.stops[at], view.sub_stop()) {
+                (owner_block::Stop::Row(key), Some(stop)) => owner_block::row_src_for(digest, key)
+                    .and_then(|src| match stop {
+                        owner_block::SubStop::Item(id) => {
+                            let (group, item) = owner_block::item_source(Some(digest), &src, &id)?;
+                            Some(owner_actions::open_at(
+                                ctx,
+                                &self.alias,
+                                &group.file,
+                                Some(&group),
+                                Some(&item),
+                            ))
+                        }
+                        owner_block::SubStop::File(path) => {
+                            let group = owner_block::file_source(Some(digest), &src, &path);
+                            Some(owner_actions::open_at(
+                                ctx,
+                                &self.alias,
+                                &path,
+                                group.as_ref(),
+                                None,
+                            ))
+                        }
+                    }),
+                _ => None,
+            };
+            match resolved {
+                Some(outcome) => outcome,
+                None => return self.owner_open(ctx),
             }
         };
         ctx.needs_redraw = true;
@@ -8127,13 +8195,11 @@ impl DetailScreen {
                     item_line: model
                         .stops
                         .get(stop)
-                        .zip(view.item_cursor.as_deref().filter(|_| !landing))
-                        .and_then(|(at, id)| match at {
-                            owner_block::Stop::Row(key) => model
-                                .item_lines
-                                .iter()
-                                .find(|(k, i, _)| k == key && i == id)
-                                .map(|(_, _, line)| *line),
+                        .zip(view.sub_stop().filter(|_| !landing))
+                        .and_then(|(at, sub)| match at {
+                            owner_block::Stop::Row(key) => {
+                                owner_block::sub_stop_line(&model, key, &sub)
+                            }
                             owner_block::Stop::FoldLine => None,
                         }),
                 });
@@ -37872,6 +37938,214 @@ mod tests {
 
     fn key_press_up(screen: &mut DetailScreen, ctx: &mut AppContext) {
         key(screen, ctx, KeyCode::Up);
+    }
+
+    /// Quick 261118-u4e (I-1..I-4): in the Owner block, Enter on a check line or
+    /// the `file PATH` line of an expanded group opens the read-only viewer at the
+    /// right line, focus and cursor stay, Enter on the row and Space still toggle.
+    #[test]
+    fn owner_block_enter_on_a_check_or_file_line_opens_the_viewer_there() {
+        use super::owner_block::SubStop;
+        use crate::config::RegisteredProject;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let phase = dir.path().join(".planning/phases/24-clock");
+        std::fs::create_dir_all(&phase).unwrap();
+        let headings: String = (0..6)
+            .map(|n| format!("### {}. check {n}\nresult: pending\n\n", n + 1))
+            .collect();
+        std::fs::write(
+            phase.join("24-UAT.md"),
+            format!("# Phase 24 UAT\n\nSummary line.\n\n{headings}"),
+        )
+        .unwrap();
+        let mut digest = sample();
+        let group = digest
+            .groups
+            .iter_mut()
+            .find(|g| g.phase == "24" && g.lane == crate::state_reader::owner_items::Lane::Test)
+            .expect("the phase 24 TEST group");
+        group.file = ".planning/phases/24-clock/24-UAT.md".to_owned();
+        let wanted = GroupKey::of(group);
+        let file = group.file.clone();
+        let mut ctx = owner_ctx(Some(digest));
+        ctx.config.projects.insert(
+            TEST_ALIAS.to_string(),
+            RegisteredProject {
+                path: dir.path().to_path_buf(),
+                added: "2026-07-29".to_string(),
+                driver_opt_in: None,
+                extra: Default::default(),
+            },
+        );
+        let mut screen = owner_screen(&ctx);
+        key_press_up(&mut screen, &mut ctx);
+        assert_eq!(screen.focus, DetailFocus::Owner);
+        let set = |ctx: &mut AppContext, sub: Option<SubStop>| {
+            let view = &mut ctx
+                .view_cache
+                .entry(TEST_ALIAS.to_string())
+                .or_default()
+                .owner_block;
+            view.cursor = Some(Stop::Row(wanted.clone()));
+            view.expanded.insert(wanted.clone());
+            view.set_sub_stop(sub);
+        };
+        // The viewer's rows at 80x24, and the one the marker is on.
+        let rows_of = |viewer: &dyn Screen, ctx: &AppContext| -> Vec<String> {
+            use ratatui::backend::TestBackend;
+            use ratatui::Terminal;
+            let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("backend");
+            terminal
+                .draw(|frame| viewer.render(frame, frame.area(), ctx))
+                .expect("draw");
+            let buffer = terminal.backend().buffer().clone();
+            (0..24u16)
+                .map(|y| {
+                    (0..80u16)
+                        .map(|x| buffer[(x, y)].symbol().to_owned())
+                        .collect()
+                })
+                .collect()
+        };
+        let marked = |viewer: &dyn Screen, ctx: &AppContext| -> String {
+            let marker = crate::ui::glyphs::POINTER_RIGHT;
+            let rows: Vec<String> = rows_of(viewer, ctx)
+                .into_iter()
+                .filter(|row| row.contains(marker))
+                .collect();
+            assert_eq!(rows.len(), 1, "one marked line: {rows:?}");
+            rows[0].clone()
+        };
+        // Enter on the check line of "check 3" marks its heading.
+        set(&mut ctx, Some(SubStop::Item("check 3".to_owned())));
+        let before = owner_view_of(&ctx);
+        let ScreenAction::Push(viewer) = key(&mut screen, &mut ctx, KeyCode::Enter) else {
+            panic!("Enter on a check line pushes the viewer");
+        };
+        assert_eq!(viewer.name(), "owner_file_view");
+        assert!(
+            marked(&*viewer, &ctx).contains("4. check 3"),
+            "{}",
+            marked(&*viewer, &ctx)
+        );
+        assert_eq!(
+            screen.focus,
+            DetailFocus::Owner,
+            "the block keeps the keyboard"
+        );
+        let after = owner_view_of(&ctx);
+        assert_eq!(after.cursor, before.cursor);
+        assert_eq!(after.sub_stop(), before.sub_stop());
+        assert!(after.expanded.contains(&wanted));
+        // Enter on the file line marks the group's first check.
+        set(&mut ctx, Some(SubStop::File(file.clone())));
+        let ScreenAction::Push(viewer) = key(&mut screen, &mut ctx, KeyCode::Enter) else {
+            panic!("Enter on a file line pushes the viewer");
+        };
+        assert!(
+            marked(&*viewer, &ctx).contains("1. check 0"),
+            "{}",
+            marked(&*viewer, &ctx)
+        );
+        assert_eq!(
+            owner_view_of(&ctx).sub_stop(),
+            Some(SubStop::File(file.clone()))
+        );
+        // Enter on the row still toggles; Space on a sub-row collapses the group.
+        set(&mut ctx, None);
+        let action = key(&mut screen, &mut ctx, KeyCode::Enter);
+        assert!(matches!(action, ScreenAction::None));
+        assert!(!owner_view_of(&ctx).expanded.contains(&wanted));
+        set(&mut ctx, Some(SubStop::Item("check 1".to_owned())));
+        let action = key(&mut screen, &mut ctx, KeyCode::Char(' '));
+        assert!(matches!(action, ScreenAction::None));
+        assert!(!owner_view_of(&ctx).expanded.contains(&wanted));
+        assert_eq!(owner_view_of(&ctx).sub_stop(), None);
+        // `o` on a sub-row still opens the row's file, at the top (D-04).
+        set(&mut ctx, Some(SubStop::File(file.clone())));
+        let ScreenAction::Push(viewer) = key(&mut screen, &mut ctx, KeyCode::Char('o')) else {
+            panic!("`o` pushes the viewer");
+        };
+        let top = rows_of(&*viewer, &ctx);
+        assert!(
+            !top.iter()
+                .any(|row| row.contains(crate::ui::glyphs::POINTER_RIGHT)),
+            "{top:?}"
+        );
+        // A file that is gone is a status line, nothing pushed.
+        std::fs::remove_file(phase.join("24-UAT.md")).unwrap();
+        set(&mut ctx, Some(SubStop::Item("check 3".to_owned())));
+        let action = key(&mut screen, &mut ctx, KeyCode::Enter);
+        assert!(matches!(action, ScreenAction::None));
+        assert_eq!(
+            ctx.status_message.as_ref().map(|(m, _)| m.as_str()),
+            Some("Cannot open .planning/phases/24-clock/24-UAT.md: not readable")
+        );
+        // A check a refresh made vanish is dropped by the clamp before the key
+        // runs, so Enter acts on the row (a toggle), never on a stale line.
+        ctx.status_message = None;
+        set(&mut ctx, Some(SubStop::Item("check 3".to_owned())));
+        for g in &mut ctx.owner_digests.get_mut(TEST_ALIAS).unwrap().groups {
+            g.items.retain(|i| i.id != "check 3");
+        }
+        let action = key(&mut screen, &mut ctx, KeyCode::Enter);
+        assert!(matches!(action, ScreenAction::None));
+        assert!(ctx.status_message.is_none());
+        assert_eq!(owner_view_of(&ctx).sub_stop(), None);
+    }
+
+    /// The selected `file PATH` line of the Owner block is highlighted in place
+    /// and its row shows no gutter.
+    #[test]
+    fn owner_block_highlights_the_selected_file_line_in_place() {
+        use super::owner_block::SubStop;
+        let mut ctx = owner_ctx(Some(sample()));
+        let mut screen = owner_screen(&ctx);
+        key_press_up(&mut screen, &mut ctx);
+        {
+            let view = &mut ctx
+                .view_cache
+                .entry(TEST_ALIAS.to_string())
+                .or_default()
+                .owner_block;
+            view.cursor = Some(Stop::Row(key_24()));
+            view.expanded.insert(key_24());
+        }
+        let plain = owner_draw(&screen, &ctx);
+        let mut ctx2 = owner_ctx(Some(sample()));
+        let mut screen2 = owner_screen(&ctx2);
+        key_press_up(&mut screen2, &mut ctx2);
+        {
+            let view = &mut ctx2
+                .view_cache
+                .entry(TEST_ALIAS.to_string())
+                .or_default()
+                .owner_block;
+            view.cursor = Some(Stop::Row(key_24()));
+            view.expanded.insert(key_24());
+        }
+        for _ in 0..5 {
+            key(&mut screen2, &mut ctx2, KeyCode::Char('j'));
+        }
+        assert_eq!(
+            owner_view_of(&ctx2).sub_stop(),
+            Some(SubStop::Item("check 4".to_owned()))
+        );
+        key(&mut screen2, &mut ctx2, KeyCode::Char('j'));
+        assert_eq!(
+            owner_view_of(&ctx2).sub_stop(),
+            Some(SubStop::File(key_24().file))
+        );
+        let on_file = owner_draw(&screen2, &ctx2);
+        // The text moves nowhere: only the row's `> ` gutter differs.
+        let differing: Vec<(&str, &str)> = plain
+            .lines()
+            .zip(on_file.lines())
+            .filter(|(a, b)| a != b)
+            .collect();
+        assert_eq!(plain.lines().count(), on_file.lines().count());
+        assert_eq!(differing.len(), 1, "{differing:#?}");
+        assert_eq!(differing[0].0.replacen('>', " ", 1), differing[0].1);
     }
 
     #[test]

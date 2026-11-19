@@ -418,7 +418,7 @@ pub(super) fn help_lines(experimental: bool) -> Vec<Line<'static>> {
         row("Up / k", "Phases tab: from the first phase, enter the Owner block above it (detail view)"),
         row("j/k g/G", "Owner block: move the row cursor / top / bottom (detail view)"),
         row("PgUp / PgDn", "Owner block: page the rows (detail view)"),
-        row("Enter / Space", "Owner block: expand or collapse the selected group or fold (detail view)"),
+        row("Enter / Space", "Owner block: expand or collapse the selected group or fold; Enter on a check or file line opens the file there (detail view)"),
         row("Left / Right", "Owner block: move between the folds on the fold line (detail view)"),
         row("v o A y x", "Owner block: run, open, acknowledge, copy or settle the selected group or check, as in the inbox (detail view)"),
         row("Esc", "Owner block: back to the phase list, or the tab bar when it is empty (detail view)"),
@@ -582,7 +582,7 @@ pub(super) fn help_lines(experimental: bool) -> Vec<Line<'static>> {
         row("1 2 3 4", "Show one lane: Test, Decide, Fix, Blocked (press the key again for the default view)"),
         row("a", "Show all four lanes, Blocked included"),
         row("j/k Up/Down", "Move the cursor; PgUp/PgDn page, Home/End jump to the first or last row"),
-        row("Enter", "Expand or collapse the selected group or fold (inbox)"),
+        row("Enter", "Expand or collapse the selected group or fold; on a check or file line, open the file there, read-only (inbox)"),
         row("Left / Right", "On the fold line: move between Old debt, Stale, Acknowledged and Triage (inbox)"),
         row("g", "Go to the project: detail view, Phases tab, on the same group when visible there"),
         row("o", "Open the group's source file, read-only (never your editor)"),
@@ -1303,7 +1303,7 @@ mod tests {
             ),
             (
                 "Enter",
-                "Expand or collapse the selected group or fold (inbox)",
+                "Expand or collapse the selected group or fold; on a check or file line, open the file there, read-only (inbox)",
             ),
             (
                 "Left / Right",
@@ -1407,7 +1407,7 @@ mod tests {
             ("PgUp / PgDn", "Owner block: page the rows (detail view)"),
             (
                 "Enter / Space",
-                "Owner block: expand or collapse the selected group or fold (detail view)",
+                "Owner block: expand or collapse the selected group or fold; Enter on a check or file line opens the file there (detail view)",
             ),
             (
                 "Left / Right",
