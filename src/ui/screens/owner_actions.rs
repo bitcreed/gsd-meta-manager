@@ -34,7 +34,7 @@ use crate::ui::screens::{AppContext, ScreenAction};
 use std::path::{Path, PathBuf};
 
 use super::ack_confirm::{AckConfirmScreen, AckHost};
-use super::detail::{owner_mux_argv, owner_terminal_argv, resolve_launch_plan, shown};
+use super::detail::shown;
 use super::inbox::InboxKey;
 use super::owner_block::GroupKey;
 use super::owner_file_view::OwnerFileViewScreen;
@@ -116,6 +116,29 @@ pub(crate) fn focus_status(focus_message: String, command: &RunCommand) -> Strin
 /// **Called only from key arms**; tests drive [`run_group`] with a recording
 /// closure instead, so none of them touches a multiplexer or a terminal.
 pub(crate) fn launch_real(plan: &RunPlan) -> String {
+    // Under test the plan is recorded and nothing starts (quick 261119-f5b, I-19):
+    // the row menu and the footer tests press `v` through the real key arm.
+    #[cfg(test)]
+    {
+        RUN_LAUNCHES.with(|launches| launches.borrow_mut().push(plan.clone()));
+        match &plan.live_session {
+            Some(_) => focus_status(
+                format!("{} {}", crate::multiplexer::FOCUS_OK_PREFIX, plan.alias),
+                &plan.command,
+            ),
+            None => format!("Launched {} in {}", plan.command, plan.alias),
+        }
+    }
+    #[cfg(not(test))]
+    {
+        launch_run_real(plan)
+    }
+}
+
+/// The real launch or focus behind [`launch_real`].
+#[cfg(not(test))]
+fn launch_run_real(plan: &RunPlan) -> String {
+    use super::detail::{owner_mux_argv, owner_terminal_argv, resolve_launch_plan};
     if let Some(session) = &plan.live_session {
         let message = crate::multiplexer::focus_message(session, &plan.alias);
         return focus_status(message, &plan.command);
@@ -128,6 +151,18 @@ pub(crate) fn launch_real(plan: &RunPlan) -> String {
         &|term| owner_terminal_argv(term, &plan.command),
         &format!("Launched {} in {}", plan.command, plan.alias),
     )
+}
+
+#[cfg(test)]
+thread_local! {
+    static RUN_LAUNCHES: std::cell::RefCell<Vec<RunPlan>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Every plan [`launch_real`] recorded on this thread, drained.
+#[cfg(test)]
+pub(crate) fn take_run_launches() -> Vec<RunPlan> {
+    RUN_LAUNCHES.with(|launches| std::mem::take(&mut *launches.borrow_mut()))
 }
 
 /// Run `group` of `alias`: the refusal text, or whatever `launch` reports.
@@ -205,6 +240,31 @@ fn read_for_view(ctx: &AppContext, alias: &str, file: &str) -> Result<String, St
     read_owner_file(&project.path, file).ok_or_else(not_readable)
 }
 
+/// Why `o` cannot open a row whose source files are `files`, or `None` when
+/// exactly one is listed. Pure (no read): the one copy of the file-count refusals,
+/// shared by [`open_target`] and the row action model, so a hint and the key
+/// cannot disagree.
+pub(crate) fn open_files_refusal(files: &[String]) -> Option<String> {
+    let count = files.iter().filter(|f| !f.is_empty()).count();
+    match count {
+        1 => None,
+        0 => Some("Cannot open this row: no source file".to_owned()),
+        // The expansion's `file PATH` lines are cursor stops (quick
+        // 261118-u4e, I-6), so Enter on one opens that file; this replaces
+        // the 38-UI-REVIEW fix 8 premise that only `g` could.
+        n => Some(format!(
+            "{n} files behind this row: expand it and press Enter on a file line"
+        )),
+    }
+}
+
+/// Why `A` refuses a same-phase merged row of `files` files (D-08, T-38-09):
+/// acknowledging is file-level, so it never picks one for the owner. Shared by
+/// the inbox's `A` and the row action model.
+pub(crate) fn merged_ack_refusal(files: usize) -> String {
+    format!("{files} files behind this row: press g to pick a file in the Owner block, then A")
+}
+
 /// `o` (D-08): read the file behind a row and push the read-only viewer, or the
 /// status line that says why not. `files` are the row's distinct source files
 /// (one for a group, several for a BLOCKED aggregate). **Called from key arms
@@ -216,17 +276,12 @@ pub(crate) fn open_target(
     alias: &str,
     files: &[String],
 ) -> Result<ScreenAction, String> {
+    if let Some(message) = open_files_refusal(files) {
+        return Err(message);
+    }
     let files: Vec<&String> = files.iter().filter(|f| !f.is_empty()).collect();
     let [file] = files.as_slice() else {
-        return match files.len() {
-            0 => Err("Cannot open this row: no source file".to_owned()),
-            // The expansion's `file PATH` lines are cursor stops (quick
-            // 261118-u4e, I-6), so Enter on one opens that file; this replaces
-            // the 38-UI-REVIEW fix 8 premise that only `g` could.
-            n => Err(format!(
-                "{n} files behind this row: expand it and press Enter on a file line"
-            )),
-        };
+        return Err("Cannot open this row: no source file".to_owned());
     };
     let text = read_for_view(ctx, alias, file)?;
     Ok(ScreenAction::Push(Box::new(OwnerFileViewScreen::new(
@@ -445,7 +500,7 @@ impl AckTarget {
 }
 
 /// The last `/`-separated segment of a project-relative path.
-fn basename(rel: &str) -> &str {
+pub(crate) fn basename(rel: &str) -> &str {
     rel.rsplit('/').next().unwrap_or(rel)
 }
 
@@ -667,13 +722,20 @@ pub(crate) fn copy_entry_text(
 }
 
 /// The Old debt checklist: the `OLD DEBT` heading and every archived group of
-/// every registered project that has a digest, in the CLI's order.
-pub(crate) fn old_debt_text(ctx: &AppContext) -> Result<(String, usize), String> {
-    let mut aliases: Vec<&String> = ctx.config.projects.keys().collect();
+/// every registered project that has a digest (only `only`'s, when given: the
+/// Owner block copies its own project's old debt), in the CLI's order.
+pub(crate) fn old_debt_text(
+    ctx: &AppContext,
+    only: Option<&str>,
+) -> Result<(String, usize), String> {
+    let mut aliases: Vec<String> = match only {
+        Some(alias) => vec![alias.to_owned()],
+        None => ctx.config.projects.keys().cloned().collect(),
+    };
     aliases.sort();
     let mut groups: Vec<(String, &OwnerGroup)> = Vec::new();
     for alias in aliases {
-        if let Some(digest) = ctx.owner_digest(alias) {
+        if let Some(digest) = ctx.owner_digest(&alias) {
             groups.extend(digest.groups.iter().map(|g| (alias.clone(), g)));
         }
     }
@@ -699,16 +761,17 @@ fn finish_copy_text(lines: Vec<String>) -> Result<(String, usize), String> {
     Ok((text, lines.len()))
 }
 
-/// What `y` does on the fold line (UI-SPEC "Folds"): Old debt copies, the other
-/// two say why not.
+/// What `y` does on the fold line (UI-SPEC "Folds"): Old debt copies (the fleet's,
+/// or the one project `only` names), the others say why not.
 pub(crate) fn fold_copy(
     ctx: &mut AppContext,
     fold: Option<crate::ui::screens::owner_block::Fold>,
+    only: Option<&str>,
 ) -> Result<ScreenAction, String> {
     use crate::ui::screens::owner_block::Fold;
     match fold {
         Some(Fold::OldDebt) => {
-            let (text, lines) = old_debt_text(ctx)?;
+            let (text, lines) = old_debt_text(ctx, only)?;
             Ok(copy(ctx, text, lines))
         }
         Some(Fold::Stale) => Err("Nothing to copy: open Stale and copy one phase".to_owned()),
@@ -2209,5 +2272,53 @@ mod tests {
             Some("Focused p; Sent 1 line to the terminal clipboard (OSC 52; the terminal must allow it)")
         );
         assert!(seam_ran().is_empty());
+    }
+
+    /// Quick 261119-f5b (I-15): the Old debt checklist is the fleet's, or one
+    /// project's when `only` names it.
+    #[test]
+    fn old_debt_text_is_the_fleet_or_one_project() {
+        use crate::ui::screens::owner_row_actions::fixture;
+        use crate::ui::screens::tests::{ctx_with_aliases, owe};
+        let mut ctx = ctx_with_aliases(&["alder-api", "birch-cli"]);
+        owe(&mut ctx, "alder-api", fixture::digest());
+        owe(&mut ctx, "birch-cli", fixture::digest());
+        let (fleet, _) = old_debt_text(&ctx, None).expect("fleet old debt");
+        let (one, _) = old_debt_text(&ctx, Some("alder-api")).expect("one project");
+        assert!(
+            fleet.contains("alder-api") && fleet.contains("birch-cli"),
+            "{fleet}"
+        );
+        assert!(
+            one.contains("alder-api") && !one.contains("birch-cli"),
+            "{one}"
+        );
+        assert!(one.starts_with("OLD DEBT"), "{one}");
+        // A project with no digest has nothing to copy.
+        assert_eq!(
+            old_debt_text(&ctx, Some("nobody")).err().as_deref(),
+            Some("Nothing to copy: no old debt is listed")
+        );
+    }
+
+    /// The file-count and merged-row refusals the model shows are the texts `o`
+    /// and `A` print.
+    #[test]
+    fn the_open_and_merged_ack_refusals_are_pure_and_shared() {
+        let one = vec!["a/1-UAT.md".to_owned()];
+        let two = vec!["a/1-UAT.md".to_owned(), "a/1-VERIFICATION.md".to_owned()];
+        assert_eq!(open_files_refusal(&one), None);
+        assert_eq!(
+            open_files_refusal(&[]).as_deref(),
+            Some("Cannot open this row: no source file")
+        );
+        assert_eq!(
+            open_files_refusal(&two).as_deref(),
+            Some("2 files behind this row: expand it and press Enter on a file line")
+        );
+        assert_eq!(
+            merged_ack_refusal(2),
+            "2 files behind this row: press g to pick a file in the Owner block, then A"
+        );
     }
 }

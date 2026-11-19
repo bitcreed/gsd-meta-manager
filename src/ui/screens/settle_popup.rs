@@ -1305,10 +1305,13 @@ mod tests {
             "{}",
             launches[0].prompt()
         );
-        // `k` back to the row: `x` is the phase.
+        // `k` back to the row: `x` is the phase. The first settle still shows its
+        // `settling...` badge on the row, and a second `x` is refused while it runs
+        // (quick 261119-f5b, I-14), so the pending entry is cleared first.
         stack.key(&mut ctx, KeyCode::Char('k'));
         stack.key(&mut ctx, KeyCode::Char('k'));
         assert_eq!(ctx.inbox_view.item_cursor, None);
+        ctx.settle_pending = Default::default();
         stack.key(&mut ctx, KeyCode::Char('x'));
         stack.key(&mut ctx, KeyCode::Char('p'));
         stack.key(&mut ctx, KeyCode::Enter);

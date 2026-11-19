@@ -25,12 +25,13 @@ use super::driver::DRY_RUN_LOADING;
 use super::owner::{owner_numbers, OWNER_SEP};
 use super::owner_actions;
 use super::owner_block::{self, blanks, cells, pad, Fold, GroupKey, RowCells, RowSrc, SubStop};
+use super::owner_row_actions::{self, Chrome, Enter, Host};
 use super::owner_settle;
 use super::settle_pending;
 use super::{AppContext, Screen, ScreenAction};
 use crate::inbox::phase_key;
 use crate::state_reader::owner_items::{
-    is_owner_row, stale_totals, triage_entries, Lane, OwnerGroup, StaleTotals,
+    is_owner_row, stale_totals, triage_entries, Lane, StaleTotals,
 };
 use crate::ui::glyphs;
 use crossterm::event::{KeyCode, KeyModifiers};
@@ -1115,27 +1116,12 @@ fn body_plan(rows: &[InboxRow]) -> Vec<BodyItem> {
     build_plan(rows, &[], &mut |_| Vec::new())
 }
 
-/// The group a key acts on for `row`, looked up by identity as the key is pressed:
-/// the digest's own group, else the entry a merged row stands for, else the row's
-/// own group (a BLOCKED aggregate has no single group; the run path refuses it by
-/// lane).
-fn row_group(ctx: &AppContext, row: &InboxRow) -> OwnerGroup {
-    let fold_days = ctx.config.preferences.owner_fold_days();
-    ctx.owner_digest(&row.alias)
-        .and_then(|digest| {
-            owner_block::group_for(digest, &row.src.key).or_else(|| {
-                owner_block::entry_for(digest, &row.src.key, fold_days).map(|entry| entry.group)
-            })
-        })
-        .unwrap_or_else(|| row.src.group.clone())
-}
-
 /// The lines under an expanded row (D-06): the Owner block's own formatter one
 /// cell further right (the inbox gutter is three cells), then, inbox only, the
 /// exact command `v` would launch.
 fn expansion_for(ctx: &AppContext, row: &InboxRow, width: usize) -> Vec<Line<'static>> {
     let (mut lines, map) = owner_block::inbox_expansion_lines_mapped(&row.src, width, 1);
-    let group = row_group(ctx, row);
+    let group = owner_row_actions::row_group(ctx, &row.alias, &row.src);
     if let Ok(plan) = owner_actions::run_plan(ctx, &row.alias, &group) {
         lines.push(owner_block::dim_line(
             5,
@@ -1411,184 +1397,61 @@ fn empty_copy(ctx: &AppContext) -> String {
     }
 }
 
-/// One footer hint: the bracketed key and its label at the three label rungs.
-struct FooterKey {
-    key: &'static str,
-    /// Rung 1 (long), rung 2 (short), rung 3 and 4 (shortest) labels.
-    labels: [&'static str; 3],
-    /// Kept on rung 2.
-    rung2: bool,
-    /// Kept from rung 3 on.
-    rung3: bool,
-    /// Kept at the minimal rung 4.
-    rung4: bool,
-}
-
-/// The hints in the UI-SPEC footer order, **only for keys that work**: later
-/// plans insert their key at its UI-SPEC position (`A`, `y`) when it works.
-const FOOTER_KEYS: [FooterKey; 10] = [
-    FooterKey {
-        key: "[j/k]",
-        labels: ["move", "move", "move"],
-        rung2: true,
-        rung3: true,
-        rung4: false,
-    },
-    FooterKey {
-        key: "[Enter]",
-        labels: ["expand", "expand", "expand"],
-        rung2: true,
-        rung3: true,
-        rung4: false,
-    },
-    FooterKey {
-        key: "[g]",
-        labels: ["o to project", "oto", "oto"],
-        rung2: true,
-        rung3: true,
-        rung4: false,
-    },
-    FooterKey {
-        key: "[v]",
-        labels: ["run command", "run", "run"],
-        rung2: true,
-        rung3: true,
-        rung4: true,
-    },
-    FooterKey {
-        key: "[o]",
-        labels: ["pen file", "pen", "pen"],
-        rung2: true,
-        rung3: true,
-        rung4: false,
-    },
-    FooterKey {
-        key: "[A]",
-        labels: ["cknowledge", "cknowledge", "ck"],
-        rung2: true,
-        rung3: true,
-        rung4: true,
-    },
-    // 39-03 D-05: shown on the widest rung only. A second rung with `[x]settle`
-    // would be 105 cells wide and push the 100x30 footer (the UI-SPEC golden) down
-    // to the `[A]ck` rung; the 80-column rung that the 38 UAT bounds is unchanged.
-    FooterKey {
-        key: "[x]",
-        labels: ["settle", "settle", "settle"],
-        rung2: false,
-        rung3: false,
-        rung4: false,
-    },
-    FooterKey {
-        key: "[y]",
-        labels: ["copy checklist", "copy", "copy"],
-        rung2: true,
-        rung3: true,
-        rung4: true,
-    },
-    FooterKey {
-        key: "[Esc]",
-        labels: ["back", "back", "back"],
-        rung2: true,
-        rung3: false,
-        rung4: false,
-    },
-    FooterKey {
-        key: "[?]",
-        labels: ["help", "help", "help"],
-        rung2: true,
-        rung3: true,
-        rung4: true,
-    },
-];
-
-/// The hints while the cursor rests on the fold line.
-fn fold_footer(rung: usize) -> Vec<Span<'static>> {
-    let bold = Style::default().add_modifier(Modifier::BOLD);
-    let hints: &[(&str, &str)] = if rung == 0 {
-        &[
-            ("[\u{2190}/\u{2192}]", "fold"),
-            ("[Enter]", "expand"),
-            ("[y]", "copy"),
-            ("[j/k]", "move"),
-            ("[Esc]", "back"),
-            ("[?]", "help"),
-        ]
-    } else {
-        &[
-            ("[\u{2190}/\u{2192}]", "fold"),
-            ("[Enter]", "expand"),
-            ("[y]", "copy"),
-            ("[j/k]", "move"),
-            ("[?]", "help"),
-        ]
-    };
-    let mut spans = vec![Span::raw("  ")];
-    for (index, (key, label)) in hints.iter().enumerate() {
-        if index > 0 {
-            spans.push(Span::raw("  "));
-        }
-        spans.push(Span::styled((*key).to_owned(), bold));
-        spans.push(Span::raw((*label).to_owned()));
-    }
-    spans
-}
-
-/// The hints of one rung, two leading spaces, `[key]` BOLD.
-fn footer_rung(rung: usize, has_stops: bool) -> Vec<Span<'static>> {
-    let bold = Style::default().add_modifier(Modifier::BOLD);
-    let mut spans = vec![Span::raw("  ")];
-    let mut first = true;
-    for hint in &FOOTER_KEYS {
-        // With no stop (an empty inbox) only the keys that need none remain.
-        let keep = match hint.key {
-            "[Esc]" | "[?]" => true,
-            _ => has_stops,
-        };
-        let kept = match rung {
-            0 => true,
-            1 => hint.rung2,
-            2 => hint.rung3,
-            _ => hint.rung4,
-        };
-        if !keep || !kept {
-            continue;
-        }
-        if !first {
-            spans.push(Span::raw("  "));
-        }
-        first = false;
-        spans.push(Span::styled(hint.key.to_owned(), bold));
-        spans.push(Span::raw(hint.labels[rung.min(2)].to_owned()));
-    }
-    spans
-}
-
-/// The footer: the status message while one is live, else the first rung of the
-/// hint ladder that fits `width` (the fold-line hints while the cursor rests on
-/// the fold line).
-fn footer_line(ctx: &AppContext, width: usize, has_stops: bool, on_fold: bool) -> Line<'static> {
+/// The footer: the status message while one is live, else the hints of the row
+/// the cursor rests on (quick 261119-f5b): only keys that act on it, from the
+/// shared row action model, cut to `width` by its fit order. With no stop at all
+/// (an empty inbox) only `[Esc]` and `[?]` remain.
+fn footer_line(ctx: &AppContext, width: usize) -> Line<'static> {
     if let Some((message, _)) = &ctx.status_message {
         // The status line is composed from authored copy and project text in one
         // string, so the escape happens here, at the consumer (as on the dashboard).
         return Line::from(Span::raw(fit_cells(&shown(message), width)));
     }
-    let mut last = Vec::new();
-    for rung in 0..4 {
-        let spans = if on_fold {
-            if rung > 1 {
-                break;
-            }
-            fold_footer(rung)
-        } else {
-            footer_rung(rung, has_stops)
+    let rows = stop_rows(ctx);
+    let Some(at) = cursor_pos(ctx, &rows) else {
+        return Line::from(vec![
+            Span::raw("  "),
+            Span::styled("[Esc]", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw("back  "),
+            Span::styled("[?]", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw("help"),
+        ]);
+    };
+    let Some(row) = rows.get(at) else {
+        // The fold line.
+        let fold = sub_cursor(ctx);
+        let open = fold.is_some_and(|fold| ctx.inbox_view.open_folds.contains(&fold));
+        let enter = match fold {
+            Some(Fold::Todos) | None => Enter::Nothing,
+            Some(_) if open => Enter::CloseFold,
+            Some(_) => Enter::OpenFold,
         };
-        if spans.iter().map(Span::width).sum::<usize>() <= width {
-            return Line::from(spans);
-        }
-        last = spans;
-    }
-    fit_spans(last, width)
+        let actions = owner_row_actions::fold_line_actions(Host::Inbox, fold, open);
+        return owner_row_actions::footer_spans(
+            Host::Inbox,
+            &actions,
+            enter,
+            true,
+            Chrome::Back,
+            width,
+        );
+    };
+    let expanded = ctx.inbox_view.expanded.contains(&row.key());
+    let sub = ctx.inbox_view.sub_stop().filter(|_| expanded);
+    let actions = owner_row_actions::row_actions(
+        ctx,
+        Host::Inbox,
+        &row.alias,
+        &row.src,
+        sub.as_ref(),
+        expanded,
+    );
+    let enter = match (&sub, expanded) {
+        (Some(_), _) => Enter::View,
+        (None, true) => Enter::Collapse,
+        (None, false) => Enter::Expand,
+    };
+    owner_row_actions::footer_spans(Host::Inbox, &actions, enter, false, Chrome::Back, width)
 }
 
 // ---------------------------------------------------------------------------
@@ -1809,7 +1672,6 @@ struct Pinned {
     rule: Rect,
     fold: Rect,
     footer: Rect,
-    has_stops: bool,
     /// The cursor rests on the fold line.
     on_fold: bool,
     /// ` {first}-{last} of {total}` while body rows are clipped.
@@ -1835,10 +1697,7 @@ impl InboxScreen {
         if let (Some(fold), true) = (fold_line_at(ctx, width, cursor), pinned.fold.height > 0) {
             frame.render_widget(Paragraph::new(fold), pinned.fold);
         }
-        frame.render_widget(
-            Paragraph::new(footer_line(ctx, width, pinned.has_stops, pinned.on_fold)),
-            pinned.footer,
-        );
+        frame.render_widget(Paragraph::new(footer_line(ctx, width)), pinned.footer);
     }
 
     pub fn new() -> Self {
@@ -2101,18 +1960,12 @@ impl InboxScreen {
         // A same-phase merged row stands for several files (D-08): acknowledging
         // is file-level, so it never picks one for the owner (T-38-09).
         if row.src.parts.len() > 1 {
-            let n = row.src.parts.len();
-            Self::say(
-                ctx,
-                format!(
-                    "{n} files behind this row: press g to pick a file in the Owner block, then A"
-                ),
-            );
+            Self::say(ctx, owner_actions::merged_ack_refusal(row.src.parts.len()));
             return ScreenAction::None;
         }
         // A BLOCKED aggregate has no single group: its row's own group stands in
         // and the request path refuses it by lane.
-        let group = row_group(ctx, &row);
+        let group = owner_row_actions::row_group(ctx, &row.alias, &row.src);
         match owner_actions::ack_open(ctx, &row.alias, &group, AckHost::Inbox) {
             Ok(action) => {
                 ctx.needs_redraw = true;
@@ -2132,7 +1985,7 @@ impl InboxScreen {
         let row = match Self::selected(ctx) {
             Err(()) => return ScreenAction::None,
             Ok(None) => {
-                Self::say(ctx, "Select a check or a phase row to settle it".to_owned());
+                Self::say(ctx, owner_row_actions::SETTLE_FOLD_LINE_REFUSAL.to_owned());
                 return ScreenAction::None;
             }
             Ok(Some(row)) => row,
@@ -2154,6 +2007,13 @@ impl InboxScreen {
                 return ScreenAction::None;
             }
             _ => {}
+        }
+        // A row whose settle is still running refuses a second one (quick
+        // 261119-f5b, I-14): the same text the model shows dim.
+        if let Some(message) = owner_row_actions::settle_pending_refusal(ctx, &row.alias, &row.src)
+        {
+            Self::say(ctx, message.to_owned());
+            return ScreenAction::None;
         }
         // D-04: on an item line `x` settles that one check; on the row, the phase.
         let item = ctx.inbox_view.item_cursor.as_deref();
@@ -2190,7 +2050,7 @@ impl InboxScreen {
     fn copy_key(&self, ctx: &mut AppContext) -> ScreenAction {
         let outcome = match Self::selected(ctx) {
             Err(()) => return ScreenAction::None,
-            Ok(None) => owner_actions::fold_copy(ctx, sub_cursor(ctx)),
+            Ok(None) => owner_actions::fold_copy(ctx, sub_cursor(ctx), None),
             Ok(Some(row))
                 if matches!(row.fold, None | Some(Fold::Stale))
                     && row.src.group.lane != Lane::Blocked =>
@@ -2269,7 +2129,7 @@ impl InboxScreen {
         // The group is looked up by its identity as the key is pressed; a BLOCKED
         // aggregate has no single group, so its row's own group stands in and the
         // run path refuses it by lane.
-        let group = row_group(ctx, &row);
+        let group = owner_row_actions::row_group(ctx, &row.alias, &row.src);
         let message = owner_actions::run_group(ctx, &row.alias, &group, launch);
         Self::say(ctx, message);
         ScreenAction::None
@@ -2398,7 +2258,6 @@ impl Screen for InboxScreen {
 
         let rows = stop_rows(ctx);
         let cursor = cursor_pos(ctx, &rows);
-        let has_stops = cursor.is_some();
         let on_fold = cursor.is_some_and(|at| at >= rows.len());
         let ghosts = ghost_rows(ctx);
         if rows.is_empty() && ghosts.is_empty() {
@@ -2414,7 +2273,6 @@ impl Screen for InboxScreen {
                 rule,
                 fold,
                 footer,
-                has_stops,
                 on_fold,
                 hint: None,
             };
@@ -2507,7 +2365,6 @@ impl Screen for InboxScreen {
             rule,
             fold,
             footer,
-            has_stops,
             on_fold,
             hint,
         };
@@ -3064,15 +2921,12 @@ mod tests {
             text[closes + 1]
         );
         assert!(text[closes + 2].starts_with(" \u{25b8} alder-api"));
-        // The footer lists only the keys that work.
-        assert!(text[29].contains("[j/k]move"), "{:?}", text[29]);
-        // At 100 columns the long rung (107 cells) does not fit, so the short one
-        // shows; `[y]copy` joins in 37-07.
-        assert!(text[29].contains("[v]run"));
-        assert!(text[29].contains("[Enter]expand"));
-        assert!(text[29].contains("[g]oto"));
-        assert!(text[29].contains("[o]pen"));
-        assert!(text[29].contains("[A]cknowledge"));
+        // The footer lists only the keys that work on the row, with `v`'s command
+        // while there is room; the lower-priority hints are the first to go.
+        assert_eq!(
+            text[29].trim_end(),
+            "  [Enter]expand  [v]run /gsd-verify-work 24  [x]settle  [o]pen  [A]ck  [y]copy  [g]oto  [?]help"
+        );
         // The first row is Cyan + BOLD, every cell of it.
         let buffer = draw(&ctx, 100, 30);
         let y = (closes + 1) as u16;
@@ -3435,7 +3289,7 @@ mod tests {
                     "{fold:?}"
                 ),
             }
-            assert!(footer.contains("[j/k]move"), "{footer:?}");
+            assert!(footer.contains("[?]help"), "{footer:?}");
             // Command column: FIX rows at 140 only.
             let commands = text
                 .iter()
@@ -3472,62 +3326,59 @@ mod tests {
                 assert!(digits || age.trim().is_empty(), "W {w} row {y}: {age:?}");
             }
         }
-        // The footer ladder: the first rung that fits (the whole strings are
-        // asserted by `footer_ladder_matches_the_ui_spec`).
+        // The footer follows the selected row (quick 261119-f5b); the whole strings
+        // are asserted by `footer_ladder_matches_the_ui_spec`.
         let ctx = inbox_fleet_ctx();
-        let footer = |w: usize| line_text(&footer_line(&ctx, w, true, false));
-        assert!(footer(137).ends_with("[y]copy checklist  [Esc]back  [?]help"));
-        assert!(footer(136).ends_with("[y]copy  [Esc]back  [?]help"));
-        assert!(footer(93).ends_with("[A]ck  [y]copy  [?]help"));
-        assert_eq!(footer(65), "  [v]run  [A]ck  [y]copy  [?]help");
+        let footer = |w: usize| line_text(&footer_line(&ctx, w));
+        assert!(
+            footer(250).ends_with("[g]oto  [Esc]back  [?]help"),
+            "{}",
+            footer(250)
+        );
+        assert!(footer(100).ends_with("[g]oto  [?]help"));
         assert_eq!(
             footer(10),
-            "  [v]run \u{2026}",
-            "the minimal rung is cut to W"
+            "  [?]help",
+            "the lead and [?]help are never dropped"
         );
-        // The cursor on the fold line has its own hints (UI-SPEC "Footer ladder").
-        let fold = |w: usize| line_text(&footer_line(&ctx, w, true, true));
+        // The cursor on the fold line has its own hints.
+        let mut on_fold = inbox_fleet_ctx();
+        let rows = stop_rows(&on_fold);
+        set_cursor(&mut on_fold, &rows, rows.len());
         assert_eq!(
-            fold(80),
-            "  [\u{2190}/\u{2192}]fold  [Enter]expand  [y]copy  [j/k]move  [Esc]back  [?]help"
-        );
-        assert_eq!(
-            fold(60),
-            "  [\u{2190}/\u{2192}]fold  [Enter]expand  [y]copy  [j/k]move  [?]help"
+            line_text(&footer_line(&on_fold, 80)),
+            "  [j/k]move  [\u{2190}/\u{2192}]fold  [Enter]open  [y]copy  [Esc]back  [?]help"
         );
         assert_eq!(
-            line_text(&footer_line(&ctx, 80, false, false)),
+            line_text(&footer_line(&on_fold, 60)),
+            "  [\u{2190}/\u{2192}]fold  [Enter]open  [y]copy  [Esc]back  [?]help"
+        );
+        let empty = ctx_with_aliases(&["lone"]);
+        assert_eq!(
+            line_text(&footer_line(&empty, 80)),
             "  [Esc]back  [?]help",
             "no stops, no movement or run key"
         );
     }
 
-    /// UI-SPEC "Footer ladder": the whole rung strings, at 140, 100 and 80 columns.
+    /// The footer's goldens: the first TEST row of the fixture (dune-app, phase 24),
+    /// at the widths the screen is laid out for.
     #[test]
     fn footer_ladder_matches_the_ui_spec() {
         let ctx = inbox_fleet_ctx();
-        let footer =
-            |w: usize, stops: bool, fold: bool| line_text(&footer_line(&ctx, w, stops, fold));
-        let rung1 = "  [j/k]move  [Enter]expand  [g]o to project  [v]run command  [o]pen file  [A]cknowledge  [x]settle  [y]copy checklist  [Esc]back  [?]help";
-        let rung2 = "  [j/k]move  [Enter]expand  [g]oto  [v]run  [o]pen  [A]cknowledge  [y]copy  [Esc]back  [?]help";
-        let rung3 = "  [j/k]move  [Enter]expand  [g]oto  [v]run  [o]pen  [A]ck  [y]copy  [?]help";
-        assert_eq!(rung1.chars().count(), 137);
-        assert_eq!(rung2.chars().count(), 94);
-        assert_eq!(rung3.chars().count(), 75);
-        assert_eq!(footer(140, true, false), rung1);
-        assert_eq!(footer(100, true, false), rung2);
-        assert_eq!(footer(80, true, false), rung3);
-        assert_eq!(footer(137, true, false), rung1);
-        assert_eq!(footer(136, true, false), rung2);
-        assert_eq!(footer(94, true, false), rung2);
-        assert_eq!(footer(93, true, false), rung3);
-        assert_eq!(footer(75, true, false), rung3);
-        assert_eq!(footer(74, true, false), "  [v]run  [A]ck  [y]copy  [?]help");
+        let footer = |w: usize| line_text(&footer_line(&ctx, w));
+        let wide = "  [j/k]move  [Enter]expand  [v]run /gsd-verify-work 24  [x]settle  [o]pen  [A]ck  [y]copy  [g]oto  [Esc]back  [?]help";
+        let w100 = "  [Enter]expand  [v]run /gsd-verify-work 24  [x]settle  [o]pen  [A]ck  [y]copy  [g]oto  [?]help";
+        let w80 = "  [Enter]expand  [v]run  [x]settle  [o]pen  [A]ck  [y]copy  [g]oto  [?]help";
+        assert_eq!(footer(140), wide);
+        assert_eq!(footer(100), w100);
+        assert_eq!(footer(80), w80);
+        assert_eq!(footer(wide.chars().count()), wide);
         assert_eq!(
-            footer(140, true, true),
-            "  [\u{2190}/\u{2192}]fold  [Enter]expand  [y]copy  [j/k]move  [Esc]back  [?]help"
+            footer(wide.chars().count() - 1),
+            wide.replace("[j/k]move  ", ""),
+            "priority 3 (`[j/k]`) goes first"
         );
-        assert_eq!(footer(140, false, false), "  [Esc]back  [?]help");
     }
 
     fn wayland_probes() -> crate::clipboard::ClipboardProbes {
@@ -3725,9 +3576,9 @@ mod tests {
             );
             assert!(header_line(&ctx, w, None).width() <= w, "header W {w}");
             assert!(
-                footer_line(&ctx, w, true, false).width() <= w,
+                footer_line(&ctx, w).width() <= w,
                 "footer W {w}: {:?}",
-                footer_line(&ctx, w, true, false)
+                footer_line(&ctx, w)
             );
             if let Some(fold) = fold_line(&ctx, w) {
                 assert!(fold.width() <= w, "fold W {w}");
@@ -4487,7 +4338,7 @@ mod tests {
         ctx.inbox_view.cursor = Some(InboxStop::FoldLine);
         let action = press_key(&mut ctx, KeyCode::Char('x'));
         assert!(matches!(action, ScreenAction::None));
-        assert_eq!(status(&ctx), "Select a check or a phase row to settle it");
+        assert_eq!(status(&ctx), "Select a check or a group row to settle it");
         // An Old debt row and an Acknowledged row, with their folds open.
         for (fold, want) in [
             (
@@ -6052,7 +5903,9 @@ mod tests {
         };
         let mut item_y = None;
         let mut row_y = None;
-        for y in 0..30u16 {
+        // The footer (the last row) names the selected line's keys: it is the one
+        // row that may differ in text.
+        for y in 0..29u16 {
             let (a, b) = (rows(&on_row, y), rows(&on_item, y));
             if a != b {
                 // Only the row's `> ` gutter differs.
@@ -6290,7 +6143,9 @@ mod tests {
         assert!(ctx.inbox_view.file_cursor.is_some());
         let on_file = draw(&screen, &ctx);
         let (before, after) = (rows(&on_row), rows(&on_file));
-        for (y, (a, b)) in before.iter().zip(&after).enumerate() {
+        // The footer (the last row) names the selected line's keys, so it may differ.
+        let body = usize::from(h) - 1;
+        for (y, (a, b)) in before.iter().zip(&after).enumerate().take(body) {
             let skip = if a == b { 0 } else { 2 };
             assert_eq!(
                 a.chars().skip(skip).collect::<String>(),
@@ -6421,5 +6276,249 @@ mod tests {
         ctx.inbox_view.expanded.remove(&row.key());
         reanchor(&mut ctx);
         assert_eq!(item_of(&ctx), None);
+    }
+
+    // ── Row action footer and hotkeys (quick 261119-f5b) ───────────────────────
+
+    use crate::ui::screens::owner_row_actions::{
+        self as row_actions, fixture, ActionId, Availability,
+    };
+
+    /// A context over the row-action fixture digest: every lane listed, both folds
+    /// open, a project path that is not on disk (nothing launches).
+    fn actions_ctx() -> AppContext {
+        let mut ctx = ctx_with_aliases(&[fixture::ALIAS]);
+        owe(&mut ctx, fixture::ALIAS, fixture::digest());
+        ctx.inbox_view.filter = LaneFilter::All;
+        ctx.inbox_view.open_folds.insert(Fold::OldDebt);
+        ctx.inbox_view.open_folds.insert(Fold::Acknowledged);
+        ctx
+    }
+
+    /// Put the cursor on `row`, expanded or not, and on `sub` when given.
+    fn park(ctx: &mut AppContext, row: &InboxRow, expanded: bool, sub: Option<SubStop>) {
+        let rows = stop_rows(ctx);
+        let at = rows.iter().position(|r| r.key() == row.key()).expect("row");
+        set_cursor(ctx, &rows, at);
+        if expanded {
+            ctx.inbox_view.expanded.insert(row.key());
+        } else {
+            ctx.inbox_view.expanded.remove(&row.key());
+        }
+        ctx.inbox_view.set_sub_stop(sub);
+    }
+
+    /// The `[key]` tokens a footer draws, in order.
+    fn drawn_keys(footer: &str) -> Vec<String> {
+        let mut keys = Vec::new();
+        let mut rest = footer;
+        while let Some(open) = rest.find('[') {
+            let Some(close) = rest[open..].find(']') else {
+                break;
+            };
+            keys.push(rest[open + 1..open + close].to_owned());
+            rest = &rest[open + close + 1..];
+        }
+        keys
+    }
+
+    /// The letter keys of the ready actions of `row` (Space is named by its own
+    /// token and is not a letter).
+    fn ready_letters(
+        ctx: &AppContext,
+        row: &InboxRow,
+        sub: Option<&SubStop>,
+        expanded: bool,
+    ) -> Vec<String> {
+        row_actions::row_actions(ctx, Host::Inbox, &row.alias, &row.src, sub, expanded)
+            .iter()
+            .filter(|a| a.is_ready() && a.id != ActionId::Toggle)
+            .map(|a| a.key_label.to_owned())
+            .collect()
+    }
+
+    fn action_letters(keys: &[String]) -> Vec<String> {
+        keys.iter()
+            .filter(|k| matches!(k.as_str(), "v" | "x" | "o" | "A" | "y" | "g"))
+            .cloned()
+            .collect()
+    }
+
+    /// Every row kind and sub-stop of the fixture: the footer names exactly the
+    /// ready actions (no blocked or never-applicable key), the Enter word of what
+    /// Enter does there, and ends with `[?]help`.
+    #[test]
+    fn the_footer_names_exactly_what_works_on_every_row() {
+        let mut ctx = actions_ctx();
+        let rows = stop_rows(&ctx);
+        assert!(rows.len() >= 10, "{}", rows.len());
+        for row in &rows {
+            // Collapsed: Enter expands.
+            park(&mut ctx, row, false, None);
+            let footer = line_text(&footer_line(&ctx, 250));
+            let keys = drawn_keys(&footer);
+            assert_eq!(
+                action_letters(&keys),
+                ready_letters(&ctx, row, None, false),
+                "{:?}: {footer}",
+                row.src.key
+            );
+            assert!(keys.contains(&"Enter".to_owned()), "{footer}");
+            assert!(footer.contains("[Enter]expand"), "{footer}");
+            assert!(footer.ends_with("[?]help"), "{footer}");
+            // Expanded: Enter collapses; a check and a file line view.
+            park(&mut ctx, row, true, None);
+            let footer = line_text(&footer_line(&ctx, 250));
+            assert!(footer.contains("[Enter]collapse"), "{footer}");
+            let stops = owner_block::inbox_sub_stops(&row.src);
+            for sub in stops.iter().take(1).chain(stops.last()) {
+                park(&mut ctx, row, true, Some(sub.clone()));
+                let footer = line_text(&footer_line(&ctx, 250));
+                assert!(footer.contains("[Enter]view"), "{sub:?}: {footer}");
+                assert!(footer.contains("[Space]collapse"), "{sub:?}: {footer}");
+                assert_eq!(
+                    action_letters(&drawn_keys(&footer)),
+                    ready_letters(&ctx, row, Some(sub), true),
+                    "{sub:?}: {footer}"
+                );
+            }
+        }
+    }
+
+    /// At 100 and 80 columns the footer fits, ends with `[?]help` and names only
+    /// ready keys; `v`'s command is shown at 100 and dropped at 80 for a TEST row.
+    #[test]
+    fn the_footer_fits_100_and_80_columns_on_every_row() {
+        let mut ctx = actions_ctx();
+        for row in &stop_rows(&ctx) {
+            park(&mut ctx, row, false, None);
+            let ready = ready_letters(&ctx, row, None, false);
+            for width in [100usize, 80] {
+                let line = footer_line(&ctx, width);
+                let text = line_text(&line);
+                assert!(line.width() <= width, "{width}: {text}");
+                assert!(text.ends_with("[?]help"), "{width}: {text}");
+                let drawn = action_letters(&drawn_keys(&text));
+                assert!(
+                    drawn.iter().all(|k| ready.contains(k)),
+                    "{width}: {drawn:?} not within {ready:?}: {text}"
+                );
+            }
+        }
+        let test = stop_rows(&ctx)
+            .into_iter()
+            .find(|row| row.src.key.phase == "24")
+            .expect("TEST 24");
+        park(&mut ctx, &test, false, None);
+        assert_eq!(
+            line_text(&footer_line(&ctx, 100)),
+            "  [Enter]expand  [v]run /gsd-verify-work 24  [x]settle  [o]pen  [A]ck  [y]copy  [g]oto  [?]help"
+        );
+        assert_eq!(
+            line_text(&footer_line(&ctx, 80)),
+            "  [Enter]expand  [v]run  [x]settle  [o]pen  [A]ck  [y]copy  [g]oto  [?]help"
+        );
+    }
+
+    /// Every blocked cell the fixture produces: the hotkey prints exactly the
+    /// reason the model carries, and pushes nothing.
+    #[test]
+    fn a_blocked_reason_is_what_the_hotkey_prints() {
+        let mut ctx = actions_ctx();
+        let by_phase = |ctx: &AppContext, phase: &str, merged: bool, lane: Option<Lane>| {
+            stop_rows(ctx)
+                .into_iter()
+                .find(|row| {
+                    row.src.key.phase == phase
+                        && (row.src.parts.len() > 1) == merged
+                        && lane.is_none_or(|lane| row.src.group.lane == lane)
+                        && row.fold.is_none()
+                })
+                .expect("fixture row")
+        };
+        let cases = [
+            (by_phase(&ctx, "28", false, None), ActionId::Run, 'v'),
+            (by_phase(&ctx, "28", false, None), ActionId::Settle, 'x'),
+            (
+                by_phase(&ctx, "23", false, Some(Lane::Blocked)),
+                ActionId::Open,
+                'o',
+            ),
+            (by_phase(&ctx, "29", true, None), ActionId::Open, 'o'),
+            (by_phase(&ctx, "29", true, None), ActionId::Acknowledge, 'A'),
+        ];
+        for (row, id, key) in cases {
+            park(&mut ctx, &row, false, None);
+            let actions =
+                row_actions::row_actions(&ctx, Host::Inbox, &row.alias, &row.src, None, false);
+            let Some(Availability::Blocked(reason)) = actions
+                .iter()
+                .find(|a| a.id == id)
+                .map(|a| a.availability.clone())
+            else {
+                panic!("{id:?} is blocked on {:?}", row.src.key);
+            };
+            ctx.status_message = None;
+            let action = press_key(&mut ctx, KeyCode::Char(key));
+            assert!(matches!(action, ScreenAction::None), "{id:?}");
+            assert_eq!(status(&ctx), reason, "{id:?} on {:?}", row.src.key);
+        }
+    }
+
+    /// `x` on a row that shows the settling badge refuses and starts nothing; the
+    /// footer omits `[x]`; once the settle is done it opens the chooser again.
+    #[test]
+    fn x_on_a_settling_row_refuses_once() {
+        use crate::ui::screens::settle_pending::{PendingSettle, Stage};
+        owner_settle::take_settle_launches();
+        let mut ctx = actions_ctx();
+        let row = stop_rows(&ctx)
+            .into_iter()
+            .find(|row| row.src.key.phase == "24")
+            .expect("TEST 24");
+        park(&mut ctx, &row, false, None);
+        assert!(line_text(&footer_line(&ctx, 250)).contains("[x]settle"));
+        let mut entry = PendingSettle::for_alias_test(fixture::ALIAS);
+        entry.phase = "24".to_owned();
+        entry.files = row.src.files.clone();
+        ctx.settle_pending.insert(entry.clone());
+        let action = press_key(&mut ctx, KeyCode::Char('x'));
+        assert!(matches!(action, ScreenAction::None));
+        assert_eq!(status(&ctx), "Settle already pending for this row");
+        assert!(owner_settle::take_settle_launches().is_empty());
+        assert!(
+            !line_text(&footer_line(&ctx, 250)).contains("[x]"),
+            "no [x] while it settles"
+        );
+        ctx.status_message = None;
+        assert!(!line_text(&footer_line(&ctx, 250)).contains("[x]"));
+        // Done (or gone): the chooser opens again.
+        entry.stage = Stage::Done {
+            since: std::time::Instant::now(),
+        };
+        ctx.settle_pending = Default::default();
+        ctx.settle_pending.insert(entry);
+        let action = press_key(&mut ctx, KeyCode::Char('x'));
+        assert!(matches!(action, ScreenAction::Push(_)), "the chooser");
+        ctx.settle_pending = Default::default();
+        let action = press_key(&mut ctx, KeyCode::Char('x'));
+        assert!(matches!(action, ScreenAction::Push(_)), "the chooser");
+    }
+
+    /// `v` through the key arm records the plan under test and launches nothing.
+    #[test]
+    fn v_through_the_key_arm_records_the_plan() {
+        owner_actions::take_run_launches();
+        let mut ctx = actions_ctx();
+        let row = stop_rows(&ctx)
+            .into_iter()
+            .find(|row| row.src.key.phase == "24")
+            .expect("TEST 24");
+        park(&mut ctx, &row, false, None);
+        press_key(&mut ctx, KeyCode::Char('v'));
+        let launches = owner_actions::take_run_launches();
+        assert_eq!(launches.len(), 1);
+        assert_eq!(launches[0].command.to_string(), "/gsd-verify-work 24");
+        assert_eq!(status(&ctx), "Launched /gsd-verify-work 24 in dune-app");
     }
 }

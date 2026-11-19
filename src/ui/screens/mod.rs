@@ -19,6 +19,7 @@ pub mod owner;
 pub mod owner_actions;
 pub mod owner_block;
 pub mod owner_file_view;
+pub mod owner_row_actions;
 pub mod owner_settle;
 pub mod preferences;
 pub mod queue_delete_confirm;

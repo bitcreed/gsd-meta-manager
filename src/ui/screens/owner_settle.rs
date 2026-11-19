@@ -234,9 +234,59 @@ fn check_ref(group: &OwnerGroup, item: &OwnerItem, position: usize) -> CheckRef 
     }
 }
 
+/// The status line `x` prints on a row whose source file is unreadable.
+pub(crate) const UNREADABLE_REFUSAL: &str = "Cannot settle: the source file is unreadable";
+
+/// Why one group's checks cannot be settled: the text `x` prints, and whether the
+/// refusal is permanent for the group's kind (`Never`: the row model hides `x`) or
+/// a state of this one file (`Unreadable`: the model shows `x` dim, with the text).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SettleRefusal {
+    pub(crate) message: &'static str,
+    pub(crate) unreadable: bool,
+}
+
+/// The lane and scope rule of [`settle_target_for`] for one group, pure: FIX,
+/// DECIDE and deferred lanes, archived and acknowledged files, then an unreadable
+/// file, in that order. The one copy, shared by the target builder and the row
+/// action model, so a hint and the key cannot disagree.
+pub(crate) fn settle_group_refusal(group: &OwnerGroup) -> Result<(), SettleRefusal> {
+    let never = |message: &'static str| {
+        Err(SettleRefusal {
+            message,
+            unreadable: false,
+        })
+    };
+    match group.lane {
+        Lane::Fix => return never("Cannot settle a FIX row: it needs code; v plans the fix"),
+        Lane::Decide => return never("Cannot settle a DECIDE row: it is not a check"),
+        Lane::Deferred => return never("Cannot settle a deferred row: it is already deferred"),
+        Lane::Test | Lane::Blocked => {}
+    }
+    if matches!(group.scope, Scope::Archived { .. }) {
+        return never(
+            "Cannot settle old debt: an archived phase is not reachable by /gsd-verify-work",
+        );
+    }
+    if group.acknowledged {
+        return never("Cannot settle an acknowledged file: it is already handled");
+    }
+    if group.counts.unreadable > 0 {
+        return Err(SettleRefusal {
+            message: UNREADABLE_REFUSAL,
+            unreadable: true,
+        });
+    }
+    Ok(())
+}
+
 /// The groups behind the row `key`: a merged entry's parts, a BLOCKED row's
 /// groups, else the one group.
-fn groups_behind(digest: &OwnerDigest, key: &GroupKey, fold_days: u32) -> Vec<OwnerGroup> {
+pub(crate) fn groups_behind(
+    digest: &OwnerDigest,
+    key: &GroupKey,
+    fold_days: u32,
+) -> Vec<OwnerGroup> {
     if key.kind == "entry" {
         owner_block::entry_for(digest, key, fold_days)
             .map(|entry| entry.parts)
@@ -264,28 +314,7 @@ pub fn settle_target_for(
         .ok_or_else(|| "Row is no longer listed; nothing started".to_owned())?;
     // D-03: only TEST and BLOCKED checks of the current milestone can be settled.
     for group in &groups {
-        match group.lane {
-            Lane::Fix => {
-                return Err("Cannot settle a FIX row: it needs code; v plans the fix".to_owned())
-            }
-            Lane::Decide => return Err("Cannot settle a DECIDE row: it is not a check".to_owned()),
-            Lane::Deferred => {
-                return Err("Cannot settle a deferred row: it is already deferred".to_owned())
-            }
-            Lane::Test | Lane::Blocked => {}
-        }
-        if matches!(group.scope, Scope::Archived { .. }) {
-            return Err(
-                "Cannot settle old debt: an archived phase is not reachable by /gsd-verify-work"
-                    .to_owned(),
-            );
-        }
-        if group.acknowledged {
-            return Err("Cannot settle an acknowledged file: it is already handled".to_owned());
-        }
-        if group.counts.unreadable > 0 {
-            return Err("Cannot settle: the source file is unreadable".to_owned());
-        }
+        settle_group_refusal(group).map_err(|refusal| refusal.message.to_owned())?;
     }
     let workstream = match first.workstream.as_deref() {
         Some(name) if !is_workstream_name(name) => {
@@ -1741,5 +1770,35 @@ mod tests {
         };
         assert!(settle_recheck(&ctx, &plan).is_ok());
         assert!(take_settle_launches().is_empty());
+    }
+
+    /// Quick 261119-f5b: the lane and scope rule is one pure function, ordered lane,
+    /// scope, acknowledged, unreadable; only the last is a state of one file.
+    #[test]
+    fn the_settle_group_rule_separates_kinds_from_unreadable_files() {
+        use crate::ui::screens::owner_row_actions::fixture;
+        let digest = fixture::digest();
+        let of = |lane: Lane, pick: &dyn Fn(&OwnerGroup) -> bool| {
+            let group = digest
+                .groups
+                .iter()
+                .find(|g| g.lane == lane && pick(g))
+                .expect("fixture group");
+            settle_group_refusal(group)
+        };
+        let current = |g: &OwnerGroup| matches!(g.scope, Scope::Current) && !g.acknowledged;
+        assert!(of(Lane::Test, &|g| current(g) && g.counts.unreadable == 0).is_ok());
+        assert!(of(Lane::Blocked, &current).is_ok());
+        let fix = of(Lane::Fix, &current).unwrap_err();
+        assert!(!fix.unreadable && fix.message.starts_with("Cannot settle a FIX row"));
+        let decide = of(Lane::Decide, &current).unwrap_err();
+        assert!(!decide.unreadable && decide.message.starts_with("Cannot settle a DECIDE row"));
+        let old = of(Lane::Test, &|g| matches!(g.scope, Scope::Archived { .. })).unwrap_err();
+        assert!(!old.unreadable && old.message.starts_with("Cannot settle old debt"));
+        let acked = of(Lane::Test, &|g| g.acknowledged).unwrap_err();
+        assert!(!acked.unreadable && acked.message.contains("acknowledged"));
+        let bad = of(Lane::Test, &|g| current(g) && g.counts.unreadable > 0).unwrap_err();
+        assert!(bad.unreadable);
+        assert_eq!(bad.message, UNREADABLE_REFUSAL);
     }
 }
