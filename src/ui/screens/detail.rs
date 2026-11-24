@@ -12324,6 +12324,17 @@ fn build_defaults_entries(
     push(cat, "workflow.live_dom_uat", v, k, false, ConfigHelp::new(
         "Runs a browser-driven verifier after each wave and writes its report; while off no browser tooling is ever driven.",
     ).since("v1.12.0"));
+    // gsd-core v1.23.0 (#3858, e43a9e4c6, quick task 261124-fox): the two keys of
+    // the deep-verify capability, placed between live_dom_uat and
+    // ui_interaction_capture as upstream's table orders them (I-fox-1).
+    let (v, k) = opt_bool(pwf.and_then(|w| w.deep_verify));
+    push(cat, "workflow.deep_verify", v, k, false, ConfigHelp::new(
+        "Before UAT, an agent runs each behavior the plan promises through a browser MCP and leaves you only judgment calls, failures and what it could not run.",
+    ).since("v1.23.0"));
+    let (v, k) = opt_bool(pwf.and_then(|w| w.deep_verify_all_phases));
+    push(cat, "workflow.deep_verify_all_phases", v, k, false, ConfigHelp::new(
+        "Widens that browser-driven behavior check from UI phases to every phase; does nothing unless workflow.deep_verify is also on.",
+    ).since("v1.23.0"));
     // gsd-core 1.15.0 re-sync (quick task 260926-gtk): introduced by 88b5775dc
     // (#4223). Placed beside the other browser-driven gate (INFERRED I-2); the
     // `since` is MEASURED: `git tag --contains 88b5775dc` resolves to v1.15.0,
@@ -12939,6 +12950,8 @@ fn builtin_default_for_key(key: &str) -> Option<&'static str> {
         | "text_mode"
         | "workflow.compact_content"
         | "workflow.cross_runtime_execution"
+        | "workflow.deep_verify"
+        | "workflow.deep_verify_all_phases"
         | "graphify.auto_update"
         | "auto_advance"
         | "auto_chain_active"
@@ -13787,6 +13800,20 @@ fn set_config_value(
                     .workflow
                     .get_or_insert_with(WorkflowConfig::default)
                     .live_dom_uat = Some(b);
+                return true;
+            }
+            "workflow.deep_verify" => {
+                config
+                    .workflow
+                    .get_or_insert_with(WorkflowConfig::default)
+                    .deep_verify = Some(b);
+                return true;
+            }
+            "workflow.deep_verify_all_phases" => {
+                config
+                    .workflow
+                    .get_or_insert_with(WorkflowConfig::default)
+                    .deep_verify_all_phases = Some(b);
                 return true;
             }
             "workflow.ui_interaction_capture" => {
@@ -14784,6 +14811,20 @@ fn clear_config_value(config: &mut crate::state_reader::config_json::GsdConfig, 
                 .live_dom_uat = None;
             true
         }
+        "workflow.deep_verify" => {
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .deep_verify = None;
+            true
+        }
+        "workflow.deep_verify_all_phases" => {
+            config
+                .workflow
+                .get_or_insert_with(WorkflowConfig::default)
+                .deep_verify_all_phases = None;
+            true
+        }
         "workflow.ui_interaction_capture" => {
             config
                 .workflow
@@ -15363,6 +15404,16 @@ fn mutate_config_entry(
                     wf.live_dom_uat = Some(!wf.live_dom_uat.unwrap_or(false));
                     true
                 }
+                "workflow.deep_verify" => {
+                    let wf = config.workflow.get_or_insert_with(WorkflowConfig::default);
+                    wf.deep_verify = Some(!wf.deep_verify.unwrap_or(false));
+                    true
+                }
+                "workflow.deep_verify_all_phases" => {
+                    let wf = config.workflow.get_or_insert_with(WorkflowConfig::default);
+                    wf.deep_verify_all_phases = Some(!wf.deep_verify_all_phases.unwrap_or(false));
+                    true
+                }
                 "workflow.ui_interaction_capture" => {
                     let wf = config.workflow.get_or_insert_with(WorkflowConfig::default);
                     wf.ui_interaction_capture = Some(!wf.ui_interaction_capture.unwrap_or(false));
@@ -15940,6 +15991,8 @@ mod tests {
                 "human_verify_mode": "end-of-phase",
                 "inline_plan_threshold": 3,
                 "live_dom_uat": false,
+                "deep_verify": true,
+                "deep_verify_all_phases": false,
                 "max_discuss_passes": 3,
                 "plan_bounce": false,
                 "plan_bounce_passes": 2,
@@ -16025,7 +16078,7 @@ mod tests {
     /// carrying such a key would make this number a property of the fixture
     /// rather than of the tab. [`populated_gsd_config`] is therefore kept free
     /// of unmodelled keys, and the pass-through rows have their own fixture.
-    const DEFAULTS_OPTION_COUNT: usize = 140;
+    const DEFAULTS_OPTION_COUNT: usize = 142;
 
     #[test]
     fn every_config_entry_carries_a_non_empty_summary() {
@@ -17448,6 +17501,15 @@ mod tests {
     /// pass-through.
     const RESYNCED_KEYS_1_22_0: &[(&str, &str)] = &[("workflow.cross_runtime_execution", "bool")];
 
+    /// MEASURED key-cell diff v1.22.0..v1.23.0 of upstream `docs/CONFIGURATION.md`
+    /// (+2 / -0), first commit e43a9e4c6 (#3858 / PR #6378): the two keys of the
+    /// deep-verify capability, both booleans, registered in
+    /// `capabilities/deep-verify/capability.json` (not in the schema manifest).
+    const RESYNCED_KEYS_1_23_0: &[(&str, &str)] = &[
+        ("workflow.deep_verify", "bool"),
+        ("workflow.deep_verify_all_phases", "bool"),
+    ];
+
     /// The real top-level gsd-core keys that were still pass-through after the
     /// release-1.15.0 re-sync, promoted to typed rows by quick task
     /// 260926-jnf — MEASURED against `upstream/release-1.15.0` (the 260926-gtk
@@ -17638,6 +17700,12 @@ mod tests {
             1,
             "the v1.22.0 delta was MEASURED at +2 cells, of which 1 is a typed key; \
              re-measure against gsd-core and update docs/GSD-CORE-SYNC.md in the SAME commit"
+        );
+        assert_eq!(
+            RESYNCED_KEYS_1_23_0.len(),
+            2,
+            "the v1.23.0 delta was MEASURED at +2 / -0 keys; re-measure against \
+             gsd-core and update docs/GSD-CORE-SYNC.md in the SAME commit"
         );
         assert_eq!(
             PROMOTED_PLANNER_KEYS_1_20_0.len(),
@@ -17883,6 +17951,66 @@ mod tests {
         );
     }
 
+    /// `workflow.deep_verify` and `workflow.deep_verify_all_phases` (gsd-core
+    /// v1.23.0, #3858): two typed, editable Bool rows between
+    /// `workflow.live_dom_uat` and `workflow.ui_interaction_capture`.
+    #[test]
+    fn workflow_deep_verify_keys_are_typed_bool_rows_that_round_trip() {
+        use crate::state_reader::config_json::{parse_gsd_config, serialize_gsd_config};
+        let mut config = parse_gsd_config(
+            r#"{"workflow":{"deep_verify":true,"deep_verify_all_phases":false}}"#,
+        )
+        .unwrap();
+        let entries = build_defaults_entries(&config);
+        let pos = |key: &str| {
+            let idx: Vec<usize> = entries
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| e.key.as_ref() == key)
+                .map(|(i, _)| i)
+                .collect();
+            assert_eq!(idx.len(), 1, "exactly one {key} row");
+            idx[0]
+        };
+        let dom = pos("workflow.live_dom_uat");
+        assert_eq!(pos("workflow.deep_verify"), dom + 1);
+        assert_eq!(pos("workflow.deep_verify_all_phases"), dom + 2);
+        assert_eq!(pos("workflow.ui_interaction_capture"), dom + 3);
+        for (key, value) in [
+            ("workflow.deep_verify", "true"),
+            ("workflow.deep_verify_all_phases", "false"),
+        ] {
+            let row = &entries[pos(key)];
+            assert!(matches!(row.kind, ConfigValueKind::Bool), "{:?}", row.kind);
+            assert_eq!(row.category, "Execution");
+            assert_ne!(row.category, PASSTHROUGH_CATEGORY);
+            assert_eq!(row.value, value);
+            assert_eq!(row.help.since, "v1.23.0");
+            assert!(mutate_config_entry(&mut config, key, &ConfigValueKind::Bool));
+        }
+        let saved: serde_json::Value =
+            serde_json::from_str(&serialize_gsd_config(&config).unwrap()).unwrap();
+        assert_eq!(
+            saved.pointer("/workflow/deep_verify"),
+            Some(&serde_json::Value::Bool(false))
+        );
+        assert_eq!(
+            saved.pointer("/workflow/deep_verify_all_phases"),
+            Some(&serde_json::Value::Bool(true))
+        );
+
+        let empty = parse_gsd_config("{}").unwrap();
+        let entries = build_defaults_entries(&empty);
+        for key in ["workflow.deep_verify", "workflow.deep_verify_all_phases"] {
+            let row = entries
+                .iter()
+                .find(|e| e.key.as_ref() == key)
+                .expect("the unset row");
+            assert_ne!(row.category, PASSTHROUGH_CATEGORY);
+            assert_eq!(builtin_default_for_key(key), Some("false"));
+        }
+    }
+
     /// `execute.models.<runtime>` (gsd-core 1.22.0, #6302) is templated by
     /// runtime name, so the top-level `execute` object stays one read-only
     /// pass-through row, shown in the clear and preserved on save.
@@ -17970,6 +18098,7 @@ mod tests {
             .chain(PROMOTED_PLANNER_KEYS_1_20_0)
             .chain(RESYNCED_KEYS_1_21_0)
             .chain(RESYNCED_KEYS_1_22_0)
+            .chain(RESYNCED_KEYS_1_23_0)
             .chain(PROMOTED_TOP_LEVEL_KEYS)
         {
             let matching: Vec<&ConfigEntry> = entries
@@ -18025,6 +18154,7 @@ mod tests {
             .chain(PROMOTED_PLANNER_KEYS_1_20_0)
             .chain(RESYNCED_KEYS_1_21_0)
             .chain(RESYNCED_KEYS_1_22_0)
+            .chain(RESYNCED_KEYS_1_23_0)
             .chain(PROMOTED_TOP_LEVEL_KEYS)
         {
             let entry = entries

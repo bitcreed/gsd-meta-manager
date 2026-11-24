@@ -916,22 +916,23 @@ in another value, is displayed like any other value (T-jnf-07, accepted).
 
 ## Modelled
 
-Every key `build_defaults_entries` pushes a row for, in display order. **140
+Every key `build_defaults_entries` pushes a row for, in display order. **142
 rows**: **51** carry a `since` measured at the 1.14.0 re-sync (260916-vqw
 measured 57; six were retired at 261012-jqb), **2** carry `v1.15.0` (added by
 260926-gtk, measured against the v1.15.0 tag at 261012-jqb), **7** carry a
 `since` measured when quick task 260926-jnf promoted them, **2** carry
 `v1.16.0` (261012-jqb), **1** carries `v1.6.0`, measured at 261019-guw, **1**
 carries `v1.19.0` (261027-184), **2** carry `v1.10.0`, measured when quick task
-261103-f5i promoted them, **1** carries `v1.21.0` (261113-fi0), **1** carries `v1.22.0` (261119-ikn), and the **72** without one predate this record
+261103-f5i promoted them, **1** carries `v1.21.0` (261113-fi0), **1** carries `v1.22.0` (261119-ikn), **2** carry `v1.23.0` (261124-fox), and the **72** without one predate this record
 and were not retro-measured.
 
-`DEFAULTS_OPTION_COUNT` in `src/ui/screens/detail.rs` pins this count at 140
+`DEFAULTS_OPTION_COUNT` in `src/ui/screens/detail.rs` pins this count at 142
 (132 -> 139 at 260926-jnf, 139 -> 135 at 261012-jqb, 135 -> 136 at 261027-184,
-136 -> 138 at 261103-f5i, 138 -> 139 at 261113-fi0, 139 -> 140 at 261119-ikn),
+136 -> 138 at 261103-f5i, 138 -> 139 at 261113-fi0, 139 -> 140 at 261119-ikn, 140 -> 142 at 261124-fox),
 `RESYNCED_KEYS` / `RESYNCED_KEYS_1_15_0` / `RESYNCED_KEYS_1_16_0` /
 `RESYNCED_KEYS_1_19_0` / `PROMOTED_PLANNER_KEYS_1_20_0` /
-`RESYNCED_KEYS_1_21_0` / `RESYNCED_KEYS_1_22_0` / `PROMOTED_TOP_LEVEL_KEYS` pin the eight key lists,
+`RESYNCED_KEYS_1_21_0` / `RESYNCED_KEYS_1_22_0` / `RESYNCED_KEYS_1_23_0` /
+`PROMOTED_TOP_LEVEL_KEYS` pin the nine key lists,
 `REMOVED_KEYS_1_16_0` pins the six retired ones, and three coverage assertions
 refuse a row with no `ConfigHelp`.
 
@@ -1003,12 +1004,16 @@ refuse a row with no `ConfigHelp`.
 | `workflow.test_command` | v1.01.0 |
 | `workflow.worktree_skip_hooks` | v1.01.0 |
 | `workflow.live_dom_uat` | v1.12.0 |
+| `workflow.deep_verify` | v1.23.0 |
+| `workflow.deep_verify_all_phases` | v1.23.0 |
 | `workflow.ui_interaction_capture` | v1.15.0 |
 | `workflow.cross_ai_execution` | v1.01.0 |
 | `workflow.cross_ai_command` | v1.01.0 |
 | `workflow.cross_ai_timeout` | v1.01.0 |
 
 gsd-core v1.22.0 registers `workflow.cross_runtime_execution` (#6302) as an opt-in gate (default `false`) that nothing reads until its cross-runtime dispatch ships (261119-ikn).
+
+gsd-core v1.23.0 registers `workflow.deep_verify` and `workflow.deep_verify_all_phases` through the deep-verify capability (`capabilities/deep-verify/capability.json`, #3858), both default `false`; the second has no effect without the first (261124-fox).
 
 ### Docs & Output
 

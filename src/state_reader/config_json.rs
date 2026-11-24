@@ -654,6 +654,15 @@ pub struct WorkflowConfig {
     /// another runtime's CLI. Registered upstream with nothing reading it yet.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cross_runtime_execution: Option<bool>,
+    // --- gsd-core v1.23.0 (#3858, quick task 261124-fox) ---
+    /// Opt-in agent-driven deep verification of the deep-verify capability: a
+    /// behavior-verifier step before UAT on UI phases.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deep_verify: Option<bool>,
+    /// Widens `deep_verify` from UI phases to every phase; does nothing
+    /// without `deep_verify`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deep_verify_all_phases: Option<bool>,
     /// See [`ExtraKeys`].
     #[serde(flatten)]
     pub extra: ExtraKeys,
@@ -1530,6 +1539,8 @@ mod tests {
                 "context_coverage_gate": false,
                 "context_drift_action": "block",
                 "context_drift_precheck": false,
+                "deep_verify": true,
+                "deep_verify_all_phases": false,
                 "cross_ai_command": "codex exec -",
                 "cross_ai_execution": true,
                 "cross_ai_timeout": 600,
@@ -1570,6 +1581,8 @@ mod tests {
         assert_eq!(wf.context_coverage_gate, Some(false));
         assert_eq!(wf.context_drift_action.as_deref(), Some("block"));
         assert_eq!(wf.context_drift_precheck, Some(false));
+        assert_eq!(wf.deep_verify, Some(true));
+        assert_eq!(wf.deep_verify_all_phases, Some(false));
         assert_eq!(wf.cross_ai_command.as_deref(), Some("codex exec -"));
         assert_eq!(wf.cross_ai_execution, Some(true));
         assert_eq!(wf.cross_ai_timeout, Some(600));
@@ -1600,6 +1613,8 @@ mod tests {
         let rwf = reparsed.workflow.as_ref().unwrap();
         assert_eq!(rwf.agent_hint_routing, Some(false));
         assert_eq!(rwf.cross_runtime_execution, Some(true));
+        assert_eq!(rwf.deep_verify, Some(true));
+        assert_eq!(rwf.deep_verify_all_phases, Some(false));
         assert_eq!(rwf.smart_zone_tokens, Some(125000));
         assert_eq!(rwf.human_verify_mode.as_deref(), Some("mid-flight"));
         assert_eq!(
@@ -1623,6 +1638,8 @@ mod tests {
         let wf = config.workflow.as_ref().unwrap();
         assert!(wf.agent_hint_routing.is_none());
         assert!(wf.cross_runtime_execution.is_none());
+        assert!(wf.deep_verify.is_none());
+        assert!(wf.deep_verify_all_phases.is_none());
         assert!(wf.build_command.is_none());
         assert!(wf.code_review_point.is_none());
         assert!(wf.compact_content.is_none());
@@ -1631,6 +1648,7 @@ mod tests {
         let serialized = serialize_gsd_config(&config).unwrap();
         assert!(!serialized.contains("agent_hint_routing"));
         assert!(!serialized.contains("cross_runtime_execution"));
+        assert!(!serialized.contains("deep_verify"));
         assert!(!serialized.contains("smart_zone_tokens"));
     }
 
