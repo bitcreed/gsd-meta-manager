@@ -1,18 +1,18 @@
 # gsd-core config sync record
 
-**Config surface synced against gsd-core `v1.22.0`**
-(`1f800effd5c33c155c57ad89ca7ec620f4b56035`, `package.json` 1.22.0, tagged
-2026-11-19) **on 2026-11-19. Conformance oracle / `GSD_CORE_SYNCED_VERSION`
-pinned at `1.22.0`**, the latest version published on npm.
+**Config surface synced against gsd-core `v1.23.0`**
+(`e3dcca27e73c3b50d9063192f67fc159769c9f9a`, `package.json` 1.23.0, tagged
+2026-11-23) **on 2026-11-24. Conformance oracle / `GSD_CORE_SYNCED_VERSION`
+pinned at `1.23.0`**, the latest version published on npm.
 
 `src/state_reader/config_json.rs` carries the machine-readable copy of those
 values as three constants, which at this sync all name the same release:
 
 | Constant | Value | What it means |
 |---|---|---|
-| `GSD_CORE_SYNCED_VERSION` | `1.22.0` | The **conformance-oracle pin**: the latest gsd-core release published on npm at or below the synced commit. `scripts/install-conformance-oracle.sh` greps this declaration and runs `npm install @opengsd/gsd-core@<version>` — in the publish job (`.github/workflows/release.yml`) and inside `./scripts/pre-tag-check.sh --container`. The floor of the installed-GSD comparison's in-sync range. |
-| `GSD_CORE_SYNCED_COMMIT` | `v1.22.0` | The tree the config surface was diffed against, as `git describe --tags --always` spells it. |
-| `GSD_CORE_SYNCED_TREE_VERSION` | `1.22.0` | The `package.json` version of that tree. The ceiling of the installed-GSD comparison's in-sync range (quick task 260926-j0a). |
+| `GSD_CORE_SYNCED_VERSION` | `1.23.0` | The **conformance-oracle pin**: the latest gsd-core release published on npm at or below the synced commit. `scripts/install-conformance-oracle.sh` greps this declaration and runs `npm install @opengsd/gsd-core@<version>` — in the publish job (`.github/workflows/release.yml`) and inside `./scripts/pre-tag-check.sh --container`. The floor of the installed-GSD comparison's in-sync range. |
+| `GSD_CORE_SYNCED_COMMIT` | `v1.23.0` | The tree the config surface was diffed against, as `git describe --tags --always` spells it. |
+| `GSD_CORE_SYNCED_TREE_VERSION` | `1.23.0` | The `package.json` version of that tree. The ceiling of the installed-GSD comparison's in-sync range (quick task 260926-j0a). |
 
 This file is the human-readable half: the full key inventory, per-key status,
 and the exact commands that produced it, so the *next* sync starts from a
@@ -58,7 +58,13 @@ row, kept `execute.models.<runtime>` pass-through, corrected the namespaced
 `commit_docs` / `search_gitignored` help, and ported two `.planning` reader
 fixes (real ATX phase headings, #5880; the phase-token VERIFICATION/UAT
 resolver, #5931) — see
-[The v1.22.0 delta](#the-v1220-delta-quick-task-261119-ikn).
+[The v1.22.0 delta](#the-v1220-delta-quick-task-261119-ikn). The v1.23.0 sync
+(quick task 261124-fox) modelled `workflow.deep_verify` and
+`workflow.deep_verify_all_phases`, corrected the cross-runtime help, stopped the
+Config tab inventing null sections that gsd-core now reads as barriers (#5096),
+showed the global values gsd-core now merges per key (#4071), and ported the
+leading-version milestone heading rule (#6149) and the recorded-pause gate
+(#6431) — see [The v1.23.0 delta](#the-v1230-delta-quick-task-261124-fox).
 
 > **Keep this file, `config_json.rs`'s three constants and README.md's
 > `**GSD compatibility:**` note in step, in the SAME commit.** A record that
@@ -89,17 +95,17 @@ The sibling checkout is **read-only** for this purpose. Nothing below writes to
 it, and nothing below checks out a branch there.
 
 **Measure against a REF, never the working tree.** The local checkout's HEAD is
-whatever branch someone last worked on (at the time of writing: a fork docs branch at
-`v1.21.0-13-g4f9cb0d42` with `package.json` 1.21.0, i.e. 13 commits past the
-last release it was described from, carrying the `v1.22.0` tag) — not the sync
+whatever branch someone last worked on (at the time of writing: the `next`
+branch at `v1.23.0-25-g455cd03c1` with `package.json` 1.23.0, i.e. 25 commits
+past the last release it was described from, which it carries) — not the sync
 target. A
 plain `cat "$CORE/docs/CONFIGURATION.md"` or `node -p require(package.json)`
 measures the wrong tree.
 
 ```bash
 CORE=~/projects/node/gsd-core
-REF=v1.23.0                          # the sync target: the next release tag
-PREV=v1.22.0                         # the previous GSD_CORE_SYNCED_COMMIT
+REF=v1.24.0                          # the sync target: the next release tag
+PREV=v1.23.0                         # the previous GSD_CORE_SYNCED_COMMIT
 
 # 1. The baseline constants.
 git -C "$CORE" describe --tags --always "$REF"   # -> GSD_CORE_SYNCED_COMMIT
@@ -141,8 +147,8 @@ CORE="$S/core.git"        # then run steps 1-5; remove "$S" afterwards
 ```
 
 The v1.21.0 sync measured this way (the sibling checkout had no `v1.21.0`
-tag); the v1.22.0 sync did not need a clone, because the sibling checkout
-carried the `v1.22.0` tag.
+tag); the v1.22.0 and v1.23.0 syncs did not need a clone, because the sibling
+checkout carried each tag.
 
 **Step 5's needle is the DOTTED key, not the leaf name.** A leaf like `enabled`
 or `auto_update` matches dozens of unrelated commits across `src/`, and the
@@ -163,6 +169,156 @@ reproduced verbatim.
 `capabilities/<name>/capability.json` (like `workflow.ui_interaction_capture`)
 shows up in CONFIGURATION.md and in step 4's capability diff, but not in
 `config-schema.manifest.json`'s `validKeys`. Diff both.
+
+---
+
+## The v1.23.0 delta (quick task 261124-fox)
+
+Measured on 2026-11-24 between `v1.22.0` and `v1.23.0`
+(`e3dcca27e73c3b50d9063192f67fc159769c9f9a`), against the tags in the sibling
+checkout, read-only: 114 commits, 645 files. v1.22.0 is an ancestor of v1.23.0.
+npm `@opengsd/gsd-core` 1.23.0 (published 2026-11-23, `gitHead` equal to the tag
+sha) is `latest`.
+
+| Measurement | v1.22.0 | v1.23.0 | Change |
+|---|---:|---:|---|
+| CONFIGURATION.md key cells (step 2) | 266 | 268 | **+2 / -0**: `workflow.deep_verify` and `workflow.deep_verify_all_phases` (both boolean, default `false`; capability-registered in the new `capabilities/deep-verify/capability.json`; e43a9e4c6, #3858 / PR #6378, 2026-11-19; first tag `v1.23.0`) |
+| Existing cells whose text changed | — | — | `workflow.cross_runtime_execution` and `execute.models.<runtime>` are now read by `dispatch-isolation` (82ff25f3c, #6303 / PR #6350); defaults unchanged |
+| `config-schema.manifest.json`, `config-defaults.manifest.json`, `gsd-core/templates/config.json` | — | — | no diff (the two new keys live in the capability, not in `validKeys`) |
+| `src/config-loader.cts`, new `config-value-resolver.cts` and `config-schema-defaults.cts` | — | — | section barriers (f7d00363d, #5096 / PR #6497): a top-level `workflow`, `git`, `planning`, `planner` or `review` that is present but not an object removes every default of that section. Per-key global layer (0a17d0742, #6030 fixing #4071 / PR #6540): `$GSD_HOME/.gsd/defaults.json` merges beneath a project for the 26 names of `GLOBAL_DEFAULTS_RESOLUTION_KEYS`, `runtime` never fills in, the whole `git.*` namespace stays project-only, a gitignored `.planning/` outranks a global-only `commit_docs`, and the #3532 "global keys are ignored" warning is gone |
+| `src/secrets.cts`, `gsd-core/references/gsd-run-resolver.md` | — | — | unchanged (no diff) |
+| Existing keys whose default changed | — | — | **none** |
+| `capabilities/` directories | 45 | 46 | +`deep-verify`; the 45 existing `capability.json` files change `version`, and mempalace's contribution point moves `execute:wave:post` -> `execute:post` (#5984 / PR #6349) |
+
+Step 3 (`comm -23`) at the tree after this sync: 173 against v1.22.0 and 173
+against v1.23.0 (the two new keys are rows here). `workflow.deep_verify` and
+`workflow.deep_verify_all_phases` both resolve to `v1.23.0` through step 5
+(`git describe` of e43a9e4c6 is `v1.22.0-24-ge43a9e4c6`).
+
+**How this build models the change.**
+
+- `workflow.deep_verify` and `workflow.deep_verify_all_phases` are typed,
+  editable Bool rows in Execution between `workflow.live_dom_uat` and
+  `workflow.ui_interaction_capture`, since `v1.23.0`, built-in default `false`
+  (feat commit `2ba4a15f`; I-fox-1). The Modelled count and
+  `DEFAULTS_OPTION_COUNT` go 140 -> 142, pinned by `RESYNCED_KEYS_1_23_0`.
+- The `workflow.cross_runtime_execution` help, its doc comment, the Execution
+  sentence and the `execute.models.<runtime>` Pass-through row now say
+  `dispatch-isolation` reads them (#6303); the `workflow.live_dom_uat` help no
+  longer claims no browser tooling is driven while it is off, because deep
+  verification drives Playwright whatever it says (fix commit `31059eea`;
+  I-fox-2). The historical v1.22.0 delta below stays as written.
+- **The save path (fix commit `9897d8d2`; I-fox-3).** Before this sync every
+  top-level `Option` field of `GsdConfig` without `skip_serializing_if` was
+  written as `null` and the three `String` fields as `""`: a scratch probe at
+  eeb8aa93 re-serialized `{"mode":"yolo"}` with `"workflow": null`,
+  `"git": null`, `"hooks": null`, `"intel": null`, `"graphify": null`,
+  `"commit_docs": null` and twelve more blanks. Since v1.23.0 a null `workflow`
+  removes research, plan-check, verifier, Nyquist and security defaults, so one
+  Config-tab save of a config without a `workflow` block disabled them. A save
+  now writes no top-level key the file did not carry; an explicit null at one of
+  the five barrier sections is recorded at parse time in
+  `GsdConfig::null_barrier_sections` and written back while its section is
+  unset, so a deliberate barrier survives a save of an unrelated row.
+- **The per-key global layer (feat commit `b578fae6`; I-fox-4, I-fox-5).**
+  `gsd_core_honors_global_default` ports upstream's `honorsGlobalDefaults`. In
+  the Project view an unset row among the 20 `GLOBAL_LAYER_ROWS` shows
+  `(global: <value>)` when the global file supplies one; `runtime`, every `git.*`
+  row, `mode` and `search_gitignored` keep the built-in default, as does a row
+  the project sets under either spelling or whose section the project nulls.
+  Editing, the prompt prefill and the saved file are unchanged. The scope strip,
+  the Global status text and the preferences doc no longer say existing projects
+  ignore the global file.
+- **Not ported (I-fox-6).** A Project-view row for a global-only pass-through
+  family (`effort`, `model_overrides`, `models`, `model_profile_overrides`,
+  `model_policy`, `granularities`, `fast_mode`, `resolve_model_ids`) and the
+  gitignored-`.planning/` rung; see "Next sync" item 10. A global file that
+  spells a short `workflow.*` key flat (`plan_checker`) does not feed the
+  inherited display.
+
+**Reader and router ports.**
+
+- **A heading opens a milestone only when its version leads (#6149 / PR #6416;
+  fix commit `dbbfb3c0`; I-fox-7).** `## Requirement Coverage (v1.5)` (daily-vow)
+  and `## Scope Explicitly Excluded from v0.12` (sentriq) stopped being
+  milestones; their two pinned tests lost those entries. This build keeps its
+  local acceptance of a bare-major `v2`.
+- **Gate 0, a recorded pause (#6431 / PR #6477; feat commit `6e7346be`;
+  I-fox-8).** `router::decide` parks with `gate_paused` and the fixed detail
+  `recorded_pause` when `HANDOFF.json` is non-empty or STATE.md carries
+  `paused_at`, before every other gate, even for a handoff the dashboard reads
+  as stale. The queue inherits the smart-entry change as it consumes
+  `smart-entry` verbatim.
+- **gaps_found over stale (#6078 / PR #6381; docs commit `0f527e37`;
+  I-fox-9).** A `gaps_found` report whose covered-input fingerprint moved reads
+  `stale` upstream; this build does not derive fingerprint staleness and parks on
+  both, so only comments changed.
+
+**No gsdmm surface (I-fox-10).**
+
+- `DEEP-VERIFY.md` / `DEEP-VERIFY-CHECKPOINTS.md`: a Checks chip would add a
+  "not run" entry to every phase while the capability is default-off; upstream
+  merges the checkpoint file into the UAT list through verify-work, which this
+  build already reads as `*-UAT.md`.
+- #6239 deferred-items closure headings (this build only flags
+  `deferred-items.md` presence); #6270 roadmap V006/V007 and
+  update-plan-progress row drops (validator and writer); #6257 / #6258 / #6399 /
+  #6122 STATE.md writers (this build reads `current_phase_name` and
+  `progress.*`, which they now fill); #6096 `verification all-summarized` (a new
+  query, not called).
+- 82ff25f3c cross-runtime dispatch (reuses the existing `orchestrator-worktree`
+  block); c17bd847c orphan reaper (the registry already skips
+  `.claude/worktrees` paths); 663f9ad90 `baseRefLayer`, 0e73a6976 `held` /
+  `decidedAt` and #6355 `provenance.layout` (verbs this build never calls).
+- Codex #6158 (b79843d27) and #6165 (2ec0e6604): this build reads only
+  `<config home>/gsd-core/VERSION`, whose installer path has no diff; #5236
+  unknown-runtime init; #6124 `_auto_chain_active` no-op writes; #6125 budget-low
+  presets; the secret-read / Bash guard and hook fixes; the mempalace
+  contribution-point move.
+
+**The gsd-tools invocation audit.** v1.23.0's `docs/CLI-SURFACE-MANIFEST.json`:
+94 declared verbs at both tags; `global.flags` (`cwd`, `default`, `json-errors`,
+`pick`, `project-dir`, `raw`, `ws`) and `global.rejected` (`--version`, `-v`)
+unchanged; `undeclared` identical (138 entries, still holding `smart-entry` and
+`init.manager`). One verb changed: `dispatch-isolation` (`plan` `value` ->
+`value-or-bare`, +`renew-held`), not called here (it appears only as prose in
+`src/launcher/assets/MASTER-PROMPT.md`). Every invocation this project makes,
+run against the installed 1.23.0:
+
+| Where | Invocation | Result |
+|---|---|---|
+| `src/state_reader/queue_md.rs:186` | `smart-entry --json`; undeclared verb | exit 0, valid JSON with `actions` (and `signals.paused`) |
+| `tests/driver_router_conformance.rs:187` (`ORACLE_VERB` at :56), `scripts/install-conformance-oracle.sh:242` (`ORACLE_VERB` at :104) | `query init.manager`; undeclared verb | exit 0 |
+| `tests/launcher_live_isolation.rs:126` | `runtime-identity --raw` | exit 0, `{"packageName":"@opengsd/gsd-core","version":"1.23.0"}` |
+| `tests/driver_router_conformance.rs:137` | PATH probe `gsd-tools --version` | rejected verb, unchanged; the probe only checks that a binary spawns |
+| `tests/launcher_config_dir.rs:299` | `query init` inside a hook-command string fixture | never executed |
+
+This build calls no `worktree base-check`, `query dispatch-isolation` or
+`project-context`, so `baseRefLayer`, `held` / `decidedAt` and
+`provenance.layout` reach nothing here. Conclusion: no code change (I-fox-11).
+
+**Other areas.**
+
+- **Routing.** `src/smart-entry.cts` changed only for #6431 (a non-empty root
+  `.planning/HANDOFF.json` classifies as paused alongside STATE.md `paused_at`);
+  `src/init.cts` changes are the #5096 / #6030 resolver adoption, #6431 and
+  #5236. `tests/driver_router_conformance.rs` is green (8 passed) against the
+  installed 1.23.0 and against the npm-pinned 1.23.0 oracle that
+  `scripts/install-conformance-oracle.sh` provisions into a throwaway HOME (see
+  the 261124-fox SUMMARY).
+- **The CLI.** `commands/gsd` has 72 files at both tags, 4 modified, none added
+  or removed; two `argument-hint` lines changed, both additive
+  (`plan-review-convergence` +`[--on-escalation ask|exit]`, `review`
+  +`[--cycle-summary]`); the slash flags this app emits (`--gaps`, `--gaps-only`,
+  `--next`, `--advanced`, `--backlog`) are all still present.
+- **Agents.** 64 -> 65 files (+`gsd-behavior-verifier`), 3 modified; this build
+  hard-codes no agent-type list.
+- **Codex and installs.** The `<config home>/gsd-core/VERSION` root
+  `src/state_reader/gsd_install.rs` reads is unchanged.
+- **Secret-bearing keys.** `src/secrets.cts` and
+  `gsd-core/references/gsd-run-resolver.md` have no diff; the heuristic matches
+  stay 6 -> 6 (the same six, all already exempt); the new key names trip no
+  marker; CONFIGURATION.md still has 6 "Masked in display" cells.
 
 ---
 
@@ -1241,7 +1397,7 @@ warning.
 Then, in priority order:
 
 1. **Re-measure the baseline trio** with step 1 against the next release tag
-   (`REF=v1.23.0`, `PREV=v1.22.0`). If `GSD_CORE_SYNCED_COMMIT` already
+   (`REF=v1.24.0`, `PREV=v1.23.0`). If `GSD_CORE_SYNCED_COMMIT` already
    matches the new REF, there is nothing else to do. If the target is an
    untagged tree past the last npm release, see "When the three disagree"
    above. After moving the oracle pin, re-run
@@ -1294,4 +1450,9 @@ Then, in priority order:
    #3511's scoping of `resolvePhaseArtifactFile`'s sorted-first tier
    (`scopeToPhase`), so another phase's stray `NN-VERIFICATION.md` in a
    directory can no longer become this phase's report.
-
+10. **Global layer for pass-through families (deferred at 261124-fox).** Give the
+    Project view a row for a global-only `effort`, `model_overrides`, `models`,
+    `model_profile_overrides`, `model_policy`, `granularities`, `fast_mode` or
+    `resolve_model_ids` that the project file lacks, and evaluate the
+    gitignored-`.planning/` rung for an inherited `commit_docs` (gsd-core #4071 /
+    #6030).
