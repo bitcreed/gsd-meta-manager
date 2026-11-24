@@ -8724,7 +8724,14 @@ impl DetailScreen {
                 let value_col =
                     u16::try_from(spans.iter().map(Span::width).sum::<usize>()).unwrap_or(u16::MAX);
                 spans.push(val_span);
-                if let Some(d) = entry.builtin_default {
+                if let Some(g) = entry.inherited.as_deref() {
+                    // The Global scope's colour: the value comes from the
+                    // global file (gsd-core v1.23.0 merges it per key).
+                    spans.push(Span::styled(
+                        format!(" (global: {})", shown(g)),
+                        Style::default().fg(Color::Magenta),
+                    ));
+                } else if let Some(d) = entry.builtin_default {
                     spans.push(Span::styled(
                         format!(" (GSD default: {d})"),
                         Style::default().fg(Color::DarkGray),
@@ -10665,12 +10672,11 @@ fn sub_tab_strip_spans(
 
 /// The Config tab's scope strip (quick 260927-t3s, D-02, D-03, I-3):
 /// ` [Project] │ Global   g switch   this project only` in project
-/// scope, ` Project │ [Global]   g switch   new projects only` in global scope
-/// (global edits are a template: gsd-core ignores ~/.gsd/defaults.json once a
-/// project has its own config.json; [INFERRED] 260 todo global-settings). The active label is
-/// bracketed AND reversed — cyan for Project, magenta for Global to match the
-/// magenta ` *` inherited-value marker (I-4). Only the project strip carries
-/// the ` *` legend, because global scope has no fallback (I-6).
+/// scope, ` Project │ [Global]   g switch   new projects + unset keys` in global
+/// scope (global edits seed new projects, and since gsd-core v1.23.0 fill the
+/// keys a project leaves unset, #4071 / #6030; quick task 261124-fox, I-fox-5).
+/// The active label is bracketed AND reversed — cyan for Project, magenta for
+/// Global, the colour of the `(global: …)` value the Project view shows.
 ///
 /// Unfocused, the hint names only `g`: on the rows the arrows keep switching
 /// tabs (t3s I-5). `focused` is true while the keyboard is on the strip
@@ -10692,9 +10698,9 @@ pub(crate) fn config_scope_strip(
         .fg(if global { Color::Magenta } else { Color::Cyan })
         .add_modifier(Modifier::BOLD | Modifier::REVERSED);
     let hint = match (focused, global) {
-        (false, true) => "   g switch   new projects only",
+        (false, true) => "   g switch   new projects + unset keys",
         (false, false) => "   g switch   this project only",
-        (true, true) => "   \u{2190}/\u{2192}/g switch   new projects only",
+        (true, true) => "   \u{2190}/\u{2192}/g switch   new projects + unset keys",
         (true, false) => "   \u{2190}/\u{2192}/g switch   this project only",
     };
     let mut spans = sub_tab_strip_spans("Project", "Global", global, active_style);
@@ -11838,11 +11844,16 @@ struct ConfigEntry {
     kind: ConfigValueKind,
     show_category: bool,
     /// GSD's own built-in default for this key, set only on a row whose value
-    /// is unset in the config being viewed. GSD does not fall back to
-    /// `~/.gsd/defaults.json` for a key a project leaves unset; it uses this
-    /// (quick 261006, [INFERRED] from gsd-core `config-loader.cjs` branch A
-    /// and `config-defaults.manifest.json`).
+    /// is unset in the config being viewed (quick 261006, [INFERRED] from
+    /// gsd-core `config-defaults.manifest.json`). For a key gsd-core v1.23.0
+    /// merges from `~/.gsd/defaults.json` (see [`GLOBAL_LAYER_ROWS`]) the global
+    /// value outranks it: it is shown through [`ConfigEntry::inherited`] instead.
     builtin_default: Option<&'static str>,
+    /// The global file's displayed value for an unset row that gsd-core v1.23.0
+    /// fills in from `$GSD_HOME/.gsd/defaults.json` (#4071 / #6030, quick task
+    /// 261124-fox). Project view only; the row's own value, the edit prompt's
+    /// prefill and the saved file never see it.
+    inherited: Option<String>,
     /// What this option means. Required — see [`ConfigHelp`] for why it is a
     /// field rather than a side table.
     help: ConfigHelp,
@@ -11989,6 +12000,7 @@ fn build_defaults_entries(
             kind,
             show_category: first,
             builtin_default: None,
+            inherited: None,
             help,
         });
     };
@@ -13128,34 +13140,159 @@ fn append_passthrough_entries(
             kind: ConfigValueKind::ReadOnly,
             show_category: first,
             builtin_default: None,
+            inherited: None,
             help: PASSTHROUGH_HELP,
         });
         first = false;
     }
 }
 
+/// The Project view's rows whose unset value gsd-core v1.23.0 fills in from
+/// `$GSD_HOME/.gsd/defaults.json`, as `(row key, config path)`. The path is the
+/// one [`crate::state_reader::config_json::gsd_core_honors_global_default`]
+/// (a port of upstream's `honorsGlobalDefaults`, #4071 / #6030) is asked about:
+/// several rows carry a short key (`research`) for a path under `workflow`.
+/// `runtime` and every `git.*` row are absent on purpose: upstream never
+/// resolves them from the global file.
+const GLOBAL_LAYER_ROWS: &[(&str, &str)] = &[
+    ("model_profile", "model_profile"),
+    ("granularity", "granularity"),
+    ("commit_docs", "commit_docs"),
+    ("planning.commit_docs", "planning.commit_docs"),
+    ("parallelization", "parallelization"),
+    ("research", "workflow.research"),
+    ("plan_check", "workflow.plan_check"),
+    ("verifier", "workflow.verifier"),
+    ("nyquist_validation", "workflow.nyquist_validation"),
+    ("workflow.post_planning_gaps", "workflow.post_planning_gaps"),
+    (
+        "research_before_questions",
+        "workflow.research_before_questions",
+    ),
+    ("text_mode", "workflow.text_mode"),
+    ("subagent_timeout", "workflow.subagent_timeout"),
+    ("context_window", "context_window"),
+    ("agent_skills", "agent_skills"),
+    ("response_language", "response_language"),
+    ("dynamic_routing.enabled", "dynamic_routing.enabled"),
+    (
+        "dynamic_routing.escalate_on_failure",
+        "dynamic_routing.escalate_on_failure",
+    ),
+    (
+        "dynamic_routing.max_escalations",
+        "dynamic_routing.max_escalations",
+    ),
+    (
+        "dynamic_routing.provider_escalation",
+        "dynamic_routing.provider_escalation",
+    ),
+];
+
+/// The flat top-level spelling gsd-core also reads for a short `workflow.*` row
+/// (`CONFIG_KEY_ALIASES`), or `None` for a row with no flat twin.
+fn flat_alias_of(row_key: &str) -> Option<&'static str> {
+    Some(match row_key {
+        "research" => "research",
+        "plan_check" => "plan_checker",
+        "verifier" => "verifier",
+        "nyquist_validation" => "nyquist_validation",
+        "workflow.post_planning_gaps" => "post_planning_gaps",
+        "text_mode" => "text_mode",
+        "subagent_timeout" => "subagent_timeout",
+        _ => return None,
+    })
+}
+
+/// Does the project's own file block the global value for `row_key`, whose
+/// config path is `path`? gsd-core merges a project key over the global one per
+/// key, so a project that sets the key under ANY spelling it reads, or carries
+/// an explicit null for the key's section (a non-object section is a barrier),
+/// keeps the global value out.
+fn project_blocks_global(
+    project: &crate::state_reader::config_json::GsdConfig,
+    row_key: &str,
+    path: &str,
+) -> bool {
+    let barred = |section: &str| project.null_barrier_sections.iter().any(|s| s == section);
+    let first = path.split('.').next().unwrap_or(path);
+    if barred(first) || (row_key == "commit_docs" && barred("planning")) {
+        return true;
+    }
+    match row_key {
+        "commit_docs" => project
+            .planning
+            .as_ref()
+            .is_some_and(|p| p.commit_docs.is_some()),
+        "planning.commit_docs" => project.commit_docs.is_some(),
+        _ => flat_alias_of(row_key)
+            .is_some_and(|flat| project.extra.get(flat).is_some_and(|v| !v.is_null())),
+    }
+}
+
+/// Fill [`ConfigEntry::inherited`] on the project's unset rows from the global
+/// file, per gsd-core v1.23.0's per-key merge (I-fox-4).
+fn apply_global_layer(
+    entries: &mut [ConfigEntry],
+    project: &crate::state_reader::config_json::GsdConfig,
+    global: &crate::state_reader::config_json::GsdConfig,
+) {
+    use crate::state_reader::config_json::gsd_core_honors_global_default;
+    let is_unset =
+        |e: &ConfigEntry| matches!(e.kind, ConfigValueKind::Unset(_)) || e.value.is_empty();
+    let global_entries = build_defaults_entries(global);
+    for entry in entries.iter_mut() {
+        if !is_unset(entry) || entry.category == PASSTHROUGH_CATEGORY {
+            continue;
+        }
+        let Some((_, path)) = GLOBAL_LAYER_ROWS
+            .iter()
+            .find(|(row, _)| *row == entry.key.as_ref())
+        else {
+            continue;
+        };
+        if !gsd_core_honors_global_default(path)
+            || project_blocks_global(project, entry.key.as_ref(), path)
+        {
+            continue;
+        }
+        entry.inherited = global_entries
+            .iter()
+            .find(|g| g.key == entry.key && g.category != PASSTHROUGH_CATEGORY && !is_unset(g))
+            .map(|g| g.value.clone());
+    }
+}
+
 /// Build defaults entries respecting the cache's edit target.
-/// When target=Project: project config only; unset keys show GSD's built-in
-/// default (never the global file). When target=Global: defaults_user_config
-/// is primary with no fallback.
+///
+/// When target=Project: the project config; an unset row whose path gsd-core
+/// v1.23.0 merges per key from `$GSD_HOME/.gsd/defaults.json` (#4071 / #6030)
+/// carries the global file's value in `inherited`, every other unset row shows
+/// GSD's built-in default. When target=Global: defaults_user_config is primary
+/// with no fallback.
 fn entries_for_cache(cache: &super::ProjectViewCache) -> Vec<ConfigEntry> {
     use super::DefaultsEditTarget;
-    // GSD does NOT read ~/.gsd/defaults.json for a project that has a
-    // config.json (gsd-core config-loader branch A; global defaults only seed
-    // NEW projects), so no global layer is shown as effective in the Project
-    // view. Unset rows show GSD's built-in default instead.
     let primary = match cache.defaults_edit_target {
         DefaultsEditTarget::Project => cache.defaults_config.as_ref(),
         DefaultsEditTarget::Global => cache.defaults_user_config.as_ref(),
     };
-    primary.map(build_defaults_entries).unwrap_or_default()
+    let mut entries = primary.map(build_defaults_entries).unwrap_or_default();
+    if cache.defaults_edit_target == DefaultsEditTarget::Project {
+        if let (Some(project), Some(global)) = (
+            cache.defaults_config.as_ref(),
+            cache.defaults_user_config.as_ref(),
+        ) {
+            apply_global_layer(&mut entries, project, global);
+        }
+    }
+    entries
 }
 
 /// Does `entry` match the Config tab's `/` filter? `q_lower` is the filter,
 /// already lowercased; empty matches everything. Matches the key, the
 /// category, and the VALUE (quick 261006: so "balanced" finds `model_profile`).
-/// The value is the displayed one, or, for an unset row, GSD's built-in
-/// effective default. Very common values (`(unset)`, `true`, `false`) are
+/// The value is the displayed one, or, for an unset row, the global file's value
+/// gsd-core merges in (Project view) or GSD's built-in effective default. Very common values (`(unset)`, `true`, `false`) are
 /// never matched, since they would hit dozens of unrelated rows; numbers are.
 /// The row under an open editor is exempt: [`visible_defaults_indices`] pins it
 /// so an edit whose new value stops matching cannot make it vanish (quick
@@ -13174,7 +13311,9 @@ fn config_value_matches(entry: &ConfigEntry, q_lower: &str) -> bool {
         let v = v.to_lowercase();
         !matches!(v.as_str(), "" | "(unset)" | "true" | "false") && v.contains(q_lower)
     };
-    searchable(&entry.value) || entry.builtin_default.is_some_and(searchable)
+    searchable(&entry.value)
+        || entry.builtin_default.is_some_and(searchable)
+        || entry.inherited.as_deref().is_some_and(searchable)
 }
 
 /// UNDERLYING indices (into `entries`) of the rows the cache's filter shows —
@@ -13406,7 +13545,7 @@ fn config_scope_status(target: super::DefaultsEditTarget) -> &'static str {
     use super::DefaultsEditTarget;
     match target {
         DefaultsEditTarget::Project => "Editing this project only (.planning/config.json)",
-        DefaultsEditTarget::Global => "Editing global template for NEW projects ($GSD_HOME/.gsd/defaults.json); existing projects ignore it",
+        DefaultsEditTarget::Global => "Editing global defaults ($GSD_HOME/.gsd/defaults.json): new projects copy them; projects inherit model and gate keys they leave unset",
     }
 }
 
@@ -17957,10 +18096,9 @@ mod tests {
     #[test]
     fn workflow_deep_verify_keys_are_typed_bool_rows_that_round_trip() {
         use crate::state_reader::config_json::{parse_gsd_config, serialize_gsd_config};
-        let mut config = parse_gsd_config(
-            r#"{"workflow":{"deep_verify":true,"deep_verify_all_phases":false}}"#,
-        )
-        .unwrap();
+        let mut config =
+            parse_gsd_config(r#"{"workflow":{"deep_verify":true,"deep_verify_all_phases":false}}"#)
+                .unwrap();
         let entries = build_defaults_entries(&config);
         let pos = |key: &str| {
             let idx: Vec<usize> = entries
@@ -17986,7 +18124,11 @@ mod tests {
             assert_ne!(row.category, PASSTHROUGH_CATEGORY);
             assert_eq!(row.value, value);
             assert_eq!(row.help.since, "v1.23.0");
-            assert!(mutate_config_entry(&mut config, key, &ConfigValueKind::Bool));
+            assert!(mutate_config_entry(
+                &mut config,
+                key,
+                &ConfigValueKind::Bool
+            ));
         }
         let saved: serde_json::Value =
             serde_json::from_str(&serialize_gsd_config(&config).unwrap()).unwrap();
@@ -25889,7 +26031,7 @@ mod tests {
         let global = config_scope_strip(DefaultsEditTarget::Global, false);
         assert_eq!(
             text(&global),
-            " Project \u{2502} [Global]   g switch   new projects only"
+            " Project \u{2502} [Global]   g switch   new projects + unset keys"
         );
         let active = global
             .spans
@@ -25975,7 +26117,7 @@ mod tests {
         assert_eq!(scope_strip_target(&ctx), DefaultsEditTarget::Global);
         assert_eq!(
             scope_strip_status(&ctx).as_deref(),
-            Some("Editing global template for NEW projects ($GSD_HOME/.gsd/defaults.json); existing projects ignore it")
+            Some("Editing global defaults ($GSD_HOME/.gsd/defaults.json): new projects copy them; projects inherit model and gate keys they leave unset")
         );
         assert_eq!(screen.focus, DetailFocus::ScopeStrip);
         let (row, _) = strip_row(&screen, &ctx);
@@ -26005,7 +26147,7 @@ mod tests {
         let global = config_scope_strip(DefaultsEditTarget::Global, true);
         assert_eq!(
             text(&global),
-            "\u{25b8}Project \u{2502} [Global]   \u{2190}/\u{2192}/g switch   new projects only"
+            "\u{25b8}Project \u{2502} [Global]   \u{2190}/\u{2192}/g switch   new projects + unset keys"
         );
 
         for (target, focused) in [
@@ -26039,7 +26181,7 @@ mod tests {
             (
                 KeyCode::Right,
                 DefaultsEditTarget::Global,
-                Some("Editing global template for NEW projects ($GSD_HOME/.gsd/defaults.json); existing projects ignore it"),
+                Some("Editing global defaults ($GSD_HOME/.gsd/defaults.json): new projects copy them; projects inherit model and gate keys they leave unset"),
             ),
             (KeyCode::Right, DefaultsEditTarget::Global, None),
             (
@@ -26590,8 +26732,8 @@ mod tests {
     }
 
     /// A secret in `~/.gsd/defaults.json` is NOT shown in the Project view
-    /// (GSD never reads the global file for a project with a config.json), and
-    /// is masked in the Global (`d`) view.
+    /// (the search-provider slots are not among the keys gsd-core merges from
+    /// the global file), and is masked in the Global (`d`) view.
     #[test]
     fn a_global_secret_is_absent_from_project_view_and_masked_in_global_view() {
         use crate::state_reader::config_json::parse_gsd_config;
@@ -30989,7 +31131,7 @@ mod tests {
         );
         assert_eq!(
             ctx.status_message.as_ref().map(|(m, _)| m.as_str()),
-            Some("Editing global template for NEW projects ($GSD_HOME/.gsd/defaults.json); existing projects ignore it")
+            Some("Editing global defaults ($GSD_HOME/.gsd/defaults.json): new projects copy them; projects inherit model and gate keys they leave unset")
         );
         assert_eq!(screen.focus, DetailFocus::Content);
         assert_eq!(
@@ -33432,25 +33574,139 @@ mod tests {
 
     // ── quick 261006: unset rows show GSD built-in defaults; value filter ──
 
-    /// An unset key is not backfilled from the global file; it carries GSD's
-    /// built-in default instead.
+    /// gsd-core v1.23.0 (#4071 / #6030) merges the global file per key beneath
+    /// a project, so an unset row on that path shows the global value; the
+    /// keys it never takes from the global file keep the built-in default.
     #[test]
-    fn project_view_shows_builtin_default_not_global_value() {
+    fn project_view_shows_the_global_value_gsd_core_merges_per_key() {
         use crate::state_reader::config_json::parse_gsd_config;
         let project = parse_gsd_config(r#"{"mode":"yolo"}"#).unwrap();
-        let global = parse_gsd_config(r#"{"model_profile":"quality"}"#).unwrap();
+        let global = parse_gsd_config(
+            r#"{"model_profile":"quality","workflow":{"research":false},
+                "dynamic_routing":{"enabled":true},"runtime":"codex",
+                "git":{"base_branch":"trunk"},"mode":"interactive"}"#,
+        )
+        .unwrap();
+        let cache = super::super::ProjectViewCache {
+            defaults_config: Some(project.clone()),
+            defaults_user_config: Some(global.clone()),
+            ..Default::default()
+        };
+        let entries = entries_for_cache(&cache);
+        let row = |key: &str| {
+            entries
+                .iter()
+                .find(|e| e.key.as_ref() == key)
+                .unwrap_or_else(|| panic!("no {key} row"))
+        };
+        let mp = row("model_profile");
+        assert_eq!(mp.value, "", "the row's own value stays unset");
+        assert_eq!(mp.inherited.as_deref(), Some("quality"));
+        assert_eq!(row("research").inherited.as_deref(), Some("false"));
+        assert_eq!(
+            row("dynamic_routing.enabled").inherited.as_deref(),
+            Some("true")
+        );
+        for key in ["runtime", "base_branch", "mode"] {
+            assert_eq!(row(key).inherited, None, "{key}");
+        }
+        assert_eq!(row("mode").value, "yolo");
+
+        // The Global target shows the global file's own values, nothing inherited.
+        let g_cache = super::super::ProjectViewCache {
+            defaults_config: Some(project.clone()),
+            defaults_user_config: Some(global.clone()),
+            defaults_edit_target: super::super::DefaultsEditTarget::Global,
+            ..Default::default()
+        };
+        let g_entries = entries_for_cache(&g_cache);
+        assert!(g_entries.iter().all(|e| e.inherited.is_none()));
+        assert_eq!(
+            g_entries
+                .iter()
+                .find(|e| e.key.as_ref() == "model_profile")
+                .unwrap()
+                .value,
+            "quality"
+        );
+
+        let text = render_defaults_cache_to_text(move |cache| {
+            cache.defaults_config = Some(project);
+            cache.defaults_user_config = Some(global);
+        });
+        let mp_line = text
+            .lines()
+            .find(|l| l.contains("model_profile"))
+            .unwrap_or_else(|| panic!("no model_profile line:\n{text}"));
+        assert!(mp_line.contains("(global: quality)"), "{mp_line}");
+        assert!(!mp_line.contains("(GSD default:"), "{mp_line}");
+        if let Some(line) = text.lines().find(|l| l.contains(" runtime ")) {
+            assert!(!line.contains("(global:"), "{line}");
+        }
+    }
+
+    /// A project that sets the key under another spelling gsd-core reads, or
+    /// carries a null barrier for its section, inherits nothing.
+    #[test]
+    fn a_project_spelling_or_null_section_blocks_the_global_value() {
+        use crate::state_reader::config_json::parse_gsd_config;
+        let global =
+            parse_gsd_config(r#"{"commit_docs":false,"workflow":{"research":false}}"#).unwrap();
+        let project =
+            parse_gsd_config(r#"{"planning":{"commit_docs":true},"workflow":null}"#).unwrap();
         let cache = super::super::ProjectViewCache {
             defaults_config: Some(project),
             defaults_user_config: Some(global),
             ..Default::default()
         };
         let entries = entries_for_cache(&cache);
+        for key in ["commit_docs", "research"] {
+            let row = entries.iter().find(|e| e.key.as_ref() == key).unwrap();
+            assert_eq!(row.inherited, None, "{key}");
+        }
+        // Control: with no project spelling, the same global file does inherit.
+        let cache = super::super::ProjectViewCache {
+            defaults_config: Some(parse_gsd_config("{}").unwrap()),
+            defaults_user_config: cache.defaults_user_config.clone(),
+            ..Default::default()
+        };
+        let entries = entries_for_cache(&cache);
         let row = entries
             .iter()
-            .find(|e| e.key.as_ref() == "model_profile")
+            .find(|e| e.key.as_ref() == "commit_docs")
             .unwrap();
-        assert_ne!(row.value, "quality", "the global value must not be shown");
-        assert_eq!(row.builtin_default, Some("balanced"));
+        assert_eq!(row.inherited.as_deref(), Some("false"));
+    }
+
+    /// The table names only rows this build pushes, only paths gsd-core reads
+    /// from the global file, and every dotted row that qualifies.
+    #[test]
+    fn every_global_layer_row_is_a_path_gsd_core_reads_from_the_global_file() {
+        use crate::state_reader::config_json::gsd_core_honors_global_default;
+        let entries = build_defaults_entries(&populated_gsd_config());
+        for (row, path) in GLOBAL_LAYER_ROWS {
+            assert!(
+                entries
+                    .iter()
+                    .any(|e| e.key.as_ref() == *row && e.category != PASSTHROUGH_CATEGORY),
+                "no row {row}"
+            );
+            assert!(gsd_core_honors_global_default(path), "{row} -> {path}");
+        }
+        for e in &entries {
+            let key = e.key.as_ref();
+            if e.category != PASSTHROUGH_CATEGORY
+                && key.contains('.')
+                && gsd_core_honors_global_default(key)
+            {
+                assert!(
+                    GLOBAL_LAYER_ROWS.iter().any(|(row, _)| *row == key),
+                    "{key} is read from the global file but is not in GLOBAL_LAYER_ROWS"
+                );
+            }
+        }
+        assert!(GLOBAL_LAYER_ROWS.iter().all(|(row, _)| *row != "runtime"));
+        assert_eq!(GLOBAL_LAYER_ROWS.len(), 20);
     }
 
     fn filter_entries(config_json: &str, q: &str) -> Vec<String> {
@@ -33468,6 +33724,25 @@ mod tests {
         assert!(hits.iter().any(|k| k == "model_profile"), "{hits:?}");
         // The effective built-in default of an unset row matches too.
         let hits = filter_entries(r#"{"mode":"yolo"}"#, "balanced");
+        assert!(hits.iter().any(|k| k == "model_profile"), "{hits:?}");
+        // So does the global value an unset Project-view row inherits.
+        let cache = super::super::ProjectViewCache {
+            defaults_config: Some(
+                crate::state_reader::config_json::parse_gsd_config(r#"{"mode":"yolo"}"#).unwrap(),
+            ),
+            defaults_user_config: Some(
+                crate::state_reader::config_json::parse_gsd_config(
+                    r#"{"model_profile":"quality"}"#,
+                )
+                .unwrap(),
+            ),
+            ..Default::default()
+        };
+        let hits: Vec<String> = entries_for_cache(&cache)
+            .iter()
+            .filter(|e| config_row_matches(e, "qual"))
+            .map(|e| e.key.to_string())
+            .collect();
         assert!(hits.iter().any(|k| k == "model_profile"), "{hits:?}");
     }
 

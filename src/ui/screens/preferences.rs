@@ -13,8 +13,8 @@
 //!   intact; only the editing surface went.
 //! * **GSD global template** (`$GSD_HOME/.gsd/defaults.json`; `GSD_HOME`
 //!   defaults to the home directory): reached with `g` from
-//!   here; it only seeds NEW projects, because gsd-core ignores it once a
-//!   project has its own `.planning/config.json`.
+//!   here; it seeds NEW projects, and since gsd-core v1.23.0 it also fills the
+//!   model and gate keys an existing project leaves unset.
 //!
 //! The screen holds no unsaved state and writes nothing itself.
 

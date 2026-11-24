@@ -796,6 +796,104 @@ pub fn serialize_gsd_config(config: &GsdConfig) -> Result<String, serde_json::Er
     serde_json::to_string_pretty(&value)
 }
 
+/// The 26 top-level names gsd-core v1.23.0's `GLOBAL_DEFAULTS_RESOLUTION_KEYS`
+/// merges per key from `$GSD_HOME/.gsd/defaults.json` beneath a project config.
+const GLOBAL_DEFAULTS_RESOLUTION_KEYS: &[&str] = &[
+    "model_profile",
+    "commit_docs",
+    "research",
+    "plan_checker",
+    "verifier",
+    "nyquist_validation",
+    "post_planning_gaps",
+    "research_before_questions",
+    "parallelization",
+    "text_mode",
+    "resolve_model_ids",
+    "context_window",
+    "subagent_timeout",
+    "model_overrides",
+    "models",
+    "granularity",
+    "granularities",
+    "planning",
+    "dynamic_routing",
+    "effort",
+    "fast_mode",
+    "agent_skills",
+    "response_language",
+    "runtime",
+    "model_profile_overrides",
+    "model_policy",
+];
+
+/// gsd-core's `CONFIG_KEY_ALIASES` as `(flat key, section, field)`: the flat
+/// spelling and the nested one the loader also reads for the same setting.
+const CONFIG_KEY_ALIASES: &[(&str, &str, &str)] = &[
+    ("commit_docs", "planning", "commit_docs"),
+    ("search_gitignored", "planning", "search_gitignored"),
+    ("sub_repos", "planning", "sub_repos"),
+    ("pr_strict", "planning", "pr_strict"),
+    ("branching_strategy", "git", "branching_strategy"),
+    ("base_branch", "git", "base_branch"),
+    ("phase_branch_template", "git", "phase_branch_template"),
+    (
+        "milestone_branch_template",
+        "git",
+        "milestone_branch_template",
+    ),
+    ("quick_branch_template", "git", "quick_branch_template"),
+    ("research", "workflow", "research"),
+    ("plan_checker", "workflow", "plan_check"),
+    ("verifier", "workflow", "verifier"),
+    ("nyquist_validation", "workflow", "nyquist_validation"),
+    ("post_planning_gaps", "workflow", "post_planning_gaps"),
+    ("mvp_mode", "workflow", "mvp_mode"),
+    ("text_mode", "workflow", "text_mode"),
+    ("auto_advance", "workflow", "auto_advance"),
+    ("_auto_chain_active", "workflow", "_auto_chain_active"),
+    ("subagent_timeout", "workflow", "subagent_timeout"),
+    ("max_prompt_tokens", "review", "max_prompt_tokens"),
+    ("parallelization", "parallelization", "enabled"),
+];
+
+/// The one global key that has no alias entry but is also read nested.
+const NESTED_ONLY_GLOBAL_KEYS: &[(&str, &str, &str)] = &[(
+    "research_before_questions",
+    "workflow",
+    "research_before_questions",
+)];
+
+/// Does gsd-core v1.23.0 merge this dotted config key from
+/// `$GSD_HOME/.gsd/defaults.json` beneath a project that leaves it unset?
+///
+/// A faithful port of upstream's `honorsGlobalDefaults` (`src/config-loader.cts`;
+/// gsd-core #4071 / #6030, PR #6540; quick task 261124-fox): `runtime` is the
+/// installer's identity stamp and never fills in; a top-level name in
+/// `GLOBAL_DEFAULTS_RESOLUTION_KEYS` other than the `planning` section is true
+/// for itself and every path under it; a `<section>.<field>` path is true when
+/// it is the nested spelling of an aliased key that is in that table. Everything
+/// else, the whole `git.*` namespace included, is project-scoped.
+pub fn gsd_core_honors_global_default(dotted: &str) -> bool {
+    let top = dotted.split('.').next().unwrap_or(dotted);
+    if top == "runtime" {
+        return false;
+    }
+    if top != "planning" && GLOBAL_DEFAULTS_RESOLUTION_KEYS.contains(&top) {
+        return true;
+    }
+    CONFIG_KEY_ALIASES
+        .iter()
+        .chain(NESTED_ONLY_GLOBAL_KEYS)
+        .any(|(key, section, field)| {
+            GLOBAL_DEFAULTS_RESOLUTION_KEYS.contains(key)
+                && dotted.len() == section.len() + 1 + field.len()
+                && dotted.starts_with(section)
+                && dotted[section.len()..].starts_with('.')
+                && dotted.ends_with(field)
+        })
+}
+
 /// Name of the environment variable that roots GSD's own store. Production
 /// code and tests reference this one literal.
 pub const GSD_HOME_ENV: &str = "GSD_HOME";
@@ -1330,6 +1428,41 @@ mod tests {
             Some(&serde_json::Value::Bool(true))
         );
         assert!(saved["workflow"].is_object(), "{saved}");
+    }
+
+    /// The predicate is a port of upstream's `honorsGlobalDefaults` at v1.23.0.
+    #[test]
+    fn gsd_core_honors_global_default_matches_the_v1_23_0_loader() {
+        for yes in [
+            "model_profile",
+            "granularity",
+            "commit_docs",
+            "planning.commit_docs",
+            "workflow.research",
+            "workflow.plan_check",
+            "workflow.research_before_questions",
+            "parallelization",
+            "parallelization.enabled",
+            "effort.agent_overrides",
+            "dynamic_routing.enabled",
+            "agent_skills",
+        ] {
+            assert!(gsd_core_honors_global_default(yes), "{yes}");
+        }
+        for no in [
+            "runtime",
+            "mode",
+            "git.base_branch",
+            "branching_strategy",
+            "planning.search_gitignored",
+            "search_gitignored",
+            "workflow.mvp_mode",
+            "workflow.auto_advance",
+            "review.max_prompt_tokens",
+            "hooks.context_warnings",
+        ] {
+            assert!(!gsd_core_honors_global_default(no), "{no}");
+        }
     }
 
     /// The repair for the live data-loss bug: the Defaults tab's save path is
