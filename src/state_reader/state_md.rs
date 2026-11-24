@@ -29,6 +29,9 @@ pub struct StateFrontmatter {
     pub stopped_at: String,
     pub last_updated: String,
     pub last_activity: Option<String>,
+    /// `paused_at`: the timestamp `/gsd-pause-work` writes when it records a
+    /// pause. Read only for emptiness (gsd-core v1.23.0 `next` Gate 0, #6431).
+    pub paused_at: Option<String>,
     /// ADR-2207: current phase number (GSD 1.8.0 frontmatter). Stored as a
     /// string but accepts a YAML string OR number.
     pub current_phase: Option<String>,
@@ -685,6 +688,7 @@ fn frontmatter_from_mapping(map: &Mapping) -> StateFrontmatter {
         stopped_at: string_field(map, "stopped_at"),
         last_updated: string_field(map, "last_updated"),
         last_activity: opt_string_field(map, "last_activity"),
+        paused_at: opt_string_field(map, "paused_at"),
         current_phase: opt_string_field(map, "current_phase"),
         current_phase_name: opt_string_field(map, "current_phase_name"),
         current_plan: opt_string_field(map, "current_plan"),
@@ -843,6 +847,15 @@ mod tests {
         assert_eq!(fm.milestone_name, "Autonomous Orchestration");
         assert_eq!(fm.progress.total_phases, 10);
         assert_eq!(fm.progress.completed_phases, 6);
+    }
+
+    #[test]
+    fn a_paused_at_frontmatter_key_is_read() {
+        let paused =
+            parse_state_md("---\nstatus: executing\npaused_at: 2026-11-20\n---\n").unwrap();
+        assert_eq!(paused.paused_at.as_deref(), Some("2026-11-20"));
+        let plain = parse_state_md(REAL_GSD_STATE_MD).unwrap();
+        assert_eq!(plain.paused_at, None);
     }
 
     #[test]

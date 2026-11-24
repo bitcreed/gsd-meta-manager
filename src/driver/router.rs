@@ -76,6 +76,12 @@ pub const REASON_STATE_UNVERIFIED: &str = "router_state_unverified";
 /// A dependency the target phase declares is not satisfied.
 pub const REASON_DEPENDENCY_UNSATISFIED: &str = "router_dependency_unsatisfied";
 
+/// G0: a pause is recorded (a non-empty `HANDOFF.json`, or STATE.md `paused_at`).
+///
+/// Mirrors gsd-core v1.23.0's `next.md` Gate 0 (#6431 / PR #6477), which routes
+/// to `/gsd-resume-work` before every other gate and route. That verb is not in
+/// this router's command alphabet, so the run parks instead.
+pub const REASON_GATE_PAUSED: &str = "gate_paused";
 /// G1: the target's verification concluded a human is needed.
 pub const REASON_GATE_VERIFICATION_HUMAN_NEEDED: &str = "gate_verification_human_needed";
 /// G2: the target's verification found gaps.
@@ -141,6 +147,8 @@ pub enum RouterReason {
     StateUnverified,
     /// A declared dependency of the target phase is not satisfied.
     DependencyUnsatisfied,
+    /// G0.
+    GatePaused,
     /// G1. The definitional DRIVE-05 gate.
     GateVerificationHumanNeeded,
     /// G2. Its own arm, so the cost of always-parking is measurable.
@@ -179,6 +187,7 @@ impl RouterReason {
             RouterReason::NoRule => REASON_NO_RULE,
             RouterReason::StateUnverified => REASON_STATE_UNVERIFIED,
             RouterReason::DependencyUnsatisfied => REASON_DEPENDENCY_UNSATISFIED,
+            RouterReason::GatePaused => REASON_GATE_PAUSED,
             RouterReason::GateVerificationHumanNeeded => REASON_GATE_VERIFICATION_HUMAN_NEEDED,
             RouterReason::GateVerificationGapsFound => REASON_GATE_VERIFICATION_GAPS_FOUND,
             RouterReason::GateVerificationStale => REASON_GATE_VERIFICATION_STALE,
@@ -205,6 +214,7 @@ impl RouterReason {
         RouterReason::NoRule,
         RouterReason::StateUnverified,
         RouterReason::DependencyUnsatisfied,
+        RouterReason::GatePaused,
         RouterReason::GateVerificationHumanNeeded,
         RouterReason::GateVerificationGapsFound,
         RouterReason::GateVerificationStale,
@@ -554,6 +564,9 @@ pub fn is_goal_met(inference: &DiskInference) -> bool {
 /// than a safety one, and it is why the most *specific* statement about the
 /// target outranks the more general ones:
 ///
+/// 0. **G0 recorded pause** — gsd-core v1.23.0 `next.md` Gate 0 (#6431),
+///    checked before every other gate and route, so it precedes G11. Upstream
+///    routes it to `/gsd-resume-work`, which this router cannot emit; it parks.
 /// 1. **G11 project status `error`/`failed`** — `next.md:60-69`'s hard stop. A
 ///    project that declares itself broken is not a project to route inside.
 /// 2. **G10 root `.continue-here.md`** — `next.md:46-58`'s hard stop, whose only
@@ -586,6 +599,13 @@ fn gate_for(
     target_phase: &str,
     inference: &DiskInference,
 ) -> Option<(RouterReason, String)> {
+    // 0. G0. Upstream checks a recorded pause before everything else, even a
+    //    handoff this build's dashboard reads as stale. The detail is a fixed
+    //    token, never any handoff content.
+    if state.pause_recorded {
+        return Some((RouterReason::GatePaused, "recorded_pause".to_string()));
+    }
+
     // 1. G11. `is_error_status` matches `error` or `failed` exactly, so the
     //    detail below is one of two known tokens chosen here rather than the
     //    project's raw status text echoed back.
@@ -1583,6 +1603,35 @@ mod tests {
         }
     }
 
+    /// G0 (gsd-core v1.23.0 `next` Gate 0, #6431): a recorded pause parks before
+    /// every other gate; with no pause each state keeps its own reason.
+    #[test]
+    fn a_recorded_pause_parks_before_every_other_gate() {
+        let paused = Decision::Park {
+            reason: RouterReason::GatePaused,
+            detail: "recorded_pause".to_string(),
+        };
+        let mut plain = state_with(&["20"], &[("20", DiskStatus::Discussed)]);
+        plain.pause_recorded = true;
+        assert_eq!(decide(&plain, "20"), paused);
+
+        let mut loud = executed_with(VerificationStatus::GapsFound, true);
+        loud.pause_recorded = true;
+        loud.status = "error".to_string();
+        loud.continue_here_present = true;
+        assert_eq!(decide(&loud, "20"), paused);
+
+        loud.pause_recorded = false;
+        assert_eq!(
+            decide(&loud, "20"),
+            Decision::Park {
+                reason: RouterReason::GateStateError,
+                detail: "error".to_string(),
+            },
+            "without a recorded pause the state keeps its own reason"
+        );
+    }
+
     #[test]
     fn the_gaps_found_reason_is_distinct_from_every_other_gate_reason() {
         for reason in RouterReason::ALL {
@@ -2053,6 +2102,10 @@ mod tests {
         let mut root = state_with(&["20"], &[("20", DiskStatus::Discussed)]);
         root.continue_here_present = true;
         record(decide(&root, "20"));
+
+        let mut paused = state_with(&["20"], &[("20", DiskStatus::Discussed)]);
+        paused.pause_recorded = true;
+        record(decide(&paused, "20"));
 
         let mut blocking = state_with(&["20"], &[]);
         blocking.phase_disk_statuses.insert(

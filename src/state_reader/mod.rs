@@ -176,6 +176,15 @@ pub struct ProjectState {
     /// [`detect_handoff`] already sets in this file: a file trimmed to nothing
     /// is a leftover, not a signal.
     pub continue_here_present: bool,
+    /// G0: a pause is recorded. Gate 0 of gsd-core v1.23.0's `next` workflow
+    /// (#6431 / PR #6477, quick task 261124-fox): a **non-empty**
+    /// `HANDOFF.json` in the planning directory, or a non-empty STATE.md
+    /// frontmatter `paused_at`. Upstream routes any recorded pause to
+    /// `/gsd-resume-work` before every other gate, so this is independent of the
+    /// staleness rule that decides [`ProjectState::paused`]: a handoff the
+    /// dashboard reads as stale is still a recorded pause. The content check
+    /// follows G10's precedent rather than upstream's bare existence test.
+    pub pause_recorded: bool,
     /// G15: the phases carrying a `## Deferred Verification` row in STATE.md.
     ///
     /// Named rather than counted, because what a router or a human needs is
@@ -970,6 +979,11 @@ pub fn parse_project_state_with(
                 state.current_phase = format!("Phase {}", fm.progress.completed_phases + 1);
             }
 
+            state.pause_recorded = fm
+                .paused_at
+                .as_deref()
+                .is_some_and(|at| !at.trim().is_empty());
+
             state.milestone = fm.milestone;
             let milestone_name = fm.milestone_name.trim();
             state.milestone_name = (!milestone_name.is_empty())
@@ -985,6 +999,15 @@ pub fn parse_project_state_with(
     state.continue_here_present = std::fs::read_to_string(planning_dir.join(".continue-here.md"))
         .map(|content| !content.trim().is_empty())
         .unwrap_or(false);
+
+    // G0: a recorded pause. STATE.md's `paused_at` was read above; a non-empty
+    // `HANDOFF.json` also records one, whether or not the dashboard reads it as
+    // stale (#6431).
+    if std::fs::read_to_string(planning_dir.join("HANDOFF.json"))
+        .is_ok_and(|content| !content.trim().is_empty())
+    {
+        state.pause_recorded = true;
+    }
 
     // Parse ROADMAP.md. The `## Progress` table (GSD 1.8.0) is authoritative
     // for progress counts when present, read for the current milestone (#5165);
@@ -1336,6 +1359,43 @@ mod tests {
         assert_eq!(stale.reason, StaleHandoffReason::PhaseBehind);
         assert_eq!(stale.phase, Some(pn("12")));
         assert_eq!(stale.state_phase, Some(pn("13")));
+    }
+
+    /// G0 input (gsd-core v1.23.0 `next` Gate 0, #6431): any non-empty
+    /// `HANDOFF.json` or STATE.md `paused_at` records a pause, stale or not.
+    #[test]
+    fn a_handoff_json_or_paused_at_records_a_pause_even_when_stale() {
+        let pause = |files: &[(&str, &str)]| {
+            let td = make_planning(files);
+            parse_project_state(&td.path().join(".planning"))
+        };
+        let state = pause(&[
+            (
+                "STATE.md",
+                "---\nstatus: executing\ncurrent_phase: 13\n---\n",
+            ),
+            ("HANDOFF.json", "{\"phase\":\"12\",\"next_action\":\"x\"}"),
+        ]);
+        assert!(!state.paused, "the dashboard reads this handoff as stale");
+        assert!(state.pause_recorded, "upstream still routes it to resume");
+
+        let state = pause(&[("HANDOFF.json", "{\"next_action\":\"x\"}")]);
+        assert!(state.pause_recorded);
+
+        let state = pause(&[("HANDOFF.json", "  \n")]);
+        assert!(
+            !state.pause_recorded,
+            "a whitespace-only handoff is a leftover"
+        );
+
+        let state = pause(&[(
+            "STATE.md",
+            "---\nstatus: executing\npaused_at: 2026-11-20\n---\n",
+        )]);
+        assert!(state.pause_recorded);
+
+        let state = pause(&[("STATE.md", "---\nstatus: executing\n---\n")]);
+        assert!(!state.pause_recorded);
     }
 
     #[test]
