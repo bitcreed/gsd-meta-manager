@@ -1,20 +1,20 @@
 ---
 gsd_state_version: "1.0"
-milestone: v2.5.0
-current_phase_name: v2.5.0 shipped; no milestone open
+milestone: v2.6.0
+current_phase_name: v2.6.0 shipped; no milestone open
 status: shipped
-stopped_at: v2.5.0 released (release commit + annotated tag v2.5.0, pushed; tag push publishes to crates.io) — gsd-core 1.22.0 sync + CLAUDE_CONFIG_DIR/XDG/GSD_HOME handling
-last_updated: "2026-11-24T18:44:08.652Z"
-last_activity: 2026-11-19
-last_activity_desc: v2.5.0 released — gsd-core 1.22.0 Sync
-state_head: bfcd3fc7ceeb501ac88158353a47c817a4078f0f
+stopped_at: v2.6.0 released (release commit + annotated tag v2.6.0, pushed; tag push publishes to crates.io) — gsd-core 1.23.0 sync
+last_updated: "2026-11-24T18:48:24.568Z"
+last_activity: 2026-11-24
+last_activity_desc: v2.6.0 released — gsd-core 1.23.0 Sync
+state_head: 0d54a1830c14983f1e8d4048d0dbd5279640a5fe
 progress:
   total_phases: 1
   completed_phases: 1
   total_plans: 2
   completed_plans: 2
   percent: 100
-milestone_name: gsd-core 1.22.0 Sync
+milestone_name: gsd-core 1.23.0 Sync
 current_phase: 33
 ---
 
@@ -25,13 +25,13 @@ current_phase: 33
 See: .planning/PROJECT.md (updated 2026-11-10)
 
 **Core value:** See the state of every GSD project at a glance and act on any of them without leaving the TUI.
-**Current focus:** Planning next milestone (v2.5.0 shipped 2026-11-19)
+**Current focus:** Planning next milestone (v2.6.0 shipped 2026-11-24)
 
 ## Current Position
 
-Phase: — (v2.5.0 shipped; no milestone open)
+Phase: — (v2.6.0 shipped; no milestone open)
 Plan: —
-Status: Shipped v2.5.0 gsd-core 1.22.0 Sync — interim release between milestones (quick 261113-dcj/dck/dcl/epo/fi0, 261119-ikn); release commit and annotated tag v2.5.0 pushed, which publishes to crates.io.
+Status: Shipped v2.6.0 gsd-core 1.23.0 Sync — interim release between milestones (quick 261124-fox); release commit and annotated tag v2.6.0 pushed, which publishes to crates.io.
 Last activity: 2026-11-24 - Completed quick task 261124-fox: Sync against gsd-core v1.23.0
 
 ## Deferred Verification
@@ -593,11 +593,12 @@ non-unique bullets in these narrative logs). Disclosed per file instead [inferre
 
 ## Session Continuity
 
-Last session: 2026-11-19
-Stopped at: v2.5.0 released — quick 261119-ikn (gsd-core v1.22.0 sync) plus the untagged v1.21.0 sync and the CLAUDE_CONFIG_DIR/GSD_HOME quick tasks; release commit and annotated tag v2.5.0 pushed
+Last session: 2026-11-24
+Stopped at: v2.6.0 released — quick 261124-fox (gsd-core v1.23.0 sync); release commit and annotated tag v2.6.0 pushed
 Resume file: None
 
 Next: `/gsd-new-milestone`.
+Earlier (2026-11-19): v2.5.0 released and published to crates.io — gsd-core 1.22.0 Sync.
 Earlier (2026-11-11): v2.4.0 released and published to crates.io — Session Locations.
 Earlier (2026-11-11): v2.3.1 released and published to crates.io — Multiplexer Backends (publish fix).
 Earlier (2026-11-10): v2.3.0 released — Multiplexer Backends (Release workflow failed: Windows clippy dead-code; never published).
