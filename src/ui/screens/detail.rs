@@ -12277,7 +12277,7 @@ fn build_defaults_entries(
     // gsd-core v1.22.0 (#6302, quick task 261119-ikn).
     let (v, k) = opt_bool(pwf.and_then(|w| w.cross_runtime_execution));
     push(cat, "workflow.cross_runtime_execution", v, k, false, ConfigHelp::new(
-        "Opt-in gate for running a plan that names executor_runtime on another vendor's CLI; gsd-core 1.22.0 registers it, but nothing dispatches on it yet.",
+        "Lets a plan naming executor_runtime run on that runtime's own CLI in a GSD worktree; read by dispatch-isolation, so it spends a second vendor's plan.",
     ).since("v1.22.0"));
     let (v, k) = opt_enum(
         pwf.and_then(|w| w.code_review_point.as_deref()),
@@ -12322,7 +12322,7 @@ fn build_defaults_entries(
     ).since("v1.01.0"));
     let (v, k) = opt_bool(pwf.and_then(|w| w.live_dom_uat));
     push(cat, "workflow.live_dom_uat", v, k, false, ConfigHelp::new(
-        "Runs a browser-driven verifier after each wave and writes its report; while off no browser tooling is ever driven.",
+        "Runs a DOM verifier after each wave and writes its report; off, no Chrome-family browser server is driven (Playwright is not gated by it).",
     ).since("v1.12.0"));
     // gsd-core v1.23.0 (#3858, e43a9e4c6, quick task 261124-fox): the two keys of
     // the deep-verify capability, placed between live_dom_uat and
@@ -18009,6 +18009,28 @@ mod tests {
             assert_ne!(row.category, PASSTHROUGH_CATEGORY);
             assert_eq!(builtin_default_for_key(key), Some("false"));
         }
+    }
+
+    /// gsd-core v1.23.0 made `dispatch-isolation` read the cross-runtime keys
+    /// (#6303) and deep verification drives Playwright whatever `live_dom_uat`
+    /// says, so neither help text may keep its v1.22.0 claim.
+    #[test]
+    fn cross_runtime_and_live_dom_help_match_gsd_core_v1_23_0() {
+        let entries = all_config_entries();
+        let summary = |key: &str| {
+            entries
+                .iter()
+                .find(|e| e.key.as_ref() == key)
+                .unwrap_or_else(|| panic!("no {key} row"))
+                .help
+                .summary
+                .to_string()
+        };
+        let cross = summary("workflow.cross_runtime_execution");
+        assert!(cross.contains("dispatch-isolation"), "{cross}");
+        assert!(!cross.contains("nothing dispatches"), "{cross}");
+        let dom = summary("workflow.live_dom_uat");
+        assert!(!dom.contains("no browser tooling"), "{dom}");
     }
 
     /// `execute.models.<runtime>` (gsd-core 1.22.0, #6302) is templated by

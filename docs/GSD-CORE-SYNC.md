@@ -1011,7 +1011,7 @@ refuse a row with no `ConfigHelp`.
 | `workflow.cross_ai_command` | v1.01.0 |
 | `workflow.cross_ai_timeout` | v1.01.0 |
 
-gsd-core v1.22.0 registers `workflow.cross_runtime_execution` (#6302) as an opt-in gate (default `false`) that nothing reads until its cross-runtime dispatch ships (261119-ikn).
+gsd-core v1.22.0 registered `workflow.cross_runtime_execution` (#6302) as an opt-in gate (default `false`, 261119-ikn); v1.23.0's `dispatch-isolation` reads it (#6303, 261124-fox), and only the boolean `true` enables it.
 
 gsd-core v1.23.0 registers `workflow.deep_verify` and `workflow.deep_verify_all_phases` through the deep-verify capability (`capabilities/deep-verify/capability.json`, #3858), both default `false`; the second has no effect without the first (261124-fox).
 
@@ -1196,7 +1196,7 @@ a name nobody here has seen, is handled by the same mechanism without an edit.
 |---|---|
 | `review.models.<cli>`, `review.effort.<slug>`, `review.context_window_tokens.<slug>`, `review.reviewer_instances.<name>.*` | Templated by CLI / reviewer-lane slug / instance name; a typed field per unknown name is not expressible. The effort family is owned by each lane's capability manifest (`effortConfigKey`). `review.context_window_tokens` (gsd-core 1.20.0, #4559) is a per-reviewer-slug object (10 capability-registered slugs at v1.20.0) that derives the default cap of `review.max_prompt_tokens*`; it round-trips losslessly through `ReviewConfig`'s flatten `extra`. |
 | `review.default_reviewers`, `review.*_host`, `review.max_prompt_tokens*`, `review.parallel_lanes` | Would be typeable; deferred because the whole `review.*` block is one editing surface and splitting it half-and-half reads worse than leaving it whole. |
-| `model_policy.*`, `model_profile_overrides.<runtime>.<tier>`, `execute.models.<runtime>` | Keyed by runtime and tier; templated. gsd-core v1.22.0 (#6302) registers `execute.models.<runtime>` (the model id handed to a foreign executor of that runtime) and nothing reads it yet; the whole top-level `execute` object shows as one read-only row, unmasked, and is preserved on save. |
+| `model_policy.*`, `model_profile_overrides.<runtime>.<tier>`, `execute.models.<runtime>` | Keyed by runtime and tier; templated. gsd-core v1.22.0 (#6302) registered `execute.models.<runtime>` (the model id handed to a foreign executor of that runtime); `dispatch-isolation` reads it since v1.23.0 for a plan that declares `executor_runtime`, and passes it only when the target declares a model flag; the whole top-level `execute` object shows as one read-only row, unmasked, and is preserved on save. |
 | `effort.*`, `fast_mode.*` | Both carry `agent_overrides.<agent-id>` and `routing_tier_defaults.*`; templated. |
 | `dynamic_routing.tier_models.<tier>` | Templated by tier name. |
 | `models.<phase_type>`, `granularities.<phase_type>` | Templated by phase type. |

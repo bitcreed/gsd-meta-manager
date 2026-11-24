@@ -651,7 +651,8 @@ pub struct WorkflowConfig {
     pub ui_interaction_capture: Option<bool>,
     // --- gsd-core v1.22.0 (#6302, quick task 261119-ikn) ---
     /// Opt-in gate for dispatching a plan that declares `executor_runtime:` to
-    /// another runtime's CLI. Registered upstream with nothing reading it yet.
+    /// another runtime's CLI. Registered by gsd-core v1.22.0 (#6302); since
+    /// v1.23.0 `dispatch-isolation` reads it (#6303, quick task 261124-fox).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cross_runtime_execution: Option<bool>,
     // --- gsd-core v1.23.0 (#3858, quick task 261124-fox) ---
