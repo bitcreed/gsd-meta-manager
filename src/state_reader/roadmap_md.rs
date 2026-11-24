@@ -1820,8 +1820,9 @@ fn version_lower(a: &[u64], b: &[u64]) -> bool {
 /// Roadmap's collapsed shipped-milestones row (D-A07). Display-only.
 ///
 /// A milestone qualifies only when it declares something: a numeric range or
-/// scoped phases. A spurious heading like `## Requirement Coverage (v1.5)` is
-/// never shipped. Then:
+/// scoped phases. A heading that only mentions a version, like a coverage
+/// section that ends `(v1.5)`, opens no milestone at all (gsd-core #6149), and
+/// a stray milestone without either is never shipped. Then:
 ///
 /// 1. When [`active_milestone_index`] finds the active milestone at `a`, every
 ///    qualifying milestone listed before it is shipped (roadmaps list in order).
@@ -1955,7 +1956,19 @@ pub fn roadmap_milestones(content: &str, convention: PhaseIdConvention) -> Vec<R
         id = phase_id_source(convention)
     ))
     .unwrap();
-    let version = Regex::new(r"\bv\d+(\.\d+)*\b").unwrap();
+    // A heading opens a milestone only when its version token LEADS its text
+    // (gsd-core #6149, de0eefe18 / PR #6416, v1.23.0: `MILESTONE_LEADING_PREFIX`
+    // in `src/roadmap-parser.cts`; quick task 261124-fox, I-fox-7). Before the
+    // token only whitespace, `✅ 📋 🚧`, `*`, the word `Roadmap` and a `[bracket
+    // id]` may stand, plus at most ONE bounded `… Milestone [N]:` label, so
+    // `## Requirement Coverage (v1.5)` mentions a version without being that
+    // milestone. This build keeps its local acceptance of a bare-major `v2`
+    // (`### 🚧 v2 Core engine`), which upstream's `v\d+\.\d+` does not read.
+    let filler = r"(?:[\s\x{2705}\x{1F4CB}\x{1F6A7}*]|Roadmap\b|\[[^\]\n]{0,64}\])*";
+    let version = Regex::new(&format!(
+        r"(?i)^{filler}(?:[\w :'-]{{0,60}}?Milestone\b(?:\s+\d+)?:?{filler})?\bv\d+(\.\d+)*\b"
+    ))
+    .unwrap();
     let numbered = Regex::new(r"(?i)\bMilestone\s+\d").unwrap();
     let tags = Regex::new(r"<[^>]*>").unwrap();
 
@@ -3752,11 +3765,10 @@ Plans:
                 "v1.3 Polish & Follow-through",
                 "v1.4 Assessment & Insight",
                 "v1.5 Closing the Loop",
-                "Requirement Coverage",
             ]
         );
         let shipped = shipped_milestones(&ms, "v1.5");
-        assert_eq!(shipped, [true, true, true, true, true, false, false]);
+        assert_eq!(shipped, [true, true, true, true, true, false]);
         let declared: u32 = ms
             .iter()
             .zip(&shipped)
@@ -3769,10 +3781,7 @@ Plans:
     #[test]
     fn sentriq_v0_11_is_shipped_by_version_order() {
         let ms = roadmap_milestones(SENTRIQ_ROADMAP, PhaseIdConvention::Legacy);
-        assert_eq!(
-            labels(&ms),
-            ["v0.11 Phases", "Scope Explicitly Excluded from v0.12"]
-        );
+        assert_eq!(labels(&ms), ["v0.11 Phases"]);
         assert_eq!(
             ms[0].first,
             PhaseNum::parse("4"),
@@ -3784,8 +3793,47 @@ Plans:
             None,
             "no roadmap milestone is v0.12, so shipped-ness comes from version order"
         );
-        assert_eq!(shipped_milestones(&ms, "v0.12"), [true, false]);
+        assert_eq!(shipped_milestones(&ms, "v0.12"), [true]);
         assert_eq!(declared_phase_count(&ms[0]), 4);
+    }
+
+    /// gsd-core #6149: a heading that only MENTIONS a version is not a
+    /// milestone heading; its phases join no milestone.
+    #[test]
+    fn a_heading_that_only_mentions_a_version_is_not_a_milestone() {
+        let content = "\
+## Carried forward to v0.5.0 (inputs, not phases)\n\n\
+### Phase 1: Carried\n\n\
+## v0.5.0 Search Revamp\n\n\
+### Phase 2: Real\n\n\
+## Requirement Coverage (v1.5)\n\n\
+## Roadmap v2.0: Next\n\n\
+### \u{1F6A7} v2 Core engine (In Progress)\n\n\
+## Milestone 1: First Milestone v1.0\n\n\
+## \u{2705} **v0.4 Shipped**\n";
+        let ms = roadmap_milestones(content, PhaseIdConvention::Legacy);
+        let ls = labels(&ms);
+        assert_eq!(ls.len(), 5, "{ls:?}");
+        assert_eq!(ls[0], "v0.5.0 Search Revamp");
+        assert!(ls[1].starts_with("Roadmap v2.0"), "{ls:?}");
+        assert_eq!(ls[2], "v2 Core engine");
+        assert_eq!(ls[3], "Milestone 1: First Milestone v1.0");
+        assert!(ls[4].starts_with("v0.4 Shipped"), "{ls:?}");
+        assert!(
+            ls.iter()
+                .all(|l| !l.starts_with("Carried") && !l.starts_with("Requirement")),
+            "{ls:?}"
+        );
+        assert_eq!(
+            ms[0].scoped_phases,
+            ["2"],
+            "phase 2 is the v0.5.0 milestone's"
+        );
+        assert!(
+            ms.iter()
+                .all(|m| !m.scoped_phases.contains(&"1".to_string())),
+            "phase 1 sits under a mention heading, so it is scoped to no milestone"
+        );
     }
 
     #[test]
