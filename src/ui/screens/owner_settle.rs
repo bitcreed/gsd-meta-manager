@@ -237,6 +237,11 @@ fn check_ref(group: &OwnerGroup, item: &OwnerItem, position: usize) -> CheckRef 
 /// The status line `x` prints on a row whose source file is unreadable.
 pub(crate) const UNREADABLE_REFUSAL: &str = "Cannot settle: the source file is unreadable";
 
+/// The status line `x` prints on a row of an acknowledged file: the marker hides it, it does
+/// not resolve it.
+pub(crate) const ACKNOWLEDGED_REFUSAL: &str =
+    "Cannot settle an acknowledged file: it is hidden until it changes";
+
 /// Why one group's checks cannot be settled: the text `x` prints, and whether the
 /// refusal is permanent for the group's kind (`Never`: the row model hides `x`) or
 /// a state of this one file (`Unreadable`: the model shows `x` dim, with the text).
@@ -269,7 +274,7 @@ pub(crate) fn settle_group_refusal(group: &OwnerGroup) -> Result<(), SettleRefus
         );
     }
     if group.acknowledged {
-        return never("Cannot settle an acknowledged file: it is already handled");
+        return never(ACKNOWLEDGED_REFUSAL);
     }
     if group.counts.unreadable > 0 {
         return Err(SettleRefusal {
@@ -1266,7 +1271,7 @@ mod tests {
             (
                 "acknowledged",
                 Box::new(|g| g.acknowledged = true),
-                "Cannot settle an acknowledged file: it is already handled",
+                "Cannot settle an acknowledged file: it is hidden until it changes",
             ),
             (
                 "unreadable",

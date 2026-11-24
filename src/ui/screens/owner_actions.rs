@@ -775,9 +775,9 @@ pub(crate) fn fold_copy(
             Ok(copy(ctx, text, lines))
         }
         Some(Fold::Stale) => Err("Nothing to copy: open Stale and copy one phase".to_owned()),
-        Some(Fold::Acknowledged) => {
-            Err("Nothing to copy: acknowledged items are already handled".to_owned())
-        }
+        Some(Fold::Acknowledged) => Err(
+            "Nothing to copy: acknowledged items are hidden until their file changes".to_owned(),
+        ),
         Some(Fold::Todos) => Err("Nothing to copy: todos are only counted here".to_owned()),
         None => Err("Select a group row to copy its checklist".to_owned()),
     }

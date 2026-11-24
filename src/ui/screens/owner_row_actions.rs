@@ -109,7 +109,7 @@ pub(crate) struct RowAction {
     pub(crate) key_label: &'static str,
     /// The label both screens use for this action.
     pub(crate) label: &'static str,
-    /// The command or target, or, when blocked, the reason.
+    /// The command, the target or what the action does, or, when blocked, the reason.
     pub(crate) detail: String,
     pub(crate) footer: FooterHint,
     pub(crate) availability: Availability,
@@ -260,8 +260,10 @@ pub(crate) fn row_actions(
         };
         let detail = match &availability {
             Availability::Blocked(message) => message.clone(),
-            Availability::Ready if item.is_some() => "this check, asks first".to_owned(),
-            Availability::Ready => "whole phase, asks first".to_owned(),
+            Availability::Ready if item.is_some() => {
+                "record this check as skipped, asks first".to_owned()
+            }
+            Availability::Ready => "record whole phase as skipped, asks first".to_owned(),
         };
         out.push(action(
             ActionId::Settle,
@@ -311,7 +313,7 @@ pub(crate) fn row_actions(
         let availability = availability_of(owner_actions::ack_refusal(ctx, alias, &group));
         let detail = match &availability {
             Availability::Blocked(message) => message.clone(),
-            Availability::Ready => format!("{} via gsd-core, asks first", shown(file_name)),
+            Availability::Ready => "hide this file until it changes, asks first".to_owned(),
         };
         out.push(action(
             ActionId::Acknowledge,
@@ -1039,9 +1041,13 @@ mod tests {
         let a = of_owner(&ctx, test, None, false);
         assert_eq!(ids(&a), [Run, Settle, Open, Acknowledge, Copy, Toggle]);
         ready(&a, Run, "/gsd-verify-work 24");
-        ready(&a, Settle, "whole phase, asks first");
+        ready(&a, Settle, "record whole phase as skipped, asks first");
         ready(&a, Open, "24-UAT.md, read-only");
-        ready(&a, Acknowledge, "24-UAT.md via gsd-core, asks first");
+        ready(
+            &a,
+            Acknowledge,
+            "hide this file until it changes, asks first",
+        );
         ready(&a, Copy, copy);
         ready(&a, Toggle, "checks and source file");
         assert_eq!(get(&a, Toggle).map(|t| t.label), Some("expand"));
@@ -1054,7 +1060,7 @@ mod tests {
         // A sub-stop collapses; a check line settles that one check.
         let check = SubStop::Item("check 0".to_owned());
         let a = of_owner(&ctx, test, Some(&check), true);
-        ready(&a, Settle, "this check, asks first");
+        ready(&a, Settle, "record this check as skipped, asks first");
         assert_eq!(get(&a, Toggle).map(|t| t.label), Some("collapse"));
         let a = of_owner(
             &ctx,
@@ -1062,7 +1068,7 @@ mod tests {
             Some(&SubStop::File(test.group.file.clone())),
             true,
         );
-        ready(&a, Settle, "whole phase, asks first");
+        ready(&a, Settle, "record whole phase as skipped, asks first");
 
         // FIX group: command, no settle.
         let fix = find(&rows, |s| {
@@ -1091,7 +1097,7 @@ mod tests {
         ready(
             &a,
             Acknowledge,
-            "widget-tap-bug.md via gsd-core, asks first",
+            "hide this file until it changes, asks first",
         );
 
         // BLOCKED aggregate over two files: settle the phase, no command, no ack,
@@ -1101,7 +1107,7 @@ mod tests {
         });
         let a = of_owner(&ctx, blocked_row, None, false);
         assert_eq!(ids(&a), [Settle, Open, Copy, Toggle]);
-        ready(&a, Settle, "whole phase, asks first");
+        ready(&a, Settle, "record whole phase as skipped, asks first");
         blocked(
             &a,
             Open,
@@ -1179,7 +1185,7 @@ mod tests {
             "2 files behind this row: press g to pick a file in the Owner block, then A",
         );
         ready(&a, Run, "/gsd-verify-work 29");
-        ready(&a, Settle, "whole phase, asks first");
+        ready(&a, Settle, "record whole phase as skipped, asks first");
         // The Owner block lists the two files as two rows, never the merged one.
         let rows = owner_rows(&ctx);
         assert!(rows.iter().all(|(key, _)| key.kind != "entry"));
@@ -1298,7 +1304,7 @@ mod tests {
         ready(
             &of_owner(&ctx, &row, None, false),
             ActionId::Settle,
-            "whole phase, asks first",
+            "record whole phase as skipped, asks first",
         );
     }
 
@@ -1606,9 +1612,9 @@ mod tests {
         let body: Vec<&String> = lines[top + 1..top + 8].iter().collect();
         for (line, want) in body.iter().zip([
             "> v     run             /gsd-verify-work 24",
-            "  x     settle          whole phase, asks first",
+            "  x     settle          record whole phase as skipped, asks first",
             "  o     open            24-UAT.md, read-only",
-            "  A     acknowledge     24-UAT.md via gsd-core, asks first",
+            "  A     acknowledge     hide this file until it changes, asks first",
             "  y     copy checklist  as gsd-meta-manager inbox prints it",
             "  g     go to project   dune-app: Phases tab, same group",
             "  Space expand          checks and source file",
@@ -1781,7 +1787,11 @@ mod tests {
         let a = of_owner(&ctx, row, None, false);
         let refusal = "Cannot acknowledge: dune-app has no known milestone version";
         blocked(&a, ActionId::Acknowledge, refusal);
-        ready(&a, ActionId::Settle, "whole phase, asks first");
+        ready(
+            &a,
+            ActionId::Settle,
+            "record whole phase as skipped, asks first",
+        );
         assert_eq!(
             owner_actions::ack_request(&ctx, ALIAS, &row.group).err(),
             Some(refusal.to_owned())

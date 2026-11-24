@@ -38082,7 +38082,7 @@ mod tests {
         assert!(matches!(action, ScreenAction::None));
         assert_eq!(
             ctx.status_message.as_ref().map(|(m, _)| m.as_str()),
-            Some("Nothing to copy: acknowledged items are already handled")
+            Some("Nothing to copy: acknowledged items are hidden until their file changes")
         );
         // A BLOCKED aggregate copies the items of all its groups, one heading each.
         let blocked = digest

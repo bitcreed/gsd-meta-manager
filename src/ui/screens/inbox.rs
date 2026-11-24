@@ -2077,10 +2077,7 @@ impl InboxScreen {
                 return ScreenAction::None;
             }
             Some(Fold::Acknowledged) => {
-                Self::say(
-                    ctx,
-                    "Cannot settle an acknowledged file: it is already handled".to_owned(),
-                );
+                Self::say(ctx, owner_settle::ACKNOWLEDGED_REFUSAL.to_owned());
                 return ScreenAction::None;
             }
             _ => {}
@@ -3603,7 +3600,7 @@ mod tests {
         key(&mut screen, &mut ctx, KeyCode::Char('y'));
         assert_eq!(
             status(&ctx),
-            "Nothing to copy: acknowledged items are already handled"
+            "Nothing to copy: acknowledged items are hidden until their file changes"
         );
         key(&mut screen, &mut ctx, KeyCode::Right);
         key(&mut screen, &mut ctx, KeyCode::Char('y'));
@@ -4469,7 +4466,7 @@ mod tests {
             ),
             (
                 Fold::Acknowledged,
-                "Cannot settle an acknowledged file: it is already handled",
+                "Cannot settle an acknowledged file: it is hidden until it changes",
             ),
         ] {
             ctx.status_message = None;
