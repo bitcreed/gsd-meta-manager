@@ -624,8 +624,8 @@ pub(super) fn help_lines(experimental: bool) -> Vec<Line<'static>> {
         row("g", "Go to the project: detail view, Phases tab, on the same group when visible there"),
         row("o", "Open the group's source file, read-only (never your editor)"),
         row("v", "Run the group's command in its project through your multiplexer; a live session is focused instead and you type the command there"),
-        row("A", "Acknowledge the group's file via gsd-core: file-level, uncommitted, asks first"),
-        row("x", "Settle the selected check or phase: won't do, deferred permanently or move to phase M; launches /gsd-verify-work after a confirm"),
+        row("A", "Acknowledge = hide, not resolve: gsd-core marks the group's file and all its items leave the lanes until the file changes; no result is recorded and the phase stays open; uncommitted, asks first"),
+        row("x", "Settle = record as skipped: the selected check or phase becomes won't do, deferred permanently or moved to phase M (via /gsd-verify-work), so the phase can close; asks first"),
         row("y", "Copy the group as a plain checklist (wl-copy, xclip, xsel, pbcopy, clip.exe, else OSC 52)"),
         row("Stale", "Fold of entries idle for longer than preferences.owner.fold_days (default 90); still counted, Enter lists them"),
         // One row per label, the label as its pseudo-key under `Labels` (the
@@ -1375,7 +1375,11 @@ mod tests {
             ),
             (
                 "A",
-                "Acknowledge the group's file via gsd-core: file-level, uncommitted, asks first",
+                "Acknowledge = hide, not resolve: gsd-core marks the group's file and all its items leave the lanes until the file changes; no result is recorded and the phase stays open; uncommitted, asks first",
+            ),
+            (
+                "x",
+                "Settle = record as skipped: the selected check or phase becomes won't do, deferred permanently or moved to phase M (via /gsd-verify-work), so the phase can close; asks first",
             ),
             (
                 "y",

@@ -1,4 +1,4 @@
-//! The screens of settle (`x`, 39): the one-row chooser, the phase step of a Move,
+//! The screens of settle (`x`, 39): the two-row chooser, the phase step of a Move,
 //! the reason field and the default-No confirm popup: a summary cut from the exact
 //! argv, with the whole argv one `d` away.
 //!
@@ -50,9 +50,10 @@ fn render_host(host: &AckHost, frame: &mut Frame, area: Rect, ctx: &AppContext) 
 
 // ── The chooser ─────────────────────────────────────────────────────────────
 
-/// `x`: the one-row chooser `Settle {target}: [w] won't do  [p] defer permanently
-/// [m] move  [Esc] cancel`. `w` and `p` replace it with the reason field, `m` with
-/// the phase step; Esc cancels.
+/// `x`: the two-row chooser `Settle {target}: record it as skipped, so the phase can
+/// close`, then `[w] won't do  [p] defer permanently  [m] move to phase M  [Esc]
+/// cancel`. `w` and `p` replace it with the reason field, `m` with the phase step;
+/// Esc cancels.
 pub struct SettleChooserScreen {
     host: AckHost,
     draft: SettleDraft,
@@ -111,21 +112,25 @@ impl Screen for SettleChooserScreen {
     }
 
     fn render(&self, frame: &mut Frame, area: Rect, ctx: &AppContext) {
-        let chunks = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(area);
+        let chunks = Layout::vertical([Constraint::Min(0), Constraint::Length(2)]).split(area);
         render_host(&self.host, frame, chunks[0], ctx);
         let key = |key: &'static str, rest: &'static str| {
             [Span::styled(key, bold()), Span::styled(rest, muted())]
         };
-        let mut spans = vec![Span::raw(format!(
-            "  Settle {}: ",
-            shown(&self.draft.target.short())
-        ))];
-        spans.extend(key("[w]", " won't do  "));
-        spans.extend(key("[p]", " defer permanently  "));
-        spans.extend(key("[m]", " move  "));
-        spans.extend(key("[Esc]", " cancel"));
-        let line = fit_spans(spans, usize::from(chunks[1].width));
-        frame.render_widget(Paragraph::new(line), chunks[1]);
+        let width = usize::from(chunks[1].width);
+        let what = vec![
+            Span::raw(format!("  Settle {}: ", shown(&self.draft.target.short()))),
+            Span::raw("record it as skipped, so the phase can close"),
+        ];
+        let mut keys = vec![Span::raw("  ")];
+        keys.extend(key("[w]", " won't do  "));
+        keys.extend(key("[p]", " defer permanently  "));
+        keys.extend(key("[m]", " move to phase M  "));
+        keys.extend(key("[Esc]", " cancel"));
+        frame.render_widget(
+            Paragraph::new(vec![fit_spans(what, width), fit_spans(keys, width)]),
+            chunks[1],
+        );
     }
 
     fn name(&self) -> &str {
@@ -2009,11 +2014,13 @@ mod tests {
         stack.key(&mut ctx, KeyCode::Char('x'));
         let chooser = stack.render(&ctx, 100, 24);
         assert!(
-            chooser.contains(
-                "Settle phase 01: [w] won't do  [p] defer permanently  [m] move  [Esc] cancel"
-            ),
+            chooser.contains("Settle phase 01: record it as skipped, so the phase can close"),
             "{chooser}"
         );
+        let keys = "[w] won't do  [p] defer permanently  [m] move to phase M  [Esc] cancel";
+        assert!(chooser.contains(keys), "{chooser}");
+        let narrow = stack.render(&ctx, 80, 24);
+        assert!(narrow.contains(keys), "{narrow}");
         stack.key(&mut ctx, KeyCode::Char('p'));
         assert_eq!(stack.name(), "settle_reason");
         let field = stack.render(&ctx, 100, 24);

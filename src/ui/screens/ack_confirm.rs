@@ -5,7 +5,8 @@
 //! `git checkout` undoes, so nothing here is drawn Red. The popup names the
 //! project, the file, the category and the milestone, says that the marker is
 //! file-level (it hides every item of the file in every lane, blocked rows
-//! included) and lapses when the file changes, that gsd-core edits the
+//! included) and lapses when the file changes, that hiding resolves nothing (no
+//! result is recorded and the phase stays open), that gsd-core edits the
 //! frontmatter and commits nothing, and shows the exact argv that Yes runs.
 //!
 //! **A cut-off popup cannot be confirmed** (the existing `confirm_popup`
@@ -188,6 +189,12 @@ pub(crate) fn ack_body(req: &AckRequest, inner_w: u16) -> Vec<Line<'static>> {
         "Hides all {} of this file in every lane, blocked rows included. The marker lapses by itself when the file changes.",
         items_phrase(req.target.items)
     )));
+    // A debug session has no phase to leave open (`AckTarget::phase` is `None`).
+    body.push(Line::raw(if req.target.phase.is_none() {
+        "Hiding resolves nothing: the investigation stays open."
+    } else {
+        "Hiding resolves nothing: no result is recorded, the phase stays open."
+    }));
     body.push(Line::raw(""));
     body.push(Line::raw(format!(
         "gsd-core edits the file's frontmatter. Nothing is committed: {} gets one modified file in its working tree.",
@@ -243,7 +250,7 @@ impl Screen for AckConfirmScreen {
         self.popup.record(confirm_popup::render_confirm_popup(
             frame,
             area,
-            "Acknowledge via gsd-core",
+            "Acknowledge (hide) via gsd-core",
             ack_body(&self.request, confirm_popup::body_room(area).0),
             Color::Yellow,
             self.popup.focus,
@@ -488,13 +495,14 @@ mod tests {
         let text = rows(&screen, &ctx, 80, 24);
         assert!(!screen.popup.clipped(), "{text}");
         for want in [
-            "Acknowledge via gsd-core",
+            "Acknowledge (hide) via gsd-core",
             "Project    alder-api",
             "File       .planning/phases/24-x/24-UAT.md",
             "Category   uat_gaps",
             "Milestone  v2.0",
             "Hides all 6 items of this file in every lane, blocked rows included.",
             "The marker lapses by itself when the file changes.",
+            "Hiding resolves nothing: no result is recorded, the phase stays open.",
             "gsd-core edits the file's frontmatter. Nothing is committed:",
             "[ Yes ]",
             "[ No ]",
@@ -515,6 +523,38 @@ mod tests {
             command_line.iter().any(|e| e == "--phase") && command_line.iter().any(|e| e == "24"),
             "{command_line:?}"
         );
+    }
+
+    /// Hiding is not resolving: the popup says so, and a debug session (no phase)
+    /// says the investigation, not the phase, stays open.
+    #[test]
+    fn the_body_says_hiding_resolves_nothing() {
+        let (_ctx, mut request) = setup();
+        let text = |request: &AckRequest| -> String {
+            ack_body(request, 70)
+                .iter()
+                .map(|line| {
+                    line.spans
+                        .iter()
+                        .map(|span| span.content.as_ref())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let phased = text(&request);
+        assert!(
+            phased
+                .contains("Hiding resolves nothing: no result is recorded, the phase stays open."),
+            "{phased}"
+        );
+        request.target.phase = None;
+        let debug = text(&request);
+        assert!(
+            debug.contains("Hiding resolves nothing: the investigation stays open."),
+            "{debug}"
+        );
+        assert!(!debug.contains("the phase stays open"), "{debug}");
     }
 
     /// UI review 37 #3: a long file path and launcher path wrap at `/` and
