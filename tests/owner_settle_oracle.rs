@@ -45,13 +45,12 @@ use tempfile::TempDir;
 const ALLOW_MISSING_ORACLE: &str = "GSD_META_MANAGER_ALLOW_MISSING_ORACLE";
 
 /// verify-work's workstream parse, verbatim from `workflows/verify-work.md`
-/// (gsd-core 1.21.0, step `initialize`). A sync that rewords it fails
+/// (gsd-core 1.23.0, step `initialize`). A sync that rewords it fails
 /// [`the_installed_verify_work_still_parses_arguments_this_way`] loudly.
-const WS_PIPELINE: &str = r#"echo "$GSD_ARGS" | grep -qE -- '--ws[[:space:]]+[A-Za-z0-9._-]+' && GSD_WS=$(echo "$GSD_ARGS" | grep -oE -- '--ws[[:space:]]+[A-Za-z0-9._-]+')"#;
+const WS_PIPELINE: &str = r#"GSD_WS=$(echo " $GSD_ARGS" | sed -nE 's/.* --ws +["'\'']?([A-Za-z0-9][A-Za-z0-9._-]*).*/--ws \1/p' | head -1)"#;
 
 /// verify-work's phase-argument parse, verbatim from the same step.
-const PHASE_ARG_PIPELINE: &str =
-    r#"PHASE_ARG=$(echo "$GSD_ARGS" | sed -E 's/--ws[[:space:]]+[A-Za-z0-9._-]+//g' | xargs)"#;
+const PHASE_ARG_PIPELINE: &str = r#"PHASE_ARG=$(echo "$GSD_ARGS" | sed -E 's/--ws[[:space:]]+("[^"]*"|'\''[^'\'']*'\''|[A-Za-z0-9._-]+)//g' | xargs)"#;
 
 fn now() -> DateTime<Utc> {
     "2026-11-14T00:00:00Z".parse().unwrap()
