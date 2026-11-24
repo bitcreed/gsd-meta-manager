@@ -4,10 +4,10 @@ milestone: v2.5.0
 current_phase_name: v2.5.0 shipped; no milestone open
 status: shipped
 stopped_at: v2.5.0 released (release commit + annotated tag v2.5.0, pushed; tag push publishes to crates.io) — gsd-core 1.22.0 sync + CLAUDE_CONFIG_DIR/XDG/GSD_HOME handling
-last_updated: "2026-11-19T20:01:59.587Z"
+last_updated: "2026-11-24T18:44:08.652Z"
 last_activity: 2026-11-19
 last_activity_desc: v2.5.0 released — gsd-core 1.22.0 Sync
-state_head: 157d6b5f6ae58300419ca625c41e7f9780ef8828
+state_head: bfcd3fc7ceeb501ac88158353a47c817a4078f0f
 progress:
   total_phases: 1
   completed_phases: 1
@@ -32,7 +32,7 @@ See: .planning/PROJECT.md (updated 2026-11-10)
 Phase: — (v2.5.0 shipped; no milestone open)
 Plan: —
 Status: Shipped v2.5.0 gsd-core 1.22.0 Sync — interim release between milestones (quick 261113-dcj/dck/dcl/epo/fi0, 261119-ikn); release commit and annotated tag v2.5.0 pushed, which publishes to crates.io.
-Last activity: 2026-11-19 - Completed quick task 261119-ikn: Sync against gsd-core v1.22.0
+Last activity: 2026-11-24 - Completed quick task 261124-fox: Sync against gsd-core v1.23.0
 
 ## Deferred Verification
 
@@ -537,6 +537,7 @@ Older entries (Phase 19 T-19-* rows, Phase 21 round-13 gaps, Phase 26 risks, 31-
 | 261113-epo | Sandbox binds of `.gsd` and `.gsd-capabilities.json` honour `GSD_HOME` | 2026-11-13 | 3eb643a | [261113-epo-sandbox-binds-of-gsd-and-gsd-capabilitie](./quick/261113-epo-sandbox-binds-of-gsd-and-gsd-capabilitie/) |
 | 261113-fi0 | Sync against gsd-core v1.21.0 | 2026-11-13 | 1ac9832 | [261113-fi0-sync-against-gsd-core-v1-21-0](./quick/261113-fi0-sync-against-gsd-core-v1-21-0/) |
 | 261119-ikn | Sync against gsd-core v1.22.0 | 2026-11-19 | 157d6b5f | [261119-ikn-sync-against-gsd-core-v1-22-0](./quick/261119-ikn-sync-against-gsd-core-v1-22-0/) |
+| 261124-fox | Sync against gsd-core v1.23.0 | 2026-11-24 | bfcd3fc7 | [261124-fox-sync-against-gsd-core-v1-23-0](./quick/261124-fox-sync-against-gsd-core-v1-23-0/) |
 
 ## Deferred Items
 
