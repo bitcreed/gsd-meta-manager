@@ -68,8 +68,10 @@ pub enum VerificationStatus {
     Missing,
     /// Verification passed. The **only** value that admits `DiskStatus::Complete`.
     Passed,
-    /// The verifier found gaps. Takes precedence over staleness upstream
-    /// (`verification.cjs:333-342`).
+    /// The verifier found gaps. Upstream checks it before a merely-newer SUMMARY
+    /// (`verification.cjs:333-342`); since gsd-core v1.23.0 (#6078 / PR #6381) a
+    /// `gaps_found` report whose covered-input fingerprint no longer matches
+    /// reads `stale` there. That derivation is not modelled here.
     GapsFound,
     /// The verifier needs a human judgement. The definitional DRIVE-05 gate.
     HumanNeeded,
@@ -80,7 +82,8 @@ pub enum VerificationStatus {
     /// staleness (a `covered_files`/`covered_digest` fingerprint scan with a
     /// SUMMARY-mtime fallback); that scan is not modelled by this reader, so a
     /// report upstream calls stale by fingerprint reads here as whatever its
-    /// literal status says.
+    /// literal status says. The v1.23.0 case (#6078) of a `gaps_found` report
+    /// whose fingerprint moved is likewise not modelled.
     Stale,
     /// The report has a closed leading frontmatter block that is not YAML —
     /// gsd-core 1.15.0's `unparseable` (#4806). The verifier ran, but nothing it

@@ -574,9 +574,13 @@ pub fn is_goal_met(inference: &DiskInference) -> bool {
 ///    invent.
 /// 3. **The verification gates on the target**, in upstream's own precedence
 ///    (`verification.cjs:333-351`): `gaps_found` first, because the source is
-///    explicit that it *"takes priority over stale"* and short-circuits the
-///    staleness check; then staleness; then ordinary table routing over the
-///    remaining statuses. These are consulted **only for an `executed` target**,
+///    explicit that it *"takes priority over stale"* and checks it before a
+///    merely-newer SUMMARY; then staleness; then ordinary table routing over
+///    the remaining statuses. Since gsd-core v1.23.0 (#6078 / PR #6381) a
+///    `gaps_found` report with a well-formed covered-input fingerprint whose
+///    files moved reads `stale` upstream; this build does not derive
+///    fingerprint staleness, and both statuses park, so only the journal reason
+///    can differ. These are consulted **only for an `executed` target**,
 ///    which is the state in which GSD itself consults its verification routing
 ///    table. For every earlier state a missing verification artifact means
 ///    *"not yet"*, not *"gate"* — reading it as a gate would park every phase in
@@ -748,7 +752,10 @@ fn verification_gate(inference: &DiskInference) -> Option<RouterReason> {
     use crate::state_reader::disk_status::VerificationStatus;
 
     match &inference.verification_status {
-        // Upstream checks this FIRST and short-circuits staleness with it.
+        // Upstream checks `gaps_found` before a merely-newer SUMMARY; since
+        // v1.23.0 (#6078) a fingerprint-moved report reads `stale` instead. That
+        // derivation is not modelled here and both statuses park (quick task
+        // 261124-fox, I-fox-9).
         VerificationStatus::GapsFound => Some(RouterReason::GateVerificationGapsFound),
         VerificationStatus::Stale => Some(RouterReason::GateVerificationStale),
         VerificationStatus::HumanNeeded => Some(RouterReason::GateVerificationHumanNeeded),
@@ -1607,6 +1614,8 @@ mod tests {
     /// every other gate; with no pause each state keeps its own reason.
     #[test]
     fn a_recorded_pause_parks_before_every_other_gate() {
+        assert_eq!(RouterReason::GatePaused.as_str(), REASON_GATE_PAUSED);
+        assert_eq!(REASON_GATE_PAUSED, "gate_paused");
         let paused = Decision::Park {
             reason: RouterReason::GatePaused,
             detail: "recorded_pause".to_string(),
