@@ -6,10 +6,10 @@ current_phase: 39
 current_phase_name: Check actions through GSD
 status: verifying
 stopped_at: Completed 39-03-PLAN.md
-last_updated: "2026-11-19T19:08:53.318Z"
-last_activity: 2026-11-18
+last_updated: "2026-11-24T21:07:53.351Z"
+last_activity: 2026-11-19
 last_activity_desc: Phase 39 execution started
-state_head: dd15c1a2a5e3d0adeaab6baf6ecb0d80e64076cd
+state_head: c473a9cd6969769ec98d8774d3c3649522357cd3
 progress:
   total_phases: 6
   completed_phases: 1
@@ -32,7 +32,7 @@ See: .planning/PROJECT.md (updated 2026-11-14)
 Phase: 39 (Check actions through GSD) — EXECUTING
 Plan: 3 of 3
 Status: Phase complete — ready for verification
-Last activity: 2026-11-19 - Completed quick task 261119-f5b: Owner-row action menu and context-aware footer (Owner block + inbox, shared)
+Last activity: 2026-11-24 - Completed quick task 261124-k1s: Clarify in-app meaning of Owner-row actions A (acknowledge = hide) and x (settle = record as skipped)
 
 
 ## Deferred Verification
@@ -597,6 +597,7 @@ Older entries (Phase 19 T-19-* rows, Phase 21 round-13 gaps, Phase 26 risks, 31-
 | 261118-u4e | Enter opens the Owner source file at the right place (inbox + Owner block) | 2026-11-18 | be39d868 | [261118-u4e-enter-opens-the-owner-source-file-at-the](./quick/261118-u4e-enter-opens-the-owner-source-file-at-the/) |
 | 261118-v6l | Pending row state after settle: settling badge, recorded step, ✓ linger (inbox + Owner block) | 2026-11-18 | dd086ffb | [261118-v6l-pending-row-state-after-settle-settling-](./quick/261118-v6l-pending-row-state-after-settle-settling-/) |
 | 261119-f5b | Owner-row action menu and context-aware footer (Owner block + inbox, shared) | 2026-11-19 | dd15c1a2 | [261119-f5b-owner-row-action-menu-and-context-aware-](./quick/261119-f5b-owner-row-action-menu-and-context-aware-/) |
+| 261124-k1s | Clarify in-app meaning of Owner-row actions A (acknowledge = hide) and x (settle = record as skipped) | 2026-11-24 | c473a9cd | [261124-k1s-clarify-in-app-meaning-of-owner-row-acti](./quick/261124-k1s-clarify-in-app-meaning-of-owner-row-acti/) |
 
 ## Deferred Items
 
