@@ -210,7 +210,9 @@ right now. Press the action's letter, or `j` / `k` and `Enter`, to run it; `Esc`
 closes the menu. `Space` or `→` expands a group to its checks and source file,
 and `Enter` on a check or file line opens that file read-only at that place.
 `x` (settle) and `A` (acknowledge) always show a default-No confirmation before
-anything runs. See [the README](../README.md#owner-inbox) for the full key list.
+anything runs. `A` only hides a file until it changes (nothing is recorded and the phase
+stays open); `x` records checks as skipped (won't do, deferred permanently or moved to phase M)
+so the phase can close. See [the README](../README.md#owner-inbox) for the full key list.
 
 ## Common setup issues
 

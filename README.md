@@ -439,17 +439,20 @@ keyboard-only.
 | `g` | Open the project's detail view on the same group |
 | `o` | Open the group's source file in a read-only viewer |
 | `v` | Run the group's command in its project through your multiplexer (tmux, herdr, ...), or switch to the project's live session and show the command to type |
-| `A` | Acknowledge the group's file (see below) |
-| `x` | Settle the selected check or phase: won't do (with a reason), deferred permanently, or move to phase M; asks first, then launches `/gsd-verify-work N` |
+| `A` | Acknowledge = hide the group's file until it changes; nothing is recorded and the phase stays open (see below) |
+| `x` | Settle = record the selected check or phase as skipped, so the phase can close: won't do (with a reason), deferred permanently, or move to phase M; asks first, then launches `/gsd-verify-work N` |
 | `y` | Copy the checklist `gsd-meta-manager inbox ALIAS` prints for that row (on the Old debt fold: that fold's checklist) |
 | `Esc` / `q` | Back to the dashboard |
+
+**`A` or `x`?** `A` hides a file for now: nothing is recorded, its phase stays open, and its items come back when the file changes. `x` records checks you cannot or will not test as skipped (won't do, deferred permanently or moved to phase M), so the phase can close.
 
 **The footer and the action menu.** In both the inbox and the Owner block the footer lists
 the keys that work on the selected row, with the command `v` runs when there is room
 (`[v]run /gsd-verify-work 16`). Narrow terminals drop the lower-priority hints (the movement
 and `Space` hints first, then the command text) but always keep `[?]help`. `Enter` on a group
 or debug row opens an action menu: one line per action for that row with its key, a label and
-the command or target. A key letter (`v` `x` `o` `A` `y`, and `g` in the inbox) or `Space`
+the command, target or effect (`A`: hide this file until it
+changes; `x`: record as skipped). A key letter (`v` `x` `o` `A` `y`, and `g` in the inbox) or `Space`
 runs that action at once; `j` / `k` and `Enter` pick one; `Esc` or `q` closes the menu. An
 action that exists for the row but cannot run now stays in the list, dimmed, with the reason
 in text (for example `Settle already pending for this row`). A menu entry runs exactly what
@@ -469,8 +472,8 @@ in the project directory. `<gsd-tools.cjs>` comes from your own install only (`$
 frontmatter and does not commit; the marker is file-level (it hides every item of the file
 in every lane) and lapses by itself when the file changes. This app never writes the file.
 `x` settles what you could not or will not test. On a TEST or BLOCKED row it settles the
-whole phase; after `Space` and `j` onto one check it settles that check. A one-row chooser
-offers three outcomes: `w` won't do, `p` deferred permanently, `m` move to another phase
+whole phase; after `Space` and `j` onto one check it settles that check. A two-row chooser
+says the target is recorded as skipped so the phase can close, and offers three outcomes: `w` won't do, `p` deferred permanently, `m` move to another phase
 (you pick phase M; an optional reason follows). A default-No popup then sums the settle
 up: project, target, outcome, your reason, the command it runs in bold with how many
 session variables `env -u` clears, and the start of the instruction with its key facts in
