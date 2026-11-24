@@ -64,7 +64,9 @@ pub const GSD_CORE_SYNCED_TREE_VERSION: &str = "1.22.0";
 /// straight over the operator's `.planning/config.json`, and serde drops what
 /// it did not parse — so before this field existed, toggling one checkbox
 /// silently deleted every gsd-core key this build does not model. Capturing the
-/// remainder makes the writer lossless.
+/// remainder makes the writer lossless. The save also never invents a blank
+/// top-level key the file did not carry (gsd-core v1.23.0 reads a null section
+/// as a barrier, #5096; quick task 261124-fox).
 ///
 /// `#[serde(flatten)]` removes the CONSUMED keys before filling the map, so a
 /// typed field can never also appear here and the serialised output cannot
@@ -115,42 +117,42 @@ impl std::fmt::Debug for ApiKeySetting {
 
 #[derive(Debug, Deserialize, Serialize, Clone, Default)]
 pub struct GsdConfig {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub mode: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub granularity: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub model_profile: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub commit_docs: Option<bool>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parallelization: Option<bool>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub search_gitignored: Option<bool>,
     /// A search-provider slot — see [`ApiKeySetting`]. May hold an API key.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub brave_search: Option<ApiKeySetting>,
     /// A search-provider slot — see [`ApiKeySetting`]. May hold an API key.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub firecrawl: Option<ApiKeySetting>,
     /// A search-provider slot — see [`ApiKeySetting`]. May hold an API key.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exa_search: Option<ApiKeySetting>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project_code: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phase_naming: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response_language: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git: Option<GitConfig>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workflow: Option<WorkflowConfig>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hooks: Option<HooksConfig>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub intel: Option<IntelConfig>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub graphify: Option<GraphifyConfig>,
     // --- GSD 1.4–1.8 additions ---
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -229,10 +231,22 @@ pub struct GsdConfig {
     /// through the top-level pass-through map — keeps it near the end on save.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audit: Option<AuditConfig>,
+    /// The top-level sections, among [`NULL_BARRIER_SECTIONS`], that the parsed
+    /// text carried as an explicit JSON `null`. gsd-core v1.23.0 (#5096,
+    /// `BLOCKED_SECTION_PROJECTIONS` in `src/config-loader.cts`) reads such a
+    /// null as an inheritance barrier, so a save must neither invent one nor
+    /// drop one the file really carries. Filled by [`parse_gsd_config`], honored
+    /// by [`serialize_gsd_config`] while the section is still unset.
+    #[serde(skip)]
+    pub null_barrier_sections: Vec<String>,
     /// Top-level gsd-core keys this build does not model — see [`ExtraKeys`].
     #[serde(flatten)]
     pub extra: ExtraKeys,
 }
+
+/// The top-level sections gsd-core v1.23.0 reads as an inheritance barrier
+/// when present but not an object (#5096, quick task 261124-fox).
+pub const NULL_BARRIER_SECTIONS: &[&str] = &["workflow", "git", "planning", "planner", "review"];
 
 #[derive(Debug, Deserialize, Serialize, Clone, Default)]
 pub struct FeaturesConfig {
@@ -719,8 +733,21 @@ pub struct GraphifyConfig {
 /// Parse GSD's .planning/config.json content.
 /// Returns None on invalid JSON or missing content.
 pub fn parse_gsd_config(content: &str) -> Option<GsdConfig> {
-    match serde_json::from_str(content) {
-        Ok(config) => Some(config),
+    match serde_json::from_str::<GsdConfig>(content) {
+        Ok(mut config) => {
+            // The typed parse is kept for its line/column-bearing error; the
+            // value parse only runs on text that already parsed, to record the
+            // explicit null barriers (#5096) that `Option` cannot tell from an
+            // absent key.
+            if let Ok(serde_json::Value::Object(map)) = serde_json::from_str(content) {
+                config.null_barrier_sections = NULL_BARRIER_SECTIONS
+                    .iter()
+                    .filter(|name| map.get(**name).is_some_and(serde_json::Value::is_null))
+                    .map(|name| (*name).to_string())
+                    .collect();
+            }
+            Some(config)
+        }
         Err(e) => {
             // T-jnf-03 (quick task 260926-jnf): NEVER the serde Display — it
             // quotes the offending value (`invalid type: string "sk-…"`), and
@@ -747,8 +774,26 @@ pub fn parse_error_summary(e: &serde_json::Error) -> String {
 }
 
 /// Serialize a GsdConfig back to pretty-printed JSON.
+///
+/// A save never writes a top-level key the file did not carry (no invented
+/// `null`, no invented `""`): gsd-core v1.23.0 reads a null `workflow`, `git`,
+/// `planning`, `planner` or `review` as an inheritance barrier (#5096). A
+/// barrier null the file really carried is recorded at parse time in
+/// [`GsdConfig::null_barrier_sections`] and written back while its section is
+/// still unset. That path goes through a `serde_json::Value`, so the output's
+/// key order follows `serde_json::Map` (sorted); every other save keeps the
+/// struct order.
 pub fn serialize_gsd_config(config: &GsdConfig) -> Result<String, serde_json::Error> {
-    serde_json::to_string_pretty(config)
+    if config.null_barrier_sections.is_empty() {
+        return serde_json::to_string_pretty(config);
+    }
+    let mut value = serde_json::to_value(config)?;
+    if let serde_json::Value::Object(map) = &mut value {
+        for name in &config.null_barrier_sections {
+            map.entry(name.clone()).or_insert(serde_json::Value::Null);
+        }
+    }
+    serde_json::to_string_pretty(&value)
 }
 
 /// Name of the environment variable that roots GSD's own store. Production
@@ -1225,6 +1270,67 @@ mod tests {
     }
 
     // ── Unknown-key preservation (quick task 260916-vqw, T-VQW-02) ────────
+
+    fn saved_value(text: &str) -> serde_json::Value {
+        let config = parse_gsd_config(text).expect("parses");
+        serde_json::from_str(&serialize_gsd_config(&config).unwrap()).unwrap()
+    }
+
+    /// gsd-core v1.23.0 (#5096) reads a top-level `null` section as an
+    /// inheritance barrier, so a save must never invent a blank key.
+    #[test]
+    fn a_save_never_invents_a_null_or_empty_top_level_key() {
+        let keys = |text: &str| -> Vec<String> {
+            saved_value(text)
+                .as_object()
+                .expect("an object")
+                .keys()
+                .cloned()
+                .collect()
+        };
+        assert_eq!(keys(r#"{"mode":"yolo"}"#), ["mode"]);
+        assert!(keys("{}").is_empty());
+        assert_eq!(keys(r#"{"workflow":{"research":true}}"#), ["workflow"]);
+    }
+
+    /// A deliberate barrier is not ours to drop on a save of an unrelated row.
+    #[test]
+    fn an_explicit_null_barrier_section_survives_a_save() {
+        for section in NULL_BARRIER_SECTIONS {
+            let saved = saved_value(&format!(r#"{{"{section}":null,"mode":"yolo"}}"#));
+            assert_eq!(
+                saved.pointer(&format!("/{section}")),
+                Some(&serde_json::Value::Null),
+                "{section}: {saved}"
+            );
+            assert_eq!(
+                saved.pointer("/mode"),
+                Some(&serde_json::Value::String("yolo".into()))
+            );
+        }
+        let saved = saved_value(r#"{"hooks":null,"commit_docs":null,"granularity":""}"#);
+        let obj = saved.as_object().unwrap();
+        for gone in ["hooks", "commit_docs", "granularity"] {
+            assert!(!obj.contains_key(gone), "{gone} was written: {saved}");
+        }
+    }
+
+    /// Setting a key inside a null barrier section replaces the barrier.
+    #[test]
+    fn setting_a_key_under_a_null_barrier_writes_the_section() {
+        let mut config = parse_gsd_config(r#"{"workflow":null}"#).unwrap();
+        config
+            .workflow
+            .get_or_insert_with(WorkflowConfig::default)
+            .research = Some(true);
+        let saved: serde_json::Value =
+            serde_json::from_str(&serialize_gsd_config(&config).unwrap()).unwrap();
+        assert_eq!(
+            saved.pointer("/workflow/research"),
+            Some(&serde_json::Value::Bool(true))
+        );
+        assert!(saved["workflow"].is_object(), "{saved}");
+    }
 
     /// The repair for the live data-loss bug: the Defaults tab's save path is
     /// `serialize_gsd_config` written straight over the operator's file, so a

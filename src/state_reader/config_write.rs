@@ -1091,6 +1091,30 @@ mod tests {
         assert_eq!(fs::read_to_string(&lock).unwrap(), foreign);
     }
 
+    /// gsd-core v1.23.0 (#5096) reads a top-level `"workflow": null` as an
+    /// inheritance barrier, so a save must not add a section the file lacks.
+    #[test]
+    fn a_save_does_not_add_sections_the_file_lacks() {
+        let td = TempDir::new().unwrap();
+        let target = project(&td);
+        fs::write(target.config_path(), r#"{"mode":"yolo"}"#).unwrap();
+        update_gsd_config(&target, policy(1000), &GsdConfig::default(), |c| {
+            c.commit_docs = Some(true);
+            true
+        })
+        .unwrap();
+        let saved: serde_json::Value =
+            serde_json::from_slice(&fs::read(target.config_path()).unwrap()).unwrap();
+        let mut keys: Vec<&str> = saved
+            .as_object()
+            .expect("an object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(keys, ["commit_docs", "mode"], "{saved}");
+    }
+
     #[test]
     fn update_without_a_mutation_writes_nothing() {
         let td = TempDir::new().unwrap();
