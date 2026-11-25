@@ -2239,6 +2239,117 @@ impl AppContext {
             .map(|alias| self.owner_digests.get(alias))
     }
 
+    /// Start tracking a project that just entered the registry: watch its
+    /// `.planning/` directory (when it is one), parse and record its state, and
+    /// schedule its owner digest.
+    ///
+    /// The order matters: `schedule_owner_digest` reads the `project_states`
+    /// entry, so the state goes in first.
+    pub(crate) fn track_project(&mut self, alias: &str, path: &std::path::Path) {
+        let planning_dir = path.join(".planning");
+        if planning_dir.is_dir() {
+            if let Some(ref mut watcher) = self.watcher {
+                if let Err(e) = watcher.watch(&planning_dir) {
+                    tracing::warn!(
+                        alias = %alias,
+                        path = %planning_dir.display(),
+                        error = %e,
+                        "registry: watcher.watch failed",
+                    );
+                }
+            }
+        }
+
+        let state = crate::state_reader::parse_project_state(&planning_dir);
+        self.change_tracker.record_initial(alias, &state);
+        self.project_states.insert(alias.to_string(), state);
+        self.schedule_owner_digest(alias, path);
+    }
+
+    /// Stop tracking a project that left the registry: unwatch its `.planning/`
+    /// directory and drop every per-alias map entry.
+    pub(crate) fn forget_project(&mut self, alias: &str, path: &std::path::Path) {
+        // Unwatch the project's .planning/ directory
+        if let Some(ref mut watcher) = self.watcher {
+            let planning_dir = path.join(".planning");
+            let _ = watcher.unwatch(&planning_dir);
+        }
+
+        self.project_states.remove(alias);
+        self.detail_sub_view_per_project.remove(alias);
+        self.last_refresh.remove(alias);
+        // The owner digest and the Owner block's view state go with the state
+        // (WR-02): an alias re-registered before the next prune would otherwise
+        // keep the removed project's numbers, and the handler refuses a first
+        // fill for an alias that already holds a digest.
+        self.owner_digests.remove(alias);
+        if let Some(cache) = self.view_cache.get_mut(alias) {
+            cache.owner_block = Default::default();
+        }
+
+        // `registry::remove_project` cleans none of the maps above (it takes a
+        // `&mut Config` and has no access to `AppContext` at all), so this is the
+        // **immediate** path, and `App::prune_driver_maps` is the backstop for
+        // every removal that does not come through here (D-27).
+    }
+
+    /// Make `fresh` the registry the TUI works with and bring the per-project
+    /// state in line with it.
+    ///
+    /// The one way the TUI's registry changes after startup is by adopting a
+    /// config that was read from or written to disk (quick 261125-kfc): an alias
+    /// new to the TUI gets project state, a `.planning/` watch and an owner
+    /// digest; an alias that vanished (or now points elsewhere) loses them. Entries
+    /// whose other fields changed (a driver opt-in) are simply replaced.
+    pub fn adopt_config(&mut self, fresh: crate::config::Config) {
+        let old = std::mem::replace(&mut self.config, fresh);
+
+        let vanished: Vec<(String, std::path::PathBuf)> = old
+            .projects
+            .iter()
+            .filter(|(alias, entry)| {
+                self.config
+                    .projects
+                    .get(*alias)
+                    .is_none_or(|now| now.path != entry.path)
+            })
+            .map(|(alias, entry)| (alias.clone(), entry.path.clone()))
+            .collect();
+        let added: Vec<(String, std::path::PathBuf)> = self
+            .config
+            .projects
+            .iter()
+            .filter(|(alias, entry)| {
+                old.projects
+                    .get(*alias)
+                    .is_none_or(|before| before.path != entry.path)
+            })
+            .map(|(alias, entry)| (alias.clone(), entry.path.clone()))
+            .collect();
+
+        for (alias, path) in &vanished {
+            self.forget_project(alias, path);
+        }
+        for (alias, path) in &added {
+            self.track_project(alias, path);
+        }
+
+        if !vanished.is_empty() || !added.is_empty() {
+            self.recompute_filtered_aliases();
+            if self.filtered_aliases.is_empty() {
+                self.table_state.select(None);
+            } else {
+                let selected = self
+                    .table_state
+                    .selected()
+                    .unwrap_or(0)
+                    .min(self.filtered_aliases.len() - 1);
+                self.table_state.select(Some(selected));
+            }
+        }
+        self.needs_redraw = true;
+    }
+
     /// Whether `alias` passes the `/y [lane]` filter (D-14): no digest never
     /// matches; no lane means any owner work; a lane means its count is above 0.
     pub(crate) fn owner_work_matches(&self, alias: &str, lane: Option<owner::OwnerLane>) -> bool {
@@ -3805,6 +3916,64 @@ mod tests {
             .iter()
             .find(|w| w.name == "v0-14-voice-assistant")
             .unwrap()
+
+    // -----------------------------------------------------------------------
+    // adopt_config (quick 261125-kfc)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn adopting_a_registry_tracks_new_aliases_and_forgets_vanished_ones() {
+        use crate::config::RegisteredProject;
+
+        let mut ctx = ctx_with_aliases(&["keep", "gone"]);
+        ctx.last_refresh
+            .insert("gone".to_string(), std::time::Instant::now());
+        ctx.owner_digests.insert(
+            "gone".to_string(),
+            crate::state_reader::owner_items::OwnerDigest::default(),
+        );
+        ctx.detail_sub_view_per_project
+            .insert("gone".to_string(), crate::app::DetailSubView::default());
+        // The row of `gone` is selected, and it is the last one on screen.
+        ctx.filtered_aliases.sort_by_key(|a| a == "gone");
+        let last = ctx.filtered_aliases.len() - 1;
+        assert_eq!(ctx.filtered_aliases[last], "gone");
+        ctx.table_state.select(Some(last));
+
+        let mut fresh = ctx.config.clone();
+        fresh.projects.remove("gone");
+        fresh.projects.insert(
+            "new".to_string(),
+            RegisteredProject {
+                path: PathBuf::from("/nonexistent/new"),
+                added: "2026-08-01".to_string(),
+                driver_opt_in: None,
+                extra: Default::default(),
+            },
+        );
+        ctx.adopt_config(fresh);
+
+        assert!(ctx.project_states.contains_key("new"));
+        assert!(!ctx.project_states.contains_key("gone"));
+        assert!(!ctx.last_refresh.contains_key("gone"));
+        assert!(!ctx.owner_digests.contains_key("gone"));
+        assert!(!ctx.detail_sub_view_per_project.contains_key("gone"));
+        assert_eq!(ctx.filtered_aliases, ["keep", "new"]);
+        let selected = ctx.table_state.selected().expect("a row stays selected");
+        assert!(selected < ctx.filtered_aliases.len());
+        assert!(ctx.needs_redraw);
+    }
+
+    #[test]
+    fn adopting_an_empty_registry_clears_the_selection() {
+        let mut ctx = ctx_with_aliases(&["only"]);
+        ctx.table_state.select(Some(0));
+        let mut fresh = ctx.config.clone();
+        fresh.projects.clear();
+        ctx.adopt_config(fresh);
+        assert!(ctx.filtered_aliases.is_empty());
+        assert_eq!(ctx.table_state.selected(), None);
+    }
             .clone();
         // The dashboard draws at most 4 workstream lines (`MAX_WORKSTREAM_LINES`,
         // private to normal.rs). Six entries put v0.14 last, behind `ws +N more`.

@@ -1,6 +1,6 @@
 use crate::action::Action;
 use crate::change_tracker::ChangeTracker;
-use crate::config::{save_config, Config};
+use crate::config::{self, save_config, Config};
 use crate::registry;
 use crate::session_detector::ClaudeSession;
 use crate::state_reader::{self, ProjectPresence, ProjectState};
@@ -2681,44 +2681,61 @@ impl App {
     }
 
     /// Auto-register any active agent sessions (Claude or Codex) whose working_dir is an
-    /// unregistered GSD project. Persists config, starts the file watcher,
-    /// loads initial project state, and surfaces a status message per
-    /// newly-added project.
+    /// unregistered GSD project, and surface a status message per newly-added
+    /// project.
+    ///
+    /// The additions are applied to `config.json` as it is on disk now, not
+    /// written from the TUI's copy: [`config::update_config`] re-reads the file and
+    /// re-runs the registration on it, so an entry another process removed stays
+    /// removed and one it added survives (quick 261125-kfc). The TUI then adopts
+    /// what that produced ([`AppContext::adopt_config`]), which starts the
+    /// watcher, loads the initial state and schedules the owner digest for every
+    /// alias new to it. When the file cannot be read or written the project is
+    /// still registered in memory for this session.
     pub fn auto_register_new_sessions(&mut self) {
-        let added =
-            registry::auto_register_from_sessions(&mut self.ctx.config, &self.active_sessions);
+        self.auto_register_new_sessions_using(registry::auto_register_from_sessions);
+    }
 
-        if added.is_empty() {
+    /// [`Self::auto_register_new_sessions`] with the registration function
+    /// injected, so a test can register a root the production guards (temp dir,
+    /// data dir) refuse by design.
+    fn auto_register_new_sessions_using(
+        &mut self,
+        register: fn(&mut Config, &[ClaudeSession]) -> Vec<(String, PathBuf)>,
+    ) {
+        // Probe a copy first: only when it finds something new does this touch
+        // the disk, so an idle session poll stays free of config I/O.
+        let mut probe = self.ctx.config.clone();
+        let probed = register(&mut probe, &self.active_sessions);
+        if probed.is_empty() {
             return;
         }
 
-        for (alias, path) in &added {
-            if let Err(e) = save_config(&self.ctx.config, &self.ctx.config_path) {
+        let sessions = self.active_sessions.clone();
+        let updated = config::update_config(&self.ctx.config_path, |config| {
+            Ok::<_, std::convert::Infallible>(register(config, &sessions))
+        });
+        let added = match updated {
+            Ok((fresh, Ok(added))) => {
+                self.ctx.adopt_config(fresh);
+                added
+            }
+            Err(e) => {
                 tracing::warn!(
-                    alias = %alias,
                     error = %e,
-                    "auto-register: save_config failed",
+                    "auto-register: config update failed; registering in memory only",
                 );
                 // Continue; the in-memory registration still helps this session.
-            }
-
-            let planning_dir = path.join(".planning");
-            if let Some(ref mut watcher) = self.ctx.watcher {
-                if let Err(e) = watcher.watch(&planning_dir) {
-                    tracing::warn!(
-                        alias = %alias,
-                        path = %planning_dir.display(),
-                        error = %e,
-                        "auto-register: watcher.watch failed",
-                    );
+                self.ctx.config = probe;
+                for (alias, path) in &probed {
+                    self.ctx.track_project(alias, path);
                 }
+                self.ctx.recompute_filtered_aliases();
+                probed
             }
+        };
 
-            let state = state_reader::parse_project_state(&planning_dir);
-            self.ctx.change_tracker.record_initial(alias, &state);
-            self.ctx.project_states.insert(alias.clone(), state);
-            self.ctx.schedule_owner_digest(alias, path);
-
+        for (alias, path) in &added {
             tracing::info!(
                 alias = %alias,
                 path = %path.display(),
@@ -2729,8 +2746,6 @@ impl App {
                 std::time::Instant::now(),
             ));
         }
-
-        self.ctx.recompute_filtered_aliases();
         self.needs_redraw = true;
     }
 
@@ -10647,6 +10662,117 @@ mod tests {
         assert!(
             refused(&app).contains("no such resolver"),
             "{}",
+
+    // -----------------------------------------------------------------------
+    // Registry writes keep other processes' edits (quick 261125-kfc)
+    // -----------------------------------------------------------------------
+
+    fn registered(path: &Path, added: &str) -> crate::config::RegisteredProject {
+        crate::config::RegisteredProject {
+            path: path.to_path_buf(),
+            added: added.to_owned(),
+            driver_opt_in: None,
+            extra: Default::default(),
+        }
+    }
+
+    /// Write a registry holding `aliases`, each at `root/<alias>`, to `root/config.json`.
+    fn seed_registry(root: &Path, aliases: &[(&str, &str)]) -> PathBuf {
+        let mut config = Config::new();
+        for (alias, added) in aliases {
+            let dir = root.join(alias);
+            std::fs::create_dir_all(&dir).unwrap();
+            config
+                .projects
+                .insert((*alias).to_owned(), registered(&dir, added));
+        }
+        let path = root.join("config.json");
+        save_config(&config, &path).unwrap();
+        path
+    }
+
+    /// What another process (the CLI, a second TUI) does to the file.
+    fn other_writer(root: &Path, config_path: &Path, remove: &str, add: (&str, &str)) {
+        let mut config = crate::config::load_config(config_path).unwrap();
+        config.projects.remove(remove);
+        let dir = root.join(add.0);
+        std::fs::create_dir_all(&dir).unwrap();
+        config
+            .projects
+            .insert(add.0.to_owned(), registered(&dir, add.1));
+        save_config(&config, config_path).unwrap();
+    }
+
+    fn sorted_keys(config: &Config) -> Vec<String> {
+        let mut keys: Vec<String> = config.projects.keys().cloned().collect();
+        keys.sort();
+        keys
+    }
+
+    /// A session whose cwd is a GSD-marked project root named `name` under `root`.
+    fn marked_session(root: &Path, name: &str) -> ClaudeSession {
+        let dir = root.join(name);
+        std::fs::create_dir_all(dir.join(".planning")).unwrap();
+        std::fs::write(dir.join(".planning/STATE.md"), "# State\n").unwrap();
+        ClaudeSession {
+            pid: 1,
+            kind: crate::session_detector::SessionKind::Claude,
+            session_id: None,
+            working_dir: dir,
+            start_time: None,
+            tty: None,
+        }
+    }
+
+    /// The public entry refuses every tempdir root by design (jx7), so the tests
+    /// inject this temp-guard-free registration.
+    fn register_without_the_temp_guard(
+        config: &mut Config,
+        sessions: &[ClaudeSession],
+    ) -> Vec<(String, PathBuf)> {
+        registry::auto_register_from_sessions_with_temp_root(config, sessions, None)
+    }
+
+    #[test]
+    fn auto_registration_keeps_registry_edits_another_process_made() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = seed_registry(dir.path(), &[("a", "2026-01-01"), ("b", "2026-01-01")]);
+        let mut app = App::new(path.clone()).unwrap();
+        // Another process removes `a` and adds `c` while this TUI runs.
+        other_writer(dir.path(), &path, "a", ("c", "2026-02-02"));
+
+        app.active_sessions = vec![marked_session(dir.path(), "fresh-proj")];
+        app.auto_register_new_sessions_using(register_without_the_temp_guard);
+
+        let on_disk = crate::config::load_config(&path).unwrap();
+        assert_eq!(sorted_keys(&on_disk), ["b", "c", "fresh-proj"]);
+        assert_eq!(on_disk.projects["c"].added, "2026-02-02");
+        assert!(!on_disk.projects.contains_key("a"));
+        assert_eq!(sorted_keys(&app.ctx.config), sorted_keys(&on_disk));
+        assert!(app.ctx.project_states.contains_key("fresh-proj"));
+        assert!(app.ctx.project_states.contains_key("c"));
+        assert!(!app.ctx.project_states.contains_key("a"));
+        assert_eq!(
+            app.ctx.status_message.as_ref().map(|(m, _)| m.as_str()),
+            Some("Auto-registered: fresh-proj")
+        );
+    }
+
+    #[test]
+    fn auto_registration_still_registers_in_memory_when_the_config_cannot_be_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::create_dir(&path).unwrap();
+        let mut app = App::new_for_test();
+        app.ctx.config_path = path.clone();
+
+        app.active_sessions = vec![marked_session(dir.path(), "fresh-proj")];
+        app.auto_register_new_sessions_using(register_without_the_temp_guard);
+
+        assert!(app.ctx.config.projects.contains_key("fresh-proj"));
+        assert!(app.ctx.project_states.contains_key("fresh-proj"));
+        assert!(path.is_dir(), "the unreadable path was left alone");
+    }
             refused(&app)
         );
         assert_eq!(app.screen_stack.len(), depth, "no viewer was opened");

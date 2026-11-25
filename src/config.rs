@@ -20,7 +20,7 @@ use tempfile::NamedTempFile;
 /// behaviour change smuggled in under a migration (D-15).
 pub const CONFIG_SCHEMA_VERSION: u32 = 2;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub version: u32,
     pub projects: HashMap<String, RegisteredProject>,
@@ -669,6 +669,52 @@ pub fn save_config(config: &Config, path: &Path) -> anyhow::Result<()> {
         .with_context(|| format!("Failed to persist config to {}", path.display()))?;
 
     Ok(())
+}
+
+/// Read `config.json`, run `mutate` on what was read, and write it back only if
+/// the mutation changed something.
+///
+/// Why it exists: a long-lived process (the TUI) holds a copy of the registry
+/// loaded at startup, and writing that whole copy back undid whatever another
+/// process (`gsd-meta-manager add`/`remove`, a second TUI, the user's editor) had
+/// done in the meantime (quick 261125-kfc). Every registry writer in a long-lived
+/// process must go through here instead: it re-reads the file, re-runs only the
+/// caller's own registry operation on what it read, so the registry's own refusals
+/// (duplicate alias, unknown alias, linked worktree) judge the registry as it is
+/// now, and no entry is ever rewritten from a stale copy.
+///
+/// Return shape:
+/// - Outer `Err`: the file could not be read or parsed, the result could not be
+///   serialized, or the write failed. Nothing was written, and `mutate` did not
+///   run when the read failed. A file that does not parse is never overwritten.
+/// - Inner `Err`: `mutate` refused. Nothing was written, and the returned config
+///   is the one as loaded, with none of the refused mutation applied.
+/// - Otherwise the config as it now is on disk. A mutation that changes nothing
+///   touches no file and creates no directory.
+///
+/// A missing file reads as an empty registry, so the first write ever works.
+/// The write is [`save_config`]'s atomic tempfile + rename.
+///
+/// Residual race [inferred]: there is no cross-process lock, so two writes that
+/// land within the same few milliseconds (between this read and the rename) can
+/// still lose one of them. Every writer is user-paced, so this is accepted and
+/// documented in `docs/CONFIGURATION.md`.
+pub fn update_config<T, E>(
+    path: &Path,
+    mutate: impl FnOnce(&mut Config) -> Result<T, E>,
+) -> anyhow::Result<(Config, Result<T, E>)> {
+    let loaded = load_config(path)?;
+    let mut config = loaded.clone();
+    let outcome = mutate(&mut config);
+    if outcome.is_err() {
+        return Ok((loaded, outcome));
+    }
+    let before = serde_json::to_value(&loaded).context("Failed to serialize config")?;
+    let after = serde_json::to_value(&config).context("Failed to serialize config")?;
+    if before != after {
+        save_config(&config, path)?;
+    }
+    Ok((config, outcome))
 }
 
 #[cfg(test)]
@@ -1393,5 +1439,151 @@ mod tests {
             "a string is not a number"
         );
         assert_eq!(prefs(r#"{"owner": "x"}"#).owner_fold_days(), 90);
+    }
+
+    // ----- update_config (quick 261125-kfc) -----
+
+    fn entry(path: &str, added: &str) -> RegisteredProject {
+        RegisteredProject {
+            path: PathBuf::from(path),
+            added: added.to_owned(),
+            driver_opt_in: None,
+            extra: Map::new(),
+        }
+    }
+
+    fn config_with(entries: &[(&str, &str)]) -> Config {
+        let mut config = Config::new();
+        for (alias, added) in entries {
+            config
+                .projects
+                .insert((*alias).to_owned(), entry(&format!("/p/{alias}"), added));
+        }
+        config
+    }
+
+    fn keys(config: &Config) -> Vec<String> {
+        let mut keys: Vec<String> = config.projects.keys().cloned().collect();
+        keys.sort();
+        keys
+    }
+
+    #[test]
+    fn an_update_applies_to_the_file_on_disk_not_to_a_stale_copy() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("config.json");
+        save_config(
+            &config_with(&[("a", "2026-01-01"), ("b", "2026-01-01")]),
+            &path,
+        )
+        .expect("seed");
+
+        // Another writer removes `a` and adds `c`.
+        let mut other = load_config(&path).expect("load");
+        other.projects.remove("a");
+        other
+            .projects
+            .insert("c".to_owned(), entry("/p/c", "2026-02-02"));
+        save_config(&other, &path).expect("other writer");
+
+        let (fresh, outcome) = update_config(&path, |config| {
+            config
+                .projects
+                .insert("d".to_owned(), entry("/p/d", "2026-03-03"));
+            Ok::<_, std::convert::Infallible>(())
+        })
+        .expect("update");
+        assert!(outcome.is_ok());
+
+        let on_disk = load_config(&path).expect("reload");
+        assert_eq!(keys(&on_disk), ["b", "c", "d"]);
+        assert_eq!(on_disk.projects["c"].added, "2026-02-02");
+        assert!(!on_disk.projects.contains_key("a"));
+        assert_eq!(keys(&fresh), keys(&on_disk));
+    }
+
+    #[test]
+    fn a_refused_mutation_writes_nothing_and_returns_the_config_as_loaded() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("config.json");
+        save_config(&config_with(&[("a", "2026-01-01")]), &path).expect("seed");
+        let before = std::fs::read(&path).expect("read");
+
+        let (fresh, outcome) = update_config(&path, |config| {
+            config
+                .projects
+                .insert("x".to_owned(), entry("/p/x", "2026-01-01"));
+            Err::<(), _>("refused")
+        })
+        .expect("a refusal is not an outer error");
+
+        assert_eq!(outcome, Err("refused"));
+        assert!(!fresh.projects.contains_key("x"));
+        assert_eq!(std::fs::read(&path).expect("read"), before);
+    }
+
+    #[test]
+    fn a_mutation_that_changes_nothing_leaves_the_file_untouched() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("config.json");
+        // Compact JSON, not save_config's pretty form: any rewrite would show.
+        let compact = r#"{"version":2,"projects":{"a":{"path":"/p/a","added":"2026-01-01"}}}"#;
+        std::fs::write(&path, compact).expect("seed");
+
+        let (_, outcome) =
+            update_config(&path, |_| Ok::<_, std::convert::Infallible>(())).expect("update");
+        assert!(outcome.is_ok());
+        assert_eq!(std::fs::read_to_string(&path).expect("read"), compact);
+    }
+
+    #[test]
+    fn an_unreadable_config_fails_before_the_mutation_runs() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("config.json");
+        std::fs::create_dir(&path).expect("a directory where the file belongs");
+
+        let mut ran = false;
+        let result = update_config(&path, |_| {
+            ran = true;
+            Ok::<_, std::convert::Infallible>(())
+        });
+        assert!(result.is_err());
+        assert!(!ran, "the mutation must not run on an unreadable registry");
+        assert!(path.is_dir(), "nothing replaced the directory");
+    }
+
+    #[test]
+    fn an_unparsable_config_is_never_overwritten() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("config.json");
+        std::fs::write(&path, "{ not json").expect("seed");
+
+        let result = update_config(&path, |config| {
+            config
+                .projects
+                .insert("x".to_owned(), entry("/p/x", "2026-01-01"));
+            Ok::<_, std::convert::Infallible>(())
+        });
+        assert!(result.is_err());
+        assert_eq!(std::fs::read_to_string(&path).expect("read"), "{ not json");
+    }
+
+    #[test]
+    fn a_missing_config_starts_empty_and_is_written_only_on_a_change() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let sub = dir.path().join("not-yet");
+        let path = sub.join("config.json");
+
+        update_config(&path, |_| Ok::<_, std::convert::Infallible>(())).expect("no-op");
+        assert!(!sub.exists(), "a no-op creates no directory");
+
+        update_config(&path, |config| {
+            config
+                .projects
+                .insert("a".to_owned(), entry("/p/a", "2026-01-01"));
+            Ok::<_, std::convert::Infallible>(())
+        })
+        .expect("insert");
+        assert_eq!(keys(&load_config(&path).expect("load")), ["a"]);
     }
 }
