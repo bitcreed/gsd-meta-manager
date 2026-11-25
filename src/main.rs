@@ -16,7 +16,7 @@ const AGENT_SKILL: &str = include_str!("agent_skill.md");
 use event::EventBus;
 use gsd_meta_manager::app::App;
 use gsd_meta_manager::cli::{Cli, Commands, EnvelopeAction};
-use gsd_meta_manager::config::{load_config, save_config, Config};
+use gsd_meta_manager::config::{load_config, save_config, update_config, Config};
 use gsd_meta_manager::input::run_with_terminal_suspended;
 use gsd_meta_manager::main_loop::{pump, PumpOutcome};
 use gsd_meta_manager::registry::{add_project, list_projects, remove_project};
@@ -497,14 +497,25 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                         }) => {
                             // A GSD project folder that is not registered yet
                             // is added under its folder name, then opened.
-                            match gsd_meta_manager::launch_target::auto_register(
-                                &mut app.ctx.config,
-                                &path,
-                            ) {
-                                Some(alias) => {
-                                    save_config(&app.ctx.config, &app.ctx.config_path)?;
-                                    Some(alias)
-                                }
+                            //
+                            // Applied to `config.json` as it is on disk now (quick
+                            // 261125-kfc), not written from the copy `App::new`
+                            // loaded. The result goes straight into `app.ctx.config`,
+                            // not through `adopt_config`: no state, watcher or
+                            // digest exists yet, and `load_project_states` and the
+                            // watcher setup below build them.
+                            let (fresh, registered) =
+                                update_config(&app.ctx.config_path, |config| {
+                                    Ok::<_, std::convert::Infallible>(
+                                        gsd_meta_manager::launch_target::auto_register(
+                                            config, &path,
+                                        ),
+                                    )
+                                })?;
+                            app.ctx.config = fresh;
+                            let Ok(registered) = registered;
+                            match registered {
+                                Some(alias) => Some(alias),
                                 None => {
                                     let err = gsd_meta_manager::launch_target::LaunchTargetError::Unregistered {
                                         path,

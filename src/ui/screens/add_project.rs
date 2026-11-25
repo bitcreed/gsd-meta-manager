@@ -1,7 +1,6 @@
 use super::{AppContext, Screen, ScreenAction};
-use crate::config::save_config;
+use crate::config;
 use crate::registry;
-use crate::state_reader;
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -194,17 +193,24 @@ fn do_add_project(ctx: &mut AppContext, alias: &str, path: &Path) {
         }
     };
 
-    match registry::add_project(&mut ctx.config, &judged, &canonical) {
-        Ok(()) => {
-            if let Err(e) = save_config(&ctx.config, &ctx.config_path) {
-                ctx.error_message = Some(format!("Failed to save config: {}", e));
-                ctx.needs_redraw = true;
-                return;
-            }
-            let planning_dir = canonical.join(".planning");
-            let state = state_reader::parse_project_state(&planning_dir);
-            ctx.project_states.insert(alias.to_string(), state);
-            ctx.schedule_owner_digest(alias, &canonical);
+    // Applied to `config.json` as it is on disk now, then adopted (quick
+    // 261125-kfc): an entry another process added or removed meanwhile is kept,
+    // and `adopt_config` loads the new project's state and watches its
+    // `.planning/`.
+    match config::update_config(&ctx.config_path, |config| {
+        registry::add_project(config, &judged, &canonical)
+    }) {
+        Err(e) => {
+            ctx.error_message = Some(format!("Failed to save config: {}", e));
+            ctx.needs_redraw = true;
+        }
+        Ok((fresh, Err(e))) => {
+            ctx.adopt_config(fresh);
+            ctx.error_message = Some(e.to_string());
+            ctx.needs_redraw = true;
+        }
+        Ok((fresh, Ok(()))) => {
+            ctx.adopt_config(fresh);
 
             ctx.status_message = Some((format!("Added \"{}\"", alias), std::time::Instant::now()));
             ctx.input_buffer.clear();
@@ -214,10 +220,6 @@ fn do_add_project(ctx: &mut AppContext, alias: &str, path: &Path) {
             if let Some(pos) = ctx.filtered_aliases.iter().position(|a| a == alias) {
                 ctx.table_state.select(Some(pos));
             }
-            ctx.needs_redraw = true;
-        }
-        Err(e) => {
-            ctx.error_message = Some(e.to_string());
             ctx.needs_redraw = true;
         }
     }
@@ -287,5 +289,45 @@ mod tests {
             err.contains(&main.display().to_string()),
             "error lacks the main path: {err}"
         );
+    }
+
+    #[test]
+    fn the_add_screen_keeps_an_entry_another_process_added() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_path = tmp.path().join("config.json");
+        let entry = |dir: &str, added: &str| crate::config::RegisteredProject {
+            path: tmp.path().join(dir),
+            added: added.to_owned(),
+            driver_opt_in: None,
+            extra: Default::default(),
+        };
+        for dir in ["x", "ext", "new"] {
+            std::fs::create_dir_all(tmp.path().join(dir).join(".planning")).unwrap();
+        }
+        let mut seeded = crate::config::Config::new();
+        seeded
+            .projects
+            .insert("x".to_owned(), entry("x", "2026-01-01"));
+        crate::config::save_config(&seeded, &config_path).unwrap();
+
+        let mut app = crate::app::App::new(config_path.clone()).unwrap();
+        // Another process adds `ext` while this TUI runs.
+        seeded
+            .projects
+            .insert("ext".to_owned(), entry("ext", "2026-02-02"));
+        crate::config::save_config(&seeded, &config_path).unwrap();
+
+        do_add_project(&mut app.ctx, "new", &tmp.path().join("new"));
+
+        assert_eq!(app.ctx.error_message, None);
+        let on_disk = crate::config::load_config(&config_path).unwrap();
+        for config in [&on_disk, &app.ctx.config] {
+            let mut keys: Vec<&String> = config.projects.keys().collect();
+            keys.sort();
+            assert_eq!(keys, ["ext", "new", "x"]);
+        }
+        assert_eq!(on_disk.projects["ext"].added, "2026-02-02");
+        assert!(app.ctx.project_states.contains_key("new"));
+        assert!(app.ctx.project_states.contains_key("ext"));
     }
 }

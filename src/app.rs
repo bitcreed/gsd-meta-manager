@@ -1,6 +1,6 @@
 use crate::action::Action;
 use crate::change_tracker::ChangeTracker;
-use crate::config::{self, save_config, Config};
+use crate::config::{self, Config};
 use crate::registry;
 use crate::session_detector::ClaudeSession;
 use crate::state_reader::{self, ProjectPresence, ProjectState};
@@ -596,6 +596,10 @@ pub struct App {
     /// The UTC hour (hours since the epoch) the owner ages were last swept at
     /// (WR-07); `None` until the first sweep. See [`App::sweep_owner_ages`].
     pub owner_age_hour: Option<i64>,
+    /// `(modified, length)` of `config.json` as last seen by [`App::new`] or
+    /// [`App::reload_config_if_changed`]; `None` while the file is missing or
+    /// unreadable. The session poll adopts the file only when this moves.
+    config_stamp: Option<(std::time::SystemTime, u64)>,
     /// The host check and the launch call the launch form reaches (30-05).
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub launch_seams: LaunchSeams,
@@ -1012,6 +1016,7 @@ impl App {
             experimental: crate::experimental::experimental_features_enabled(),
         };
         ctx.filtered_aliases = ctx.sorted_aliases();
+        let stamp = config_stamp(&ctx.config_path);
 
         App {
             should_quit: false,
@@ -1027,6 +1032,7 @@ impl App {
             new_run_flow: std::collections::HashSet::new(),
             reparse_pending: std::collections::HashSet::new(),
             owner_age_hour: None,
+            config_stamp: stamp,
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             launch_seams: LaunchSeams::default(),
             #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -2680,6 +2686,49 @@ impl App {
         });
     }
 
+    /// Adopt `config.json` when another process changed it since the last look.
+    ///
+    /// Compares the file's `(modified, length)` stamp, and only on a change reads
+    /// and parses it (quick 261125-kfc). A file that is missing or does not parse
+    /// is not adopted: the in-memory registry stays as it is, and nothing is
+    /// written. After the TUI's own write the next call finds an identical
+    /// registry and changes nothing.
+    fn reload_config_if_changed(&mut self) {
+        let stamp = config_stamp(&self.ctx.config_path);
+        if stamp == self.config_stamp {
+            return;
+        }
+        self.config_stamp = stamp;
+        if stamp.is_none() {
+            return;
+        }
+        match config::load_config(&self.ctx.config_path) {
+            Ok(fresh) => {
+                let unchanged = matches!(
+                    (
+                        serde_json::to_value(&fresh),
+                        serde_json::to_value(&self.ctx.config)
+                    ),
+                    (Ok(a), Ok(b)) if a == b
+                );
+                if unchanged {
+                    return;
+                }
+                self.ctx.adopt_config(fresh);
+                if self.ctx.needs_redraw {
+                    self.needs_redraw = true;
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "registry: config.json changed on disk but could not be loaded; \
+                     keeping the in-memory registry",
+                );
+            }
+        }
+    }
+
     /// Auto-register any active agent sessions (Claude or Codex) whose working_dir is an
     /// unregistered GSD project, and surface a status message per newly-added
     /// project.
@@ -2888,6 +2937,14 @@ impl App {
                             });
                         }
                     }
+
+                    // Adopt a `config.json` another process changed (`add`,
+                    // `remove`, a second TUI, an editor). It rides this same counter
+                    // like everything in the block, never a timer of its own, and
+                    // runs inline: one `stat` plus, only when the file changed, the
+                    // small read every registry write already does on this thread.
+                    // Before the prune, so the prune sees the reloaded registry.
+                    self.reload_config_if_changed();
 
                     // The prune rides the SAME counter, for the same reason the
                     // reconciliation probe above does (D-27 says so explicitly).
@@ -3133,26 +3190,32 @@ impl App {
                             return;
                         }
                     };
-                    if let Err(e) =
-                        registry::add_project_unchecked(&mut self.ctx.config, &judged, &path)
-                    {
-                        self.ctx.error_message = Some(format!("Failed to register: {}", e));
-                        self.needs_redraw = true;
-                        return;
-                    }
-                    if let Err(e) = save_config(&self.ctx.config, &self.ctx.config_path) {
-                        self.ctx.error_message = Some(format!("Failed to save config: {}", e));
-                        self.needs_redraw = true;
-                        return;
+                    // Applied to `config.json` as it is on disk now, then adopted
+                    // (quick 261125-kfc): an `add` or `remove` another process made
+                    // meanwhile is kept, and `adopt_config` watches `.planning/`
+                    // (when it exists), loads the state and schedules the digest.
+                    match config::update_config(&self.ctx.config_path, |config| {
+                        registry::add_project_unchecked(config, &judged, &path)
+                    }) {
+                        Err(e) => {
+                            self.ctx.error_message = Some(format!("Failed to save config: {}", e));
+                            self.needs_redraw = true;
+                            return;
+                        }
+                        Ok((fresh, outcome)) => {
+                            self.ctx.adopt_config(fresh);
+                            if let Err(e) = outcome {
+                                self.ctx.error_message = Some(format!("Failed to register: {}", e));
+                                self.needs_redraw = true;
+                                return;
+                            }
+                        }
                     }
 
-                    // Start file watcher on the new project
+                    // `.planning/` does not exist yet: nothing could be watched.
+                    // Poll for it, then ask for the re-parse that registers it.
                     let planning_dir = path.join(".planning");
-                    if planning_dir.is_dir() {
-                        if let Some(ref mut watcher) = self.ctx.watcher {
-                            let _ = watcher.watch(&planning_dir);
-                        }
-                    } else {
+                    if !planning_dir.is_dir() {
                         if let Some(ref tx) = self.ctx.event_tx {
                             let tx = tx.clone();
                             let planning_poll = planning_dir.clone();
@@ -3178,11 +3241,6 @@ impl App {
                             });
                         }
                     }
-
-                    // Load project state for the new alias
-                    let state = state_reader::parse_project_state(&planning_dir);
-                    self.ctx.project_states.insert(alias.clone(), state);
-                    self.ctx.schedule_owner_digest(&alias, &path);
 
                     self.ctx.status_message = Some((
                         format!("Created project \"{}\"", alias),
@@ -4032,6 +4090,13 @@ impl App {
             }
         }
     }
+}
+
+/// `(modified, length)` of the file at `path`, or `None` when either is
+/// unavailable. The change detector behind [`App::reload_config_if_changed`].
+fn config_stamp(path: &Path) -> Option<(std::time::SystemTime, u64)> {
+    let meta = std::fs::metadata(path).ok()?;
+    Some((meta.modified().ok()?, meta.len()))
 }
 
 #[cfg(test)]
@@ -6967,9 +7032,11 @@ mod tests {
 
         let dir = tempfile::tempdir().expect("temp dir");
         let (mut app, _rx) = obs_app(dir.path());
-        // `save_config` must land somewhere real, or the removal reports a save
-        // failure and returns before it reaches the cleanup block.
+        // The removal re-reads `config.json`, so the registry must be on disk, and
+        // somewhere real, or the removal reports a save failure and returns before
+        // it reaches the cleanup block.
         app.ctx.config_path = dir.path().join("config.json");
+        crate::config::save_config(&app.ctx.config, &app.ctx.config_path).unwrap();
 
         app.ctx
             .last_refresh
@@ -10687,7 +10754,7 @@ mod tests {
                 .insert((*alias).to_owned(), registered(&dir, added));
         }
         let path = root.join("config.json");
-        save_config(&config, &path).unwrap();
+        crate::config::save_config(&config, &path).unwrap();
         path
     }
 
@@ -10700,7 +10767,7 @@ mod tests {
         config
             .projects
             .insert(add.0.to_owned(), registered(&dir, add.1));
-        save_config(&config, config_path).unwrap();
+        crate::config::save_config(&config, config_path).unwrap();
     }
 
     fn sorted_keys(config: &Config) -> Vec<String> {
@@ -10772,5 +10839,45 @@ mod tests {
         assert!(app.ctx.config.projects.contains_key("fresh-proj"));
         assert!(app.ctx.project_states.contains_key("fresh-proj"));
         assert!(path.is_dir(), "the unreadable path was left alone");
+    }
+
+    #[test]
+    fn the_session_poll_adopts_a_registry_another_process_changed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = seed_registry(dir.path(), &[("a", "2026-01-01")]);
+        let mut app = App::new(path.clone()).unwrap();
+        assert!(app.ctx.config.projects.contains_key("a"));
+
+        // The new entry is longer than the old one, so the file length moves even
+        // when both writes land inside one coarse mtime tick.
+        other_writer(dir.path(), &path, "a", ("c-longer", "2026-02-02"));
+        app.reload_config_if_changed();
+
+        assert_eq!(sorted_keys(&app.ctx.config), ["c-longer"]);
+        assert!(app.ctx.project_states.contains_key("c-longer"));
+        assert!(!app.ctx.project_states.contains_key("a"));
+
+        // The file is unchanged now: a second call reloads nothing.
+        app.ctx
+            .config
+            .projects
+            .insert("sentinel".to_owned(), registered(dir.path(), "x"));
+        app.reload_config_if_changed();
+        assert!(app.ctx.config.projects.contains_key("sentinel"));
+    }
+
+    #[test]
+    fn a_registry_that_vanishes_or_stops_parsing_is_not_adopted() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = seed_registry(dir.path(), &[("a", "2026-01-01")]);
+        let mut app = App::new(path.clone()).unwrap();
+
+        std::fs::write(&path, "{ this is not json, and it is longer than before").unwrap();
+        app.reload_config_if_changed();
+        assert_eq!(sorted_keys(&app.ctx.config), ["a"]);
+
+        std::fs::remove_file(&path).unwrap();
+        app.reload_config_if_changed();
+        assert_eq!(sorted_keys(&app.ctx.config), ["a"]);
     }
 }
