@@ -137,12 +137,15 @@ pub fn resolve_launch_target(
 /// Register the unregistered GSD project at `path` under its folder name.
 ///
 /// Called when [`resolve_launch_target`] answered `Unregistered` and `path`
-/// (canonical) holds a `.planning` directory: `gsd-meta-manager .` inside a
-/// fresh GSD project adds it instead of refusing. Returns the new alias, or
-/// `None` when `path` is not a GSD project root or its folder name is not an
-/// admissible alias — the caller then reports the original refusal.
+/// (canonical) is a GSD project root ([`crate::registry::is_gsd_project_root`]):
+/// `gsd-meta-manager .` inside a fresh GSD project adds it instead of refusing.
+/// Returns the new alias, or `None` when `path` is not a GSD project root or its
+/// folder name is not an admissible alias — the caller then reports the
+/// original refusal. Unlike session discovery it is not refused under the
+/// system temp dir, because the user named this folder, the same intent as
+/// `add` (quick 261125-jx7, [inferred]).
 pub fn auto_register(config: &mut Config, path: &Path) -> Option<String> {
-    if !path.join(".planning").is_dir() {
+    if !crate::registry::is_gsd_project_root(path) {
         return None;
     }
     let name = path.file_name()?.to_str()?;
@@ -398,12 +401,33 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let root = tmp.path().join("fresh-proj");
         std::fs::create_dir_all(root.join(".planning")).unwrap();
+        // The fixture sits under the temp dir on purpose: the temp guard is
+        // session-discovery only.
+        std::fs::write(root.join(".planning/STATE.md"), "state\n").unwrap();
         let mut config = Config::new();
         assert_eq!(
             auto_register(&mut config, &root),
             Some("fresh-proj".to_string())
         );
         assert!(config.projects.contains_key("fresh-proj"));
+    }
+
+    #[test]
+    fn auto_register_refuses_a_planning_folder_without_a_gsd_marker() {
+        let empty = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(empty.path().join(".planning")).unwrap();
+        let mut config = Config::new();
+        assert_eq!(auto_register(&mut config, empty.path()), None);
+        assert!(config.projects.is_empty());
+
+        let own_state = tempfile::TempDir::new().unwrap();
+        let run = own_state
+            .path()
+            .join(".planning/meta-manager/drivers/run-1");
+        std::fs::create_dir_all(&run).unwrap();
+        std::fs::write(run.join("DIRECTION.md"), "direction\n").unwrap();
+        assert_eq!(auto_register(&mut config, own_state.path()), None);
+        assert!(config.projects.is_empty());
     }
 
     #[test]
