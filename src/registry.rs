@@ -1048,6 +1048,49 @@ fn canon_or_raw(p: &Path) -> PathBuf {
     p.canonicalize().unwrap_or_else(|_| p.to_path_buf())
 }
 
+/// Files whose presence directly inside `.planning/` marks a GSD project root.
+pub const GSD_PLANNING_MARKERS: [&str; 4] = ["STATE.md", "ROADMAP.md", "PROJECT.md", "config.json"];
+
+/// `root/.planning` is a directory holding at least one
+/// [`GSD_PLANNING_MARKERS`] entry as a regular file.
+///
+/// The `.planning/` folder alone is not enough: gsd-meta-manager writes its own
+/// state under `.planning/meta-manager/` (driver direction files and the like),
+/// and test fixtures do the same, so a folder that holds only that is not a GSD
+/// project. Used by session auto-discovery and by launch-target registration.
+/// Manual [`add_project`] deliberately does not use it: the user named the
+/// folder and may be about to run `/gsd:new-project` in it (quick 261125-jx7).
+pub fn is_gsd_project_root(root: &Path) -> bool {
+    let planning = root.join(".planning");
+    planning.is_dir()
+        && GSD_PLANNING_MARKERS
+            .iter()
+            .any(|marker| planning.join(marker).is_file())
+}
+
+/// Canonicalize a temp dir for the temp-dir guard, or `None` when the result
+/// cannot serve as a prefix: an empty or relative path, or the filesystem root
+/// (no parent). An empty path is a prefix of every path, and `/` would refuse
+/// every root, so a degenerate value disables the guard instead.
+fn temp_guard_root(raw: &Path) -> Option<PathBuf> {
+    let canon = canon_or_raw(raw);
+    (canon.is_absolute() && canon.parent().is_some()).then_some(canon)
+}
+
+/// The canonical system temp dir (`std::env::temp_dir`, which respects
+/// `TMPDIR`), or `None` when it is degenerate. Canonicalization matters on
+/// macOS, where `/var` is a symlink to `/private/var` and session cwds arrive
+/// canonical.
+pub fn system_temp_root() -> Option<PathBuf> {
+    temp_guard_root(&std::env::temp_dir())
+}
+
+/// `root` lies under `temp_root`. [`Path::starts_with`] compares component-wise,
+/// so `/tmpfoo/x` is not under `/tmp`. `None` disables the guard.
+fn is_under_temp_root(root: &Path, temp_root: Option<&Path>) -> bool {
+    temp_root.is_some_and(|t| root.starts_with(t))
+}
+
 /// Derive an alias from a path's file name (lowercased), SANITIZED to the
 /// identity alphabet. Falls back to `"project"`.
 ///
@@ -1177,8 +1220,9 @@ fn discovery_root(cwd: &Path, registered: &HashSet<PathBuf>) -> Option<PathBuf> 
 /// subdirectory of one) resolves to its MAIN worktree, a `.claude/worktrees/agent-*`
 /// path git does not recognise resolves to its prefix, anything else is the
 /// cwd itself (a plain subdirectory of a main worktree is not walked up
-/// [inferred]). The resolved root must hold `.planning/` and must not already
-/// be registered.
+/// [inferred]). The resolved root must be a GSD project root
+/// ([`is_gsd_project_root`]) outside the system temp dir
+/// ([`system_temp_root`]) and must not already be registered.
 ///
 /// Returns the list of `(alias, root)` pairs that were newly added, where
 /// `root` is the canonical RESOLVED root — not the session cwd — and the alias
@@ -1192,6 +1236,20 @@ fn discovery_root(cwd: &Path, registered: &HashSet<PathBuf>) -> Option<PathBuf> 
 pub fn auto_register_from_sessions(
     config: &mut Config,
     sessions: &[ClaudeSession],
+) -> Vec<(String, PathBuf)> {
+    let temp_root = system_temp_root();
+    auto_register_from_sessions_with_temp_root(config, sessions, temp_root.as_deref())
+}
+
+/// [`auto_register_from_sessions`] with the temp-dir guard's root as a
+/// parameter, so tests (whose fixtures live under the system temp dir) can pass
+/// `None` without mutating `TMPDIR`. `None` disables the temp-dir guard; the
+/// marker rule always applies. A resolved root under `temp_root` is never
+/// registered (quick 261125-jx7).
+pub fn auto_register_from_sessions_with_temp_root(
+    config: &mut Config,
+    sessions: &[ClaudeSession],
+    temp_root: Option<&Path>,
 ) -> Vec<(String, PathBuf)> {
     let registered: HashSet<PathBuf> = config
         .projects
@@ -1216,7 +1274,24 @@ pub fn auto_register_from_sessions(
         let Some(root) = discovery_root(&canonical, &registered) else {
             continue;
         };
+        // No `.planning/` at all stays a silent skip: it fires for every
+        // non-GSD session on every poll.
         if !root.join(".planning").is_dir() {
+            continue;
+        }
+        if !is_gsd_project_root(&root) {
+            tracing::debug!(
+                root = %root.display(),
+                "auto-register: skipping root whose .planning/ holds no GSD marker",
+            );
+            continue;
+        }
+        if is_under_temp_root(&root, temp_root) {
+            tracing::debug!(
+                root = %root.display(),
+                temp_root = ?temp_root,
+                "auto-register: skipping root under the system temp dir",
+            );
             continue;
         }
         if registered.contains(&root) || !seen_this_pass.insert(root.clone()) {
@@ -1415,9 +1490,16 @@ pub(crate) mod worktree_fixture {
     pub(crate) fn fake_linked_worktree(root: &Path) -> (PathBuf, PathBuf) {
         let root = root.canonicalize().expect("canonical root");
         let main = root.join("main");
-        std::fs::create_dir_all(main.join(".planning")).unwrap();
+        make_gsd_project(&main);
         let worktree = add_fake_worktree(&main, "agent-x");
         (main, worktree)
+    }
+
+    /// `dir/.planning/STATE.md`: a GSD marker, so the session auto-registration
+    /// marker rule (quick 261125-jx7) accepts `dir`.
+    pub(crate) fn make_gsd_project(dir: &Path) {
+        std::fs::create_dir_all(dir.join(".planning")).unwrap();
+        std::fs::write(dir.join(".planning").join("STATE.md"), "state\n").unwrap();
     }
 
     /// One more fake linked worktree of `main` (which must already hold a
@@ -1431,7 +1513,8 @@ pub(crate) mod worktree_fixture {
         std::fs::create_dir_all(&admin).unwrap();
         std::fs::write(admin.join("commondir"), "../..\n").unwrap();
         let worktree = main.join(".claude").join("worktrees").join(name);
-        std::fs::create_dir_all(worktree.join(".planning")).unwrap();
+        // A worktree is a checkout of main, so it carries main's markers too.
+        make_gsd_project(&worktree);
         std::fs::write(
             worktree.join(".git"),
             format!("gitdir: {}\n", admin.display()),
@@ -1443,9 +1526,15 @@ pub(crate) mod worktree_fixture {
 
 #[cfg(test)]
 mod linked_worktree_tests {
-    use super::worktree_fixture::fake_linked_worktree;
+    use super::worktree_fixture::{fake_linked_worktree, make_gsd_project};
     use super::*;
     use tempfile::tempdir;
+
+    // Fixtures live under the system temp dir, which the public entry refuses
+    // by design (quick 261125-jx7), so these tests pass no temp root.
+    fn discover(cfg: &mut Config, sessions: &[ClaudeSession]) -> Vec<(String, PathBuf)> {
+        auto_register_from_sessions_with_temp_root(cfg, sessions, None)
+    }
 
     fn alias(raw: &str) -> Alias {
         Alias::new(raw).expect("plain test alias")
@@ -1536,12 +1625,14 @@ mod linked_worktree_tests {
         std::fs::create_dir_all(plain.join(".planning")).unwrap();
         assert_eq!(linked_worktree_main(&plain), None);
 
+        // Manual add accepts a marker-less `.planning/`.
         let mut cfg = Config::new();
         add_project(&mut cfg, &alias("plain"), &plain).expect("registers");
         assert_eq!(cfg.projects.len(), 1);
 
+        make_gsd_project(&plain);
         let mut cfg = Config::new();
-        let added = auto_register_from_sessions(&mut cfg, &[session(plain.clone())]);
+        let added = discover(&mut cfg, &[session(plain.clone())]);
         assert_eq!(added, vec![("plain".to_string(), plain)]);
     }
 
@@ -1577,10 +1668,10 @@ mod linked_worktree_tests {
         let stray_agent = root.join("other/.claude/worktrees/agent-y");
         let no_dot = root.join("q/claude/worktrees/agent-z");
         for dir in [&feature, &stray_agent, &no_dot] {
-            std::fs::create_dir_all(dir.join(".planning")).unwrap();
+            make_gsd_project(dir);
         }
 
-        let added = auto_register_from_sessions(
+        let added = discover(
             &mut cfg,
             &[
                 session(feature),
@@ -1732,9 +1823,15 @@ mod linked_worktree_tests {
 /// `tests/registry_worktree_guard.rs`.
 #[cfg(test)]
 mod worktree_session_discovery_tests {
-    use super::worktree_fixture::{add_fake_worktree, fake_linked_worktree};
+    use super::worktree_fixture::{add_fake_worktree, fake_linked_worktree, make_gsd_project};
     use super::*;
     use tempfile::tempdir;
+
+    // Fixtures live under the system temp dir, which the public entry refuses
+    // by design (quick 261125-jx7), so these tests pass no temp root.
+    fn discover(cfg: &mut Config, sessions: &[ClaudeSession]) -> Vec<(String, PathBuf)> {
+        auto_register_from_sessions_with_temp_root(cfg, sessions, None)
+    }
 
     fn session(working_dir: PathBuf) -> ClaudeSession {
         ClaudeSession {
@@ -1798,13 +1895,13 @@ mod worktree_session_discovery_tests {
         }
 
         let mut cfg = Config::new();
-        let added = auto_register_from_sessions(&mut cfg, &sessions);
+        let added = discover(&mut cfg, &sessions);
         assert_eq!(added, vec![("main".to_string(), main.clone())]);
         assert_eq!(aliases(&cfg), vec!["main"]);
         assert!(cfg.projects.keys().all(|k| !k.ends_with("-2")));
         assert_no_worktree_registered(&cfg);
 
-        assert!(auto_register_from_sessions(&mut cfg, &sessions).is_empty());
+        assert!(discover(&mut cfg, &sessions).is_empty());
         assert_eq!(cfg.projects.len(), 1);
         assert_no_worktree_registered(&cfg);
     }
@@ -1816,9 +1913,9 @@ mod worktree_session_discovery_tests {
         let sessions: Vec<ClaudeSession> = worktrees.iter().cloned().map(session).collect();
 
         let mut cfg = Config::new();
-        let added = auto_register_from_sessions(&mut cfg, &sessions[..6]);
+        let added = discover(&mut cfg, &sessions[..6]);
         assert_eq!(added, vec![("main".to_string(), main)]);
-        assert!(auto_register_from_sessions(&mut cfg, &sessions[6..]).is_empty());
+        assert!(discover(&mut cfg, &sessions[6..]).is_empty());
         assert_eq!(aliases(&cfg), vec!["main"]);
         assert_no_worktree_registered(&cfg);
     }
@@ -1835,8 +1932,7 @@ mod worktree_session_discovery_tests {
 
         let sub = worktree.join("src");
         std::fs::create_dir_all(&sub).unwrap();
-        let added =
-            auto_register_from_sessions(&mut cfg, &[session(worktree.clone()), session(sub)]);
+        let added = discover(&mut cfg, &[session(worktree.clone()), session(sub)]);
         assert!(added.is_empty(), "registered again: {added:?}");
         assert_eq!(aliases(&cfg), vec!["custom"]);
         assert_no_worktree_registered(&cfg);
@@ -1852,7 +1948,7 @@ mod worktree_session_discovery_tests {
         std::fs::create_dir_all(&sub).unwrap();
 
         let mut cfg = Config::new();
-        let added = auto_register_from_sessions(&mut cfg, &[session(worktree), session(sub)]);
+        let added = discover(&mut cfg, &[session(worktree), session(sub)]);
         assert!(added.is_empty(), "registered: {added:?}");
         assert!(cfg.projects.is_empty());
     }
@@ -1865,7 +1961,7 @@ mod worktree_session_discovery_tests {
         std::fs::create_dir_all(&deep).unwrap();
 
         let mut cfg = Config::new();
-        let added = auto_register_from_sessions(&mut cfg, &[session(deep)]);
+        let added = discover(&mut cfg, &[session(deep)]);
         assert_eq!(added, vec![("main".to_string(), main)]);
         assert_no_worktree_registered(&cfg);
     }
@@ -1874,14 +1970,14 @@ mod worktree_session_discovery_tests {
     fn a_non_git_agent_path_falls_back_to_its_claude_worktrees_prefix() {
         let tmp = tempdir().unwrap();
         let proj = tmp.path().canonicalize().unwrap().join("proj");
-        std::fs::create_dir_all(proj.join(".planning")).unwrap();
+        make_gsd_project(&proj);
         let gone = proj.join(".claude/worktrees/agent-gone/src");
         let q = proj.join(".claude/worktrees/agent-q");
-        std::fs::create_dir_all(q.join(".planning")).unwrap();
+        make_gsd_project(&q);
         assert!(!gone.exists());
 
         let mut cfg = Config::new();
-        let added = auto_register_from_sessions(&mut cfg, &[session(gone), session(q)]);
+        let added = discover(&mut cfg, &[session(gone), session(q)]);
         assert_eq!(added, vec![("proj".to_string(), proj)]);
         assert_eq!(aliases(&cfg), vec!["proj"]);
         assert_no_worktree_registered(&cfg);
@@ -1897,7 +1993,7 @@ mod worktree_session_discovery_tests {
         std::fs::create_dir_all(&admin).unwrap();
         std::fs::write(admin.join("commondir"), "../..\n").unwrap();
         let wt2 = main.join("wt2");
-        std::fs::create_dir_all(wt2.join(".planning")).unwrap();
+        make_gsd_project(&wt2);
         std::fs::write(wt2.join(".git"), format!("gitdir: {}\n", admin.display())).unwrap();
         assert_eq!(linked_worktree_main(&wt2), Some(main.clone()));
 
@@ -1905,11 +2001,11 @@ mod worktree_session_discovery_tests {
         // so resolution reaches the path heuristic with a linked-worktree prefix.
         let agent_n = wt2.join(".claude/worktrees/agent-n");
         std::fs::create_dir_all(agent_n.join(".git")).unwrap();
-        std::fs::create_dir_all(agent_n.join(".planning")).unwrap();
+        make_gsd_project(&agent_n);
         assert_eq!(linked_worktree_main(&agent_n), None);
 
         let mut cfg = Config::new();
-        let added = auto_register_from_sessions(&mut cfg, &[session(agent_n)]);
+        let added = discover(&mut cfg, &[session(agent_n)]);
         assert!(added.is_empty(), "registered: {added:?}");
         assert!(cfg.projects.is_empty());
     }
@@ -1917,9 +2013,16 @@ mod worktree_session_discovery_tests {
 
 #[cfg(test)]
 mod tests {
+    use super::worktree_fixture::make_gsd_project;
     use super::*;
     use std::path::PathBuf;
     use tempfile::tempdir;
+
+    // Fixtures live under the system temp dir, which the public entry refuses
+    // by design (quick 261125-jx7), so these tests pass no temp root.
+    fn discover(cfg: &mut Config, sessions: &[ClaudeSession]) -> Vec<(String, PathBuf)> {
+        auto_register_from_sessions_with_temp_root(cfg, sessions, None)
+    }
 
     fn make_session(working_dir: PathBuf) -> ClaudeSession {
         ClaudeSession {
@@ -2583,11 +2686,11 @@ mod tests {
     #[test]
     fn auto_register_adds_new_gsd_project() {
         let dir = tempdir().unwrap();
-        std::fs::create_dir(dir.path().join(".planning")).unwrap();
+        make_gsd_project(dir.path());
         let mut config = empty_config();
         let sessions = vec![make_session(dir.path().to_path_buf())];
 
-        let added = auto_register_from_sessions(&mut config, &sessions);
+        let added = discover(&mut config, &sessions);
 
         assert_eq!(added.len(), 1);
         assert_eq!(config.projects.len(), 1);
@@ -2598,13 +2701,13 @@ mod tests {
     #[test]
     fn auto_register_skips_existing_canonical_path() {
         let dir = tempdir().unwrap();
-        std::fs::create_dir(dir.path().join(".planning")).unwrap();
+        make_gsd_project(dir.path());
         let canonical = dir.path().canonicalize().unwrap();
         let mut config = empty_config();
         add_project(&mut config, &visible("existing"), &canonical).unwrap();
         let sessions = vec![make_session(canonical.clone())];
 
-        let added = auto_register_from_sessions(&mut config, &sessions);
+        let added = discover(&mut config, &sessions);
 
         assert!(added.is_empty());
         assert_eq!(config.projects.len(), 1);
@@ -2617,7 +2720,7 @@ mod tests {
         let mut config = empty_config();
         let sessions = vec![make_session(dir.path().to_path_buf())];
 
-        let added = auto_register_from_sessions(&mut config, &sessions);
+        let added = discover(&mut config, &sessions);
 
         assert!(added.is_empty());
         assert!(config.projects.is_empty());
@@ -2626,14 +2729,14 @@ mod tests {
     #[test]
     fn auto_register_dedupes_within_single_pass() {
         let dir = tempdir().unwrap();
-        std::fs::create_dir(dir.path().join(".planning")).unwrap();
+        make_gsd_project(dir.path());
         let mut config = empty_config();
         let sessions = vec![
             make_session(dir.path().to_path_buf()),
             make_session(dir.path().to_path_buf()),
         ];
 
-        let added = auto_register_from_sessions(&mut config, &sessions);
+        let added = discover(&mut config, &sessions);
 
         assert_eq!(added.len(), 1);
         assert_eq!(config.projects.len(), 1);
@@ -2644,10 +2747,10 @@ mod tests {
         // Two different directories sharing the same basename.
         let parent_a = tempdir().unwrap();
         let parent_b = tempdir().unwrap();
-        std::fs::create_dir_all(parent_a.path().join("myproj/.planning")).unwrap();
-        std::fs::create_dir_all(parent_b.path().join("myproj/.planning")).unwrap();
         let path_a = parent_a.path().join("myproj");
         let path_b = parent_b.path().join("myproj");
+        make_gsd_project(&path_a);
+        make_gsd_project(&path_b);
 
         let mut config = empty_config();
         // Pre-register the first one under its natural alias.
@@ -2659,7 +2762,7 @@ mod tests {
         .unwrap();
 
         let sessions = vec![make_session(path_b)];
-        let added = auto_register_from_sessions(&mut config, &sessions);
+        let added = discover(&mut config, &sessions);
 
         assert_eq!(added.len(), 1);
         assert_eq!(added[0].0, "myproj-2");
@@ -2768,8 +2871,8 @@ mod tests {
     fn auto_registration_leaves_every_discovered_project_not_opted_in() {
         let dir_a = tempdir().unwrap();
         let dir_b = tempdir().unwrap();
-        std::fs::create_dir(dir_a.path().join(".planning")).unwrap();
-        std::fs::create_dir(dir_b.path().join(".planning")).unwrap();
+        make_gsd_project(dir_a.path());
+        make_gsd_project(dir_b.path());
         // A CLAUDE.md present at discovery time must make no difference at all.
         std::fs::write(dir_a.path().join("CLAUDE.md"), "# A\n").unwrap();
 
@@ -2779,7 +2882,7 @@ mod tests {
             make_session(dir_b.path().to_path_buf()),
         ];
 
-        let added = auto_register_from_sessions(&mut config, &sessions);
+        let added = discover(&mut config, &sessions);
 
         assert_eq!(added.len(), 2, "both discovered projects register");
         for (alias, entry) in &config.projects {
@@ -2794,13 +2897,187 @@ mod tests {
     #[test]
     fn auto_register_returns_canonical_paths() {
         let dir = tempdir().unwrap();
-        std::fs::create_dir(dir.path().join(".planning")).unwrap();
+        make_gsd_project(dir.path());
         let mut config = empty_config();
         let sessions = vec![make_session(dir.path().to_path_buf())];
 
-        let added = auto_register_from_sessions(&mut config, &sessions);
+        let added = discover(&mut config, &sessions);
 
         let canonical = dir.path().canonicalize().unwrap();
         assert_eq!(added[0].1, canonical);
+    }
+}
+
+/// The GSD-root marker rule and the system-temp-dir guard of session
+/// auto-registration (quick 261125-jx7). `std::fs` only; no env mutation (tests
+/// run in parallel), which is why the temp root is a parameter.
+#[cfg(test)]
+mod gsd_root_guard_tests {
+    use super::worktree_fixture::make_gsd_project;
+    use super::*;
+    use tempfile::tempdir;
+
+    fn session(working_dir: PathBuf) -> ClaudeSession {
+        ClaudeSession {
+            pid: 1,
+            kind: crate::session_detector::SessionKind::Claude,
+            session_id: None,
+            working_dir,
+            start_time: None,
+            tty: None,
+        }
+    }
+
+    /// The exact shape of the launcher test fixture that was auto-registered:
+    /// only gsd-meta-manager's own state under `.planning/meta-manager/`.
+    fn make_meta_manager_only_root(root: &Path) {
+        let run = root.join(".planning/meta-manager/drivers/run-1");
+        std::fs::create_dir_all(&run).unwrap();
+        std::fs::write(run.join("DIRECTION.md"), "direction\n").unwrap();
+    }
+
+    #[test]
+    fn each_marker_alone_makes_a_gsd_project_root() {
+        for marker in GSD_PLANNING_MARKERS {
+            let dir = tempdir().unwrap();
+            std::fs::create_dir(dir.path().join(".planning")).unwrap();
+            std::fs::write(dir.path().join(".planning").join(marker), "x").unwrap();
+            assert!(is_gsd_project_root(dir.path()), "{marker} must mark a root");
+        }
+    }
+
+    #[test]
+    fn a_folder_without_a_marker_is_not_a_gsd_project_root() {
+        let none = tempdir().unwrap();
+        assert!(!is_gsd_project_root(none.path()), "no .planning/");
+
+        let empty = tempdir().unwrap();
+        std::fs::create_dir(empty.path().join(".planning")).unwrap();
+        assert!(!is_gsd_project_root(empty.path()), "empty .planning/");
+
+        let own_state = tempdir().unwrap();
+        make_meta_manager_only_root(own_state.path());
+        assert!(!is_gsd_project_root(own_state.path()), "meta-manager only");
+
+        let dir_marker = tempdir().unwrap();
+        std::fs::create_dir_all(dir_marker.path().join(".planning/STATE.md")).unwrap();
+        assert!(!is_gsd_project_root(dir_marker.path()), "STATE.md is a dir");
+    }
+
+    #[test]
+    fn a_meta_manager_only_root_is_never_registered_even_with_the_temp_guard_off() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        make_meta_manager_only_root(&root);
+
+        let mut cfg = Config::new();
+        let added = auto_register_from_sessions_with_temp_root(&mut cfg, &[session(root)], None);
+        assert!(added.is_empty(), "registered: {added:?}");
+        assert!(cfg.projects.is_empty());
+    }
+
+    #[test]
+    fn a_marked_root_under_the_temp_root_is_refused_and_registers_without_it() {
+        let tmp = tempdir().unwrap();
+        let t = tmp.path().canonicalize().unwrap();
+        let proj = t.join("proj");
+        make_gsd_project(&proj);
+
+        let mut cfg = Config::new();
+        let added = auto_register_from_sessions_with_temp_root(
+            &mut cfg,
+            &[session(proj.clone())],
+            Some(&t),
+        );
+        assert!(
+            added.is_empty(),
+            "registered under the temp root: {added:?}"
+        );
+        assert!(cfg.projects.is_empty());
+
+        let added =
+            auto_register_from_sessions_with_temp_root(&mut cfg, &[session(proj.clone())], None);
+        assert_eq!(added, vec![("proj".to_string(), proj)]);
+    }
+
+    #[test]
+    fn the_temp_root_comparison_is_component_wise() {
+        let tmp = tempdir().unwrap();
+        let t = tmp.path().canonicalize().unwrap();
+        let temp_root = t.join("tmp");
+        let sibling = t.join("tmpfoo/proj");
+        let itself = temp_root.clone();
+        let nested = temp_root.join("a/proj");
+        for dir in [&sibling, &itself, &nested] {
+            make_gsd_project(dir);
+        }
+
+        let mut cfg = Config::new();
+        let added = auto_register_from_sessions_with_temp_root(
+            &mut cfg,
+            &[session(sibling.clone()), session(itself), session(nested)],
+            Some(&temp_root),
+        );
+        assert_eq!(added, vec![("proj".to_string(), sibling)]);
+    }
+
+    /// A worktree cwd under the temp root whose main lies elsewhere still
+    /// registers its main: the guard judges the RESOLVED root.
+    #[test]
+    fn the_temp_guard_judges_the_resolved_root_not_the_session_cwd() {
+        let tmp = tempdir().unwrap();
+        let t = tmp.path().canonicalize().unwrap();
+        let (main, worktree) = super::worktree_fixture::fake_linked_worktree(&t);
+        let elsewhere = t.join("not-the-temp-root");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+
+        let mut cfg = Config::new();
+        let added = auto_register_from_sessions_with_temp_root(
+            &mut cfg,
+            &[session(worktree)],
+            Some(&elsewhere),
+        );
+        assert_eq!(added, vec![("main".to_string(), main)]);
+    }
+
+    #[test]
+    fn the_public_entry_refuses_a_marked_root_under_the_real_temp_dir() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        make_gsd_project(&root);
+        let temp_root = system_temp_root().expect("this machine has a usable temp dir");
+        assert!(root.starts_with(&temp_root), "fixture must sit under it");
+
+        let mut cfg = Config::new();
+        let added = auto_register_from_sessions(&mut cfg, &[session(root)]);
+        assert!(added.is_empty(), "registered: {added:?}");
+        assert!(cfg.projects.is_empty());
+    }
+
+    #[test]
+    fn a_degenerate_temp_dir_disables_the_guard() {
+        assert_eq!(temp_guard_root(Path::new("")), None);
+        assert_eq!(temp_guard_root(Path::new("/")), None);
+        assert_eq!(
+            temp_guard_root(Path::new("definitely/not/an/existing/relative/path")),
+            None
+        );
+        let tmp = tempdir().unwrap();
+        assert_eq!(
+            temp_guard_root(tmp.path()),
+            Some(tmp.path().canonicalize().unwrap())
+        );
+        assert!(!is_under_temp_root(Path::new("/anything"), None));
+    }
+
+    #[test]
+    fn manual_add_still_accepts_a_markerless_planning_dir_under_the_temp_dir() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        std::fs::create_dir(root.join(".planning")).unwrap();
+
+        let mut cfg = Config::new();
+        add_project(&mut cfg, &Alias::new("manual").unwrap(), &root).expect("manual add");
+        assert_eq!(cfg.projects.len(), 1);
     }
 }
