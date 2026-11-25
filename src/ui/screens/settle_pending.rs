@@ -14,8 +14,12 @@
 //! taken when a reparse lands (and once before the launch). Like the other settle
 //! modules it is covered by `tests/owner_settle_guard.rs`.
 //!
-//! There is no timeout and no stall state: a source file that never changes leaves
-//! the badge counting.
+//! **There is no timeout and no stall state, and an entry is never dropped by
+//! itself** (the owner's decision in quick 261118-v6l, kept by quick 261125-khh
+//! D-05): a source file that never changes leaves the badge counting. The escape is
+//! `x` on the row: `stop waiting` asks first (default No) and drops the entry from
+//! memory only ([`PendingSettles::stop_waiting`]), so the row is normal again and
+//! `x` settles it again; a launched session, if any, keeps running.
 
 use super::detail::{fit_cells, fit_spans, shown};
 use super::owner::OWNER_SEP;
@@ -181,6 +185,16 @@ impl PendingSettles {
             .iter()
             .rev()
             .find(|entry| entry.covers(alias, row))
+    }
+
+    /// Stop waiting (quick 261125-khh, D-04): drop every not-done settle covering
+    /// `row` of `alias`, from memory only. Done entries (the lingering `✓` line) and
+    /// the entries of other rows and aliases stay. Whether anything was dropped.
+    pub(crate) fn stop_waiting(&mut self, alias: &str, row: &RowSrc) -> bool {
+        let before = self.entries.len();
+        self.entries
+            .retain(|entry| entry.is_done() || !entry.covers(alias, row));
+        self.entries.len() != before
     }
 
     /// Drop the settles of aliases that are no longer registered.
@@ -691,6 +705,63 @@ mod tests {
         assert!(!ctx.settle_pending.expire(at(&ctx, 3600)));
         let text = stack.text(&ctx, 100);
         assert!(text.contains("won't do \u{b7} launched"), "{text}");
+        // D-05: no stall wording either, however long it waits.
+        for word in ["stall", "stuck", "timed out", "timeout"] {
+            assert!(!text.contains(word), "{word:?} in\n{text}");
+        }
+    }
+
+    /// Quick 261125-khh, D-04: stop waiting drops every not-done entry covering the
+    /// row, from memory only, and keeps done entries and the entries of other rows
+    /// and aliases.
+    #[test]
+    fn drops_only_the_rows_not_done_entries_on_stop_waiting() {
+        let (_dir, root) = temp_fixture("uat-pending");
+        let before = crate::ui::screens::owner_settle::test_support::tree(&root);
+        let (mut ctx, _stack) = settled_in_inbox(&root);
+        let row = crate::ui::screens::inbox::stop_rows(&ctx).remove(0).src;
+        let pending = ctx.settle_pending.entries()[0].clone();
+        // A second not-done entry on the same row (other checks), a done one, one
+        // of another phase and one of another alias.
+        let mut second = pending.clone();
+        second.checks = vec![("7".to_owned(), "another check".to_owned())];
+        let mut done = pending.clone();
+        done.checks = vec![("8".to_owned(), "a recorded check".to_owned())];
+        done.stage = Stage::Done {
+            since: Instant::now(),
+        };
+        let mut other_row = pending.clone();
+        other_row.phase = "02".to_owned();
+        other_row.checks = vec![("9".to_owned(), "x".to_owned())];
+        let mut other_alias = pending.clone();
+        other_alias.alias = "birch-cli".to_owned();
+        for entry in [second, done, other_row, other_alias] {
+            ctx.settle_pending.insert(entry);
+        }
+        assert_eq!(ctx.settle_pending.len(), 5);
+        assert!(ctx.settle_pending.stop_waiting(ALIAS, &row));
+        let left: Vec<(String, String, bool)> = ctx
+            .settle_pending
+            .entries()
+            .iter()
+            .map(|e| (e.alias.clone(), e.phase.clone(), e.is_done()))
+            .collect();
+        assert_eq!(
+            left,
+            [
+                (ALIAS.to_owned(), "01".to_owned(), true),
+                (ALIAS.to_owned(), "02".to_owned(), false),
+                ("birch-cli".to_owned(), "01".to_owned(), false),
+            ]
+        );
+        // Nothing not-done is left on the row: false, nothing changes.
+        assert!(!ctx.settle_pending.stop_waiting(ALIAS, &row));
+        assert_eq!(ctx.settle_pending.len(), 3);
+        assert_eq!(
+            crate::ui::screens::owner_settle::test_support::tree(&root),
+            before,
+            "memory only"
+        );
     }
 
     #[test]

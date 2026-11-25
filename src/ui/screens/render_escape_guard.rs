@@ -390,6 +390,7 @@ const SCREEN_IDENTITY_DISPOSITIONS: &[FixtureRow] = &[
     ("SettleConfirmScreen", "src/ui/screens/settle_popup.rs"),
     ("SettlePhaseScreen", "src/ui/screens/settle_popup.rs"),
     ("SettleReasonScreen", "src/ui/screens/settle_popup.rs"),
+    ("SettleStopScreen", "src/ui/screens/settle_popup.rs"),
     ("SlugInputScreen", "src/ui/screens/driver_launch.rs"),
     (
         "UnsandboxedConfirmScreen",
@@ -2582,6 +2583,45 @@ fn fixture_for(type_name: &str) -> Option<Fixture> {
                     "refused empty reason, with its error row",
                     refused_ctx,
                     refused,
+                ),
+            ]
+        }),
+
+        // The stop-waiting confirm (quick 261125-khh, D-04): the alias and the badge
+        // words carry the identity, and the row comes from the hostile digest.
+        "SettleStopScreen" => Some(|identity| {
+            use super::ack_confirm::AckHost;
+            use super::owner_block::{self, GroupKey};
+            use super::settle_popup::SettleStopScreen;
+            let digest = hostile_owner_digest(identity);
+            let row = owner_block::row_src_for(&digest, &GroupKey::of(&digest.groups[0]))
+                .expect("the hostile digest lists a row");
+            let ctx_with_digest = || {
+                let mut ctx = probe_ctx(identity);
+                ctx.owner_digests
+                    .insert(identity.to_string(), hostile_owner_digest(identity));
+                ctx
+            };
+            vec![
+                one_state(
+                    "stop popup over the inbox",
+                    ctx_with_digest(),
+                    Box::new(SettleStopScreen::new(
+                        AckHost::Inbox,
+                        identity.to_string(),
+                        row.clone(),
+                        identity.to_string(),
+                    )),
+                ),
+                one_state(
+                    "stop popup over the detail view",
+                    ctx_with_digest(),
+                    Box::new(SettleStopScreen::new(
+                        AckHost::Detail(identity.to_string()),
+                        identity.to_string(),
+                        row,
+                        identity.to_string(),
+                    )),
                 ),
             ]
         }),

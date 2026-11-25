@@ -1,6 +1,7 @@
 //! The screens of settle (`x`, 39): the two-row chooser, the phase step of a Move,
 //! the reason field and the default-No confirm popup: a summary cut from the exact
-//! argv, with the whole argv one `d` away.
+//! argv, with the whole argv one `d` away. On a row whose settle is still pending,
+//! `x` opens the default-No stop-waiting popup instead (quick 261125-khh).
 //!
 //! **No screen here writes a file or starts a process.** Yes hands the plan to
 //! `owner_settle::launch_settle` after `settle_recheck` found the row unchanged;
@@ -16,6 +17,7 @@ use super::detail::fit_cells;
 use super::detail::{fit_spans, settle_mux_argv, shown};
 use super::driver_steer::tail_cells;
 use super::inbox::InboxScreen;
+use super::owner_block::RowSrc;
 use super::owner_settle::{
     self, clean, MoveTarget, Outcome, SettleChoice, SettleDraft, SettlePlan, SettleScope,
     REASON_MAX_CHARS,
@@ -989,6 +991,121 @@ impl Screen for SettleConfirmScreen {
 
     fn name(&self) -> &str {
         "settle_confirm"
+    }
+}
+
+// ── Stop waiting ────────────────────────────────────────────────────────────
+
+/// The title of the stop-waiting popup.
+const STOP_TITLE: &str = "Stop waiting for this settle?";
+
+/// What the stop-waiting popup says Yes does (D-04).
+const STOP_EXPLAINED: &str = "It may still be running in its session. Yes only clears the badge \
+     here: nothing is stopped or written, and x settles the row again.";
+
+/// `x` on a row whose settle is still pending (quick 261125-khh, D-04): a default-No
+/// confirm, Yellow accent. Yes drops every not-done pending entry covering the row,
+/// from memory only, so the row is normal again and `x` settles it again; a session
+/// that was launched keeps running. No, Enter on the default and Esc change nothing.
+/// Nothing here writes a file or starts a process, and nothing drops an entry by
+/// itself (D-05).
+pub struct SettleStopScreen {
+    host: AckHost,
+    alias: String,
+    row: RowSrc,
+    /// The badge words of the pending settle: `won't do`, `test 2 move to phase 02`.
+    words: String,
+    popup: ConfirmPopup,
+}
+
+impl SettleStopScreen {
+    pub(crate) fn new(host: AckHost, alias: String, row: RowSrc, words: String) -> Self {
+        Self {
+            host,
+            alias,
+            row,
+            words,
+            popup: ConfirmPopup::default(),
+        }
+    }
+
+    /// Yes: drop the row's pending settle and say so, or say nothing was left.
+    fn confirm(&self, ctx: &mut AppContext) -> ScreenAction {
+        let message = if ctx.settle_pending.stop_waiting(&self.alias, &self.row) {
+            format!(
+                "Stopped waiting for the settle in {}; x settles the row again",
+                self.alias
+            )
+        } else {
+            "That settle is no longer pending; nothing changed".to_owned()
+        };
+        ctx.status_message = Some((message, std::time::Instant::now()));
+        ScreenAction::Pop
+    }
+
+    /// The popup body: Project, Settle (the badge words), a blank line and the muted
+    /// explanation. Every dynamic value goes through `shown`.
+    fn body(&self, inner_w: u16) -> Vec<Line<'static>> {
+        let inner_w = usize::from(inner_w);
+        let mut body: Vec<Line<'static>> = Vec::new();
+        body.extend(field("Project", &shown(&self.alias), inner_w));
+        body.push(one_row("Settle", &self.words, inner_w));
+        body.push(Line::raw(""));
+        body.extend(
+            wrap_at_separators(STOP_EXPLAINED, inner_w)
+                .into_iter()
+                .map(|part| Line::from(Span::styled(part, muted()))),
+        );
+        body
+    }
+}
+
+crate::ui::screens::adjudicate_screen!(
+    SettleStopScreen,
+    crate::ui::screens::RENDERS_ATTACKER_INFLUENCED_IDENTITY,
+    "Draws the registered alias and the badge words of the pending settle (the phase \
+     token, the check number and the Move target, all read out of `.planning/`), each \
+     through `shown`, over the inbox or the detail view as its background. Fixture \
+     states: the popup over the inbox and over the detail view with hostile values.",
+);
+
+impl Screen for SettleStopScreen {
+    fn handle_key(
+        &mut self,
+        code: KeyCode,
+        _modifiers: KeyModifiers,
+        ctx: &mut AppContext,
+    ) -> ScreenAction {
+        ctx.needs_redraw = true;
+        match self.popup.on_key(code) {
+            ConfirmOutcome::Confirm => self.confirm(ctx),
+            ConfirmOutcome::Cancel => ScreenAction::Pop,
+            ConfirmOutcome::Pending => ScreenAction::None,
+        }
+    }
+
+    fn render(&self, frame: &mut Frame, area: Rect, ctx: &AppContext) {
+        render_host(&self.host, frame, area, ctx);
+        confirm_popup::dim_background(frame, area);
+        let inner_w = confirm_popup::body_room(area).0;
+        self.popup.record(confirm_popup::render_confirm_popup(
+            frame,
+            area,
+            STOP_TITLE,
+            self.body(inner_w),
+            Color::Yellow,
+            self.popup.focus,
+        ));
+    }
+
+    fn handle_mouse(&mut self, input: MouseInput, ctx: &mut AppContext) -> ScreenAction {
+        confirm_popup::click_as_key(&self.popup, input).map_or(ScreenAction::None, |code| {
+            self.handle_key(code, KeyModifiers::NONE, ctx)
+        })
+    }
+
+    fn name(&self) -> &str {
+        "settle_stop"
     }
 }
 
@@ -2489,6 +2606,119 @@ mod tests {
         assert!(owner_actions::seam_ran().is_empty());
         assert!(status(&ctx).starts_with("Launched "), "{}", status(&ctx));
         assert_eq!(take_settle_launches().len(), 1);
+    }
+
+    /// Quick 261125-khh, D-04: on a settling row `x` opens the stop-waiting confirm;
+    /// Enter (the default No) and Esc change nothing; `y` drops the pending entry from
+    /// memory and `x` opens the settle chooser again. `stack` holds the host with
+    /// the row's settle already pending; the tree stays byte-identical throughout.
+    fn stop_waiting_flow(stack: &mut Stack, ctx: &mut AppContext, root: &std::path::Path) {
+        let before = tree(root);
+        let pending = |ctx: &AppContext| {
+            ctx.settle_pending
+                .entries()
+                .iter()
+                .filter(|entry| !entry.is_done())
+                .count()
+        };
+        assert_eq!(pending(ctx), 1, "the row is settling");
+        assert_eq!(stack.depth(), 1);
+        // Enter on the default No.
+        assert!(stack.key(ctx, KeyCode::Char('x')));
+        assert_eq!(stack.name(), "settle_stop");
+        let text = stack.render(ctx, 100, 30);
+        for want in [
+            "Stop waiting for this settle?",
+            "alder-api",
+            "won't do",
+            "It may still be running in its session.",
+        ] {
+            assert!(
+                squash(&text).contains(&squash(want)),
+                "{want:?} missing\n{text}"
+            );
+        }
+        ctx.status_message = None;
+        assert!(stack.key(ctx, KeyCode::Enter));
+        assert_eq!(stack.depth(), 1, "No pops");
+        assert_eq!(pending(ctx), 1, "No changes nothing");
+        assert!(ctx.status_message.is_none());
+        // Esc.
+        stack.key(ctx, KeyCode::Char('x'));
+        assert_eq!(stack.name(), "settle_stop");
+        assert!(stack.key(ctx, KeyCode::Esc));
+        assert_eq!(stack.depth(), 1, "Esc pops");
+        assert_eq!(pending(ctx), 1, "Esc changes nothing");
+        assert!(ctx.status_message.is_none());
+        // y drops the entry; x settles the row again.
+        stack.key(ctx, KeyCode::Char('x'));
+        assert_eq!(stack.name(), "settle_stop");
+        assert!(stack.key(ctx, KeyCode::Char('y')));
+        assert_eq!(stack.depth(), 1);
+        assert_eq!(pending(ctx), 0, "the pending entry is gone");
+        assert_eq!(
+            status(ctx),
+            "Stopped waiting for the settle in alder-api; x settles the row again"
+        );
+        assert!(take_settle_launches().is_empty(), "nothing launched");
+        stack.key(ctx, KeyCode::Char('x'));
+        assert_eq!(stack.name(), "settle_chooser");
+        assert_eq!(tree(root), before, "nothing was written");
+    }
+
+    #[test]
+    fn stop_waiting_in_the_inbox_drops_the_pending_settle() {
+        take_settle_launches();
+        let (_dir, root) = temp_fixture("uat-pending");
+        let mut ctx = fixture_ctx(&root, ALIAS);
+        let mut stack = Stack::inbox();
+        to_popup(&mut stack, &mut ctx);
+        stack.key(&mut ctx, KeyCode::Char('y'));
+        assert_eq!(take_settle_launches().len(), 1);
+        stop_waiting_flow(&mut stack, &mut ctx, &root);
+    }
+
+    #[test]
+    fn stop_waiting_in_the_owner_block_drops_the_pending_settle() {
+        take_settle_launches();
+        let (_dir, root) = temp_fixture("uat-pending");
+        let mut ctx = fixture_ctx(&root, ALIAS);
+        let (key, _) = uat_row_and_first_item(&ctx);
+        let mut stack = Stack::detail(&mut ctx, ALIAS, &key);
+        to_popup(&mut stack, &mut ctx);
+        stack.key(&mut ctx, KeyCode::Char('y'));
+        assert_eq!(take_settle_launches().len(), 1);
+        stop_waiting_flow(&mut stack, &mut ctx, &root);
+    }
+
+    /// Yes after the entry left (done or dropped meanwhile) says so and changes
+    /// nothing; the stop popup fits 80x24 unclipped.
+    #[test]
+    fn stop_waiting_after_the_entry_left_changes_nothing() {
+        take_settle_launches();
+        let (_dir, root) = temp_fixture("uat-pending");
+        let mut ctx = fixture_ctx(&root, ALIAS);
+        let mut stack = Stack::inbox();
+        to_popup(&mut stack, &mut ctx);
+        stack.key(&mut ctx, KeyCode::Char('y'));
+        take_settle_launches();
+        stack.key(&mut ctx, KeyCode::Char('x'));
+        assert_eq!(stack.name(), "settle_stop");
+        let narrow = stack.render(&ctx, 80, 24);
+        assert!(
+            !narrow.contains(confirm_popup::CLIPPED_HINT.trim_end()),
+            "{narrow}"
+        );
+        assert!(narrow.contains("Stop waiting for this settle?"), "{narrow}");
+        // The entry leaves while the popup is open.
+        ctx.settle_pending = Default::default();
+        assert!(stack.key(&mut ctx, KeyCode::Char('y')));
+        assert_eq!(stack.depth(), 1);
+        assert_eq!(
+            status(&ctx),
+            "That settle is no longer pending; nothing changed"
+        );
+        assert!(take_settle_launches().is_empty());
     }
 
     /// D-13b (SC5): every outcome x host x target, on a throwaway copy each, through

@@ -28,6 +28,7 @@ use super::owner_block::{self, blanks, cells, pad, Fold, GroupKey, RowCells, Row
 use super::owner_row_actions::{self, ActionMenu, Chrome, Enter, Host, MenuKey, RowAction};
 use super::owner_settle;
 use super::settle_pending;
+use super::settle_popup::SettleStopScreen;
 use super::{AppContext, Screen, ScreenAction};
 use crate::inbox::phase_key;
 use crate::state_reader::owner_items::{
@@ -2082,12 +2083,18 @@ impl InboxScreen {
             }
             _ => {}
         }
-        // A row whose settle is still running refuses a second one (quick
-        // 261119-f5b, I-14): the same text the model shows dim.
-        if let Some(message) = owner_row_actions::settle_pending_refusal(ctx, &row.alias, &row.src)
+        // A row whose settle is still running offers to stop waiting (quick
+        // 261125-khh, D-04): a default-No confirm, the entry the model lists.
+        if let Some(words) = owner_row_actions::pending_settle(ctx, &row.alias, &row.src)
+            .map(|entry| entry.words.clone())
         {
-            Self::say(ctx, message.to_owned());
-            return ScreenAction::None;
+            ctx.needs_redraw = true;
+            return ScreenAction::Push(Box::new(SettleStopScreen::new(
+                AckHost::Inbox,
+                row.alias.clone(),
+                row.src.clone(),
+                words,
+            )));
         }
         // D-04: on an item line `x` settles that one check; on the row, the phase.
         let item = ctx.inbox_view.item_cursor.as_deref();
@@ -6588,10 +6595,11 @@ mod tests {
         }
     }
 
-    /// `x` on a row that shows the settling badge refuses and starts nothing; the
-    /// footer omits `[x]`; once the settle is done it opens the chooser again.
+    /// Quick 261125-khh, D-04: `x` on a row that shows the settling badge opens the
+    /// stop-waiting confirm and starts nothing; the footer lists `[x]stop waiting`;
+    /// once the settle is done (or gone) it opens the chooser again.
     #[test]
-    fn x_on_a_settling_row_refuses_once() {
+    fn x_on_a_settling_row_offers_stop_waiting() {
         use crate::ui::screens::settle_pending::{PendingSettle, Stage};
         owner_settle::take_settle_launches();
         let mut ctx = actions_ctx();
@@ -6605,16 +6613,17 @@ mod tests {
         entry.phase = "24".to_owned();
         entry.files = row.src.files.clone();
         ctx.settle_pending.insert(entry.clone());
-        let action = press_key(&mut ctx, KeyCode::Char('x'));
-        assert!(matches!(action, ScreenAction::None));
-        assert_eq!(status(&ctx), "Settle already pending for this row");
-        assert!(owner_settle::take_settle_launches().is_empty());
-        assert!(
-            !line_text(&footer_line(&ctx, 250)).contains("[x]"),
-            "no [x] while it settles"
-        );
+        let footer = line_text(&footer_line(&ctx, 250));
+        assert!(footer.contains("[x]stop waiting"), "{footer}");
         ctx.status_message = None;
-        assert!(!line_text(&footer_line(&ctx, 250)).contains("[x]"));
+        let action = press_key(&mut ctx, KeyCode::Char('x'));
+        let ScreenAction::Push(screen) = action else {
+            panic!("x pushes the stop-waiting confirm");
+        };
+        assert_eq!(screen.name(), "settle_stop");
+        assert!(status(&ctx).is_empty(), "nothing is said before Yes");
+        assert!(owner_settle::take_settle_launches().is_empty());
+        assert_eq!(ctx.settle_pending.len(), 1, "nothing is dropped before Yes");
         // Done (or gone): the chooser opens again.
         entry.stage = Stage::Done {
             since: std::time::Instant::now(),
@@ -6622,7 +6631,10 @@ mod tests {
         ctx.settle_pending = Default::default();
         ctx.settle_pending.insert(entry);
         let action = press_key(&mut ctx, KeyCode::Char('x'));
-        assert!(matches!(action, ScreenAction::Push(_)), "the chooser");
+        let ScreenAction::Push(screen) = action else {
+            panic!("the chooser");
+        };
+        assert_eq!(screen.name(), "settle_chooser");
         ctx.settle_pending = Default::default();
         let action = press_key(&mut ctx, KeyCode::Char('x'));
         assert!(matches!(action, ScreenAction::Push(_)), "the chooser");

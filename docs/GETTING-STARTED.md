@@ -220,7 +220,8 @@ and `Enter` on a check or file line opens that file read-only at that place.
 anything runs. `A` only hides a file until it changes (nothing is recorded and the phase
 stays open); `x` records checks as skipped (won't do, deferred permanently or moved to phase M)
 so the phase can close. `x` always launches GSD in a new session, next to any session
-already running in the project. See [the README](../README.md#owner-inbox) for the full key list.
+already running in the project. A row still settling offers `x` stop waiting, which
+clears its badge after a confirmation. See [the README](../README.md#owner-inbox) for the full key list.
 
 ## Common setup issues
 

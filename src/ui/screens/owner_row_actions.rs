@@ -15,8 +15,8 @@
 //! shows is the text the hotkey prints: they come from the same pure helpers
 //! (`owner_actions::run_plan`, `open_files_refusal`, `merged_ack_refusal`,
 //! `owner_actions::ack_refusal` and `owner_settle::settle_refusal`, which run the
-//! very target builders the keys run, minus their one file read,
-//! [`settle_pending_refusal`]).
+//! very target builders the keys run, minus their one file read). A row whose
+//! settle is still pending ([`pending_settle`]) offers `x` as `stop waiting`.
 //!
 //! **Hidden or blocked.** An action that never applies to the row's kind is absent
 //! from the result; one that applies but cannot run right now is present as
@@ -30,6 +30,7 @@ use super::detail::{fit_cells, fit_footer, fit_spans, shown, FooterToken};
 use super::owner_actions;
 use super::owner_block::{self, Fold, GroupKey, RowSrc, SubStop};
 use super::owner_settle;
+use super::settle_pending::PendingSettle;
 use super::AppContext;
 use crate::state_reader::owner_items::{Kind, Lane, OwnerGroup};
 use crossterm::event::{KeyCode, KeyModifiers};
@@ -70,10 +71,6 @@ pub(crate) const INBOX_ONLY: &[ActionId] = &[ActionId::GoToProject];
 /// The actions only the Owner block offers, each with its reason. None: every
 /// action of the Owner block's rows is also offered by the inbox.
 pub(crate) const OWNER_BLOCK_ONLY: &[ActionId] = &[];
-
-/// What `x` says on a row whose settle is still running (the `settling...` badge):
-/// one message for the hotkey and the model (quick 261119-f5b, I-14).
-pub(crate) const SETTLE_PENDING_REFUSAL: &str = "Settle already pending for this row";
 
 /// What `x` says on the fold line, in both screens (quick 261119-f5b, I-16).
 pub(crate) const SETTLE_FOLD_LINE_REFUSAL: &str = "Select a check or a group row to settle it";
@@ -136,18 +133,18 @@ pub(crate) fn row_group(ctx: &AppContext, alias: &str, src: &RowSrc) -> OwnerGro
         .unwrap_or_else(|| src.group.clone())
 }
 
-/// Why `x` refuses the row `src` of `alias` while its settle runs: the covering
-/// [`PendingSettle`](super::settle_pending::PendingSettle) is not done, i.e.
-/// exactly while the row shows the `settling...` badge (I-14).
-pub(crate) fn settle_pending_refusal(
-    ctx: &AppContext,
+/// The settle still pending on the row `src` of `alias`: the covering
+/// [`PendingSettle`] that is not done, i.e. exactly while the row shows the
+/// `settling...` badge (I-14). `x` then offers `stop waiting` (quick 261125-khh,
+/// D-04) instead of the settle chooser.
+pub(crate) fn pending_settle<'a>(
+    ctx: &'a AppContext,
     alias: &str,
     src: &RowSrc,
-) -> Option<&'static str> {
+) -> Option<&'a PendingSettle> {
     ctx.settle_pending
         .for_row(alias, src)
         .filter(|entry| !entry.is_done())
-        .map(|_| SETTLE_PENDING_REFUSAL)
 }
 
 fn action(
@@ -238,8 +235,9 @@ pub(crate) fn row_actions(
         }
     }
 
-    // x: the lane and scope rule `settle_target_for` applies hides it; a pending
-    // settle, an unreadable file and every other pure refusal of the target builder
+    // x: a pending settle turns it into `stop waiting` (D-04), whatever the settle
+    // rule says. Otherwise the lane and scope rule `settle_target_for` applies hides
+    // it; an unreadable file and every other pure refusal of the target builder
     // (unsafe token, unlisted check, no state) block it with the text the key prints.
     let fold_days = ctx.config.preferences.owner_fold_days();
     let groups = ctx
@@ -249,15 +247,22 @@ pub(crate) fn row_actions(
     let refusal = groups
         .iter()
         .find_map(|group| owner_settle::settle_group_refusal(group).err());
-    if !groups.is_empty() && !refusal.is_some_and(|refusal| !refusal.unreadable) {
+    if pending_settle(ctx, alias, src).is_some() {
+        out.push(action(
+            ActionId::Settle,
+            "x",
+            "stop waiting",
+            "stop waiting",
+            "settle may still run; clears the badge here, asks first".to_owned(),
+            Availability::Ready,
+        ));
+    } else if !groups.is_empty() && !refusal.is_some_and(|refusal| !refusal.unreadable) {
         let item = match sub_stop {
             Some(SubStop::Item(id)) => Some(id.as_str()),
             _ => None,
         };
-        let availability = match settle_pending_refusal(ctx, alias, src) {
-            Some(message) => Availability::Blocked(message.to_owned()),
-            None => availability_of(owner_settle::settle_refusal(ctx, alias, &src.key, item)),
-        };
+        let availability =
+            availability_of(owner_settle::settle_refusal(ctx, alias, &src.key, item));
         let detail = match &availability {
             Availability::Blocked(message) => message.clone(),
             Availability::Ready if item.is_some() => {
@@ -1271,27 +1276,32 @@ mod tests {
         assert!(copy_ids(None).is_empty());
     }
 
-    /// While a settle covering the row runs, `x` is blocked with the shared message;
-    /// once it is done (or gone) the action is ready again.
+    /// Quick 261125-khh, D-04: while a settle covering the row runs, `x` is an
+    /// ENABLED `stop waiting` entry; once it is done (or gone) it is the usual settle.
     #[test]
-    fn x_is_blocked_while_the_settle_runs() {
+    fn x_offers_stop_waiting_while_the_settle_runs() {
         let mut ctx = ctx();
         let rows = owner_rows(&ctx);
         let row = find(&rows, |s| s.key.phase == "24").clone();
-        assert_eq!(settle_pending_refusal(&ctx, ALIAS, &row), None);
+        assert!(pending_settle(&ctx, ALIAS, &row).is_none());
         let mut entry = PendingSettle::for_alias_test(ALIAS);
         entry.phase = "24".to_owned();
         entry.files = row.files.clone();
         ctx.settle_pending.insert(entry);
-        assert_eq!(
-            settle_pending_refusal(&ctx, ALIAS, &row),
-            Some(SETTLE_PENDING_REFUSAL)
-        );
+        assert!(pending_settle(&ctx, ALIAS, &row).is_some());
         let a = of_owner(&ctx, &row, None, false);
-        blocked(&a, ActionId::Settle, SETTLE_PENDING_REFUSAL);
+        let x = get(&a, ActionId::Settle).expect("x is listed");
+        assert!(x.is_ready(), "{x:?}");
+        assert_eq!(x.label, "stop waiting");
+        assert_eq!(x.footer.short, "stop waiting");
+        assert_eq!(x.key, KeyCode::Char('x'));
+        assert_eq!(
+            x.detail,
+            "settle may still run; clears the badge here, asks first"
+        );
         // The other actions stay ready.
         assert!(get(&a, ActionId::Run).is_some_and(RowAction::is_ready));
-        // A done settle no longer blocks.
+        // A done settle is the usual settle again.
         let mut done = PendingSettle::for_alias_test(ALIAS);
         done.phase = "24".to_owned();
         done.files = row.files.clone();
@@ -1300,7 +1310,16 @@ mod tests {
         };
         ctx.settle_pending = Default::default();
         ctx.settle_pending.insert(done);
-        assert_eq!(settle_pending_refusal(&ctx, ALIAS, &row), None);
+        assert!(pending_settle(&ctx, ALIAS, &row).is_none());
+        let a = of_owner(&ctx, &row, None, false);
+        assert_eq!(get(&a, ActionId::Settle).unwrap().label, "settle");
+        ready(
+            &a,
+            ActionId::Settle,
+            "record whole phase as skipped, asks first",
+        );
+        // And with no entry at all.
+        ctx.settle_pending = Default::default();
         ready(
             &of_owner(&ctx, &row, None, false),
             ActionId::Settle,

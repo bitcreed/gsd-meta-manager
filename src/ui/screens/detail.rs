@@ -2467,23 +2467,34 @@ impl DetailScreen {
                 owner_block::Stop::FoldLine => {
                     Err(super::owner_row_actions::SETTLE_FOLD_LINE_REFUSAL.to_owned())
                 }
-                // A row whose settle is still running refuses a second one (quick
-                // 261119-f5b, I-14): the text the inbox's `x` and the model use.
-                owner_block::Stop::Row(key)
-                    if owner_block::row_src_for(digest, key).is_some_and(|src| {
-                        super::owner_row_actions::settle_pending_refusal(ctx, &self.alias, &src)
-                            .is_some()
-                    }) =>
-                {
-                    Err(super::owner_row_actions::SETTLE_PENDING_REFUSAL.to_owned())
+                // A row whose settle is still running offers to stop waiting (quick
+                // 261125-khh, D-04): the default-No confirm the inbox's `x` opens.
+                owner_block::Stop::Row(key) => {
+                    let pending = owner_block::row_src_for(digest, key).and_then(|src| {
+                        let words =
+                            super::owner_row_actions::pending_settle(ctx, &self.alias, &src)?
+                                .words
+                                .clone();
+                        Some((src, words))
+                    });
+                    match pending {
+                        Some((src, words)) => Ok(ScreenAction::Push(Box::new(
+                            super::settle_popup::SettleStopScreen::new(
+                                super::ack_confirm::AckHost::Detail(self.alias.clone()),
+                                self.alias.clone(),
+                                src,
+                                words,
+                            ),
+                        ))),
+                        None => super::owner_settle::settle_open(
+                            ctx,
+                            &self.alias,
+                            key,
+                            view.item_cursor.as_deref(),
+                            super::ack_confirm::AckHost::Detail(self.alias.clone()),
+                        ),
+                    }
                 }
-                owner_block::Stop::Row(key) => super::owner_settle::settle_open(
-                    ctx,
-                    &self.alias,
-                    key,
-                    view.item_cursor.as_deref(),
-                    super::ack_confirm::AckHost::Detail(self.alias.clone()),
-                ),
             }
         };
         ctx.needs_redraw = true;
@@ -39267,10 +39278,11 @@ mod tests {
         key(screen, ctx, code)
     }
 
-    /// `x` on a row whose settle still runs refuses with the shared message and
-    /// starts nothing; the footer omits `[x]`; a done settle opens the chooser.
+    /// Quick 261125-khh, D-04: `x` on a row whose settle still runs opens the
+    /// stop-waiting confirm and starts nothing; the footer lists `[x]stop waiting`;
+    /// a done settle opens the chooser.
     #[test]
-    fn owner_x_on_a_settling_row_refuses_once() {
+    fn owner_x_on_a_settling_row_offers_stop_waiting() {
         use crate::ui::screens::settle_pending::{PendingSettle, Stage};
         owner_settle::take_settle_launches();
         let (mut screen, mut ctx) = actions_ctx();
@@ -39282,22 +39294,27 @@ mod tests {
         entry.phase = "24".to_owned();
         entry.files = src.files.clone();
         ctx.settle_pending.insert(entry.clone());
+        let footer = owner_footer(&screen, &ctx, 250);
+        assert!(footer.contains("[x]stop waiting"), "{footer}");
         ctx.status_message = None;
         let action = key(&mut screen, &mut ctx, KeyCode::Char('x'));
-        assert!(matches!(action, ScreenAction::None));
-        assert_eq!(
-            ctx.status_message.as_ref().map(|(m, _)| m.as_str()),
-            Some("Settle already pending for this row")
-        );
+        let ScreenAction::Push(pushed) = action else {
+            panic!("x pushes the stop-waiting confirm");
+        };
+        assert_eq!(pushed.name(), "settle_stop");
+        assert!(ctx.status_message.is_none(), "nothing is said before Yes");
         assert!(owner_settle::take_settle_launches().is_empty());
-        assert!(!owner_footer(&screen, &ctx, 250).contains("[x]"));
+        assert_eq!(ctx.settle_pending.len(), 1, "nothing is dropped before Yes");
         entry.stage = Stage::Done {
             since: std::time::Instant::now(),
         };
         ctx.settle_pending = Default::default();
         ctx.settle_pending.insert(entry);
         let action = key(&mut screen, &mut ctx, KeyCode::Char('x'));
-        assert!(matches!(action, ScreenAction::Push(_)), "the chooser");
+        let ScreenAction::Push(pushed) = action else {
+            panic!("the chooser");
+        };
+        assert_eq!(pushed.name(), "settle_chooser");
     }
 
     /// The fold line: `x` says the one shared text in both screens.

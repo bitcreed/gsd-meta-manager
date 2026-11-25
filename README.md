@@ -450,7 +450,7 @@ keyboard-only.
 | `o` | Open the group's source file in a read-only viewer |
 | `v` | Run the group's command in its project through your multiplexer (tmux, herdr, ...), or switch to the project's live session and show the command to type |
 | `A` | Acknowledge = hide the group's file until it changes; nothing is recorded and the phase stays open (see below) |
-| `x` | Settle = record the selected check or phase as skipped, so the phase can close: won't do (with a reason), deferred permanently, or move to phase M; asks first, then launches `/gsd-verify-work N` |
+| `x` | Settle = record the selected check or phase as skipped, so the phase can close: won't do (with a reason), deferred permanently, or move to phase M; asks first, then launches `/gsd-verify-work N`; on a row that is still settling it offers to stop waiting |
 | `y` | Copy the checklist `gsd-meta-manager inbox ALIAS` prints for that row (on the Old debt fold: that fold's checklist) |
 | `Esc` / `q` | Back to the dashboard |
 
@@ -465,7 +465,7 @@ the command, target or effect (`A`: hide this file until it
 changes; `x`: record as skipped). A key letter (`v` `x` `o` `A` `y`, and `g` in the inbox) or `Space`
 runs that action at once; `j` / `k` and `Enter` pick one; `Esc` or `q` closes the menu. An
 action that exists for the row but cannot run now stays in the list, dimmed, with the reason
-in text (for example `Settle already pending for this row`). A menu entry runs exactly what
+in text (for example `Cannot settle: the source file is unreadable`). A menu entry runs exactly what
 the key does, so `x` still opens the settle chooser and its confirmation and `A` still asks
 first. The menu is keyboard-only: other keys and mouse clicks do nothing while it is open.
 
@@ -502,7 +502,10 @@ spinner and the time since `y`; it reads `recorded` once the source file changes
 and when the check leaves the list it shows `✓ test 2 skipped` (or `✓ moved to phase M`)
 for about two seconds before the row goes. The badge shows in the inbox and in the Owner
 block, and the state lives in memory only: it survives refreshes, is gone after a restart,
-and with no change on disk the badge just keeps counting. The
+and with no change on disk the badge just keeps counting. If it never finishes (the
+session was closed, or GSD recorded nothing), `x` on the row offers stop waiting; after a
+default-No confirmation it clears the badge in this app only (a running session keeps
+running) and `x` settles the row again. The
 app writes nothing: every change comes from the command GSD runs.
 
 `y` uses `wl-copy`, `xclip`/`xsel`, `pbcopy` or `clip.exe` when present, otherwise an OSC 52
