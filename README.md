@@ -493,7 +493,9 @@ in a new session through your multiplexer; a view the terminal cuts off cannot b
 confirmed, so enlarge it or press `d` for the one that fits. The instruction asks GSD
 to resume the UAT session, record each check as `result: skipped` with a
 `Deferred follow-up:` reason (which gsd-core counts as non-blocking), and not to promote
-it to the 999.x backlog. Move also asks for one todo naming phase M, so the check comes up again
+it to the 999.x backlog. Your reason goes into it as `Owner’s note: “““…”””`, verbatim,
+and any double quotes in it become single typographic quotes so they cannot end the note
+early. Move also asks for one todo naming phase M, so the check comes up again
 when phase M runs. `y` always starts a new session, even when the project already has a
 live Claude session: it never switches to that session or types into it, and it never
 touches the clipboard; the popup notes that the new session starts beside the live one.
