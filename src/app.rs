@@ -2748,10 +2748,7 @@ impl App {
     /// [`Self::auto_register_new_sessions`] with the registration function
     /// injected, so a test can register a root the production guards (temp dir,
     /// data dir) refuse by design.
-    fn auto_register_new_sessions_using(
-        &mut self,
-        register: fn(&mut Config, &[ClaudeSession]) -> Vec<(String, PathBuf)>,
-    ) {
+    fn auto_register_new_sessions_using(&mut self, register: RegisterFromSessions) {
         // Probe a copy first: only when it finds something new does this touch
         // the disk, so an idle session poll stays free of config I/O.
         let mut probe = self.ctx.config.clone();
@@ -4091,6 +4088,11 @@ impl App {
         }
     }
 }
+
+/// A session auto-registration function: what
+/// [`App::auto_register_new_sessions_using`] runs on a probe copy and again on the
+/// config read from disk.
+type RegisterFromSessions = fn(&mut Config, &[ClaudeSession]) -> Vec<(String, PathBuf)>;
 
 /// `(modified, length)` of the file at `path`, or `None` when either is
 /// unavailable. The change detector behind [`App::reload_config_if_changed`].
