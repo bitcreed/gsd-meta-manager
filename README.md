@@ -210,11 +210,16 @@ The binary is at `target/release/gsd-meta-manager`.
    gsd-meta-manager add /path/to/your/gsd-project
    ```
 
-4. Active `claude` sessions whose working directory contains `.planning/` are
-   auto-registered on launch and during the ~5s session poll. A git linked
-   worktree (such as an agent worktree under `.claude/worktrees/`) is never
-   registered itself: a session inside one resolves to its main worktree, which
-   is registered instead when it has `.planning/`, so many concurrent agent
+4. Active `claude` sessions whose working directory is a GSD project are
+   auto-registered on launch and during the ~5s session poll. A GSD project
+   here means its `.planning/` holds `STATE.md`, `ROADMAP.md`, `PROJECT.md` or `config.json`,
+   so an empty `.planning/`, or one holding only gsd-meta-manager's own
+   `.planning/meta-manager/`, does not count. Folders under the system temp dir
+   (`$TMPDIR`, else `/tmp`) are never auto-registered, so test fixtures and
+   scratch checkouts stay out of the registry; `add` still registers them. A
+   git linked worktree (such as an agent worktree under `.claude/worktrees/`)
+   is never registered itself: a session inside one resolves to its main
+   worktree, which is registered instead when it is a GSD project, so many concurrent agent
    sessions of one project yield a single entry. `add` refuses a linked
    worktree and names the main worktree to register instead, and stale
    worktree entries are pruned from the config on launch.
@@ -510,7 +515,10 @@ gsd-meta-manager ~/projects/my-app
 ```
 
 The TUI starts on that project's detail view; Esc returns to the overview with
-that project selected. A target that is neither a registered alias nor inside a
+that project selected. An unregistered folder that is a GSD project (its
+`.planning/` holds `STATE.md`, `ROADMAP.md`, `PROJECT.md` or `config.json`) is
+registered under its folder name and opened, wherever it lives, temp dir
+included. Any other target that is neither a registered alias nor inside a
 registered project exits with a hint to run `gsd-meta-manager add <path>`. An
 alias that collides with a subcommand name (e.g. a project registered as `list`)
 must be opened by its path, such as `gsd-meta-manager ./list`.

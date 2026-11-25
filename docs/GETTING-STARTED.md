@@ -70,14 +70,19 @@ On first launch:
 - The dashboard appears with an empty project list.
 - A log file is created under `dirs::data_local_dir() + "gsd-meta-manager/"`
   (typically `~/.local/share/gsd-meta-manager/gsd-meta-manager.log.<date>`).
-- Active `claude` sessions whose working directory contains `.planning/` are
-  auto-registered. If you happen to have a Claude session running in a GSD
+- Active `claude` sessions whose working directory is a GSD project are
+  auto-registered. A GSD project here means its `.planning/` holds
+  `STATE.md`, `ROADMAP.md`, `PROJECT.md` or `config.json`; an empty
+  `.planning/`, or one holding only gsd-meta-manager's own
+  `.planning/meta-manager/`, does not count. Folders under the system temp dir
+  are never auto-registered, so test fixtures and scratch checkouts stay out of
+  the list; `add` still registers them. If you happen to have a Claude session running in a GSD
   project, it will appear immediately; otherwise the list stays empty until
   you register a project manually. A git linked worktree (such as an agent
   worktree under `.claude/worktrees/`) is never registered itself. A session
   running inside one, or in any subdirectory of it, resolves to its main
-  worktree, and that main worktree is auto-registered instead when it has
-  `.planning/` and is not already registered, so many concurrent agent
+  worktree, and that main worktree is auto-registered instead when it is a GSD
+  project and is not already registered, so many concurrent agent
   sessions of one project yield a single entry. `add` still refuses a linked
   worktree and names the main worktree to register instead, and stale worktree
   entries are pruned from the config on launch.
