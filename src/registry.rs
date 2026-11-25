@@ -1091,6 +1091,55 @@ fn is_under_temp_root(root: &Path, temp_root: Option<&Path>) -> bool {
     temp_root.is_some_and(|t| root.starts_with(t))
 }
 
+/// The app subdirectory of the platform data dir that holds everything
+/// gsd-meta-manager creates for itself (`dirs::data_local_dir()/gsd-meta-manager`).
+const GSDMM_DATA_SUBDIR: &str = "gsd-meta-manager";
+
+/// The trees gsd-meta-manager creates under [`GSDMM_DATA_SUBDIR`]: one-off clones
+/// (`oneoff`), the driver's per-run state and push mirrors (`driver`) and the
+/// envelope ledgers (`envelope`). They mirror `oneoff::store::oneoff_root`,
+/// `launcher::config_dir::driver_root` and `envelope::envelope_root`, which are
+/// not callable from this portable module (the first two are linux/macos only);
+/// the unix-only test `the_guard_names_the_trees_the_run_locators_use` pins these
+/// names to those locators, so a rename breaks that test, not production.
+const GSDMM_RUN_TREES: [&str; 3] = ["oneoff", "driver", "envelope"];
+
+/// The canonical real `dirs::data_local_dir()/gsd-meta-manager`, or `None`
+/// without a platform data dir.
+pub(crate) fn gsdmm_data_root() -> Option<PathBuf> {
+    dirs::data_local_dir().map(|d| canon_or_raw(&d.join(GSDMM_DATA_SUBDIR)))
+}
+
+/// `root` lies inside gsd-meta-manager's own data dir: a one-off clone, a land
+/// attempt, a driver mirror or an envelope tree.
+///
+/// True when `root` has a `gsd-meta-manager` path component directly followed by
+/// one of [`GSDMM_RUN_TREES`], or when `data_root` is `Some` and `root` starts
+/// with it. Both halves compare whole components, so `gsd-meta-manager-x/oneoff`
+/// and a project merely named `gsd-meta-manager` do not match.
+///
+/// The structural half catches another gsd-meta-manager process's relocated data
+/// dir (the test harness's `target/tmp/hx7-mask` clone that leaked into the
+/// registry as `work`); the real-root half catches a symlinked app dir. It is not
+/// a parameter of the injectable entry point because its structural half reads
+/// no environment and the real data root never holds a test fixture [inferred].
+/// `GSD_MM_ENVELOPE_ROOT` is deliberately not consulted, so a stray override
+/// cannot make real projects unregistrable (quick 261125-kfc).
+pub(crate) fn is_in_gsdmm_data_dir(root: &Path, data_root: Option<&Path>) -> bool {
+    use std::path::Component;
+    let names: Vec<&std::ffi::OsStr> = root
+        .components()
+        .filter_map(|c| match c {
+            Component::Normal(name) => Some(name),
+            _ => None,
+        })
+        .collect();
+    let structural = names.windows(2).any(|pair| {
+        pair[0] == GSDMM_DATA_SUBDIR && GSDMM_RUN_TREES.iter().any(|tree| pair[1] == *tree)
+    });
+    structural || data_root.is_some_and(|data| root.starts_with(data))
+}
+
 /// Derive an alias from a path's file name (lowercased), SANITIZED to the
 /// identity alphabet. Falls back to `"project"`.
 ///
@@ -1222,7 +1271,9 @@ fn discovery_root(cwd: &Path, registered: &HashSet<PathBuf>) -> Option<PathBuf> 
 /// cwd itself (a plain subdirectory of a main worktree is not walked up
 /// [inferred]). The resolved root must be a GSD project root
 /// ([`is_gsd_project_root`]) outside the system temp dir
-/// ([`system_temp_root`]) and must not already be registered.
+/// ([`system_temp_root`]) and outside gsd-meta-manager's own data dir
+/// ([`is_in_gsdmm_data_dir`], quick 261125-kfc), and must not already be
+/// registered.
 ///
 /// Returns the list of `(alias, root)` pairs that were newly added, where
 /// `root` is the canonical RESOLVED root — not the session cwd — and the alias
@@ -1244,8 +1295,9 @@ pub fn auto_register_from_sessions(
 /// [`auto_register_from_sessions`] with the temp-dir guard's root as a
 /// parameter, so tests (whose fixtures live under the system temp dir) can pass
 /// `None` without mutating `TMPDIR`. `None` disables the temp-dir guard; the
-/// marker rule always applies. A resolved root under `temp_root` is never
-/// registered (quick 261125-jx7).
+/// marker rule and the data-dir rule always apply. A resolved root under
+/// `temp_root` is never registered (quick 261125-jx7), and neither is one inside
+/// gsd-meta-manager's own data dir (quick 261125-kfc).
 pub fn auto_register_from_sessions_with_temp_root(
     config: &mut Config,
     sessions: &[ClaudeSession],
@@ -1259,6 +1311,8 @@ pub fn auto_register_from_sessions_with_temp_root(
 
     let mut seen_this_pass: HashSet<PathBuf> = HashSet::new();
     let mut added: Vec<(String, PathBuf)> = Vec::new();
+    // Once per call: a canonicalize per poll, not per session.
+    let data_root = gsdmm_data_root();
 
     for session in sessions {
         let canonical = canon_or_raw(&session.working_dir);
@@ -1291,6 +1345,14 @@ pub fn auto_register_from_sessions_with_temp_root(
                 root = %root.display(),
                 temp_root = ?temp_root,
                 "auto-register: skipping root under the system temp dir",
+            );
+            continue;
+        }
+        if is_in_gsdmm_data_dir(&root, data_root.as_deref()) {
+            tracing::debug!(
+                root = %root.display(),
+                data_root = ?data_root,
+                "auto-register: skipping root inside gsd-meta-manager's own data dir",
             );
             continue;
         }
@@ -2171,6 +2233,83 @@ mod gsd_root_guard_tests {
             Some(tmp.path().canonicalize().unwrap())
         );
         assert!(!is_under_temp_root(Path::new("/anything"), None));
+    }
+
+    /// A `.planning/ROADMAP.md` at `dir`, as a one-off clone of a real project has.
+    fn make_roadmap_project(dir: &Path) {
+        std::fs::create_dir_all(dir.join(".planning")).unwrap();
+        std::fs::write(dir.join(".planning/ROADMAP.md"), "roadmap\n").unwrap();
+    }
+
+    #[test]
+    fn a_session_in_a_one_off_or_driver_tree_is_never_auto_registered() {
+        let tmp = tempdir().unwrap();
+        let t = tmp.path().canonicalize().unwrap();
+        let data = t.join("data/gsd-meta-manager");
+        let roots = [
+            data.join("oneoff/abcd1234/oneoff-261125-x/work"),
+            data.join("oneoff/abcd1234/oneoff-261125-x/land/1/work"),
+            data.join("driver/abcd1234/run-1/mirror"),
+            data.join("envelope/proj"),
+        ];
+        for root in &roots {
+            make_roadmap_project(root);
+        }
+
+        let mut cfg = Config::new();
+        let sessions: Vec<ClaudeSession> = roots.iter().cloned().map(session).collect();
+        let added = auto_register_from_sessions_with_temp_root(&mut cfg, &sessions, None);
+        assert!(added.is_empty(), "registered: {added:?}");
+        assert!(cfg.projects.is_empty());
+    }
+
+    #[test]
+    fn a_project_merely_named_like_gsd_meta_manager_still_registers() {
+        let tmp = tempdir().unwrap();
+        let t = tmp.path().canonicalize().unwrap();
+        for (root, alias) in [
+            (t.join("src/gsd-meta-manager"), "gsd-meta-manager"),
+            (t.join("gsd-meta-manager-x/oneoff/p"), "p"),
+            (t.join("oneoff/gsd-meta-manager/p"), "p"),
+        ] {
+            make_roadmap_project(&root);
+            let mut cfg = Config::new();
+            let added = auto_register_from_sessions_with_temp_root(
+                &mut cfg,
+                &[session(root.clone())],
+                None,
+            );
+            assert_eq!(added, vec![(alias.to_string(), root)]);
+        }
+    }
+
+    #[test]
+    fn the_real_data_dir_guard_is_component_wise() {
+        let tmp = tempdir().unwrap();
+        let t = tmp.path().canonicalize().unwrap();
+        let data = t.join("relocated");
+        assert!(is_in_gsdmm_data_dir(&data, Some(&data)));
+        assert!(is_in_gsdmm_data_dir(&data.join("x/work"), Some(&data)));
+        assert!(!is_in_gsdmm_data_dir(&t.join("relocated-2/p"), Some(&data)));
+        assert!(!is_in_gsdmm_data_dir(&t.join("other/p"), Some(&data)));
+        assert!(!is_in_gsdmm_data_dir(&t.join("other/p"), None));
+    }
+
+    /// The guard's tree names are the ones the run locators create, so renaming
+    /// a locator breaks this test rather than silently disabling the guard.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn the_guard_names_the_trees_the_run_locators_use() {
+        let oneoff = crate::oneoff::store::oneoff_root().expect("this machine has a data dir");
+        let driver =
+            crate::launcher::config_dir::driver_root().expect("this machine has a data dir");
+        for tree in [oneoff, driver] {
+            assert!(
+                is_in_gsdmm_data_dir(&tree.join("abcd1234/run-1/work"), None),
+                "{} is not recognized by the data-dir guard",
+                tree.display()
+            );
+        }
     }
 
     #[test]
