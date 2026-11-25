@@ -12,8 +12,10 @@
 //! and nothing in a check name or the owner's reason can break verify-work's
 //! `sed | xargs` argument parse or smuggle a second `--ws`.
 //!
-//! **Nothing is typed into a live session** (37 D-12): a project that already runs
-//! Claude gets that session focused, never a second one.
+//! **Settle always starts a new session** through the multiplexer, even when the
+//! project already runs Claude (owner decision, quick 261125-khh, reversing 39
+//! D-11 for settle only; `v` keeps 37 D-12). It never focuses a session and never
+//! touches the clipboard, so nothing disturbs the context of a live session.
 //!
 //! **This module and `settle_popup.rs` write no file** (D-13a). gsd-core records
 //! the outcome (and, for a move, the todo) when the launched command runs.
@@ -153,7 +155,8 @@ pub(crate) struct SettleDraft {
     pub target: SettleTarget,
     /// The project path: the child's cwd, never part of the argv.
     pub cwd: PathBuf,
-    /// A live session whose working directory IS the project path (37 D-12).
+    /// A live session whose working directory IS the project path (T-37-06). Used
+    /// only for the popup's note that the new session starts beside the live one.
     pub live_session: Option<ClaudeSession>,
 }
 
@@ -691,9 +694,9 @@ pub(crate) fn settle_open(
 }
 
 /// Yes re-checks what the popup showed (T-39-04): the row, found again by its
-/// identity, must still resolve to the same prompt and project path, and a live
-/// session must still be there (or still be absent). Anything else says why and
-/// launches nothing. The fresh plan is the one launched against.
+/// identity, must still resolve to the same prompt and project path, and a known
+/// Move target must still be listed. Anything else says why and launches nothing.
+/// The fresh plan is the one launched against.
 pub(crate) fn settle_recheck(ctx: &AppContext, plan: &SettlePlan) -> Result<SettlePlan, String> {
     let target = &plan.draft.target;
     let item = match &target.scope {
@@ -730,12 +733,6 @@ pub(crate) fn settle_recheck(ctx: &AppContext, plan: &SettlePlan) -> Result<Sett
             ));
         }
     }
-    if fresh.draft.live_session.is_some() != plan.draft.live_session.is_some() {
-        return Err(format!(
-            "A session started or ended in {} since the popup opened; nothing launched",
-            target.alias
-        ));
-    }
     Ok(fresh)
 }
 
@@ -761,9 +758,9 @@ pub(crate) fn launched_status(plan: &SettlePlan) -> String {
     )
 }
 
-/// Launch the plan, or focus the live session (37 D-12). The real launch is
-/// reached only from here; unit tests record the plan on a thread-local instead,
-/// so none of them touches a multiplexer or a terminal.
+/// Launch the plan in a new session. The real launch is reached only from here;
+/// unit tests record the plan on a thread-local instead, so none of them touches
+/// a multiplexer or a terminal.
 pub(crate) fn launch_settle(plan: &SettlePlan) -> String {
     #[cfg(not(test))]
     {
@@ -772,14 +769,7 @@ pub(crate) fn launch_settle(plan: &SettlePlan) -> String {
     #[cfg(test)]
     {
         SETTLE_LAUNCHES.with(|launches| launches.borrow_mut().push(plan.clone()));
-        match &plan.draft.live_session {
-            Some(_) => format!(
-                "{} {}",
-                crate::multiplexer::FOCUS_OK_PREFIX,
-                plan.draft.target.alias
-            ),
-            None => launched_status(plan),
-        }
+        launched_status(plan)
     }
 }
 
@@ -865,22 +855,18 @@ fn pending_for(ctx: &AppContext, plan: &SettlePlan) -> Option<settle_pending::Pe
     Some(entry)
 }
 
-/// Whether Yes started something worth waiting on (I-10): a live session always
-/// (the paste happens outside the app), a new session only when `status` is the
-/// launched line or reports a GUI terminal. The multiplexer's failures
+/// Whether Yes started something worth waiting on (I-10): only when `status` is
+/// the launched line or reports a GUI terminal. The multiplexer's failures
 /// (`Failed to launch: ...`, `... no terminal emulator found ...`) are neither.
 pub(crate) fn launch_started(plan: &SettlePlan, status: &str) -> bool {
-    plan.draft.live_session.is_some()
-        || status == launched_status(plan)
-        || status.contains("opened in")
+    status == launched_status(plan) || status.contains("opened in")
 }
 
-/// Yes: launch the plan (or focus the live session) and leave a pending entry on
-/// the context so the settled row shows `settling…` until its checks leave
-/// (quick 261118-v6l, I-10). A new session registers only when it started (the
-/// status is the launched line or reports a GUI terminal); a live session always
-/// registers, because the paste happens outside the app. Returns the status line
-/// of [`launch_settle`] unchanged.
+/// Yes: launch the plan in a new session and leave a pending entry on the context
+/// so the settled row shows `settling…` until its checks leave (quick 261118-v6l,
+/// I-10). The entry registers only when the launch started (the status is the
+/// launched line or reports a GUI terminal). Returns the status line of
+/// [`launch_settle`] unchanged.
 pub(crate) fn launch_and_track(ctx: &mut AppContext, plan: &SettlePlan) -> String {
     let entry = pending_for(ctx, plan);
     let status = launch_settle(plan);
@@ -890,14 +876,12 @@ pub(crate) fn launch_and_track(ctx: &mut AppContext, plan: &SettlePlan) -> Strin
     status
 }
 
-/// The real action behind Yes: focus the live session or launch a new one. The
-/// project path is the child's cwd, the prompt is ONE argv element.
+/// The real action behind Yes: always launch a new session, even beside a live
+/// one (quick 261125-khh). The project path is the child's cwd, the prompt is ONE
+/// argv element.
 #[cfg(not(test))]
 fn launch_settle_real(plan: &SettlePlan) -> String {
     use super::detail::{resolve_launch_plan, settle_mux_argv, settle_terminal_argv};
-    if let Some(session) = &plan.draft.live_session {
-        return crate::multiplexer::focus_message(session, &plan.draft.target.alias);
-    }
     crate::multiplexer::launch(
         &resolve_launch_plan(),
         &plan.draft.cwd,

@@ -4021,14 +4021,6 @@ impl App {
                 self.pending_osc52 = Some(sequence);
                 self.needs_redraw = true;
             }
-            // 39-03 D-11: `Pop` (same root guard) and `WriteOsc52` as one transition.
-            ScreenAction::PopWriteOsc52(sequence) => {
-                if self.screen_stack.len() > 1 {
-                    self.screen_stack.pop();
-                }
-                self.pending_osc52 = Some(sequence);
-                self.needs_redraw = true;
-            }
             // Runtime only: nothing is written to `config.json` (D-06, I-2).
             ScreenAction::ToggleMouseCapture => {
                 self.mouse_capture = !self.mouse_capture;
@@ -6898,26 +6890,6 @@ mod tests {
         assert!(app.needs_redraw);
         assert_eq!(app.pending_osc52.take(), Some(sequence));
         assert!(app.pending_osc52.is_none());
-    }
-
-    /// 39-03 D-11: `PopWriteOsc52` closes the popup and holds the sequence in one
-    /// transition; the root screen is never popped.
-    #[test]
-    fn pop_write_osc52_pops_and_holds_the_sequence() {
-        let mut app = App::new_for_test();
-        let sequence = crate::clipboard::osc52("/gsd-verify-work 01 x");
-        let root = app.screen_stack.len();
-        app.screen_stack
-            .push(Box::new(crate::ui::screens::help::HelpScreen::new()));
-        app.needs_redraw = false;
-        app.process_screen_action(ScreenAction::PopWriteOsc52(sequence.clone()));
-        assert_eq!(app.screen_stack.len(), root);
-        assert_eq!(app.pending_osc52.as_deref(), Some(sequence.as_str()));
-        assert!(app.needs_redraw);
-        app.pending_osc52 = None;
-        app.process_screen_action(ScreenAction::PopWriteOsc52(sequence.clone()));
-        assert_eq!(app.screen_stack.len(), root, "the root is never popped");
-        assert_eq!(app.pending_osc52, Some(sequence));
     }
 
     /// 37-07 D-09: the clipboard tool's answer sets the (escaped) status line.
@@ -10662,6 +10634,34 @@ mod tests {
         assert!(
             refused(&app).contains("no such resolver"),
             "{}",
+            refused(&app)
+        );
+        assert_eq!(app.screen_stack.len(), depth, "no viewer was opened");
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
+    async fn the_viewer_follows_the_chosen_resolver_attempt_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, _rx) = app_on_the_driver_tab(dir.path());
+        let id = cached_resolved_run(&mut app);
+        let depth = app.screen_stack.len();
+        app.update(Action::OneoffViewerOpen {
+            alias: OBS_ALIAS.to_string(),
+            run_id: id,
+            attempt: Some(2),
+        });
+        assert_eq!(app.screen_stack.len(), depth + 1);
+        let stream = app.ctx.view_cache[OBS_ALIAS]
+            .oneoff_stream
+            .as_ref()
+            .unwrap();
+        assert_eq!(stream.attempt, Some(2));
+        assert!(stream.run_dir.ends_with("land/2"), "{:?}", stream.run_dir);
+        // No landing is in progress, so the finished resolver session is not live.
+        assert_eq!(stream.info.live, crate::oneoff::store::LiveState::Finished);
+        assert_eq!(stream.info.soft_cap_usd, None);
+    }
 
     // -----------------------------------------------------------------------
     // Registry writes keep other processes' edits (quick 261125-kfc)
@@ -10772,33 +10772,5 @@ mod tests {
         assert!(app.ctx.config.projects.contains_key("fresh-proj"));
         assert!(app.ctx.project_states.contains_key("fresh-proj"));
         assert!(path.is_dir(), "the unreadable path was left alone");
-    }
-            refused(&app)
-        );
-        assert_eq!(app.screen_stack.len(), depth, "no viewer was opened");
-    }
-
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    #[tokio::test]
-    async fn the_viewer_follows_the_chosen_resolver_attempt_dir() {
-        let dir = tempfile::tempdir().unwrap();
-        let (mut app, _rx) = app_on_the_driver_tab(dir.path());
-        let id = cached_resolved_run(&mut app);
-        let depth = app.screen_stack.len();
-        app.update(Action::OneoffViewerOpen {
-            alias: OBS_ALIAS.to_string(),
-            run_id: id,
-            attempt: Some(2),
-        });
-        assert_eq!(app.screen_stack.len(), depth + 1);
-        let stream = app.ctx.view_cache[OBS_ALIAS]
-            .oneoff_stream
-            .as_ref()
-            .unwrap();
-        assert_eq!(stream.attempt, Some(2));
-        assert!(stream.run_dir.ends_with("land/2"), "{:?}", stream.run_dir);
-        // No landing is in progress, so the finished resolver session is not live.
-        assert_eq!(stream.info.live, crate::oneoff::store::LiveState::Finished);
-        assert_eq!(stream.info.soft_cap_usd, None);
     }
 }

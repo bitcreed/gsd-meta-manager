@@ -489,9 +489,9 @@ confirmed, so enlarge it or press `d` for the one that fits. The instruction ask
 to resume the UAT session, record each check as `result: skipped` with a
 `Deferred follow-up:` reason (which gsd-core counts as non-blocking), and not to promote
 it to the 999.x backlog. Move also asks for one todo naming phase M, so the check comes up again
-when phase M runs. If the project already has a live Claude session, `y` switches to it
-and copies the command (instruction included) for you to paste, by the same clipboard
-route as `y` on a row; nothing is typed into that session and no second one starts.
+when phase M runs. `y` always starts a new session, even when the project already has a
+live Claude session: it never switches to that session or types into it, and it never
+touches the clipboard; the popup notes that the new session starts beside the live one.
 After `y` the row stays where it was and shows a dim `settling… <outcome>` badge with a
 spinner and the time since `y`; it reads `recorded` once the source file changes on disk,
 and when the check leaves the list it shows `✓ test 2 skipped` (or `✓ moved to phase M`)

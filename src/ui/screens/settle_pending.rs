@@ -584,7 +584,7 @@ mod tests {
                     self.0.pop();
                     self.0.push(screen);
                 }
-                ScreenAction::Pop | ScreenAction::PopWriteOsc52(_) => {
+                ScreenAction::Pop => {
                     self.0.pop();
                 }
                 _ => {}
@@ -910,10 +910,12 @@ mod tests {
         assert!(stack.text(&ctx, 100).contains("\u{2713} moved to phase 02"));
     }
 
-    /// I-10: a live session always registers, a new session only when it started.
+    /// I-10: an entry registers exactly when the launch started (the launched line
+    /// or a GUI-terminal line), with or without a live session in the project
+    /// (quick 261125-khh: Yes always starts a new session); a failed launch
+    /// registers nothing.
     #[test]
-    fn a_live_session_registers_and_a_failed_launch_does_not() {
-        crate::ui::screens::owner_actions::force_clipboard(None);
+    fn a_started_launch_registers_and_a_failed_one_does_not() {
         take_settle_launches();
         let (_dir, root) = temp_fixture("uat-pending");
         let mut ctx = fixture_ctx(&root, ALIAS);
@@ -922,7 +924,12 @@ mod tests {
         stack.open_popup(&mut ctx);
         stack.key(&mut ctx, KeyCode::Char('y'));
         assert_eq!(stack.0.len(), 1, "the popup closed");
-        assert_eq!(ctx.settle_pending.len(), 1, "the paste happens outside");
+        assert_eq!(
+            take_settle_launches().len(),
+            1,
+            "a new session beside the live one"
+        );
+        assert_eq!(ctx.settle_pending.len(), 1, "the launch started");
         let text = stack.text(&ctx, 100);
         assert!(
             text.contains("settling\u{2026} won't do \u{b7} launched"),
@@ -940,24 +947,26 @@ mod tests {
                 },
             }
         };
-        let mut new_session = plan.clone();
-        new_session.draft.live_session = None;
-        for (status, started) in [
-            (owner_settle::launched_status(&new_session), true),
-            ("Launched via opened in gnome-terminal".to_owned(), true),
-            ("Failed to launch: no such file".to_owned(), false),
-            (
-                "no terminal emulator found (set $TERMINAL)".to_owned(),
-                false,
-            ),
-        ] {
-            assert_eq!(
-                owner_settle::launch_started(&new_session, &status),
-                started,
-                "{status}"
-            );
+        assert!(plan.draft.live_session.is_some());
+        let mut no_live = plan.clone();
+        no_live.draft.live_session = None;
+        for plan in [&plan, &no_live] {
+            for (status, started) in [
+                (owner_settle::launched_status(plan), true),
+                ("Launched via opened in gnome-terminal".to_owned(), true),
+                ("Failed to launch: no such file".to_owned(), false),
+                (
+                    "no terminal emulator found (set $TERMINAL)".to_owned(),
+                    false,
+                ),
+            ] {
+                assert_eq!(
+                    owner_settle::launch_started(plan, &status),
+                    started,
+                    "{status}"
+                );
+            }
         }
-        assert!(owner_settle::launch_started(&plan, "Failed to focus"));
     }
 
     /// A new Yes on the same checks replaces the old entry.

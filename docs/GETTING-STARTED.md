@@ -217,7 +217,8 @@ and `Enter` on a check or file line opens that file read-only at that place.
 `x` (settle) and `A` (acknowledge) always show a default-No confirmation before
 anything runs. `A` only hides a file until it changes (nothing is recorded and the phase
 stays open); `x` records checks as skipped (won't do, deferred permanently or moved to phase M)
-so the phase can close. See [the README](../README.md#owner-inbox) for the full key list.
+so the phase can close. `x` always launches GSD in a new session, next to any session
+already running in the project. See [the README](../README.md#owner-inbox) for the full key list.
 
 ## Common setup issues
 

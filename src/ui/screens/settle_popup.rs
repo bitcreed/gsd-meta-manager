@@ -16,7 +16,6 @@ use super::detail::fit_cells;
 use super::detail::{fit_spans, settle_mux_argv, shown};
 use super::driver_steer::tail_cells;
 use super::inbox::InboxScreen;
-use super::owner_actions;
 use super::owner_settle::{
     self, clean, MoveTarget, Outcome, SettleChoice, SettleDraft, SettlePlan, SettleScope,
     REASON_MAX_CHARS,
@@ -551,10 +550,9 @@ impl SettleConfirmScreen {
         self
     }
 
-    /// Yes: the status line says why nothing launched, or what launched. With a
-    /// live session in the project it is focused (never typed into) and the
-    /// prompt goes to the clipboard for the owner to paste there (D-11); the
-    /// OSC 52 branch closes the popup and hands over the sequence in one action.
+    /// Yes: the status line says why nothing launched, or what launched. Yes always
+    /// starts a new session, even beside a live one (quick 261125-khh): it never
+    /// focuses a session and never touches the clipboard.
     fn confirm(&self, ctx: &mut AppContext) -> ScreenAction {
         let fresh = match owner_settle::settle_recheck(ctx, &self.plan) {
             Ok(fresh) => fresh,
@@ -563,40 +561,25 @@ impl SettleConfirmScreen {
                 return ScreenAction::Pop;
             }
         };
-        let focus = owner_settle::launch_and_track(ctx, &fresh);
-        if fresh.draft.live_session.is_none() {
-            ctx.status_message = Some((focus, std::time::Instant::now()));
-            return ScreenAction::Pop;
-        }
-        let lead = live_settle_lead(&focus, &fresh.draft.target.alias);
-        match owner_actions::copy_led(ctx, lead, fresh.prompt(), 1) {
-            ScreenAction::WriteOsc52(sequence) => ScreenAction::PopWriteOsc52(sequence),
-            _ => ScreenAction::Pop,
-        }
-    }
-}
-
-/// The status lead for a live-session settle. "paste the command there" only
-/// holds when the focus actually switched (the `v` path's `focus_status` rule);
-/// on a failed focus the reason stays and the owner is told where to paste.
-fn live_settle_lead(focus: &str, alias: &str) -> String {
-    if focus.starts_with(crate::multiplexer::FOCUS_OK_PREFIX) {
-        format!("{focus} \u{b7} paste the command there")
-    } else {
-        format!("{focus} \u{b7} paste the command into the Claude session in {alias}")
+        let status = owner_settle::launch_and_track(ctx, &fresh);
+        ctx.status_message = Some((status, std::time::Instant::now()));
+        ScreenAction::Pop
     }
 }
 
 /// Width of the label column of the popup's header rows.
 const LABEL_W: usize = 11;
 
-/// The one footer both views end with, as the popup shows it for a new session.
+/// The one footer both views end with, as the popup shows it when the project has
+/// no live Claude session.
 const FOOTER_NEW: &str =
     "Yes starts a new session \u{b7} GSD records it \u{b7} this app writes nothing";
 
-/// The footer when Claude already runs in the project.
-const FOOTER_LIVE: &str =
-    "Claude runs here \u{b7} Yes focuses it, copies the command \u{b7} no new session";
+/// The footer when Claude already runs in the project (D-02): Yes still starts a
+/// new session, beside the live one. Same width as the footer it replaced (70
+/// cells), so the 80x24 fit holds.
+const FOOTER_BESIDE_LIVE: &str =
+    "Yes starts a new session beside the live one \u{b7} this app writes nothing";
 
 /// `label` (BOLD, in the label column) and `value` wrapped at separators under it.
 fn field(label: &str, value: &str, inner_w: usize) -> Vec<Line<'static>> {
@@ -671,7 +654,7 @@ fn unknown_phase_warning(plan: &SettlePlan, inner_w: usize) -> Vec<Line<'static>
 /// every word.
 fn footer(plan: &SettlePlan, inner_w: usize) -> Vec<Line<'static>> {
     let text = if plan.draft.live_session.is_some() {
-        FOOTER_LIVE
+        FOOTER_BESIDE_LIVE
     } else {
         FOOTER_NEW
     };
@@ -1013,6 +996,7 @@ impl Screen for SettleConfirmScreen {
 mod tests {
     use super::*;
     use crate::ui::screens::inbox::stop_rows;
+    use crate::ui::screens::owner_actions;
     use crate::ui::screens::owner_settle::take_settle_launches;
     use crate::ui::screens::owner_settle::test_support::{fixture_ctx, temp_fixture, tree};
     use ratatui::backend::TestBackend;
@@ -1066,9 +1050,8 @@ mod tests {
                 ScreenAction::Pop => {
                     self.0.pop();
                 }
-                // As `App` applies it: pop and hold the sequence.
-                ScreenAction::PopWriteOsc52(sequence) => {
-                    self.0.pop();
+                // Held, so a test can assert settle never hands one over.
+                ScreenAction::WriteOsc52(sequence) => {
                     self.1 = Some(sequence);
                 }
                 ScreenAction::None => return false,
@@ -1087,7 +1070,7 @@ mod tests {
             }
         }
 
-        /// The OSC 52 sequence a `PopWriteOsc52` handed over, drained.
+        /// Any OSC 52 sequence a screen handed over, drained.
         pub(crate) fn take_osc52(&mut self) -> Option<String> {
             self.1.take()
         }
@@ -2094,64 +2077,72 @@ mod tests {
         assert!(take_settle_launches().is_empty());
     }
 
+    /// Quick 261125-khh (D-01, D-02): a live session in the project still gets a
+    /// NEW session. Yes never focuses it and never touches the clipboard: no OSC 52
+    /// sequence reaches the stack and the native-copy seam records nothing, even
+    /// with a native tool available. The popup notes the live session.
     #[test]
-    fn yes_rechecks_a_new_live_session() {
-        take_settle_launches();
+    fn a_live_session_still_gets_a_new_session() {
+        use crate::clipboard::ClipboardProbes;
+        let wl_copy = || {
+            Some(ClipboardProbes {
+                os: "linux",
+                wayland_display: true,
+                display: false,
+                on_path: vec!["wl-copy"],
+            })
+        };
+        // The inbox.
+        owner_actions::force_clipboard(wl_copy());
         let (_dir, root) = temp_fixture("uat-pending");
-        let mut ctx = fixture_ctx(&root, ALIAS);
-        let mut stack = Stack::inbox();
-        to_popup(&mut stack, &mut ctx);
-        ctx.active_sessions.push(session_in(&root));
-        stack.key(&mut ctx, KeyCode::Char('y'));
-        assert_eq!(
-            status(&ctx),
-            "A session started or ended in alder-api since the popup opened; nothing launched"
+        let before = tree(&root);
+        let (mut ctx, mut stack) = live_flow(&root);
+        let text = stack.render(&ctx, 100, 30);
+        assert!(text.contains("beside the live one"), "{text}");
+        assert!(!text.contains("copies the command"), "{text}");
+        assert!(stack.key(&mut ctx, KeyCode::Char('y')));
+        assert_eq!(stack.depth(), 1, "the popup closed");
+        let launches = take_settle_launches();
+        assert_eq!(launches.len(), 1, "exactly one new session");
+        assert!(launches[0].draft.live_session.is_some());
+        assert_eq!(launches[0].prompt(), TRACER_PROMPT);
+        assert_eq!(status(&ctx), owner_settle::launched_status(&launches[0]));
+        assert!(
+            status(&ctx).starts_with("Launched /gsd-verify-work 01 in alder-api"),
+            "{}",
+            status(&ctx)
         );
-        assert!(take_settle_launches().is_empty());
-        // And the other direction: a session that vanished.
-        let mut stack = Stack::inbox();
-        to_popup(&mut stack, &mut ctx);
-        ctx.active_sessions.clear();
-        stack.key(&mut ctx, KeyCode::Char('y'));
-        assert_eq!(
-            status(&ctx),
-            "A session started or ended in alder-api since the popup opened; nothing launched"
-        );
-        assert!(take_settle_launches().is_empty());
-    }
-
-    #[test]
-    fn a_live_session_is_focused_not_relaunched() {
-        take_settle_launches();
-        let (_dir, root) = temp_fixture("uat-pending");
+        assert!(stack.take_osc52().is_none(), "no OSC 52 sequence");
+        assert!(owner_actions::seam_ran().is_empty(), "no native copy");
+        assert_eq!(tree(&root), before);
+        // The Owner block host, one check.
+        owner_actions::force_clipboard(wl_copy());
         let mut ctx = fixture_ctx(&root, ALIAS);
         ctx.active_sessions.push(session_in(&root));
-        let mut stack = Stack::inbox();
+        let (key, _) = uat_row_and_first_item(&ctx);
+        let mut stack = Stack::detail(&mut ctx, ALIAS, &key);
+        stack.key(&mut ctx, KeyCode::Char(' '));
+        stack.key(&mut ctx, KeyCode::Char('j'));
         stack.key(&mut ctx, KeyCode::Char('x'));
         stack.key(&mut ctx, KeyCode::Char('w'));
         stack.keys(&mut ctx, "no device here");
         stack.key(&mut ctx, KeyCode::Enter);
+        assert_eq!(stack.name(), "settle_confirm");
         let text = stack.render(&ctx, 100, 30);
-        for want in [
-            "Claude runs here",
-            "Yes focuses it, copies the command",
-            "no new session",
-        ] {
-            assert!(text.contains(want), "{want:?} missing from\n{text}");
-        }
+        assert!(text.contains("beside the live one"), "{text}");
         stack.key(&mut ctx, KeyCode::Char('y'));
         let launches = take_settle_launches();
         assert_eq!(launches.len(), 1);
-        assert!(
-            launches[0].draft.live_session.is_some(),
-            "the real path focuses it"
+        assert_eq!(
+            launches[0].draft.target.scope,
+            SettleScope::Check("01-UAT.md#2".to_owned())
         );
-        assert!(
-            status(&ctx).starts_with(crate::multiplexer::FOCUS_OK_PREFIX),
-            "{}",
-            status(&ctx)
-        );
-        // A prefix-sharing sibling directory is a different project.
+        assert_eq!(status(&ctx), owner_settle::launched_status(&launches[0]));
+        assert!(stack.take_osc52().is_none());
+        assert!(owner_actions::seam_ran().is_empty());
+        assert_eq!(tree(&root), before);
+        owner_actions::force_clipboard(None);
+        // A prefix-sharing sibling directory is a different project (T-37-06).
         let mut ctx = fixture_ctx(&root, ALIAS);
         let sibling = root.with_file_name(format!(
             "{}-sibling",
@@ -2160,10 +2151,39 @@ mod tests {
         ctx.active_sessions.push(session_in(&sibling));
         let mut stack = Stack::inbox();
         to_popup(&mut stack, &mut ctx);
+        let text = stack.render(&ctx, 100, 30);
+        assert!(!text.contains("beside the live one"), "{text}");
         stack.key(&mut ctx, KeyCode::Char('y'));
         let launches = take_settle_launches();
         assert_eq!(launches.len(), 1);
         assert!(launches[0].draft.live_session.is_none());
+    }
+
+    /// D-03: Yes does the same with or without a live session, so a session that
+    /// started or ended after the popup opened refuses nothing.
+    #[test]
+    fn a_session_that_starts_or_ends_before_yes_still_launches() {
+        take_settle_launches();
+        let (_dir, root) = temp_fixture("uat-pending");
+        let mut ctx = fixture_ctx(&root, ALIAS);
+        let mut stack = Stack::inbox();
+        to_popup(&mut stack, &mut ctx);
+        ctx.active_sessions.push(session_in(&root));
+        stack.key(&mut ctx, KeyCode::Char('y'));
+        let launches = take_settle_launches();
+        assert_eq!(launches.len(), 1, "a session that started refuses nothing");
+        assert_eq!(status(&ctx), owner_settle::launched_status(&launches[0]));
+        // And the other direction: a session that ended (a fresh context, since
+        // the first Yes left the row pending).
+        let mut ctx = fixture_ctx(&root, ALIAS);
+        ctx.active_sessions.push(session_in(&root));
+        let mut stack = Stack::inbox();
+        to_popup(&mut stack, &mut ctx);
+        ctx.active_sessions.clear();
+        stack.key(&mut ctx, KeyCode::Char('y'));
+        let launches = take_settle_launches();
+        assert_eq!(launches.len(), 1, "a session that ended refuses nothing");
+        assert_eq!(status(&ctx), owner_settle::launched_status(&launches[0]));
     }
 
     #[test]
@@ -2453,103 +2473,6 @@ mod tests {
         let mut stack = Stack::inbox();
         to_popup(&mut stack, &mut ctx);
         (ctx, stack)
-    }
-
-    const FOCUSED: &str = "alder-api \u{b7} paste the command there";
-
-    #[test]
-    fn a_failed_focus_never_says_paste_there() {
-        let ok = format!("{} alder-api", crate::multiplexer::FOCUS_OK_PREFIX);
-        assert_eq!(
-            live_settle_lead(&ok, "alder-api"),
-            format!("{} {FOCUSED}", crate::multiplexer::FOCUS_OK_PREFIX)
-        );
-        let failed = "Tab-switching requires running inside tmux or herdr (none detected)";
-        let lead = live_settle_lead(failed, "alder-api");
-        assert!(lead.starts_with(failed), "{lead}");
-        assert!(!lead.contains("paste the command there"), "{lead}");
-        assert!(lead.ends_with("Claude session in alder-api"), "{lead}");
-    }
-
-    #[test]
-    fn a_live_session_gets_the_prompt_by_osc52() {
-        crate::ui::screens::owner_actions::force_clipboard(None);
-        let (_dir, root) = temp_fixture("uat-pending");
-        let before = tree(&root);
-        let (mut ctx, mut stack) = live_flow(&root);
-        stack.key(&mut ctx, KeyCode::Char('y'));
-        assert_eq!(stack.depth(), 1, "the popup closed in the same transition");
-        let launches = take_settle_launches();
-        assert_eq!(launches.len(), 1, "one focus, no second session");
-        let prompt = launches[0].prompt();
-        assert_eq!(prompt, TRACER_PROMPT);
-        let sequence = stack.take_osc52().expect("the sequence reached the stack");
-        assert_eq!(sequence, crate::clipboard::osc52(&prompt));
-        assert!(sequence.starts_with("\u{1b}]52;c;") && sequence.ends_with('\u{7}'));
-        assert!(!sequence.contains("claude"), "never the argv");
-        assert_eq!(
-            status(&ctx),
-            format!(
-                "{} {FOCUSED}; Sent 1 line to the terminal clipboard (OSC 52; the terminal must allow it)",
-                crate::multiplexer::FOCUS_OK_PREFIX
-            )
-        );
-        assert!(owner_actions::seam_ran().is_empty());
-        assert_eq!(tree(&root), before);
-    }
-
-    #[test]
-    fn a_live_session_gets_the_prompt_by_a_native_tool() {
-        use crate::clipboard::{ClipboardProbes, Tool};
-        crate::ui::screens::owner_actions::force_clipboard(Some(ClipboardProbes {
-            os: "linux",
-            wayland_display: true,
-            display: false,
-            on_path: vec!["wl-copy"],
-        }));
-        let (_dir, root) = temp_fixture("uat-pending");
-        let (mut ctx, mut stack) = live_flow(&root);
-        stack.key(&mut ctx, KeyCode::Char('y'));
-        assert_eq!(stack.depth(), 1);
-        assert!(stack.take_osc52().is_none(), "the native tool is used");
-        assert_eq!(
-            owner_actions::seam_ran(),
-            vec![(Tool::WlCopy, TRACER_PROMPT.to_owned(), 1)]
-        );
-        assert_eq!(
-            status(&ctx),
-            format!("{} {FOCUSED}", crate::multiplexer::FOCUS_OK_PREFIX)
-        );
-        assert_eq!(take_settle_launches().len(), 1);
-        crate::ui::screens::owner_actions::force_clipboard(None);
-    }
-
-    #[test]
-    fn an_owner_block_live_session_copies_the_check_prompt() {
-        crate::ui::screens::owner_actions::force_clipboard(None);
-        take_settle_launches();
-        let (_dir, root) = temp_fixture("uat-pending");
-        let mut ctx = fixture_ctx(&root, ALIAS);
-        ctx.active_sessions.push(session_in(&root));
-        let (key, _) = uat_row_and_first_item(&ctx);
-        let mut stack = Stack::detail(&mut ctx, ALIAS, &key);
-        stack.key(&mut ctx, KeyCode::Char(' '));
-        stack.key(&mut ctx, KeyCode::Char('j'));
-        stack.key(&mut ctx, KeyCode::Char('x'));
-        stack.key(&mut ctx, KeyCode::Char('w'));
-        stack.keys(&mut ctx, "no device here");
-        stack.key(&mut ctx, KeyCode::Enter);
-        stack.key(&mut ctx, KeyCode::Char('y'));
-        let launches = take_settle_launches();
-        assert_eq!(launches.len(), 1);
-        assert_eq!(
-            launches[0].draft.target.scope,
-            SettleScope::Check("01-UAT.md#2".to_owned())
-        );
-        assert_eq!(
-            stack.take_osc52(),
-            Some(crate::clipboard::osc52(&launches[0].prompt()))
-        );
     }
 
     #[test]

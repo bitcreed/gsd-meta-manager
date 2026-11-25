@@ -3,12 +3,12 @@
 //! `x` on a check or a phase launches `/gsd-verify-work N <instruction>`; GSD files
 //! the outcome. The claim "the app writes no GSD file" therefore reduces to: the
 //! settle modules contain no write API and no process API outside their test code.
-//! Launching goes through `crate::multiplexer`, the clipboard through
-//! `owner_actions`; neither is spelled in these files.
+//! Launching goes through `crate::multiplexer` only (settle never touches the
+//! clipboard, quick 261125-khh); it is not spelled in these files.
 //!
 //! The scan is a lint, not a proof (a helper elsewhere could still write), but the
-//! helpers the settle modules call are the launch seam and the clipboard, whose own
-//! guards (`tests/spawn_seam_guard.rs`, `tests/focus_entry_guard.rs`) cover them.
+//! helper the settle modules call is the launch seam, whose own guard
+//! (`tests/spawn_seam_guard.rs`) covers it.
 //! Its silence is only meaningful if it read the files, so the executable-line
 //! floor and the per-file presence check fail it when it did not.
 //!
@@ -140,8 +140,8 @@ fn the_settle_modules_write_nothing_and_spawn_nothing() {
     }
     assert!(
         found.is_empty(),
-        "a settle module writes or spawns; launching goes through `crate::multiplexer` and \
-         the clipboard through `owner_actions`: {found:#?}"
+        "a settle module writes or spawns; launching goes through `crate::multiplexer` \
+         only: {found:#?}"
     );
 }
 

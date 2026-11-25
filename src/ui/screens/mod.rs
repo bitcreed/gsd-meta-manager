@@ -377,11 +377,6 @@ pub enum ScreenAction {
     /// (`App::pending_osc52`); the binary's main loop writes it to the terminal
     /// after the frame, never from `render` or a key handler.
     WriteOsc52(String),
-    /// [`ScreenAction::Pop`] and [`ScreenAction::WriteOsc52`] in one transition,
-    /// for a confirm popup that closes and hands the terminal a clipboard
-    /// sequence (the live-session settle, 39-03 D-11). `App` holds the sequence
-    /// like `WriteOsc52` does.
-    PopWriteOsc52(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -2006,45 +2001,9 @@ impl AppContext {
     ) where
         F: FnOnce(crate::clipboard::Tool, &str) -> Result<(), String> + Send + 'static,
     {
-        self.start_copy_led_with(tool, text, lines, None, run);
-    }
-
-    /// [`Self::start_copy`] with every message led by `lead` (39-03, D-11): the
-    /// live-session settle says what was focused before it says what was copied.
-    // The unit tests go through the `owner_actions` seam instead of this wrapper.
-    #[cfg_attr(test, allow(dead_code))]
-    pub(crate) fn start_copy_led(
-        &mut self,
-        tool: crate::clipboard::Tool,
-        text: String,
-        lines: usize,
-        lead: String,
-    ) {
-        self.start_copy_led_with(tool, text, lines, Some(lead), |tool, text| {
-            crate::clipboard::copy_with_tool(tool, text, std::time::Duration::from_secs(2))
-        });
-    }
-
-    /// The body of [`Self::start_copy_with`]: with `Some(lead)` every message it
-    /// sets or sends (the busy status, the no-channel status, the outcome) reads
-    /// `{lead}; {message}`.
-    pub(crate) fn start_copy_led_with<F>(
-        &mut self,
-        tool: crate::clipboard::Tool,
-        text: String,
-        lines: usize,
-        lead: Option<String>,
-        run: F,
-    ) where
-        F: FnOnce(crate::clipboard::Tool, &str) -> Result<(), String> + Send + 'static,
-    {
-        let led = move |message: String| match &lead {
-            Some(lead) => format!("{lead}; {message}"),
-            None => message,
-        };
         let Some(tx) = self.event_tx.clone() else {
             self.status_message = Some((
-                led("Copy failed: this session has no event channel".to_owned()),
+                "Copy failed: this session has no event channel".to_owned(),
                 std::time::Instant::now(),
             ));
             self.needs_redraw = true;
@@ -2052,7 +2011,7 @@ impl AppContext {
         };
         if std::mem::replace(&mut self.owner_copy_busy, true) {
             self.status_message = Some((
-                led("Already copying; wait for it to finish".to_owned()),
+                "Already copying; wait for it to finish".to_owned(),
                 std::time::Instant::now(),
             ));
             self.needs_redraw = true;
@@ -2063,12 +2022,12 @@ impl AppContext {
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(tool, &text)))
                     .unwrap_or_else(|_| Err("stopped unexpectedly".to_owned()));
             let outcome = match result {
-                Ok(()) => led(format!(
+                Ok(()) => format!(
                     "Copied {} via {}",
                     owner_actions::line_count(lines),
                     tool.name()
-                )),
-                Err(why) => led(format!("Copy failed: {} {why}", tool.name())),
+                ),
+                Err(why) => format!("Copy failed: {} {why}", tool.name()),
             };
             let _ = tx.send(crate::action::Action::ClipboardCopied { outcome });
         });
@@ -2239,6 +2198,47 @@ impl AppContext {
             .map(|alias| self.owner_digests.get(alias))
     }
 
+    /// Whether `alias` passes the `/y [lane]` filter (D-14): no digest never
+    /// matches; no lane means any owner work; a lane means its count is above 0.
+    pub(crate) fn owner_work_matches(&self, alias: &str, lane: Option<owner::OwnerLane>) -> bool {
+        let Some(digest) = self.owner_digest(alias) else {
+            return false;
+        };
+        let numbers = owner::owner_numbers(digest);
+        match lane {
+            None => owner::has_owner_work(&numbers),
+            Some(lane) => owner::lane_count(&numbers, lane) > 0,
+        }
+    }
+
+    /// Get the alias of the currently selected project, if any.
+    pub fn selected_alias(&self) -> Option<String> {
+        self.table_state
+            .selected()
+            .and_then(|i| self.filtered_aliases.get(i).cloned())
+    }
+
+    /// Re-derive [`table_state`](AppContext::table_state) from the alias that
+    /// was selected before the row set changed.
+    ///
+    /// **Pinned to the alias, never to the index.** Under
+    /// [`SortMode::AttentionFirst`] a run finishing re-ranks its project, and an
+    /// index-preserving selection would move the row out from under the cursor
+    /// — so the next keystroke would act on a project the user never chose.
+    /// When the previously selected alias is gone the index is clamped into
+    /// range rather than left dangling, and an empty list selects nothing.
+    fn pin_selection_to_alias(&mut self, previous: Option<String>) {
+        if self.filtered_aliases.is_empty() {
+            self.table_state.select(None);
+            return;
+        }
+        let last = self.filtered_aliases.len() - 1;
+        let index = previous
+            .and_then(|alias| self.filtered_aliases.iter().position(|a| *a == alias))
+            .unwrap_or_else(|| self.table_state.selected().unwrap_or(0).min(last));
+        self.table_state.select(Some(index));
+    }
+
     /// Start tracking a project that just entered the registry: watch its
     /// `.planning/` directory (when it is one), parse and record its state, and
     /// schedule its owner digest.
@@ -2348,47 +2348,6 @@ impl AppContext {
             }
         }
         self.needs_redraw = true;
-    }
-
-    /// Whether `alias` passes the `/y [lane]` filter (D-14): no digest never
-    /// matches; no lane means any owner work; a lane means its count is above 0.
-    pub(crate) fn owner_work_matches(&self, alias: &str, lane: Option<owner::OwnerLane>) -> bool {
-        let Some(digest) = self.owner_digest(alias) else {
-            return false;
-        };
-        let numbers = owner::owner_numbers(digest);
-        match lane {
-            None => owner::has_owner_work(&numbers),
-            Some(lane) => owner::lane_count(&numbers, lane) > 0,
-        }
-    }
-
-    /// Get the alias of the currently selected project, if any.
-    pub fn selected_alias(&self) -> Option<String> {
-        self.table_state
-            .selected()
-            .and_then(|i| self.filtered_aliases.get(i).cloned())
-    }
-
-    /// Re-derive [`table_state`](AppContext::table_state) from the alias that
-    /// was selected before the row set changed.
-    ///
-    /// **Pinned to the alias, never to the index.** Under
-    /// [`SortMode::AttentionFirst`] a run finishing re-ranks its project, and an
-    /// index-preserving selection would move the row out from under the cursor
-    /// — so the next keystroke would act on a project the user never chose.
-    /// When the previously selected alias is gone the index is clamped into
-    /// range rather than left dangling, and an empty list selects nothing.
-    fn pin_selection_to_alias(&mut self, previous: Option<String>) {
-        if self.filtered_aliases.is_empty() {
-            self.table_state.select(None);
-            return;
-        }
-        let last = self.filtered_aliases.len() - 1;
-        let index = previous
-            .and_then(|alias| self.filtered_aliases.iter().position(|a| *a == alias))
-            .unwrap_or_else(|| self.table_state.selected().unwrap_or(0).min(last));
-        self.table_state.select(Some(index));
     }
 
     pub fn recompute_filtered_aliases(&mut self) {
@@ -3916,6 +3875,47 @@ mod tests {
             .iter()
             .find(|w| w.name == "v0-14-voice-assistant")
             .unwrap()
+            .clone();
+        // The dashboard draws at most 4 workstream lines (`MAX_WORKSTREAM_LINES`,
+        // private to normal.rs). Six entries put v0.14 last, behind `ws +N more`.
+        let mut rebuilt = Vec::new();
+        for i in 1..=4 {
+            let mut copy = v013.clone();
+            copy.name = format!("v0-13-copy-{i}");
+            rebuilt.push(copy);
+        }
+        rebuilt.push(v013);
+        rebuilt.push(v014);
+        assert_eq!(rebuilt.len(), 6);
+        state.workstreams = rebuilt;
+        for query in ["push-to-talk", "assistant"] {
+            assert_eq!(
+                filtered_for(&mut ctx, query),
+                vec!["sentriq".to_string()],
+                "/{query} must match a workstream hidden behind the line cap"
+            );
+        }
+    }
+
+    #[test]
+    fn sentriq_dashboard_filter_follows_the_drawn_workstream_line_at_live_and_lapsed_instants() {
+        let td = tempfile::TempDir::new().unwrap();
+        let now = chrono::Utc::now();
+        let planning = td.path().join(".planning");
+        crate::state_reader::workstreams::write_sentriq_workstreams_fixture(&planning, now);
+        let state = crate::state_reader::parse_project_state(&planning);
+        assert!(!state.workstreams.is_empty());
+        for t in [now, now + chrono::Duration::hours(5)] {
+            for ws in &state.workstreams {
+                let line = crate::app::format_workstream_display(ws, t).to_lowercase();
+                assert!(
+                    workstream_text_matches(&state, &line, t),
+                    "the filter must match the drawn line {line:?} for {} at {t}",
+                    ws.name
+                );
+            }
+        }
+    }
 
     // -----------------------------------------------------------------------
     // adopt_config (quick 261125-kfc)
@@ -3973,46 +3973,5 @@ mod tests {
         ctx.adopt_config(fresh);
         assert!(ctx.filtered_aliases.is_empty());
         assert_eq!(ctx.table_state.selected(), None);
-    }
-            .clone();
-        // The dashboard draws at most 4 workstream lines (`MAX_WORKSTREAM_LINES`,
-        // private to normal.rs). Six entries put v0.14 last, behind `ws +N more`.
-        let mut rebuilt = Vec::new();
-        for i in 1..=4 {
-            let mut copy = v013.clone();
-            copy.name = format!("v0-13-copy-{i}");
-            rebuilt.push(copy);
-        }
-        rebuilt.push(v013);
-        rebuilt.push(v014);
-        assert_eq!(rebuilt.len(), 6);
-        state.workstreams = rebuilt;
-        for query in ["push-to-talk", "assistant"] {
-            assert_eq!(
-                filtered_for(&mut ctx, query),
-                vec!["sentriq".to_string()],
-                "/{query} must match a workstream hidden behind the line cap"
-            );
-        }
-    }
-
-    #[test]
-    fn sentriq_dashboard_filter_follows_the_drawn_workstream_line_at_live_and_lapsed_instants() {
-        let td = tempfile::TempDir::new().unwrap();
-        let now = chrono::Utc::now();
-        let planning = td.path().join(".planning");
-        crate::state_reader::workstreams::write_sentriq_workstreams_fixture(&planning, now);
-        let state = crate::state_reader::parse_project_state(&planning);
-        assert!(!state.workstreams.is_empty());
-        for t in [now, now + chrono::Duration::hours(5)] {
-            for ws in &state.workstreams {
-                let line = crate::app::format_workstream_display(ws, t).to_lowercase();
-                assert!(
-                    workstream_text_matches(&state, &line, t),
-                    "the filter must match the drawn line {line:?} for {} at {t}",
-                    ws.name
-                );
-            }
-        }
     }
 }
