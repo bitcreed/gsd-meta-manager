@@ -2011,6 +2011,180 @@ mod worktree_session_discovery_tests {
     }
 }
 
+/// The GSD-root marker rule and the system-temp-dir guard of session
+/// auto-registration (quick 261125-jx7). `std::fs` only; no env mutation (tests
+/// run in parallel), which is why the temp root is a parameter.
+#[cfg(test)]
+mod gsd_root_guard_tests {
+    use super::worktree_fixture::make_gsd_project;
+    use super::*;
+    use tempfile::tempdir;
+
+    fn session(working_dir: PathBuf) -> ClaudeSession {
+        ClaudeSession {
+            pid: 1,
+            kind: crate::session_detector::SessionKind::Claude,
+            session_id: None,
+            working_dir,
+            start_time: None,
+            tty: None,
+        }
+    }
+
+    /// The exact shape of the launcher test fixture that was auto-registered:
+    /// only gsd-meta-manager's own state under `.planning/meta-manager/`.
+    fn make_meta_manager_only_root(root: &Path) {
+        let run = root.join(".planning/meta-manager/drivers/run-1");
+        std::fs::create_dir_all(&run).unwrap();
+        std::fs::write(run.join("DIRECTION.md"), "direction\n").unwrap();
+    }
+
+    #[test]
+    fn each_marker_alone_makes_a_gsd_project_root() {
+        for marker in GSD_PLANNING_MARKERS {
+            let dir = tempdir().unwrap();
+            std::fs::create_dir(dir.path().join(".planning")).unwrap();
+            std::fs::write(dir.path().join(".planning").join(marker), "x").unwrap();
+            assert!(is_gsd_project_root(dir.path()), "{marker} must mark a root");
+        }
+    }
+
+    #[test]
+    fn a_folder_without_a_marker_is_not_a_gsd_project_root() {
+        let none = tempdir().unwrap();
+        assert!(!is_gsd_project_root(none.path()), "no .planning/");
+
+        let empty = tempdir().unwrap();
+        std::fs::create_dir(empty.path().join(".planning")).unwrap();
+        assert!(!is_gsd_project_root(empty.path()), "empty .planning/");
+
+        let own_state = tempdir().unwrap();
+        make_meta_manager_only_root(own_state.path());
+        assert!(!is_gsd_project_root(own_state.path()), "meta-manager only");
+
+        let dir_marker = tempdir().unwrap();
+        std::fs::create_dir_all(dir_marker.path().join(".planning/STATE.md")).unwrap();
+        assert!(!is_gsd_project_root(dir_marker.path()), "STATE.md is a dir");
+    }
+
+    #[test]
+    fn a_meta_manager_only_root_is_never_registered_even_with_the_temp_guard_off() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        make_meta_manager_only_root(&root);
+
+        let mut cfg = Config::new();
+        let added = auto_register_from_sessions_with_temp_root(&mut cfg, &[session(root)], None);
+        assert!(added.is_empty(), "registered: {added:?}");
+        assert!(cfg.projects.is_empty());
+    }
+
+    #[test]
+    fn a_marked_root_under_the_temp_root_is_refused_and_registers_without_it() {
+        let tmp = tempdir().unwrap();
+        let t = tmp.path().canonicalize().unwrap();
+        let proj = t.join("proj");
+        make_gsd_project(&proj);
+
+        let mut cfg = Config::new();
+        let added = auto_register_from_sessions_with_temp_root(
+            &mut cfg,
+            &[session(proj.clone())],
+            Some(&t),
+        );
+        assert!(
+            added.is_empty(),
+            "registered under the temp root: {added:?}"
+        );
+        assert!(cfg.projects.is_empty());
+
+        let added =
+            auto_register_from_sessions_with_temp_root(&mut cfg, &[session(proj.clone())], None);
+        assert_eq!(added, vec![("proj".to_string(), proj)]);
+    }
+
+    #[test]
+    fn the_temp_root_comparison_is_component_wise() {
+        let tmp = tempdir().unwrap();
+        let t = tmp.path().canonicalize().unwrap();
+        let temp_root = t.join("tmp");
+        let sibling = t.join("tmpfoo/proj");
+        let itself = temp_root.clone();
+        let nested = temp_root.join("a/proj");
+        for dir in [&sibling, &itself, &nested] {
+            make_gsd_project(dir);
+        }
+
+        let mut cfg = Config::new();
+        let added = auto_register_from_sessions_with_temp_root(
+            &mut cfg,
+            &[session(sibling.clone()), session(itself), session(nested)],
+            Some(&temp_root),
+        );
+        assert_eq!(added, vec![("proj".to_string(), sibling)]);
+    }
+
+    /// A worktree cwd under the temp root whose main lies elsewhere still
+    /// registers its main: the guard judges the RESOLVED root.
+    #[test]
+    fn the_temp_guard_judges_the_resolved_root_not_the_session_cwd() {
+        let tmp = tempdir().unwrap();
+        let t = tmp.path().canonicalize().unwrap();
+        let (main, worktree) = super::worktree_fixture::fake_linked_worktree(&t);
+        let elsewhere = t.join("not-the-temp-root");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+
+        let mut cfg = Config::new();
+        let added = auto_register_from_sessions_with_temp_root(
+            &mut cfg,
+            &[session(worktree)],
+            Some(&elsewhere),
+        );
+        assert_eq!(added, vec![("main".to_string(), main)]);
+    }
+
+    #[test]
+    fn the_public_entry_refuses_a_marked_root_under_the_real_temp_dir() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        make_gsd_project(&root);
+        let temp_root = system_temp_root().expect("this machine has a usable temp dir");
+        assert!(root.starts_with(&temp_root), "fixture must sit under it");
+
+        let mut cfg = Config::new();
+        let added = auto_register_from_sessions(&mut cfg, &[session(root)]);
+        assert!(added.is_empty(), "registered: {added:?}");
+        assert!(cfg.projects.is_empty());
+    }
+
+    #[test]
+    fn a_degenerate_temp_dir_disables_the_guard() {
+        assert_eq!(temp_guard_root(Path::new("")), None);
+        assert_eq!(temp_guard_root(Path::new("/")), None);
+        assert_eq!(
+            temp_guard_root(Path::new("definitely/not/an/existing/relative/path")),
+            None
+        );
+        let tmp = tempdir().unwrap();
+        assert_eq!(
+            temp_guard_root(tmp.path()),
+            Some(tmp.path().canonicalize().unwrap())
+        );
+        assert!(!is_under_temp_root(Path::new("/anything"), None));
+    }
+
+    #[test]
+    fn manual_add_still_accepts_a_markerless_planning_dir_under_the_temp_dir() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        std::fs::create_dir(root.join(".planning")).unwrap();
+
+        let mut cfg = Config::new();
+        add_project(&mut cfg, &Alias::new("manual").unwrap(), &root).expect("manual add");
+        assert_eq!(cfg.projects.len(), 1);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::worktree_fixture::make_gsd_project;
@@ -2905,179 +3079,5 @@ mod tests {
 
         let canonical = dir.path().canonicalize().unwrap();
         assert_eq!(added[0].1, canonical);
-    }
-}
-
-/// The GSD-root marker rule and the system-temp-dir guard of session
-/// auto-registration (quick 261125-jx7). `std::fs` only; no env mutation (tests
-/// run in parallel), which is why the temp root is a parameter.
-#[cfg(test)]
-mod gsd_root_guard_tests {
-    use super::worktree_fixture::make_gsd_project;
-    use super::*;
-    use tempfile::tempdir;
-
-    fn session(working_dir: PathBuf) -> ClaudeSession {
-        ClaudeSession {
-            pid: 1,
-            kind: crate::session_detector::SessionKind::Claude,
-            session_id: None,
-            working_dir,
-            start_time: None,
-            tty: None,
-        }
-    }
-
-    /// The exact shape of the launcher test fixture that was auto-registered:
-    /// only gsd-meta-manager's own state under `.planning/meta-manager/`.
-    fn make_meta_manager_only_root(root: &Path) {
-        let run = root.join(".planning/meta-manager/drivers/run-1");
-        std::fs::create_dir_all(&run).unwrap();
-        std::fs::write(run.join("DIRECTION.md"), "direction\n").unwrap();
-    }
-
-    #[test]
-    fn each_marker_alone_makes_a_gsd_project_root() {
-        for marker in GSD_PLANNING_MARKERS {
-            let dir = tempdir().unwrap();
-            std::fs::create_dir(dir.path().join(".planning")).unwrap();
-            std::fs::write(dir.path().join(".planning").join(marker), "x").unwrap();
-            assert!(is_gsd_project_root(dir.path()), "{marker} must mark a root");
-        }
-    }
-
-    #[test]
-    fn a_folder_without_a_marker_is_not_a_gsd_project_root() {
-        let none = tempdir().unwrap();
-        assert!(!is_gsd_project_root(none.path()), "no .planning/");
-
-        let empty = tempdir().unwrap();
-        std::fs::create_dir(empty.path().join(".planning")).unwrap();
-        assert!(!is_gsd_project_root(empty.path()), "empty .planning/");
-
-        let own_state = tempdir().unwrap();
-        make_meta_manager_only_root(own_state.path());
-        assert!(!is_gsd_project_root(own_state.path()), "meta-manager only");
-
-        let dir_marker = tempdir().unwrap();
-        std::fs::create_dir_all(dir_marker.path().join(".planning/STATE.md")).unwrap();
-        assert!(!is_gsd_project_root(dir_marker.path()), "STATE.md is a dir");
-    }
-
-    #[test]
-    fn a_meta_manager_only_root_is_never_registered_even_with_the_temp_guard_off() {
-        let tmp = tempdir().unwrap();
-        let root = tmp.path().canonicalize().unwrap();
-        make_meta_manager_only_root(&root);
-
-        let mut cfg = Config::new();
-        let added = auto_register_from_sessions_with_temp_root(&mut cfg, &[session(root)], None);
-        assert!(added.is_empty(), "registered: {added:?}");
-        assert!(cfg.projects.is_empty());
-    }
-
-    #[test]
-    fn a_marked_root_under_the_temp_root_is_refused_and_registers_without_it() {
-        let tmp = tempdir().unwrap();
-        let t = tmp.path().canonicalize().unwrap();
-        let proj = t.join("proj");
-        make_gsd_project(&proj);
-
-        let mut cfg = Config::new();
-        let added = auto_register_from_sessions_with_temp_root(
-            &mut cfg,
-            &[session(proj.clone())],
-            Some(&t),
-        );
-        assert!(
-            added.is_empty(),
-            "registered under the temp root: {added:?}"
-        );
-        assert!(cfg.projects.is_empty());
-
-        let added =
-            auto_register_from_sessions_with_temp_root(&mut cfg, &[session(proj.clone())], None);
-        assert_eq!(added, vec![("proj".to_string(), proj)]);
-    }
-
-    #[test]
-    fn the_temp_root_comparison_is_component_wise() {
-        let tmp = tempdir().unwrap();
-        let t = tmp.path().canonicalize().unwrap();
-        let temp_root = t.join("tmp");
-        let sibling = t.join("tmpfoo/proj");
-        let itself = temp_root.clone();
-        let nested = temp_root.join("a/proj");
-        for dir in [&sibling, &itself, &nested] {
-            make_gsd_project(dir);
-        }
-
-        let mut cfg = Config::new();
-        let added = auto_register_from_sessions_with_temp_root(
-            &mut cfg,
-            &[session(sibling.clone()), session(itself), session(nested)],
-            Some(&temp_root),
-        );
-        assert_eq!(added, vec![("proj".to_string(), sibling)]);
-    }
-
-    /// A worktree cwd under the temp root whose main lies elsewhere still
-    /// registers its main: the guard judges the RESOLVED root.
-    #[test]
-    fn the_temp_guard_judges_the_resolved_root_not_the_session_cwd() {
-        let tmp = tempdir().unwrap();
-        let t = tmp.path().canonicalize().unwrap();
-        let (main, worktree) = super::worktree_fixture::fake_linked_worktree(&t);
-        let elsewhere = t.join("not-the-temp-root");
-        std::fs::create_dir_all(&elsewhere).unwrap();
-
-        let mut cfg = Config::new();
-        let added = auto_register_from_sessions_with_temp_root(
-            &mut cfg,
-            &[session(worktree)],
-            Some(&elsewhere),
-        );
-        assert_eq!(added, vec![("main".to_string(), main)]);
-    }
-
-    #[test]
-    fn the_public_entry_refuses_a_marked_root_under_the_real_temp_dir() {
-        let tmp = tempdir().unwrap();
-        let root = tmp.path().canonicalize().unwrap();
-        make_gsd_project(&root);
-        let temp_root = system_temp_root().expect("this machine has a usable temp dir");
-        assert!(root.starts_with(&temp_root), "fixture must sit under it");
-
-        let mut cfg = Config::new();
-        let added = auto_register_from_sessions(&mut cfg, &[session(root)]);
-        assert!(added.is_empty(), "registered: {added:?}");
-        assert!(cfg.projects.is_empty());
-    }
-
-    #[test]
-    fn a_degenerate_temp_dir_disables_the_guard() {
-        assert_eq!(temp_guard_root(Path::new("")), None);
-        assert_eq!(temp_guard_root(Path::new("/")), None);
-        assert_eq!(
-            temp_guard_root(Path::new("definitely/not/an/existing/relative/path")),
-            None
-        );
-        let tmp = tempdir().unwrap();
-        assert_eq!(
-            temp_guard_root(tmp.path()),
-            Some(tmp.path().canonicalize().unwrap())
-        );
-        assert!(!is_under_temp_root(Path::new("/anything"), None));
-    }
-
-    #[test]
-    fn manual_add_still_accepts_a_markerless_planning_dir_under_the_temp_dir() {
-        let tmp = tempdir().unwrap();
-        let root = tmp.path().canonicalize().unwrap();
-        std::fs::create_dir(root.join(".planning")).unwrap();
-
-        let mut cfg = Config::new();
-        add_project(&mut cfg, &Alias::new("manual").unwrap(), &root).expect("manual add");
-        assert_eq!(cfg.projects.len(), 1);
     }
 }
