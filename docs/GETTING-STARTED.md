@@ -76,7 +76,9 @@ On first launch:
   `.planning/`, or one holding only gsd-meta-manager's own
   `.planning/meta-manager/`, does not count. Folders under the system temp dir
   are never auto-registered, so test fixtures and scratch checkouts stay out of
-  the list; `add` still registers them. If you happen to have a Claude session running in a GSD
+  the list; `add` still registers them. Folders inside gsd-meta-manager's own data dir
+  (`~/.local/share/gsd-meta-manager/` on Linux), such as the private clones one-off
+  runs work in, are never auto-registered either. If you happen to have a Claude session running in a GSD
   project, it will appear immediately; otherwise the list stays empty until
   you register a project manually. A git linked worktree (such as an agent
   worktree under `.claude/worktrees/`) is never registered itself. A session

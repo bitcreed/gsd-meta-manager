@@ -674,7 +674,7 @@ There is no first-class notion of development/staging/production environments in
 
 - **Per-invocation config override**: pass `--config /alternate/path/config.json` to use a different registry without modifying the default file. Useful for keeping work and personal projects separate, or for integration tests.
 - **Per-platform paths**: the defaults adapt automatically because they are derived from the `dirs` crate (`config_dir` and `data_local_dir`), so the same binary picks `XDG`-style paths on Linux, `Application Support` on macOS, and `%APPDATA%` / `%LOCALAPPDATA%` on Windows without configuration.
-- **Atomic writes**: `save_config` uses `tempfile::NamedTempFile` plus `persist` (rename) to update the config file atomically, so a partial write cannot corrupt the registry. Concurrent invocations are not coordinated; the last writer wins.
+- **Atomic writes**: `save_config` uses `tempfile::NamedTempFile` plus `persist` (rename) to update the config file atomically, so a partial write cannot corrupt the registry. Every registry write re-reads `config.json` and applies only its own change, so an entry another process added or removed is kept: the TUI does it through `update_config`, and the CLI `add` and `remove` load the file immediately before they save. The TUI also adopts edits other processes make, within one session poll (about 5 seconds). Writers are not locked against each other, so two writes landing within the same few milliseconds can still lose one. A `config.json` that does not parse is never overwritten.
 
 ## Secret values in GSD project config (Config tab)
 
@@ -716,7 +716,7 @@ A project save hands the key to `gsd-tools config-set` as a command-line argumen
 
 ## Related files in the repository
 
-- `src/config.rs` — `Config`, `RegisteredProject`, `Preferences`, `HooksConfig` types; `default_path`, `load_config`, `save_config`.
+- `src/config.rs` — `Config`, `RegisteredProject`, `Preferences`, `HooksConfig` types; `default_path`, `load_config`, `save_config`, `update_config`.
 - `src/cli.rs` — `clap` definitions for `--config`, `add`, `remove`, `list`.
 - `src/main.rs` — log directory setup, editor launch, TUI bootstrap.
 - `src/project_creator.rs` — `pre_create` / `post_create` hook execution and `GSD_PROJECT_*` env vars.

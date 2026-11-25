@@ -216,7 +216,12 @@ The binary is at `target/release/gsd-meta-manager`.
    so an empty `.planning/`, or one holding only gsd-meta-manager's own
    `.planning/meta-manager/`, does not count. Folders under the system temp dir
    (`$TMPDIR`, else `/tmp`) are never auto-registered, so test fixtures and
-   scratch checkouts stay out of the registry; `add` still registers them. A
+   scratch checkouts stay out of the registry; `add` still registers them.
+   Folders inside gsd-meta-manager's own data dir (`<data dir>/gsd-meta-manager/`,
+   typically `~/.local/share/gsd-meta-manager/`) are never auto-registered either,
+   nor is any folder under a `gsd-meta-manager/oneoff/`, `gsd-meta-manager/driver/`
+   or `gsd-meta-manager/envelope/` directory elsewhere, so the private clones
+   one-off runs work in never show up as `work`, `work-2`, and so on. A
    git linked worktree (such as an agent worktree under `.claude/worktrees/`)
    is never registered itself: a session inside one resolves to its main
    worktree, which is registered instead when it is a GSD project, so many concurrent agent
@@ -944,6 +949,12 @@ User configuration is stored at:
 `~/Library/Application Support/gsd-meta-manager/config.json`.)
 
 Override the config location with `--config <PATH>`.
+
+Each registry change a running TUI makes (auto-registration, adding, removing, a
+driver opt-in) re-reads `config.json` and writes back only that change, so an `add`
+or `remove` from the command line or another TUI is never undone. The TUI picks
+such edits up within one session poll (about 5 seconds). A `config.json` that does
+not parse is never overwritten.
 
 ## How it works
 
