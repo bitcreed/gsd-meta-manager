@@ -663,7 +663,7 @@ The defaults declared in source (`src/config.rs`):
 | Config path | `dirs::config_dir() + "gsd-meta-manager/config.json"` | `Config::default_path` |
 | Log directory | `dirs::data_local_dir() + "gsd-meta-manager/"` (rotated daily) | `src/main.rs` |
 | Log filename pattern | `gsd-meta-manager.log.<YYYY-MM-DD>` (via `tracing_appender::rolling::daily`) | `src/main.rs` |
-| Session poll interval (TUI) | ~5s (auto-registration of Claude sessions) | `src/main.rs` / README |
+| Session poll interval (TUI) | ~5s (auto-registration of Claude sessions) | `src/main.rs` |
 | Render tick interval | 250 ms | `event_bus.spawn_tick(250)` in `src/main.rs` |
 | Editor fallback chain | `$VISUAL` → `$EDITOR` → `vi` | `src/main.rs` |
 | Terminal fallback chain | the innermost multiplexer's new window or tab (tmux or herdr, when inside one) → `$TERMINAL` → `xdg-terminal-exec` → `x-terminal-emulator` → `kitty` → `alacritty` → `ptyxis` → `gnome-terminal` → `xterm` | `src/multiplexer/mod.rs` (`plan_launch`), `src/multiplexer/gui.rs` (`rank_gui`), `src/ui/screens/detail.rs` (`FALLBACK_TERMINAL_CANDIDATES`) |

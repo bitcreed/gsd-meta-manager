@@ -770,12 +770,12 @@ fn a_bogus_lane_is_a_usage_error_in_text_mode_too() {
     assert_eq!(out.status.code(), Some(2), "{out:?}");
 }
 
-// ── The README contract (OWN-13) ──
+// ── The docs/SCRIPTING.md contract (OWN-13) ──
 
-const README: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md"));
+const SCRIPTING_DOC: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/docs/SCRIPTING.md"));
 
 /// Every key path of the schema v1 document: `.` between object keys, `[]` for
-/// an array element (the same notation as the README table).
+/// an array element (the same notation as the docs/SCRIPTING.md table).
 const INBOX_PATHS: &[&str] = &[
     "schema",
     "schema_version",
@@ -930,15 +930,15 @@ fn json_fence(doc: &str, needle: &str) -> Value {
     panic!("no json fence containing {needle:?}");
 }
 
-/// The README's inbox subsection only: the status table shares paths such as
+/// docs/SCRIPTING.md's inbox section only: the status table shares paths such as
 /// `projects[].alias`, so the rows must be looked up in this slice.
 fn inbox_section() -> &'static str {
-    let start = README
-        .find("#### Owner work: `inbox`")
-        .expect("the README has the inbox subsection");
-    let rest = &README[start..];
+    let start = SCRIPTING_DOC
+        .find("## Owner work: `inbox`")
+        .expect("docs/SCRIPTING.md has the inbox section");
+    let rest = &SCRIPTING_DOC[start..];
     let end = rest
-        .match_indices("\n### ")
+        .match_indices("\n## ")
         .next()
         .map_or(rest.len(), |(at, _)| at);
     &rest[..end]
@@ -999,7 +999,7 @@ fn copy_tree(from: &Path, to: &Path) {
 
 #[test]
 fn the_readme_inbox_fence_has_exactly_the_schema_v1_key_paths() {
-    let doc = json_fence(README, "\"schema\": \"gsd-meta-manager/inbox\"");
+    let doc = json_fence(SCRIPTING_DOC, "\"schema\": \"gsd-meta-manager/inbox\"");
     assert_eq!(key_paths(&doc), inbox_set());
 }
 
@@ -1009,7 +1009,7 @@ fn the_readme_inbox_table_documents_every_path() {
     for path in INBOX_PATHS {
         assert!(
             section.contains(&format!("| `{path}` |")),
-            "the README inbox section has no table row for {path}"
+            "the docs/SCRIPTING.md inbox section has no table row for {path}"
         );
     }
     let rows = section.lines().filter(|l| l.starts_with("| `")).count();

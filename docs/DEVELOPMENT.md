@@ -331,6 +331,8 @@ truth.
 - `docs/ARCHITECTURE.md` -- component diagram, data flow, key abstractions.
 - `docs/CONFIGURATION.md` -- user config schema and environment variables.
 - `docs/GETTING-STARTED.md` -- first-run walkthrough.
+- `docs/OWNER-INBOX.md` -- the owner inbox: lanes, acknowledge and settle.
+- `docs/SCRIPTING.md` -- the `status` / `inbox` JSON contracts (pinned by `tests/status_cli.rs` and `tests/inbox_cli.rs`).
 - `docs/TESTING.md` -- test suite layout and how to run it.
 - `docs/DRIVER-SANDBOX.md` -- the sandboxed driver launcher.
 - `docs/GSD-CORE-SYNC.md` -- how the tracked gsd-core baseline is synced.

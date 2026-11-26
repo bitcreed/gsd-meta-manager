@@ -163,7 +163,7 @@ fn without_json_clap_exits_two() {
 // ── Registry and alias forms, error entries, attention, read-only, schema ──
 
 /// Every key path of schema v1; `[]` marks array elements. The contract table in
-/// README.md, pinned.
+/// docs/SCRIPTING.md, pinned.
 const SCHEMA_PATHS: &[&str] = &[
     "schema",
     "schema_version",
@@ -857,7 +857,7 @@ fn the_emitted_key_paths_are_exactly_schema_v1_and_every_entry_has_twelve_keys()
 // ── `--skill`, and the documentation drift guards ──
 
 const SKILL: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/agent_skill.md"));
-const README: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md"));
+const SCRIPTING_DOC: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/docs/SCRIPTING.md"));
 
 /// The body of the first fenced `json` block in `doc` that contains `needle`
 /// (an empty needle matches the first block), parsed.
@@ -943,7 +943,7 @@ fn the_skill_skeleton_has_exactly_the_schema_v1_key_paths() {
 
 #[test]
 fn the_readme_skeleton_has_exactly_the_schema_v1_key_paths() {
-    let doc = json_fence(README, "\"schema\": \"gsd-meta-manager/status\"");
+    let doc = json_fence(SCRIPTING_DOC, "\"schema\": \"gsd-meta-manager/status\"");
     assert_eq!(key_paths(&doc), schema_set());
 }
 
@@ -951,8 +951,8 @@ fn the_readme_skeleton_has_exactly_the_schema_v1_key_paths() {
 fn the_readme_table_documents_every_schema_v1_path() {
     for path in SCHEMA_PATHS {
         assert!(
-            README.contains(&format!("| `{path}` |")),
-            "README.md has no table row for {path}"
+            SCRIPTING_DOC.contains(&format!("| `{path}` |")),
+            "docs/SCRIPTING.md has no table row for {path}"
         );
     }
 }

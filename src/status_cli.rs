@@ -14,7 +14,7 @@
 //! 2. **One compact JSON document, one stdout line** (D1; every entry has twelve keys): `{schema,
 //!    schema_version, sessions_supported, projects}`. No timestamp, so the output
 //!    is deterministic. The schema v1 contract (every key path, its type and its
-//!    meaning, and the stability rule) lives in README.md's "Scripting and agents"
+//!    meaning, and the stability rule) lives in docs/SCRIPTING.md's "Project state"
 //!    section; `tests/status_cli.rs` pins the emitted key paths against it.
 //! 3. **Exit codes.** `0` the document was printed, including per-project error
 //!    entries; `1` the registry could not be loaded or parsed, or the working

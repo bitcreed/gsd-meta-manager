@@ -206,6 +206,23 @@ a phase not started yet (`not started`, every wave open), a completed phase
 (`No plans yet — /gsd-plan-phase N`). Below 100 columns, focusing the pane
 widens it to the full width under a one-line breadcrumb.
 
+### What the counts mean
+
+- **Phases done.** The dashboard's `k/n phases` and the Roadmap header's
+  `k of n phases done` count the current milestone's phases. A phase is done once
+  its implementation is finished (executed on disk, or ticked in ROADMAP.md when it
+  has no phase directory); verification state is shown separately.
+- **Paused.** A project is paused when it has a GSD handoff file. A handoff is
+  ignored as stale when its phase is behind STATE.md's `current_phase`, or when
+  STATE.md's `last_updated` is more than an hour newer than the handoff's
+  `timestamp` (the file's mtime when it has none); the detail view then shows a
+  dimmed "Stale HANDOFF ignored" hint instead of a pause badge.
+- **Worktree-only plans.** Plans that exist only in a linked git worktree (main's
+  phase directory is empty or absent) still show in the Waves pane, titled
+  `plans in worktree <name> (<branch>)`, and count on the Roadmap with an `@<ref>`
+  badge. Main's plans always win; among several worktrees, the newest PLAN wins
+  (` +N more` names the rest).
+
 ### Acting on owner work
 
 `i` on the dashboard opens the inbox: everything that waits on you, across every
@@ -221,7 +238,8 @@ anything runs. `A` only hides a file until it changes (nothing is recorded and t
 stays open); `x` records checks as skipped (won't do, deferred permanently or moved to phase M)
 so the phase can close. `x` always launches GSD in a new session, next to any session
 already running in the project. A row still settling offers `x` stop waiting, which
-clears its badge after a confirmation. See [the README](../README.md#owner-inbox) for the full key list.
+clears its badge after a confirmation. [OWNER-INBOX.md](OWNER-INBOX.md) explains the lanes and
+what each action runs; press `?` on either screen for its keys.
 
 ## Common setup issues
 
@@ -312,5 +330,9 @@ gsd-meta-manager --config /tmp/test-registry.json
   documented in [CONFIGURATION.md](CONFIGURATION.md).
 - **Architecture overview** — see [ARCHITECTURE.md](ARCHITECTURE.md) for the
   event loop, module layout, and how `.planning/` files are parsed.
-- **Project README** — the top-level [README.md](../README.md) lists features,
-  the full key-binding table, and example invocations.
+- **Owner inbox** — lanes, acknowledge and settle in
+  [OWNER-INBOX.md](OWNER-INBOX.md).
+- **Scripting** — the `status`, `next` and `inbox` JSON for scripts and agents
+  in [SCRIPTING.md](SCRIPTING.md).
+- **Key bindings** — press `?` in the TUI; it lists the keys of the screen you
+  are on.
