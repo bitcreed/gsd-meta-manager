@@ -121,10 +121,20 @@ const BLOCKING_MARKERS: &[&str] = &[
 /// with the in-process executor that was its only `async fn` caller. The markers
 /// that remain are the envelope and git seams that the launcher still reaches.
 ///
+/// Phase 34 adds `read_owner_digest(`: the owner-items reader opens, reads and
+/// parses every UAT, VERIFICATION and deferred-items file of a project, so no
+/// `async fn` and no render path may call it directly (OWN-12); the TUI hands it
+/// to `spawn_blocking` like every other reader.
+///
 /// `every_named_blocking_helper_still_exists_in_the_tree` keeps this list from
 /// going stale: a rename that emptied a marker would otherwise look exactly
 /// like a clean run.
-const BLOCKING_HELPERS: &[&str] = &["scan_worktree(", "record_and_check(", "git_read_raw("];
+const BLOCKING_HELPERS: &[&str] = &[
+    "scan_worktree(",
+    "record_and_check(",
+    "git_read_raw(",
+    "read_owner_digest(",
+];
 
 /// The hand-off shapes that move blocking work off the runtime thread.
 ///

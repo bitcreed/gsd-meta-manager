@@ -1012,7 +1012,8 @@ pub fn launch_with(
 }
 
 /// [`launch_with`] with the real GUI spawner. **The real-environment entry,
-/// called only from `detail.rs`.** A test that called it inside herdr would open
+/// called from `detail.rs` and from `owner_actions.rs` (the Owner inbox's `v`,
+/// 37-03).** A test that called it inside herdr would open
 /// a real tab, so tests use [`launch_with`] with injected backends.
 pub fn launch(
     plan: &LaunchPlan,
@@ -1030,6 +1031,12 @@ pub fn launch(
         success,
     )
 }
+
+/// The text a successful focus message starts with. `focus_with` builds the
+/// message from it and callers that react to a success (the inbox's `v`, which
+/// then adds the command to type) test for it, so a rewording cannot silently
+/// drop the hint (Phase 37 IN-03).
+pub const FOCUS_OK_PREFIX: &str = "Switched to";
 
 /// Focus the pane or tab running `session` and report what happened (D-09).
 /// **Pure over `backends`**: tests pass fakes. Reads `/proc` only for the reveal
@@ -1090,8 +1097,8 @@ pub(crate) fn focus_with_procs(
                 tracing::debug!(backend = name, matched_by = ?outcome.by, "focused session");
                 let outcome = reveal_client(detected, backends, env, procfs, outcome);
                 return match outcome.partial {
-                    Some(note) => format!("Switched to {label} ({note})"),
-                    None => format!("Switched to {label}"),
+                    Some(note) => format!("{FOCUS_OK_PREFIX} {label} ({note})"),
+                    None => format!("{FOCUS_OK_PREFIX} {label}"),
                 };
             }
             Err(e) => failures.push((name, e.to_string())),
@@ -1213,7 +1220,9 @@ fn reveal_client(
 }
 
 /// [`focus_with`] over the detected process environment. **The
-/// real-environment entry, called only from `normal.rs` and `detail.rs`.**
+/// real-environment entry, called only from `normal.rs`, `detail.rs` and
+/// `owner_actions.rs` (the Owner inbox's `v` on a project with a live session,
+/// 37-03).**
 ///
 /// There is ONE entry for both focus paths, the Sessions panel and the
 /// tab-switch, so they cannot route differently (`tests/focus_entry_guard.rs`
@@ -2362,7 +2371,7 @@ mod tests {
             "a session that runs under herdr was reported missing from tmux: {message:?}"
         );
         assert!(
-            message.starts_with("Switched to sentriq"),
+            message.starts_with(&format!("{FOCUS_OK_PREFIX} sentriq")),
             "focusing a herdr-hosted session must succeed through herdr; got {message:?}"
         );
         assert_eq!(

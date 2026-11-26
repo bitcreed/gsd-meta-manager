@@ -1,6 +1,6 @@
 use super::confirm_popup::{self, ConfirmOutcome, ConfirmPopup};
 use super::{AppContext, Screen, ScreenAction};
-use crate::config::save_config;
+use crate::config;
 use crate::registry;
 use crate::ui::mouse::MouseInput;
 use crossterm::event::{KeyCode, KeyModifiers};
@@ -141,66 +141,50 @@ fn do_remove_project(ctx: &mut AppContext, alias: &str) {
         return;
     }
 
-    let project_path = ctx.config.projects.get(alias).map(|p| p.path.clone());
-
+    // Applied to `config.json` as it is on disk now, then adopted (quick
+    // 261125-kfc): an entry another process added meanwhile is kept, and
+    // `adopt_config` drops this alias's watch and per-alias maps (through
+    // `forget_project`, the immediate path; `App::prune_driver_maps` is the
+    // backstop for every removal that does not come through this screen, D-27).
+    //
+    // An alias another process already removed counts as removed: the user's
+    // intent is met and nothing is written.
+    //
     // Wrapped at the CALL, not stored: this is a registry key being looked up
     // and thrown away, which is exactly what `LegacyRegistryKey` is for
     // (`21-24`). The raw bytes still reach the removal through
     // `as_raw_for_lookup_only` inside `remove_project`, so a legacy row an
     // older build accepted is still removable from this screen (D-17-3); what
     // the type buys is that the FAILURE echo cannot be written raw.
-    match registry::remove_project(
-        &mut ctx.config,
-        &registry::LegacyRegistryKey::from_argv(alias.to_string()),
-    ) {
-        Ok(()) => {
-            if let Err(e) = save_config(&ctx.config, &ctx.config_path) {
-                ctx.error_message = Some(format!("Failed to save config: {}", e));
-                ctx.needs_redraw = true;
-                return;
-            }
+    let updated = config::update_config(&ctx.config_path, |config| {
+        if !config.projects.contains_key(alias) {
+            return Ok(());
+        }
+        registry::remove_project(
+            config,
+            &registry::LegacyRegistryKey::from_argv(alias.to_string()),
+        )
+    });
+    match updated {
+        Err(e) => {
+            ctx.error_message = Some(format!("Failed to save config: {}", e));
+            ctx.needs_redraw = true;
+        }
+        Ok((fresh, Err(e))) => {
+            ctx.adopt_config(fresh);
+            ctx.error_message = Some(e.to_string());
+            ctx.needs_redraw = true;
+        }
+        Ok((fresh, Ok(()))) => {
+            ctx.adopt_config(fresh);
 
-            // Unwatch the project's .planning/ directory
-            if let Some(ref path) = project_path {
-                if let Some(ref mut watcher) = ctx.watcher {
-                    let planning_dir = path.join(".planning");
-                    let _ = watcher.unwatch(&planning_dir);
-                }
-            }
-
-            ctx.project_states.remove(alias);
-            ctx.detail_sub_view_per_project.remove(alias);
-            ctx.last_refresh.remove(alias);
-
-            // `registry::remove_project` cleans none of the maps above — it takes
-            // a `&mut Config` and has no access to `AppContext` at all — so this
-            // is the **immediate** path, and `App::prune_driver_maps` is the
-            // backstop for every removal that does not come through this screen
-            // (D-27).
-
-            // Read, not looked up: every map removal above keys off the RAW
-            // `alias`; only this toast is escaped, because only this toast is
+            // Read, not looked up: the map removals in `forget_project` key off the
+            // RAW `alias`; only this toast is escaped, because only this toast is
             // read by a person.
             ctx.status_message = Some((
                 format!("Removed \"{}\"", crate::text::render_for_terminal(alias)),
                 std::time::Instant::now(),
             ));
-
-            ctx.recompute_filtered_aliases();
-            if ctx.filtered_aliases.is_empty() {
-                ctx.table_state.select(None);
-            } else {
-                let selected = ctx
-                    .table_state
-                    .selected()
-                    .unwrap_or(0)
-                    .min(ctx.filtered_aliases.len() - 1);
-                ctx.table_state.select(Some(selected));
-            }
-            ctx.needs_redraw = true;
-        }
-        Err(e) => {
-            ctx.error_message = Some(e.to_string());
             ctx.needs_redraw = true;
         }
     }
@@ -217,8 +201,9 @@ mod tests {
     const ALIAS: &str = "proj";
 
     /// An `AppContext` with one registered project, a live event channel, and a
-    /// config path inside `root` so `save_config` is a **real write** and the
-    /// removal path is exercised end to end.
+    /// config path inside `root`, with the registry also saved there (memory
+    /// mirrors disk, as in production) so the removal re-reads and writes a real
+    /// file and is exercised end to end.
     ///
     /// Copied from `driver_confirm.rs`'s: the full `AppContext` literal is this
     /// module's convention, and a constructor shortcut does not exist.
@@ -254,6 +239,12 @@ mod tests {
             error_message: None,
             event_tx: Some(tx),
             reparse_dispatches: 0,
+            owner_digests: HashMap::new(),
+            owner_digest_failed: Default::default(),
+            owner_ack_busy: Default::default(),
+            owner_copy_busy: false,
+            inbox_view: Default::default(),
+            settle_pending: Default::default(),
             agent_views: HashMap::new(),
             agents_scan_in_flight: false,
             sort_mode: crate::ui::screens::SortMode::default(),
@@ -271,6 +262,7 @@ mod tests {
             // the flag-off tests call `with_experimental(false)`.
             experimental: true,
         };
+        crate::config::save_config(&ctx.config, &ctx.config_path).expect("seed config.json");
         (ctx, rx)
     }
 
@@ -301,6 +293,45 @@ mod tests {
         );
     }
 
+    /// WR-02: the owner digest and the Owner block's view state leave with the
+    /// project, so an alias registered again before the next prune does not show
+    /// (or refuse to replace) the removed project's numbers.
+    #[test]
+    fn unregistering_a_project_drops_its_owner_digest_and_block_state() {
+        use crate::state_reader::owner_items::OwnerDigest;
+        use crate::ui::screens::owner_block::{Fold, Stop};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut ctx, _rx) = ctx_with_project(dir.path());
+        ctx.owner_digests.insert(
+            ALIAS.to_string(),
+            OwnerDigest {
+                test: 4,
+                ..OwnerDigest::default()
+            },
+        );
+        let block = &mut ctx
+            .view_cache
+            .entry(ALIAS.to_string())
+            .or_default()
+            .owner_block;
+        block.cursor = Some(Stop::FoldLine);
+        block.open_folds.insert(Fold::OldDebt);
+        block.cursor_index = 3;
+
+        confirm_removal(&mut ctx);
+
+        assert!(!ctx.config.projects.contains_key(ALIAS));
+        assert!(
+            !ctx.owner_digests.contains_key(ALIAS),
+            "a removed project's digest must not wait for the prune"
+        );
+        if let Some(cache) = ctx.view_cache.get(ALIAS) {
+            assert!(cache.owner_block.cursor.is_none());
+            assert!(cache.owner_block.open_folds.is_empty());
+            assert_eq!(cache.owner_block.cursor_index, 0);
+        }
+    }
+
     /// A view cache entry carrying only the given launcher marker.
     fn cache_with_marker(
         marker: crate::ui::screens::driver_run::LauncherMarker,
@@ -317,6 +348,7 @@ mod tests {
 
         let dir = tempfile::tempdir().expect("temp dir");
         let (mut ctx, _rx) = ctx_with_project(dir.path());
+        let seeded = std::fs::read(&ctx.config_path).expect("the seeded config");
         ctx.view_cache.insert(
             ALIAS.to_string(),
             cache_with_marker(LauncherMarker {
@@ -335,8 +367,9 @@ mod tests {
         let msg = ctx.error_message.as_deref().expect("a refusal is reported");
         assert!(msg.contains("has a live driver run"), "got: {msg}");
         assert!(msg.contains(ALIAS), "the refusal names the alias: {msg}");
-        assert!(
-            !ctx.config_path.exists(),
+        assert_eq!(
+            std::fs::read(&ctx.config_path).expect("the seeded config"),
+            seeded,
             "a refused removal must not write the config"
         );
     }
@@ -405,6 +438,62 @@ mod tests {
             .as_ref()
             .expect("a removal reports what it did");
         assert!(status.contains("Removed"), "got: {status}");
+    }
+
+    /// What another process (the CLI, a second TUI) does to `config.json`.
+    fn other_process(ctx: &AppContext, edit: impl FnOnce(&mut Config)) {
+        let mut on_disk = crate::config::load_config(&ctx.config_path).expect("load");
+        edit(&mut on_disk);
+        crate::config::save_config(&on_disk, &ctx.config_path).expect("other writer");
+    }
+
+    fn keys(config: &Config) -> Vec<String> {
+        let mut keys: Vec<String> = config.projects.keys().cloned().collect();
+        keys.sort();
+        keys
+    }
+
+    #[test]
+    fn removing_a_project_keeps_an_entry_another_process_added() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut ctx, _rx) = ctx_with_project(dir.path());
+        other_process(&ctx, |config| {
+            config.projects.insert(
+                "ext".to_string(),
+                RegisteredProject {
+                    path: dir.path().join("ext"),
+                    added: "2026-02-02".to_string(),
+                    driver_opt_in: None,
+                    extra: Default::default(),
+                },
+            );
+        });
+
+        confirm_removal(&mut ctx);
+
+        let on_disk = crate::config::load_config(&ctx.config_path).expect("reload");
+        assert_eq!(keys(&on_disk), ["ext"]);
+        assert_eq!(on_disk.projects["ext"].added, "2026-02-02");
+        assert_eq!(keys(&ctx.config), ["ext"]);
+        assert_eq!(ctx.error_message, None);
+    }
+
+    #[test]
+    fn removing_a_project_another_process_already_removed_succeeds() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut ctx, _rx) = ctx_with_project(dir.path());
+        other_process(&ctx, |config| {
+            config.projects.remove(ALIAS);
+        });
+        let before = std::fs::read(&ctx.config_path).expect("read");
+
+        confirm_removal(&mut ctx);
+
+        assert_eq!(ctx.error_message, None, "nothing to refuse");
+        let (status, _) = ctx.status_message.as_ref().expect("a toast");
+        assert!(status.contains("Removed"), "got: {status}");
+        assert!(ctx.config.projects.is_empty());
+        assert_eq!(std::fs::read(&ctx.config_path).expect("read"), before);
     }
 
     fn render_rows(screen: &DeleteConfirmScreen, ctx: &AppContext) -> Vec<String> {

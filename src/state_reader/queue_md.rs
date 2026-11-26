@@ -15,11 +15,11 @@ pub struct QueuedAction {
 /// Mirrors GSD's own launcher resolution: the `.cjs` shim is run through
 /// `node`, while a `gsd-tools` binary found on `PATH` is invoked directly.
 #[derive(Debug, Clone, PartialEq)]
-struct GsdToolsCmd {
+pub(crate) struct GsdToolsCmd {
     /// Program to spawn (`node` for `.cjs` shims, else `gsd-tools`).
-    program: String,
+    pub(crate) program: String,
     /// Leading args (the `.cjs` path when running through `node`, else empty).
-    prefix_args: Vec<String>,
+    pub(crate) prefix_args: Vec<String>,
 }
 
 impl GsdToolsCmd {
@@ -113,7 +113,7 @@ fn gsd_tools_candidates(project_root: &Path, roots: &InstallRoots) -> Vec<PathBu
 /// [`InstallRoots::from_env`] (home, `CLAUDE_CONFIG_DIR`, `CODEX_HOME`). This is
 /// the ONLY place the resolver reads process state for those, so tests never
 /// have to mutate the environment.
-fn resolve_gsd_tools(project_root: &Path) -> Option<GsdToolsCmd> {
+pub(crate) fn resolve_gsd_tools(project_root: &Path) -> Option<GsdToolsCmd> {
     resolve_gsd_tools_from(project_root, &InstallRoots::from_env())
 }
 
@@ -166,6 +166,54 @@ fn resolve_gsd_tools_from(project_root: &Path, roots: &InstallRoots) -> Option<G
         });
     }
     None
+}
+
+/// Resolve the `gsd-tools` launcher for a **write** the owner confirmed (the
+/// acknowledge child), from the user's own installs only.
+///
+/// Unlike [`resolve_gsd_tools`] this never looks inside a registered project: a
+/// cloned repository that ships `.claude/gsd-core/bin/gsd-tools.cjs` would
+/// otherwise get its code run, with the TUI's full environment, once the owner
+/// presses `A` and `y` (Phase 37 review WR-05). The order is
+/// `${CLAUDE_CONFIG_DIR:-~/.claude}`, then `${CODEX_HOME:-~/.codex}`, then an
+/// executable `gsd-tools` found through an absolute `PATH` entry. The Config
+/// tab's `config-set` saves resolve through here too (quick 261116-kft).
+///
+/// Unit tests never call it (they force a launcher instead, I-kft-11).
+#[cfg_attr(test, allow(dead_code))]
+pub(crate) fn resolve_user_gsd_tools() -> Option<GsdToolsCmd> {
+    resolve_user_gsd_tools_from(
+        &InstallRoots::from_env(),
+        std::env::var_os("PATH").as_deref(),
+    )
+}
+
+/// [`resolve_user_gsd_tools`] with the install roots and `PATH` injected.
+///
+/// The `PATH` arm skips relative entries (`.`, `bin`, empty) and returns the
+/// full path of what it found, because the child runs with the project as its
+/// working directory and a bare `gsd-tools` would be looked up there.
+fn resolve_user_gsd_tools_from(
+    roots: &InstallRoots,
+    path: Option<&std::ffi::OsStr>,
+) -> Option<GsdToolsCmd> {
+    for candidate in install_candidates(None, roots) {
+        let shim = candidate.gsd_core_dir.join(GSD_TOOLS_SHIM);
+        if shim.is_file() {
+            return Some(GsdToolsCmd {
+                program: "node".to_string(),
+                prefix_args: vec![shim.to_string_lossy().into_owned()],
+            });
+        }
+    }
+    let found = std::env::split_paths(path?)
+        .filter(|dir| dir.is_absolute())
+        .map(|dir| dir.join("gsd-tools"))
+        .find(|candidate| candidate.is_file())?;
+    Some(GsdToolsCmd {
+        program: found.to_string_lossy().into_owned(),
+        prefix_args: Vec::new(),
+    })
 }
 
 /// Return true if a `gsd-tools` executable is resolvable on `PATH`.
@@ -788,6 +836,74 @@ mod tests {
         assert_eq!(
             resolve_gsd_tools_from(root.path(), &home_roots(home.path())),
             Some(node_cmd(&local))
+        );
+    }
+
+    /// WR-05: the acknowledge writer resolves the user's install, and the
+    /// signature takes no project, so a project-shipped launcher cannot win.
+    #[test]
+    fn the_user_resolver_picks_the_user_install() {
+        let home = tempfile::tempdir().unwrap();
+        let user = plant(home.path(), ".claude");
+        assert_eq!(
+            resolve_user_gsd_tools_from(&home_roots(home.path()), None),
+            Some(node_cmd(&user))
+        );
+    }
+
+    #[test]
+    fn the_user_resolver_finds_nothing_when_only_the_project_has_an_install() {
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        plant(project.path(), ".claude");
+        plant(project.path(), "");
+        // The project-aware resolver still prefers the project's shim ...
+        assert!(resolve_gsd_tools_from(project.path(), &home_roots(home.path())).is_some());
+        // ... the writer's resolver has no project argument at all.
+        assert_eq!(
+            resolve_user_gsd_tools_from(&home_roots(home.path()), None),
+            None
+        );
+    }
+
+    #[test]
+    fn the_user_resolver_honours_claude_config_dir_before_codex_home() {
+        let home = tempfile::tempdir().unwrap();
+        let cfg = tempfile::tempdir().unwrap();
+        plant(home.path(), ".claude");
+        plant(home.path(), ".codex");
+        let chosen = plant(cfg.path(), "");
+        let roots = InstallRoots {
+            home: Some(home.path().to_path_buf()),
+            claude_config_dir: Some(cfg.path().as_os_str().to_owned()),
+            codex_home: None,
+        };
+        assert_eq!(
+            resolve_user_gsd_tools_from(&roots, None),
+            Some(node_cmd(&chosen))
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_user_resolver_path_arm_skips_relative_entries_and_returns_the_full_path() {
+        use std::os::unix::fs::PermissionsExt;
+        let bin = tempfile::tempdir().unwrap();
+        let exe = bin.path().join("gsd-tools");
+        std::fs::write(&exe, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let path = std::env::join_paths([Path::new("."), Path::new("bin"), bin.path()]).unwrap();
+        assert_eq!(
+            resolve_user_gsd_tools_from(&InstallRoots::default(), Some(&path)),
+            Some(GsdToolsCmd {
+                program: exe.to_string_lossy().into_owned(),
+                prefix_args: Vec::new(),
+            })
+        );
+        let relative_only = std::env::join_paths([Path::new("."), Path::new("bin")]).unwrap();
+        assert_eq!(
+            resolve_user_gsd_tools_from(&InstallRoots::default(), Some(&relative_only)),
+            None
         );
     }
 }

@@ -422,6 +422,10 @@ fn compact_pipeline(status: &DiskStatus) -> Line<'static> {
 /// project renders identically to a mid-pipeline one (UIFIX-02 / CR-01).
 const STATUS_COLUMN_MIN_CELLS: u16 = 13;
 
+/// The `You` column's fixed width in cells (36 D-05): wide enough for the widest
+/// normal form, `decide 99 \u{b7} fix 99 ph`.
+const YOU_COLUMN_CELLS: u16 = 21;
+
 /// Resolve the dashboard's header cells and column constraints for a terminal width.
 ///
 /// Single source of truth for the three width tiers, so the render-level tests
@@ -437,7 +441,20 @@ const STATUS_COLUMN_MIN_CELLS: u16 = 13;
 /// `Percentage(30)` already yields 13+ cells from width 44 upward, and adding a floor
 /// there would starve the Alias column at very narrow widths.
 fn dashboard_columns(terminal_width: u16) -> (Vec<&'static str>, Vec<Constraint>) {
-    if terminal_width >= 80 {
+    if terminal_width >= 100 {
+        // The `You` column (OWN-16). Status keeps its 13-cell floor and index 2.
+        (
+            vec!["Alias", "Phase", "Status", "You", "Progress", "Backlog"],
+            vec![
+                Constraint::Percentage(20),
+                Constraint::Percentage(26),
+                Constraint::Min(STATUS_COLUMN_MIN_CELLS),
+                Constraint::Length(YOU_COLUMN_CELLS),
+                Constraint::Percentage(12),
+                Constraint::Percentage(9),
+            ],
+        )
+    } else if terminal_width >= 80 {
         (
             vec!["Alias", "Phase", "Status", "Progress", "Backlog"],
             vec![
@@ -680,8 +697,31 @@ crate::ui::screens::adjudicate_screen!(
      `src/ui/screens/normal.rs`'s status branch. `row_badge`'s lookup keys \
      off the RAW alias while the cell beside it is escaped — the worked \
      example of the split. Fixture states: the dashboard, the dashboard with \
-     a status message, and the dashboard with the filter footer active.",
+     a status message, the dashboard with the filter footer active, and the \
+     dashboard with owner work (a hostile digest behind the hostile alias).",
 );
+
+/// The summary row appears from this width (D-10).
+const SUMMARY_MIN_WIDTH: u16 = 100;
+/// The summary row appears from this height (D-10).
+const SUMMARY_MIN_HEIGHT: u16 = 12;
+
+/// Draw the `You:` summary row: the fleet totals of the visible rows on the
+/// left, `[i] inbox` right-aligned (D-10, D-11). Reads only in-memory digests.
+fn render_owner_summary(frame: &mut Frame, area: Rect, ctx: &AppContext) {
+    use super::owner::{owner_totals, summary_left_line, summary_right_spans, INBOX_HINT_CELLS};
+    let parts =
+        Layout::horizontal([Constraint::Min(0), Constraint::Length(INBOX_HINT_CELLS)]).split(area);
+    let totals = owner_totals(ctx.summary_owner_rows());
+    frame.render_widget(
+        Paragraph::new(summary_left_line(&totals, parts[0].width.saturating_sub(2))),
+        parts[0],
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(summary_right_spans())).alignment(Alignment::Right),
+        parts[1],
+    );
+}
 
 impl Screen for NormalScreen {
     fn handle_key(
@@ -730,7 +770,7 @@ impl Screen for NormalScreen {
             //
             // One key, one indicator, no new screen. `s` is free on this
             // screen: the match above claims `q`, `j`, `k`, `a`, `c`, `d`,
-            // `b`, `M`, `/`, `?`, `Tab`, `Enter`, `Up` and `Down`, and the
+            // `b`, `M`, `/`, `?`, `i`, `Tab`, `Enter`, `Up` and `Down`, and the
             // search sub-mode is entered by `/` and handled separately. (`b`
             // is bound below, beside `Enter`.) The dashboard's `r`, `x` and `o`
             // were the legacy driver start, stop and opt-in keys; Phase 31
@@ -759,6 +799,15 @@ impl Screen for NormalScreen {
                 ctx.status_message = Some((msg.to_string(), std::time::Instant::now()));
                 ctx.needs_redraw = true;
                 ScreenAction::None
+            }
+            // The Owner inbox (37-03, D-01). `i` resets the inbox's view state so
+            // every visit starts on the first row, and pushes the screen; `Esc`
+            // and `q` pop back here with the selection, sort and filter as they
+            // were. No status message: the 36 interim message is gone.
+            KeyCode::Char('i') => {
+                ctx.inbox_view = Default::default();
+                ctx.needs_redraw = true;
+                ScreenAction::Push(Box::new(super::inbox::InboxScreen::new()))
             }
             // Mouse capture toggle (quick 260926-dyf, D-06 / I-2). Runtime
             // only; App flips the desired state and says so. Free: nothing in
@@ -862,13 +911,24 @@ impl Screen for NormalScreen {
             return;
         }
 
-        // Split into main area and footer
-        let chunks = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(area);
-        let main_area = chunks[0];
-        let footer_area = chunks[1];
-
-        self.render_main(frame, main_area, ctx);
-        self.render_footer(frame, footer_area, ctx);
+        // Split into main area and footer. From 100 columns and 12 rows a
+        // one-row `You:` summary sits between them (D-10); narrower or shorter
+        // frames keep the two-part split and render as before.
+        if area.width >= SUMMARY_MIN_WIDTH && area.height >= SUMMARY_MIN_HEIGHT {
+            let chunks = Layout::vertical([
+                Constraint::Min(0),
+                Constraint::Length(1),
+                Constraint::Length(1),
+            ])
+            .split(area);
+            self.render_main(frame, chunks[0], ctx);
+            render_owner_summary(frame, chunks[1], ctx);
+            self.render_footer(frame, chunks[2], ctx);
+        } else {
+            let chunks = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(area);
+            self.render_main(frame, chunks[0], ctx);
+            self.render_footer(frame, chunks[1], ctx);
+        }
     }
 
     fn name(&self) -> &str {
@@ -1197,7 +1257,23 @@ impl NormalScreen {
                             .collect::<Vec<_>>(),
                     );
 
-                    let cells: Vec<TableCell> = if terminal_width >= 80 {
+                    let cells: Vec<TableCell> = if terminal_width >= 100 {
+                        // Built from the digest map only: no read, no parse here.
+                        let you_cell = super::owner::you_cell_line(
+                            ctx.owner_digest(alias)
+                                .map(super::owner::owner_numbers)
+                                .as_ref(),
+                            YOU_COLUMN_CELLS,
+                        );
+                        vec![
+                            TableCell::from(alias_cell),
+                            TableCell::from(phase_line),
+                            TableCell::from(status_text),
+                            TableCell::from(you_cell),
+                            TableCell::from(Line::from(progress_cell)),
+                            TableCell::from(Line::from(backlog_cell)),
+                        ]
+                    } else if terminal_width >= 80 {
                         vec![
                             TableCell::from(alias_cell),
                             TableCell::from(phase_line),
@@ -1501,6 +1577,7 @@ fn move_selection_up(ctx: &mut AppContext) {
 mod tests {
     use super::*;
     use crate::app::DetailSubView;
+    use crate::state_reader::owner_items::OwnerDigest;
     use crate::state_reader::{parse_project_state, ProjectState};
     use crate::ui::screens::driver_run::LauncherMarker;
     use std::collections::HashMap;
@@ -1674,6 +1751,12 @@ mod tests {
             error_message: None,
             event_tx: None,
             reparse_dispatches: 0,
+            owner_digests: HashMap::new(),
+            owner_digest_failed: Default::default(),
+            owner_ack_busy: Default::default(),
+            owner_copy_busy: false,
+            inbox_view: Default::default(),
+            settle_pending: Default::default(),
             agent_views: HashMap::new(),
             agents_scan_in_flight: false,
             sort_mode: crate::ui::screens::SortMode::default(),
@@ -1713,6 +1796,11 @@ mod tests {
             .get_mut(alias)
             .expect("the fixture registered this alias")
             .paused = true;
+    }
+
+    /// Give `alias` an owner digest, as the reparse task would.
+    pub(super) fn owe(ctx: &mut AppContext, alias: &str, digest: OwnerDigest) {
+        ctx.owner_digests.insert(alias.to_string(), digest);
     }
 
     /// Drive the real key handler, exactly as the event loop does.
@@ -2583,11 +2671,609 @@ mod tests {
     }
 
     #[test]
+    fn the_you_column_shows_owner_numbers_at_100_columns_and_up() {
+        let mut ctx = ctx_with_aliases(&["alpha"]);
+        owe(
+            &mut ctx,
+            "alpha",
+            OwnerDigest {
+                test: 2,
+                ..OwnerDigest::default()
+            },
+        );
+        let wide = rendered_text(&render_dashboard_cells(&ctx, 120, 20)).join("\n");
+        assert!(wide.contains("You"), "the header names the column:\n{wide}");
+        assert!(wide.contains("test 2"), "the cell shows the lane:\n{wide}");
+        let narrow = rendered_text(&render_dashboard_cells(&ctx, 99, 20)).join("\n");
+        assert!(!narrow.contains("You"), "no column below 100:\n{narrow}");
+        assert!(!narrow.contains("test 2"), "no cell below 100:\n{narrow}");
+    }
+
+    /// Counts-only digest, as the fleet literals need it.
+    fn counts(test: usize, closeable: usize, decide: usize, fix_phases: usize) -> OwnerDigest {
+        OwnerDigest {
+            test,
+            closeable_phases: closeable,
+            decide,
+            fix_phases,
+            ..OwnerDigest::default()
+        }
+    }
+
+    /// The 15-project fleet of the UI-SPEC "Fixture fleet" table (synthetic
+    /// names, counts only). `juno-pending` gets no digest; `fir-sync` is paused.
+    /// Statuses and one missing folder spread the rows over Green, Yellow, Red
+    /// and the default color, for the quiet-color test.
+    pub(super) fn owner_fleet_ctx() -> AppContext {
+        let aliases = [
+            "alder-api",
+            "birch-cli",
+            "cedar-web",
+            "dune-app",
+            "elm-shop",
+            "fir-sync",
+            "gum-tool",
+            "holly-pics",
+            "iris-blocked",
+            "juno-pending",
+            "kale-triple",
+            "lime-debug",
+            "maple-mixed",
+            "nettle-old",
+            "oak-flat",
+        ];
+        let mut ctx = ctx_with_aliases(&aliases);
+        pause(&mut ctx, "fir-sync");
+        ctx.project_states.get_mut("alder-api").unwrap().status = "executing".to_string();
+        ctx.project_states.get_mut("birch-cli").unwrap().status = "verifying".to_string();
+        ctx.project_states.get_mut("dune-app").unwrap().status = "blocked".to_string();
+
+        owe(&mut ctx, "alder-api", counts(3, 1, 0, 0));
+        owe(&mut ctx, "birch-cli", counts(10, 4, 0, 0));
+        owe(&mut ctx, "cedar-web", counts(6, 0, 0, 4));
+        owe(&mut ctx, "dune-app", counts(12, 3, 0, 0));
+        owe(&mut ctx, "elm-shop", counts(0, 0, 1, 2));
+        owe(&mut ctx, "fir-sync", counts(0, 0, 1, 0));
+        owe(&mut ctx, "gum-tool", OwnerDigest::default());
+        let mut holly = OwnerDigest::default();
+        holly.archived.test = 3;
+        owe(&mut ctx, "holly-pics", holly);
+        owe(
+            &mut ctx,
+            "iris-blocked",
+            OwnerDigest {
+                blocked: 4,
+                ..OwnerDigest::default()
+            },
+        );
+        owe(&mut ctx, "kale-triple", counts(5, 0, 2, 1));
+        owe(
+            &mut ctx,
+            "lime-debug",
+            OwnerDigest {
+                fix_debug: 2,
+                ..OwnerDigest::default()
+            },
+        );
+        owe(
+            &mut ctx,
+            "maple-mixed",
+            OwnerDigest {
+                fix_phases: 1,
+                fix_debug: 1,
+                ..OwnerDigest::default()
+            },
+        );
+        let mut nettle = counts(0, 0, 1, 0);
+        nettle.archived.test = 2;
+        owe(&mut ctx, "nettle-old", nettle);
+        owe(&mut ctx, "oak-flat", counts(4, 0, 0, 0));
+        ctx.recompute_filtered_aliases();
+        ctx
+    }
+
+    /// The fleet's expected `You` cell per alias (UI-SPEC "Fixture fleet").
+    const FLEET_CELLS: [(&str, &str); 15] = [
+        ("alder-api", "test 3 \u{2192} closes 1"),
+        ("birch-cli", "test 10 \u{2192} closes 4"),
+        ("cedar-web", "test 6 \u{b7} fix 4 ph"),
+        ("dune-app", "test 12 \u{2192} closes 3"),
+        ("elm-shop", "decide 1 \u{b7} fix 2 ph"),
+        ("fir-sync", "decide 1"),
+        ("gum-tool", "\u{b7}"),
+        ("holly-pics", "\u{b7} (+3 old)"),
+        ("iris-blocked", "\u{b7}"),
+        ("juno-pending", ""),
+        ("kale-triple", "decide 2 \u{b7} test 5"),
+        ("lime-debug", "fix 2"),
+        ("maple-mixed", "fix 2"),
+        ("nettle-old", "decide 1 (+2 old)"),
+        ("oak-flat", "test 4"),
+    ];
+
+    /// The trimmed text of `row` between the `You` and `Progress` header columns,
+    /// measured from the rendered header like [`status_cell_text`].
+    pub(super) fn you_cell_text(rows: &[Vec<(String, Color)>], row: &[(String, Color)]) -> String {
+        let (start, end) = you_span(rows);
+        row[start..end]
+            .iter()
+            .map(|(s, _)| s.as_str())
+            .collect::<String>()
+            .trim()
+            .to_string()
+    }
+
+    /// The `You` column's [start, end) cell range, from the rendered header.
+    fn you_span(rows: &[Vec<(String, Color)>]) -> (usize, usize) {
+        let header = row_with(rows, "Progress");
+        let start = find_in_row(header, "You").expect("You header");
+        let end = find_in_row(header, "Progress").expect("Progress header");
+        (start, end)
+    }
+
+    #[test]
+    fn the_you_tier_resolves_the_specified_column_widths() {
+        // UI-SPEC "Resolved column widths": Alias, Phase, Status, You, Progress, Backlog.
+        let table: [(u16, [u16; 6]); 5] = [
+            (100, [18, 19, 13, 21, 11, 9]),
+            (120, [23, 30, 13, 21, 14, 10]),
+            (140, [27, 36, 18, 21, 17, 12]),
+            (160, [31, 41, 25, 21, 19, 14]),
+            (200, [39, 51, 39, 21, 23, 18]),
+        ];
+        for (width, expected) in table {
+            let (headers, constraints) = dashboard_columns(width);
+            assert_eq!(headers.len(), 6, "six columns at {width}");
+            let inner = width - 2 - 2;
+            let got: Vec<u16> = Layout::horizontal(constraints)
+                .flex(Flex::Start)
+                .spacing(1)
+                .split(Rect::new(0, 0, inner, 1))
+                .iter()
+                .map(|r| r.width)
+                .collect();
+            assert_eq!(got, expected, "resolved widths at {width}");
+        }
+        assert_eq!(status_column_cells(100), 13);
+        assert_eq!(status_column_cells(120), 13);
+        assert!(status_column_cells(200) >= 22);
+        // The boundary: the cell vector and the header agree at 99 and 100.
+        assert_eq!(dashboard_columns(99).0.len(), 5);
+        assert_eq!(dashboard_columns(100).0.len(), 6);
+    }
+
+    const FLEET_SUMMARY: &str =
+        "You: test 40 (8 close) \u{b7} decide 5 \u{b7} fix 11 \u{b7} 11 of 15 projects \u{b7} 1 loading";
+
+    /// The row directly above the footer, as text.
+    fn summary_row(rows: &[Vec<(String, Color)>]) -> String {
+        rendered_text(rows)[rows.len() - 2].clone()
+    }
+
+    #[test]
+    fn the_summary_row_sits_above_the_footer_at_100_120_and_140() {
+        let ctx = owner_fleet_ctx();
+        for width in [100u16, 120, 140] {
+            let rows = render_dashboard_cells(&ctx, width, 20);
+            let row = summary_row(&rows);
+            assert!(
+                row.starts_with(FLEET_SUMMARY),
+                "the D-11 fleet text at {width}: {row:?}"
+            );
+            assert!(
+                row.trim_end().ends_with("[i] inbox"),
+                "[i] inbox right-aligned at {width}: {row:?}"
+            );
+            assert_eq!(row.trim_end().chars().count(), usize::from(width));
+        }
+        for (width, height) in [(99u16, 20u16), (120, 11)] {
+            let text = rendered_text(&render_dashboard_cells(&ctx, width, height)).join("\n");
+            assert!(!text.contains("You:"), "no summary at {width}x{height}");
+        }
+    }
+
+    #[test]
+    fn summary_totals_equal_the_sum_of_the_visible_cells() {
+        use super::super::owner::{owner_numbers, owner_totals};
+        let mut ctx = owner_fleet_ctx();
+        for filter in ["", "e/n", "-/n", "/y", "/y test"] {
+            ctx.filter_text = filter.to_string();
+            ctx.recompute_filtered_aliases();
+            let totals = owner_totals(
+                ctx.filtered_aliases
+                    .iter()
+                    .map(|alias| ctx.owner_digests.get(alias)),
+            );
+            let numbers: Vec<_> = ctx
+                .filtered_aliases
+                .iter()
+                .filter_map(|alias| ctx.owner_digests.get(alias))
+                .map(owner_numbers)
+                .collect();
+            assert_eq!(totals.visible, ctx.filtered_aliases.len(), "{filter:?}");
+            assert_eq!(totals.pending, totals.visible - numbers.len(), "{filter:?}");
+            assert_eq!(totals.test, numbers.iter().map(|n| n.test).sum::<usize>());
+            assert_eq!(
+                totals.decide,
+                numbers.iter().map(|n| n.decide).sum::<usize>()
+            );
+            assert_eq!(totals.fix, numbers.iter().map(|n| n.fix).sum::<usize>());
+            assert_eq!(
+                totals.closeable,
+                numbers.iter().map(|n| n.closeable).sum::<usize>()
+            );
+            assert_eq!(
+                totals.with_work,
+                numbers
+                    .iter()
+                    .filter(|n| super::super::owner::has_owner_work(n))
+                    .count()
+            );
+        }
+        // The two fleet texts of the D-11 truth for the filtered subsets.
+        for (filter, expected) in [
+            (
+                "/y",
+                "You: test 40 (8 close) \u{b7} decide 5 \u{b7} fix 11 \u{b7} 11 of 11 projects",
+            ),
+            (
+                "/y test",
+                "You: test 40 (8 close) \u{b7} decide 2 \u{b7} fix 5 phases \u{b7} 6 of 6 projects",
+            ),
+        ] {
+            ctx.filter_text = filter.to_string();
+            ctx.recompute_filtered_aliases();
+            let rows = render_dashboard_cells(&ctx, 120, 20);
+            assert!(
+                summary_row(&rows).starts_with(expected),
+                "{filter:?}: {:?}",
+                summary_row(&rows)
+            );
+        }
+    }
+
+    #[test]
+    fn the_summary_reads_loading_until_a_digest_arrives() {
+        let mut ctx = owner_fleet_ctx();
+        ctx.owner_digests.clear();
+        let rows = render_dashboard_cells(&ctx, 120, 20);
+        assert!(summary_row(&rows).starts_with("You: Loading..."));
+    }
+
+    #[test]
+    fn a_fleet_without_owner_work_reads_a_dim_dot() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let mut ctx = ctx_with_aliases(&["alpha", "bravo"]);
+        owe(&mut ctx, "alpha", OwnerDigest::default());
+        owe(&mut ctx, "bravo", OwnerDigest::default());
+        let mut terminal = Terminal::new(TestBackend::new(120, 20)).unwrap();
+        let screen = NormalScreen::new();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                Screen::render(&screen, frame, area, &ctx);
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let row: String = (0..120)
+            .map(|x| buffer.cell((x, 18)).unwrap().symbol().to_string())
+            .collect();
+        assert!(row.starts_with("You: \u{b7}"), "{row:?}");
+        let dot = buffer.cell((5, 18)).unwrap();
+        assert_eq!(dot.symbol(), "\u{b7}");
+        assert!(dot.modifier.contains(Modifier::DIM));
+        assert!(!buffer
+            .cell((0, 18))
+            .unwrap()
+            .modifier
+            .contains(Modifier::DIM));
+        assert!(buffer
+            .cell((0, 18))
+            .unwrap()
+            .modifier
+            .contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn the_i_key_opens_the_inbox_screen() {
+        let mut ctx = owner_fleet_ctx();
+        let mut screen = NormalScreen::new();
+        let action = screen.handle_key(KeyCode::Char('i'), KeyModifiers::NONE, &mut ctx);
+        assert!(matches!(action, ScreenAction::Push(_)));
+        assert!(ctx.status_message.is_none(), "`i` shows no message");
+        let action = screen.handle_key(KeyCode::Char('y'), KeyModifiers::NONE, &mut ctx);
+        assert!(
+            matches!(action, ScreenAction::None),
+            "a bare y stays unbound"
+        );
+    }
+
+    #[test]
+    fn esc_and_q_leave_the_inbox_with_the_dashboard_unchanged() {
+        for leave in [KeyCode::Esc, KeyCode::Char('q')] {
+            let mut ctx = owner_fleet_ctx();
+            let mut screen = NormalScreen::new();
+            screen.handle_key(KeyCode::Char('j'), KeyModifiers::NONE, &mut ctx);
+            let before = (
+                ctx.selected_alias(),
+                ctx.sort_mode,
+                ctx.filter_text.clone(),
+                ctx.filtered_aliases.clone(),
+            );
+            let ScreenAction::Push(mut inbox) =
+                screen.handle_key(KeyCode::Char('i'), KeyModifiers::NONE, &mut ctx)
+            else {
+                panic!("`i` must push the inbox");
+            };
+            let action = inbox.handle_key(leave, KeyModifiers::NONE, &mut ctx);
+            assert!(matches!(action, ScreenAction::Pop), "{leave:?}");
+            let after = (
+                ctx.selected_alias(),
+                ctx.sort_mode,
+                ctx.filter_text.clone(),
+                ctx.filtered_aliases.clone(),
+            );
+            assert_eq!(before, after, "{leave:?}");
+        }
+    }
+
+    #[test]
+    fn the_summary_line_takes_no_color() {
+        let ctx = owner_fleet_ctx();
+        let rows = render_dashboard_cells(&ctx, 120, 20);
+        for (symbol, fg) in &rows[rows.len() - 2] {
+            assert_eq!(*fg, Color::Reset, "summary cell {symbol:?}");
+        }
+    }
+
+    #[test]
+    fn sort_and_filter_by_owner_work_at_120() {
+        let mut ctx = owner_fleet_ctx();
+        let order = |ctx: &AppContext| -> Vec<String> {
+            let text = rendered_text(&render_dashboard_cells(ctx, 120, 20));
+            let mut seen: Vec<(usize, String)> = ctx
+                .project_states
+                .keys()
+                .filter_map(|alias| {
+                    text.iter()
+                        .position(|row| row.contains(alias.as_str()))
+                        .map(|y| (y, alias.clone()))
+                })
+                .collect();
+            seen.sort();
+            seen.into_iter().map(|(_, alias)| alias).collect()
+        };
+        ctx.sort_mode = SortMode::AttentionFirst;
+        ctx.recompute_filtered_aliases();
+        assert_eq!(
+            order(&ctx),
+            [
+                "fir-sync",
+                "alder-api",
+                "birch-cli",
+                "cedar-web",
+                "dune-app",
+                "elm-shop",
+                "kale-triple",
+                "lime-debug",
+                "maple-mixed",
+                "nettle-old",
+                "oak-flat",
+                "gum-tool",
+                "holly-pics",
+                "iris-blocked",
+                "juno-pending",
+            ]
+        );
+
+        ctx.filter_text = "/y".to_string();
+        ctx.recompute_filtered_aliases();
+        let listed = order(&ctx);
+        assert_eq!(listed.len(), 11);
+        for hidden in ["gum-tool", "holly-pics", "iris-blocked", "juno-pending"] {
+            assert!(!listed.iter().any(|a| a == hidden), "{hidden} is hidden");
+        }
+
+        ctx.filter_text = "/y bogus".to_string();
+        ctx.recompute_filtered_aliases();
+        assert!(order(&ctx).is_empty(), "no project row renders");
+        let rows = render_dashboard_cells(&ctx, 120, 20);
+        assert!(summary_row(&rows).starts_with("You: \u{b7}"), "{rows:?}");
+    }
+
+    #[test]
+    fn below_100_columns_the_dashboard_ignores_owner_digests() {
+        let loaded = owner_fleet_ctx();
+        let mut bare = owner_fleet_ctx();
+        bare.owner_digests.clear();
+        for width in [60u16, 80, 99] {
+            let with = rendered_text(&render_dashboard_cells(&loaded, width, 20));
+            let without = rendered_text(&render_dashboard_cells(&bare, width, 20));
+            assert_eq!(with, without, "byte-identical at {width}");
+            assert!(
+                !with.iter().any(|line| line.contains("You")),
+                "no You header at {width}"
+            );
+        }
+        let wide = rendered_text(&render_dashboard_cells(&loaded, 100, 20));
+        assert!(wide.iter().any(|line| line.contains("You")));
+    }
+
+    #[test]
+    fn the_you_column_shows_every_fleet_cell_at_100_120_and_140() {
+        let ctx = owner_fleet_ctx();
+        for width in [100u16, 120, 140] {
+            let rows = render_dashboard_cells(&ctx, width, 20);
+            for (alias, expected) in FLEET_CELLS {
+                let row = row_with(&rows, alias);
+                assert_eq!(
+                    you_cell_text(&rows, row),
+                    expected,
+                    "{alias} at width {width}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn sc1_the_three_closeable_test_projects_read_legibly_at_120() {
+        let ctx = owner_fleet_ctx();
+        let rows = render_dashboard_cells(&ctx, 120, 20);
+        for (alias, form) in [
+            ("alder-api", "test 3 \u{2192} closes 1"),
+            ("birch-cli", "test 10 \u{2192} closes 4"),
+            ("dune-app", "test 12 \u{2192} closes 3"),
+        ] {
+            let row = row_with(&rows, alias);
+            assert_eq!(you_cell_text(&rows, row), form, "{alias} is unclipped");
+        }
+        // Every non-blank value starts in the same column.
+        let (start, _) = you_span(&rows);
+        for (alias, expected) in FLEET_CELLS {
+            if expected.is_empty() {
+                continue;
+            }
+            let row = row_with(&rows, alias);
+            let first = expected.chars().next().unwrap().to_string();
+            assert_eq!(row[start].0, first, "{alias} starts at column {start}");
+        }
+    }
+
+    #[test]
+    fn sc2_blocked_and_archived_only_projects_show_no_lane_text() {
+        let ctx = owner_fleet_ctx();
+        let rows = render_dashboard_cells(&ctx, 120, 20);
+        let blocked = you_cell_text(&rows, row_with(&rows, "iris-blocked"));
+        let archived = you_cell_text(&rows, row_with(&rows, "holly-pics"));
+        assert_eq!(blocked, "\u{b7}");
+        assert_eq!(archived, "\u{b7} (+3 old)");
+        for cell in [blocked, archived] {
+            for word in ["test", "decide", "fix"] {
+                assert!(!cell.contains(word), "{cell:?} holds {word}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_you_cell_is_quiet_on_every_row_color() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let ctx = owner_fleet_ctx();
+        let mut terminal = Terminal::new(TestBackend::new(120, 20)).expect("terminal");
+        let screen = NormalScreen::new();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                Screen::render(&screen, frame, area, &ctx);
+            })
+            .expect("draw");
+        let buffer = terminal.backend().buffer().clone();
+        let rows = render_dashboard_cells(&ctx, 120, 20);
+        let (start, end) = you_span(&rows);
+
+        let mut row_colors = std::collections::HashSet::new();
+        for (alias, expected) in FLEET_CELLS {
+            let y = rows
+                .iter()
+                .position(|r| find_in_row(r, alias).is_some())
+                .expect("row") as u16;
+            // The status cell's row color shows on the alias column's text.
+            let alias_x = find_in_row(&rows[y as usize], alias).unwrap() as u16;
+            row_colors.insert(format!("{:?}", buffer.cell((alias_x, y)).unwrap().fg));
+            if expected.is_empty() {
+                continue;
+            }
+            let dim_expected = expected == "\u{b7}" || expected == "\u{b7} (+3 old)";
+            for x in start..end {
+                let cell = buffer.cell((x as u16, y)).unwrap();
+                if cell.symbol().trim().is_empty() {
+                    continue;
+                }
+                assert_eq!(
+                    cell.fg,
+                    Color::Reset,
+                    "{alias} cell {x} {:?}",
+                    cell.symbol()
+                );
+                if dim_expected {
+                    assert!(
+                        cell.modifier.contains(Modifier::DIM),
+                        "{alias} {:?} is dim",
+                        cell.symbol()
+                    );
+                }
+            }
+            if expected == "decide 1 (+2 old)" {
+                let old_x = start + expected.find('(').unwrap();
+                assert!(buffer
+                    .cell((old_x as u16, y))
+                    .unwrap()
+                    .modifier
+                    .contains(Modifier::DIM));
+            }
+        }
+        assert!(
+            row_colors.len() >= 3,
+            "the fleet must cover several row colors, got {row_colors:?}"
+        );
+    }
+
+    #[test]
+    fn a_project_without_a_digest_has_a_blank_you_cell() {
+        let ctx = owner_fleet_ctx();
+        let rows = render_dashboard_cells(&ctx, 120, 20);
+        let juno = row_with(&rows, "juno-pending");
+        assert_eq!(you_cell_text(&rows, juno), "");
+        let (start, end) = you_span(&rows);
+        assert!(juno[start..end].iter().all(|(s, _)| s == " "));
+    }
+
+    /// WR-01 (D-09): a project whose folder or `.planning/` is gone shows no owner
+    /// value, even with an older digest still in the map. Its `You` cell is blank
+    /// (never the clean `·`), it has no owner rank, `/y` skips it, and the summary
+    /// neither counts it nor reports it loading.
+    #[test]
+    fn a_missing_project_shows_no_owner_value() {
+        for presence in [ProjectPresence::FolderMissing, ProjectPresence::NoPlanning] {
+            let mut ctx = owner_fleet_ctx();
+            ctx.project_states.get_mut("cedar-web").unwrap().presence = presence;
+            ctx.recompute_filtered_aliases();
+            let rows = render_dashboard_cells(&ctx, 120, 20);
+            let cedar = row_with(&rows, "cedar-web");
+            assert_eq!(you_cell_text(&rows, cedar), "", "{presence:?}");
+            assert!(
+                summary_row(&rows).starts_with(
+                    "You: test 34 (8 close) \u{b7} decide 5 \u{b7} fix 7 \u{b7} 10 of 14 projects \u{b7} 1 loading"
+                ),
+                "{presence:?}: {:?}",
+                summary_row(&rows)
+            );
+            assert!(!ctx.owner_work_matches("cedar-web", None), "{presence:?}");
+            ctx.filter_text = "/y".to_string();
+            ctx.recompute_filtered_aliases();
+            assert!(
+                !ctx.filtered_aliases.iter().any(|a| a == "cedar-web"),
+                "{presence:?}"
+            );
+
+            // Absent data never reads as the clean dot: a gone project with an
+            // empty digest stays blank too.
+            ctx.filter_text.clear();
+            ctx.owner_digests
+                .insert("cedar-web".to_string(), OwnerDigest::default());
+            ctx.recompute_filtered_aliases();
+            let rows = render_dashboard_cells(&ctx, 120, 20);
+            assert_eq!(you_cell_text(&rows, row_with(&rows, "cedar-web")), "");
+        }
+    }
+
+    #[test]
     fn test_dashboard_columns_header_and_width_counts_match() {
         // Header vector and width vector must stay the same length at every
         // tier, with Status always at index 2 — the invariant that keeps the
         // per-row cell vector in `render_main` from drifting out of step.
-        for width in [200u16, 120, 80, 79, 60, 59, 40, 20] {
+        for width in [200u16, 120, 100, 99, 80, 79, 60, 59, 40, 20] {
             let (headers, widths) = dashboard_columns(width);
             assert_eq!(
                 headers.len(),

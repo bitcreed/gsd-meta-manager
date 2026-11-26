@@ -1,6 +1,6 @@
 use crate::action::Action;
 use crate::change_tracker::ChangeTracker;
-use crate::config::{save_config, Config};
+use crate::config::{self, Config};
 use crate::registry;
 use crate::session_detector::ClaudeSession;
 use crate::state_reader::{self, ProjectPresence, ProjectState};
@@ -72,6 +72,13 @@ pub enum FilterColumn {
     /// survives. `/h` alone (an empty term) is therefore "every project waiting
     /// on a human" with no special case in the grammar.
     NeedsHuman,
+    /// Rows with owner work (36 OWN-18, D-14), optionally in one lane.
+    ///
+    /// A predicate like [`FilterColumn::NeedsHuman`]: the term still matches
+    /// across every column and this narrows what survives, so `/y` alone is
+    /// "every project with owner work". `None` is any lane; `Some(lane)` keeps
+    /// rows whose count in that lane is above zero. `blocked` is not a lane.
+    OwnerWork(Option<crate::ui::screens::owner::OwnerLane>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -85,11 +92,29 @@ pub enum StatusCategory {
 
 /// Split a filter string into its term and the column or predicate it narrows.
 ///
-/// The suffix grammar is `term/x`. `h` joins `n`, `p` and `s` for "needs a
+/// The suffix grammar is `term/x`; `y` adds owner work and takes an optional
+/// lane (`/y test`, `/y decide`, `/y fix`, short `/yt /yd /yf`). `h` joins `n`, `p` and `s` for "needs a
 /// human" (OBS-07): the other three letters were taken and `h` is both free and
 /// mnemonic. On screen the search prompt supplies its own leading `/`, so the
 /// all-rows form renders as `//h` while the stored `filter_text` is `/h`.
 pub fn parse_filter(input: &str) -> (String, FilterColumn) {
+    use crate::ui::screens::owner::OwnerLane;
+    // `/y [lane]` (D-14): the long lane words and the short forms are matched
+    // before the bare `/y`. Any other word after `/y ` falls through to a plain
+    // term, so `//y bogus` matches nothing.
+    for (suffix, lane) in [
+        ("/y test", Some(OwnerLane::Test)),
+        ("/y decide", Some(OwnerLane::Decide)),
+        ("/y fix", Some(OwnerLane::Fix)),
+        ("/yt", Some(OwnerLane::Test)),
+        ("/yd", Some(OwnerLane::Decide)),
+        ("/yf", Some(OwnerLane::Fix)),
+        ("/y", None),
+    ] {
+        if let Some(term) = input.strip_suffix(suffix) {
+            return (term.to_string(), FilterColumn::OwnerWork(lane));
+        }
+    }
     if let Some(term) = input.strip_suffix("/p") {
         (term.to_string(), FilterColumn::Phase)
     } else if let Some(term) = input.strip_suffix("/n") {
@@ -524,6 +549,10 @@ impl Default for OneoffSeams {
     }
 }
 
+/// How much longer an acknowledge outcome stays on the status line than the usual
+/// 3 s (37 UI review #7).
+const OWNER_ACK_STATUS_EXTRA: std::time::Duration = std::time::Duration::from_secs(9);
+
 pub struct App {
     pub should_quit: bool,
     pub needs_redraw: bool,
@@ -534,6 +563,10 @@ pub struct App {
     /// When set, the main loop should suspend the TUI and open this file in
     /// $EDITOR, at the 1-based line when one is carried (see [`editor_args`]).
     pub pending_editor: Option<(PathBuf, Option<usize>)>,
+    /// A complete OSC 52 sequence the main loop writes to the terminal after the
+    /// next frame, then clears (37-07, D-09). Never written from `render` or a
+    /// key handler.
+    pub pending_osc52: Option<String>,
     /// The stop flag of every landing this App started, by `<alias>/<run-id>` (quick
     /// 261103-klf, C-13): a stop of such a landing sets it, and the landing removes its
     /// entry when it ends.
@@ -551,6 +584,22 @@ pub struct App {
     /// the check is clean, the user leaves the run unlaunched, the editor fails, the
     /// kept text is discarded, or the run is launched.
     pub new_run_flow: std::collections::HashSet<(String, String)>,
+    /// Aliases whose `.planning/` changed inside the 500 ms re-parse window (WR-06).
+    ///
+    /// The dedup in the `FileChanged` handler drops a write that lands within
+    /// 500 ms of the previous re-parse. Owner files change in bursts (a verify
+    /// step writes the UAT file, `STATE.md` and `ROADMAP.md` back to back), so the
+    /// dropped write is often the one the digest needed. A dropped alias is
+    /// marked here, and the tick re-parses it once its window has passed: the
+    /// dedup becomes trailing-edge without a timer of its own.
+    pub reparse_pending: std::collections::HashSet<String>,
+    /// The UTC hour (hours since the epoch) the owner ages were last swept at
+    /// (WR-07); `None` until the first sweep. See [`App::sweep_owner_ages`].
+    pub owner_age_hour: Option<i64>,
+    /// `(modified, length)` of `config.json` as last seen by [`App::new`] or
+    /// [`App::reload_config_if_changed`]; `None` while the file is missing or
+    /// unreadable. The session poll adopts the file only when this moves.
+    config_stamp: Option<(std::time::SystemTime, u64)>,
     /// The host check and the launch call the launch form reaches (30-05).
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub launch_seams: LaunchSeams,
@@ -943,6 +992,12 @@ impl App {
             error_message: None,
             event_tx: None,
             reparse_dispatches: 0,
+            owner_digests: HashMap::new(),
+            owner_digest_failed: std::collections::HashSet::new(),
+            owner_ack_busy: std::collections::HashSet::new(),
+            owner_copy_busy: false,
+            inbox_view: crate::ui::screens::inbox::InboxViewState::default(),
+            settle_pending: Default::default(),
             agent_views: HashMap::new(),
             agents_scan_in_flight: false,
             sort_mode: crate::ui::screens::SortMode::default(),
@@ -961,6 +1016,7 @@ impl App {
             experimental: crate::experimental::experimental_features_enabled(),
         };
         ctx.filtered_aliases = ctx.sorted_aliases();
+        let stamp = config_stamp(&ctx.config_path);
 
         App {
             should_quit: false,
@@ -970,9 +1026,13 @@ impl App {
             active_sessions: Vec::new(),
             session_poll_counter: 0,
             pending_editor: None,
+            pending_osc52: None,
             oneoff_landings: Default::default(),
             edit_sessions: HashMap::new(),
             new_run_flow: std::collections::HashSet::new(),
+            reparse_pending: std::collections::HashSet::new(),
+            owner_age_hour: None,
+            config_stamp: stamp,
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             launch_seams: LaunchSeams::default(),
             #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -1004,18 +1064,103 @@ impl App {
         let tx = tx.clone();
         let alias_for_task = alias.to_string();
         let planning_dir = project_path.join(".planning");
+        let stale_days = self.ctx.config.preferences.owner_stale_days();
 
         self.ctx.reparse_dispatches += 1;
         tokio::task::spawn_blocking(move || {
             let state = state_reader::parse_project_state(&planning_dir);
+            // The owner digest rides the same blocking task (36 D-01): it reads
+            // the reader's own parsed-file caches, never the render path. A
+            // reader panic is caught so the state above is still sent (WR-04).
+            let digest = AppContext::guarded_owner_digest(&alias_for_task, || {
+                state_reader::owner_items::read_owner_digest(
+                    &planning_dir,
+                    &state,
+                    chrono::Utc::now(),
+                    stale_days,
+                )
+            });
             let _ = tx.send(Action::ProjectStateLoaded {
                 alias: alias_for_task,
                 state: Box::new(state),
+                digest: digest.map(Box::new),
             });
         });
         self.ctx
             .last_refresh
             .insert(alias.to_string(), std::time::Instant::now());
+    }
+
+    /// The window inside which a `.planning/` change does not re-parse `alias`
+    /// again: 500 ms from the last dispatch.
+    const REPARSE_WINDOW: std::time::Duration = std::time::Duration::from_millis(500);
+
+    /// Whether `alias` was re-parsed less than [`Self::REPARSE_WINDOW`] before `now`.
+    fn reparse_window_open(&self, alias: &str, now: std::time::Instant) -> bool {
+        self.ctx
+            .last_refresh
+            .get(alias)
+            .is_some_and(|last| now.saturating_duration_since(*last) < Self::REPARSE_WINDOW)
+    }
+
+    /// Re-parse every alias in [`App::reparse_pending`] whose window has passed
+    /// (WR-06), through [`Self::schedule_reparse`], the only dispatch site. An
+    /// alias no longer registered is dropped. Runs on the existing tick, no timer.
+    fn flush_pending_reparses(&mut self, now: std::time::Instant) {
+        if self.reparse_pending.is_empty() {
+            return;
+        }
+        let due: Vec<String> = self
+            .reparse_pending
+            .iter()
+            .filter(|alias| !self.reparse_window_open(alias, now))
+            .cloned()
+            .collect();
+        for alias in due {
+            self.reparse_pending.remove(&alias);
+            if let Some(path) = self.ctx.config.projects.get(&alias).map(|p| p.path.clone()) {
+                self.schedule_reparse(&alias, &path);
+            }
+        }
+    }
+
+    /// Re-parse, once per UTC hour, every project whose owner digest shows an age
+    /// (WR-07).
+    ///
+    /// The reader stores ages, the `stale` flag and the oldest-todo age as whole
+    /// days counted at read time, and a digest is otherwise re-read only when a
+    /// `.planning/` file changes. On a dashboard left open for days a quiet
+    /// project would keep `3 d`, keep `stale` off past `stale_days`, and keep its
+    /// Todos fold at the old age. This sweep bounds that lag to an hour.
+    ///
+    /// It rides the existing 20-tick counter (no timer of its own) and goes
+    /// through [`Self::schedule_reparse`], the only dispatch site, so a swept
+    /// result is ordered like any watcher re-parse. A digest without groups or
+    /// todos shows no age and is skipped, as is the first call, which only
+    /// records the hour (the startup load has just read every digest). This
+    /// relaxes 36 D-03's "no timer-driven recompute" for ages only; a warm
+    /// re-parse costs a `stat` per owner file thanks to the reader's caches.
+    fn sweep_owner_ages(&mut self, now: chrono::DateTime<chrono::Utc>) {
+        let hour = now.timestamp().div_euclid(3600);
+        match self.owner_age_hour.replace(hour) {
+            Some(last) if last != hour => {}
+            _ => return,
+        }
+        let due: Vec<(String, PathBuf)> = self
+            .ctx
+            .config
+            .projects
+            .iter()
+            .filter(|(alias, _)| {
+                self.ctx
+                    .owner_digest(alias)
+                    .is_some_and(|d| !d.groups.is_empty() || d.hidden.todos > 0)
+            })
+            .map(|(alias, project)| (alias.clone(), project.path.clone()))
+            .collect();
+        for (alias, path) in due {
+            self.schedule_reparse(&alias, &path);
+        }
     }
 
     /// Gather the facts [`launcher_heartbeat_redraw_wanted`] decides on (30-02, D-08).
@@ -1031,6 +1176,16 @@ impl App {
             self.ctx.detail_sub_view_per_project.get(&alias),
             self.ctx.view_cache.get(&alias),
         )
+    }
+
+    /// Whether a pending settle's badge is on screen: any entry exists and the top
+    /// screen is the inbox or the detail view (quick 261118-v6l, I-2).
+    fn settle_pending_redraw_due(&self) -> bool {
+        !self.ctx.settle_pending.is_empty()
+            && self.screen_stack.last().is_some_and(|top| {
+                top.name() == "inbox"
+                    || top.name() == crate::ui::screens::detail::DetailScreen::NAME
+            })
     }
 
     /// Re-list the selected project's launcher runs **if the Driver tab is the
@@ -2531,44 +2686,102 @@ impl App {
         });
     }
 
-    /// Auto-register any active agent sessions (Claude or Codex) whose working_dir is an
-    /// unregistered GSD project. Persists config, starts the file watcher,
-    /// loads initial project state, and surfaces a status message per
-    /// newly-added project.
-    pub fn auto_register_new_sessions(&mut self) {
-        let added =
-            registry::auto_register_from_sessions(&mut self.ctx.config, &self.active_sessions);
+    /// Adopt `config.json` when another process changed it since the last look.
+    ///
+    /// Compares the file's `(modified, length)` stamp, and only on a change reads
+    /// and parses it (quick 261125-kfc). A file that is missing or does not parse
+    /// is not adopted: the in-memory registry stays as it is, and nothing is
+    /// written. After the TUI's own write the next call finds an identical
+    /// registry and changes nothing.
+    fn reload_config_if_changed(&mut self) {
+        let stamp = config_stamp(&self.ctx.config_path);
+        if stamp == self.config_stamp {
+            return;
+        }
+        self.config_stamp = stamp;
+        if stamp.is_none() {
+            return;
+        }
+        match config::load_config(&self.ctx.config_path) {
+            Ok(fresh) => {
+                let unchanged = matches!(
+                    (
+                        serde_json::to_value(&fresh),
+                        serde_json::to_value(&self.ctx.config)
+                    ),
+                    (Ok(a), Ok(b)) if a == b
+                );
+                if unchanged {
+                    return;
+                }
+                self.ctx.adopt_config(fresh);
+                if self.ctx.needs_redraw {
+                    self.needs_redraw = true;
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "registry: config.json changed on disk but could not be loaded; \
+                     keeping the in-memory registry",
+                );
+            }
+        }
+    }
 
-        if added.is_empty() {
+    /// Auto-register any active agent sessions (Claude or Codex) whose working_dir is an
+    /// unregistered GSD project, and surface a status message per newly-added
+    /// project.
+    ///
+    /// The additions are applied to `config.json` as it is on disk now, not
+    /// written from the TUI's copy: [`config::update_config`] re-reads the file and
+    /// re-runs the registration on it, so an entry another process removed stays
+    /// removed and one it added survives (quick 261125-kfc). The TUI then adopts
+    /// what that produced ([`AppContext::adopt_config`]), which starts the
+    /// watcher, loads the initial state and schedules the owner digest for every
+    /// alias new to it. When the file cannot be read or written the project is
+    /// still registered in memory for this session.
+    pub fn auto_register_new_sessions(&mut self) {
+        self.auto_register_new_sessions_using(registry::auto_register_from_sessions);
+    }
+
+    /// [`Self::auto_register_new_sessions`] with the registration function
+    /// injected, so a test can register a root the production guards (temp dir,
+    /// data dir) refuse by design.
+    fn auto_register_new_sessions_using(&mut self, register: RegisterFromSessions) {
+        // Probe a copy first: only when it finds something new does this touch
+        // the disk, so an idle session poll stays free of config I/O.
+        let mut probe = self.ctx.config.clone();
+        let probed = register(&mut probe, &self.active_sessions);
+        if probed.is_empty() {
             return;
         }
 
-        for (alias, path) in &added {
-            if let Err(e) = save_config(&self.ctx.config, &self.ctx.config_path) {
+        let sessions = self.active_sessions.clone();
+        let updated = config::update_config(&self.ctx.config_path, |config| {
+            Ok::<_, std::convert::Infallible>(register(config, &sessions))
+        });
+        let added = match updated {
+            Ok((fresh, Ok(added))) => {
+                self.ctx.adopt_config(fresh);
+                added
+            }
+            Err(e) => {
                 tracing::warn!(
-                    alias = %alias,
                     error = %e,
-                    "auto-register: save_config failed",
+                    "auto-register: config update failed; registering in memory only",
                 );
                 // Continue; the in-memory registration still helps this session.
-            }
-
-            let planning_dir = path.join(".planning");
-            if let Some(ref mut watcher) = self.ctx.watcher {
-                if let Err(e) = watcher.watch(&planning_dir) {
-                    tracing::warn!(
-                        alias = %alias,
-                        path = %planning_dir.display(),
-                        error = %e,
-                        "auto-register: watcher.watch failed",
-                    );
+                self.ctx.config = probe;
+                for (alias, path) in &probed {
+                    self.ctx.track_project(alias, path);
                 }
+                self.ctx.recompute_filtered_aliases();
+                probed
             }
+        };
 
-            let state = state_reader::parse_project_state(&planning_dir);
-            self.ctx.change_tracker.record_initial(alias, &state);
-            self.ctx.project_states.insert(alias.clone(), state);
-
+        for (alias, path) in &added {
             tracing::info!(
                 alias = %alias,
                 path = %path.display(),
@@ -2579,8 +2792,6 @@ impl App {
                 std::time::Instant::now(),
             ));
         }
-
-        self.ctx.recompute_filtered_aliases();
         self.needs_redraw = true;
     }
 
@@ -2603,6 +2814,20 @@ impl App {
                 if self.launcher_heartbeat_redraw_due() {
                     self.needs_redraw = true;
                 }
+
+                // A pending settle's spinner and timer move on their own (quick
+                // 261118-v6l, I-2): redraw on the tick, only while the inbox or the
+                // detail view (the two hosts of the badge) is on top.
+                if self.ctx.settle_pending.expire(std::time::Instant::now()) {
+                    self.needs_redraw = true;
+                }
+                if self.settle_pending_redraw_due() {
+                    self.needs_redraw = true;
+                }
+
+                // The trailing edge of the 500 ms re-parse dedup (WR-06): a write
+                // the dedup dropped is re-parsed on the first tick after its window.
+                self.flush_pending_reparses(std::time::Instant::now());
 
                 // Poll for Claude and Codex sessions every 20 ticks (~5s at 250ms interval)
                 self.session_poll_counter += 1;
@@ -2710,11 +2935,23 @@ impl App {
                         }
                     }
 
+                    // Adopt a `config.json` another process changed (`add`,
+                    // `remove`, a second TUI, an editor). It rides this same counter
+                    // like everything in the block, never a timer of its own, and
+                    // runs inline: one `stat` plus, only when the file changed, the
+                    // small read every registry write already does on this thread.
+                    // Before the prune, so the prune sees the reloaded registry.
+                    self.reload_config_if_changed();
+
                     // The prune rides the SAME counter, for the same reason the
                     // reconciliation probe above does (D-27 says so explicitly).
                     // It is pure in-memory map work — no syscall, no file read —
                     // so it runs inline rather than on a blocking task.
                     self.prune_driver_maps();
+
+                    // The hourly owner-age sweep rides this counter too (WR-07):
+                    // at most one re-parse per aged project per UTC hour.
+                    self.sweep_owner_ages(chrono::Utc::now());
                 }
             }
             Action::RawKey(key_event) => {
@@ -2730,6 +2967,10 @@ impl App {
                 project_path,
                 changed_path,
             } => {
+                // Drop the owner reader's parsed files for this project (D-16): a map
+                // removal, no read and no parse, so it costs nothing on a render
+                // path and stays right when a later phase fills the digest in.
+                crate::state_reader::owner_items::evict_project(&project_path);
                 // Find the alias matching this project path
                 let alias = self
                     .ctx
@@ -2803,15 +3044,15 @@ impl App {
                             // does.
                             self.ctx.schedule_archive_refresh(&alias, &project_path);
 
-                            // Dedup: skip if last refresh was less than 500ms ago
-                            let now = std::time::Instant::now();
-                            if let Some(last) = self.ctx.last_refresh.get(&alias) {
-                                if now.duration_since(*last) < std::time::Duration::from_millis(500)
-                                {
-                                    return;
-                                }
+                            // Dedup: skip if last refresh was less than 500ms ago,
+                            // but remember the skipped write: the tick re-parses
+                            // the alias once the window has passed (WR-06).
+                            if self.reparse_window_open(&alias, std::time::Instant::now()) {
+                                self.reparse_pending.insert(alias);
+                                return;
                             }
 
+                            self.reparse_pending.remove(&alias);
                             self.schedule_reparse(&alias, &project_path);
 
                             // Auto-start watcher if not yet watching
@@ -2825,7 +3066,11 @@ impl App {
                     }
                 }
             }
-            Action::ProjectStateLoaded { alias, state } => {
+            Action::ProjectStateLoaded {
+                alias,
+                state,
+                digest,
+            } => {
                 // Detect changes before replacing the old state.
                 // `changed` is true if there was no prior state (first load) or
                 // the freshly-parsed snapshot differs from the cached one.
@@ -2841,11 +3086,47 @@ impl App {
                     None => true,
                 };
                 self.ctx.project_states.insert(alias.clone(), *state);
-                if changed {
+                // A digest-only change (a UAT row flipped, a ruling made) must
+                // redraw and re-sort but never post `Updated:` (36 Pitfall 1).
+                // A late result for an unregistered alias must not outlive the
+                // prune, and a project whose folder or `.planning/` is gone holds
+                // no digest at all, so it never reads as clean (WR-01, D-09).
+                // `None` is a reader panic (WR-04): the numbers are unknown, so
+                // the old digest goes too rather than show a past moment.
+                // A stored digest clears the alias's unreadable mark; a missing one
+                // on a storable alias sets it (37-04: it will not arrive).
+                let mut digest_changed = match digest {
+                    Some(digest) if self.ctx.owner_digest_storable(&alias) => {
+                        let differs = self.ctx.owner_digests.get(&alias) != Some(&*digest);
+                        self.ctx.owner_digests.insert(alias.clone(), *digest);
+                        differs | self.ctx.owner_digest_failed.remove(&alias)
+                    }
+                    None if self.ctx.owner_digest_storable(&alias) => {
+                        let removed = self.ctx.owner_digests.remove(&alias).is_some();
+                        self.ctx.owner_digest_failed.insert(alias.clone()) | removed
+                    }
+                    _ => self.ctx.owner_digests.remove(&alias).is_some(),
+                };
+                if !self.ctx.owner_digest_storable(&alias) {
+                    digest_changed |= self.ctx.owner_digest_failed.remove(&alias);
+                }
+                // The reparse is what a settle waits on (quick 261118-v6l, I-1): step
+                // this alias's pending badges from the file change and the digest.
+                if crate::ui::screens::settle_pending::on_refresh(
+                    &mut self.ctx,
+                    &alias,
+                    std::time::Instant::now(),
+                ) {
+                    self.needs_redraw = true;
+                }
+                if changed || digest_changed {
                     self.ctx.recompute_filtered_aliases();
+                    crate::ui::screens::inbox::reanchor(&mut self.ctx);
+                    self.needs_redraw = true;
+                }
+                if changed {
                     self.ctx.status_message =
                         Some((format!("Updated: {}", alias), std::time::Instant::now()));
-                    self.needs_redraw = true;
                 }
             }
             Action::GitLogLoaded {
@@ -2906,26 +3187,32 @@ impl App {
                             return;
                         }
                     };
-                    if let Err(e) =
-                        registry::add_project_unchecked(&mut self.ctx.config, &judged, &path)
-                    {
-                        self.ctx.error_message = Some(format!("Failed to register: {}", e));
-                        self.needs_redraw = true;
-                        return;
-                    }
-                    if let Err(e) = save_config(&self.ctx.config, &self.ctx.config_path) {
-                        self.ctx.error_message = Some(format!("Failed to save config: {}", e));
-                        self.needs_redraw = true;
-                        return;
+                    // Applied to `config.json` as it is on disk now, then adopted
+                    // (quick 261125-kfc): an `add` or `remove` another process made
+                    // meanwhile is kept, and `adopt_config` watches `.planning/`
+                    // (when it exists), loads the state and schedules the digest.
+                    match config::update_config(&self.ctx.config_path, |config| {
+                        registry::add_project_unchecked(config, &judged, &path)
+                    }) {
+                        Err(e) => {
+                            self.ctx.error_message = Some(format!("Failed to save config: {}", e));
+                            self.needs_redraw = true;
+                            return;
+                        }
+                        Ok((fresh, outcome)) => {
+                            self.ctx.adopt_config(fresh);
+                            if let Err(e) = outcome {
+                                self.ctx.error_message = Some(format!("Failed to register: {}", e));
+                                self.needs_redraw = true;
+                                return;
+                            }
+                        }
                     }
 
-                    // Start file watcher on the new project
+                    // `.planning/` does not exist yet: nothing could be watched.
+                    // Poll for it, then ask for the re-parse that registers it.
                     let planning_dir = path.join(".planning");
-                    if planning_dir.is_dir() {
-                        if let Some(ref mut watcher) = self.ctx.watcher {
-                            let _ = watcher.watch(&planning_dir);
-                        }
-                    } else {
+                    if !planning_dir.is_dir() {
                         if let Some(ref tx) = self.ctx.event_tx {
                             let tx = tx.clone();
                             let planning_poll = planning_dir.clone();
@@ -2951,10 +3238,6 @@ impl App {
                             });
                         }
                     }
-
-                    // Load project state for the new alias
-                    let state = state_reader::parse_project_state(&planning_dir);
-                    self.ctx.project_states.insert(alias.clone(), state);
 
                     self.ctx.status_message = Some((
                         format!("Created project \"{}\"", alias),
@@ -3127,6 +3410,37 @@ impl App {
                 if let Some(path) = self.ctx.config.projects.get(&alias).map(|p| p.path.clone()) {
                     self.ctx.schedule_launcher_refresh(&alias, &path);
                 }
+                self.needs_redraw = true;
+            }
+            // 37 D-15, D-16: the acknowledge child answered. The outcome carries
+            // gsd-core's own refusal line and a project file name, so it is
+            // escaped here; the row itself disappears on the next watcher refresh.
+            Action::OwnerAcknowledged {
+                alias,
+                file,
+                outcome,
+            } => {
+                self.ctx.owner_ack_busy.remove(&(alias, file));
+                // The child may run 10 s and its failure line is the owner's only
+                // explanation, so the line outlives the usual 3 s: the stamp is set
+                // ahead of now (`elapsed` reads zero until then).
+                let stamp = std::time::Instant::now();
+                let stamp = stamp.checked_add(OWNER_ACK_STATUS_EXTRA).unwrap_or(stamp);
+                self.ctx.status_message = Some((
+                    crate::text::render_for_terminal(&outcome).to_string(),
+                    stamp,
+                ));
+                self.needs_redraw = true;
+            }
+            // 37-07 D-09: the clipboard tool answered. The outcome names the tool
+            // and its exit, never project text, but it is escaped like every
+            // status line composed off the render thread.
+            Action::ClipboardCopied { outcome } => {
+                self.ctx.owner_copy_busy = false;
+                self.ctx.status_message = Some((
+                    crate::text::render_for_terminal(&outcome).to_string(),
+                    std::time::Instant::now(),
+                ));
                 self.needs_redraw = true;
             }
             // 30-04, D-14, D-15: a steering key asked for one edit to the selected
@@ -3536,6 +3850,35 @@ impl App {
                 }
                 self.needs_redraw = true;
             }
+            // The digest-only first fill (36 D-03). A registered alias without a
+            // digest takes it; one that has a digest keeps it, because a digest
+            // from the reparse task is never older than a first-fill one
+            // (RESEARCH Pitfall 2). This holds only because removing a
+            // project drops its digest (WR-02): otherwise a re-added alias would
+            // hold the removed project's digest and refuse its own first fill.
+            // Never a status message.
+            Action::OwnerDigestLoaded { alias, digest } => {
+                if self.ctx.owner_digest_storable(&alias)
+                    && !self.ctx.owner_digests.contains_key(&alias)
+                {
+                    self.ctx.owner_digest_failed.remove(&alias);
+                    self.ctx.owner_digests.insert(alias, *digest);
+                    self.ctx.recompute_filtered_aliases();
+                    crate::ui::screens::inbox::reanchor(&mut self.ctx);
+                    self.needs_redraw = true;
+                }
+            }
+            // The first fill's reader panicked (37-04): the digest will not
+            // arrive, so the inbox says `unreadable` instead of `loading`. Only
+            // a storable alias without a digest enters the set (T-37-12).
+            Action::OwnerDigestFailed { alias } => {
+                if self.ctx.owner_digest_storable(&alias)
+                    && !self.ctx.owner_digests.contains_key(&alias)
+                    && self.ctx.owner_digest_failed.insert(alias)
+                {
+                    self.needs_redraw = true;
+                }
+            }
             // A one-project marker scan landed (30-03, D-13). Only a registered alias
             // is accepted, so a scan answered after the project was removed leaves no
             // cache entry behind.
@@ -3599,6 +3942,20 @@ impl App {
         self.ctx
             .last_refresh
             .retain(|alias, _| registered.contains_key(alias));
+        // One digest per alias ever loaded; a removed project's numbers describe
+        // nothing the user can open, and the dashboard must not rank on them.
+        self.ctx
+            .owner_digests
+            .retain(|alias, _| registered.contains_key(alias));
+        // A settle's pending badge describes a row of a registered project only
+        // (quick 261118-v6l); the entries are memory-only and small, but a removed
+        // project's `settling…` must not outlive the project.
+        self.ctx.settle_pending.retain_registered(registered);
+        // The unreadable marks follow their digests: an unregistered alias has
+        // nothing to be unreadable about (37-04).
+        self.ctx
+            .owner_digest_failed
+            .retain(|alias| registered.contains_key(alias));
         // `archive_cache` was keyed by MILESTONE when this line first retained
         // it by alias, so every archive went on every pass and the Archive
         // tab's drill-in flipped to `Loading...` five seconds after it loaded
@@ -3714,6 +4071,11 @@ impl App {
                     let _ = tx.send(*action);
                 }
             }
+            // 37-07 D-09: held for the main loop, which writes it after the frame.
+            ScreenAction::WriteOsc52(sequence) => {
+                self.pending_osc52 = Some(sequence);
+                self.needs_redraw = true;
+            }
             // Runtime only: nothing is written to `config.json` (D-06, I-2).
             ScreenAction::ToggleMouseCapture => {
                 self.mouse_capture = !self.mouse_capture;
@@ -3725,6 +4087,18 @@ impl App {
             }
         }
     }
+}
+
+/// A session auto-registration function: what
+/// [`App::auto_register_new_sessions_using`] runs on a probe copy and again on the
+/// config read from disk.
+type RegisterFromSessions = fn(&mut Config, &[ClaudeSession]) -> Vec<(String, PathBuf)>;
+
+/// `(modified, length)` of the file at `path`, or `None` when either is
+/// unavailable. The change detector behind [`App::reload_config_if_changed`].
+fn config_stamp(path: &Path) -> Option<(std::time::SystemTime, u64)> {
+    let meta = std::fs::metadata(path).ok()?;
+    Some((meta.modified().ok()?, meta.len()))
 }
 
 #[cfg(test)]
@@ -4547,6 +4921,14 @@ mod tests {
                 extra: Default::default(),
             },
         );
+        // The fixtures carry fixed dates that grow older with the clock: a fold
+        // threshold of ten years keeps their rows in the inbox lanes instead of the
+        // Stale fold (38 D-09), whatever day the suite runs.
+        app.ctx
+            .config
+            .preferences
+            .extra
+            .insert("owner".to_owned(), serde_json::json!({"fold_days": 3650}));
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         app.ctx.event_tx = Some(tx);
         (app, rx)
@@ -5387,9 +5769,20 @@ mod tests {
             let cache = app.ctx.view_cache.entry(alias.to_string()).or_default();
             cache.launcher_selected = 2;
             cache.launcher_selected_id = Some("20261019-a".to_string());
+            app.ctx.owner_digests.insert(
+                alias.to_string(),
+                crate::state_reader::owner_items::OwnerDigest::default(),
+            );
         }
 
         app.prune_driver_maps();
+
+        assert!(
+            !app.ctx.owner_digests.contains_key("gone"),
+            "an unregistered project's owner digest must be pruned with the other \
+             alias-keyed maps"
+        );
+        assert!(app.ctx.owner_digests.contains_key(OBS_ALIAS));
 
         assert!(
             !app.ctx.view_cache.contains_key("gone"),
@@ -5410,6 +5803,878 @@ mod tests {
             kept.launcher_selected_id.as_deref(),
             Some("20261019-a"),
             "the prune must not clear a live cache's contents"
+        );
+    }
+
+    // ── The owner digest (36 D-01, D-02, D-04) ────────────────────────────
+
+    fn copy_tree(from: &std::path::Path, to: &std::path::Path) {
+        std::fs::create_dir_all(to).expect("create dir");
+        for entry in std::fs::read_dir(from).expect("read dir") {
+            let entry = entry.expect("dir entry");
+            let target = to.join(entry.file_name());
+            if entry.file_type().expect("file type").is_dir() {
+                copy_tree(&entry.path(), &target);
+            } else {
+                std::fs::copy(entry.path(), &target).expect("copy file");
+            }
+        }
+    }
+
+    /// A synthetic fixture project copied under `root`.
+    fn copy_owner_fixture(name: &str, root: &std::path::Path) {
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/owner")
+            .join(name)
+            .join(".planning");
+        copy_tree(&src, &root.join(".planning"));
+    }
+
+    /// Receive until a `ProjectStateLoaded` arrives, hand it to `app`.
+    async fn deliver_reparse(app: &mut App, rx: &mut tokio::sync::mpsc::UnboundedReceiver<Action>) {
+        let wait = async {
+            loop {
+                let action = rx.recv().await.expect("the channel stays open");
+                if matches!(action, Action::ProjectStateLoaded { .. }) {
+                    return action;
+                }
+            }
+        };
+        let action = tokio::time::timeout(std::time::Duration::from_secs(10), wait)
+            .await
+            .expect("a ProjectStateLoaded within 10 s");
+        app.update(action);
+    }
+
+    /// D-04: a watcher refresh puts a fresh digest in the map, and a UAT row
+    /// flipped to `pass` lowers the count the `You` cell is built from.
+    #[tokio::test]
+    async fn a_watcher_refresh_delivers_a_fresh_owner_digest() {
+        use crate::ui::screens::owner::{owner_numbers, you_cell_line};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path();
+        copy_owner_fixture("uat-pending", root);
+        let (mut app, mut rx) = obs_app(root);
+
+        app.update(planning_change(root));
+        deliver_reparse(&mut app, &mut rx).await;
+        let first = app
+            .ctx
+            .owner_digests
+            .get(OBS_ALIAS)
+            .expect("the first refresh delivers a digest")
+            .clone();
+        assert!(first.test > 0, "the fixture has pending checks");
+        let first_cell = you_cell_line(Some(&owner_numbers(&first)), 21);
+
+        let uat = root.join(".planning/phases/01-alpha/01-UAT.md");
+        let text = std::fs::read_to_string(&uat).expect("read the UAT file");
+        assert!(text.contains("result: pending"));
+        std::fs::write(&uat, text.replacen("result: pending", "result: pass", 1))
+            .expect("rewrite the UAT file");
+        app.ctx.last_refresh.remove(OBS_ALIAS);
+
+        app.update(planning_change(root));
+        deliver_reparse(&mut app, &mut rx).await;
+        let second = app
+            .ctx
+            .owner_digests
+            .get(OBS_ALIAS)
+            .expect("the second refresh delivers a digest");
+        assert_eq!(second.test, first.test - 1, "one pending check was passed");
+        let second_cell = you_cell_line(Some(&owner_numbers(second)), 21);
+        assert_ne!(first_cell, second_cell, "the You cell text changes");
+    }
+
+    /// Quick 261118-v6l, I-1: a settle's badge steps on the watcher-driven reparse
+    /// alone (no key press), `launched` -> `recorded` -> done, and the tick drops the
+    /// done line after its linger and asks for a redraw.
+    #[tokio::test]
+    async fn a_reparse_steps_the_pending_settle_and_the_tick_expires_it() {
+        use crate::ui::screens::owner_settle::{
+            launch_and_track, resolve_draft, Outcome, SettleChoice, SettlePlan,
+        };
+        use crate::ui::screens::settle_pending::{Stage, LINGER};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path();
+        copy_owner_fixture("uat-pending", root);
+        let (mut app, mut rx) = obs_app(root);
+        app.update(planning_change(root));
+        deliver_reparse(&mut app, &mut rx).await;
+
+        let row = crate::ui::screens::inbox::stop_rows(&app.ctx).remove(0);
+        let draft = resolve_draft(&app.ctx, OBS_ALIAS, &row.src.key, None).expect("a draft");
+        let plan = SettlePlan {
+            draft,
+            choice: SettleChoice {
+                outcome: Outcome::WontDo,
+                reason: String::new(),
+                move_to: None,
+            },
+        };
+        launch_and_track(&mut app.ctx, &plan);
+        assert_eq!(app.ctx.settle_pending.len(), 1);
+        assert_eq!(app.ctx.settle_pending.entries()[0].stage, Stage::Launched);
+
+        // GSD records both checks; the watcher's reparse lands.
+        let uat = root.join(".planning/phases/01-alpha/01-UAT.md");
+        let text = std::fs::read_to_string(&uat).expect("read the UAT file");
+        let text = text
+            .replacen(
+                "result: pending",
+                "result: skipped\nreason: Deferred follow-up: will not do.",
+                1,
+            )
+            .replacen(
+                "result: [pending]",
+                "result: skipped\nreason: Deferred follow-up: will not do.",
+                1,
+            );
+        std::fs::write(&uat, text).expect("rewrite the UAT file");
+        app.ctx.last_refresh.remove(OBS_ALIAS);
+        app.needs_redraw = false;
+        app.update(planning_change(root));
+        deliver_reparse(&mut app, &mut rx).await;
+        assert!(matches!(
+            app.ctx.settle_pending.entries()[0].stage,
+            Stage::Done { .. }
+        ));
+        assert!(app.needs_redraw, "the step redraws without a key press");
+
+        // The tick: a done line inside its linger stays, one past it goes.
+        app.update(Action::Tick);
+        assert_eq!(app.ctx.settle_pending.len(), 1);
+        let past = std::time::Instant::now()
+            .checked_sub(LINGER + std::time::Duration::from_millis(1))
+            .expect("an instant two seconds ago");
+        app.ctx.settle_pending.entries_mut()[0].stage = Stage::Done { since: past };
+        app.needs_redraw = false;
+        app.update(Action::Tick);
+        assert!(app.ctx.settle_pending.is_empty());
+        assert!(app.needs_redraw);
+    }
+
+    /// The redraw gate: ticks repaint for a pending settle only while the inbox or
+    /// the detail view is on top.
+    #[tokio::test]
+    async fn the_tick_redraws_a_pending_settle_only_on_its_hosts() {
+        use crate::ui::screens::settle_pending::PendingSettle;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, _rx) = obs_app(dir.path());
+        app.ctx
+            .settle_pending
+            .insert(PendingSettle::for_alias_test(OBS_ALIAS));
+        app.needs_redraw = false;
+        app.update(Action::Tick);
+        assert!(!app.needs_redraw, "the dashboard is not a host");
+        app.screen_stack
+            .push(Box::new(crate::ui::screens::inbox::InboxScreen::new()));
+        app.update(Action::Tick);
+        assert!(app.needs_redraw, "the inbox repaints its spinner");
+        app.needs_redraw = false;
+        app.ctx.settle_pending = Default::default();
+        app.update(Action::Tick);
+        assert!(!app.needs_redraw, "nothing pending, nothing to repaint");
+    }
+
+    /// The project-wide state of `alias` as the inbox reads it.
+    fn inbox_state(app: &App, alias: &str) -> crate::ui::screens::inbox::DigestState {
+        crate::ui::screens::inbox::digest_state(&app.ctx, alias)
+    }
+
+    /// 37-04, directive 2: a first fill whose reader panicked reads `unreadable`
+    /// (not loading forever), and any later digest clears it.
+    #[tokio::test]
+    async fn a_failed_owner_digest_reads_unreadable_until_one_arrives() {
+        use crate::state_reader::owner_items::OwnerDigest;
+        use crate::ui::screens::inbox::DigestState;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, _rx) = obs_app(dir.path());
+        assert_eq!(inbox_state(&app, OBS_ALIAS), DigestState::Loading);
+
+        app.needs_redraw = false;
+        app.update(Action::OwnerDigestFailed {
+            alias: OBS_ALIAS.to_string(),
+        });
+        assert!(app.ctx.owner_digest_failed.contains(OBS_ALIAS));
+        assert_eq!(inbox_state(&app, OBS_ALIAS), DigestState::Unreadable);
+        assert!(
+            app.needs_redraw,
+            "the header changes, so the screen redraws"
+        );
+
+        // An alias the registry does not hold never enters the set (T-37-12).
+        app.update(Action::OwnerDigestFailed {
+            alias: "gone".to_string(),
+        });
+        assert!(!app.ctx.owner_digest_failed.contains("gone"));
+
+        // A digest from the first fill clears it.
+        app.update(Action::OwnerDigestLoaded {
+            alias: OBS_ALIAS.to_string(),
+            digest: Box::new(OwnerDigest::default()),
+        });
+        assert!(app.ctx.owner_digest_failed.is_empty());
+        assert_eq!(inbox_state(&app, OBS_ALIAS), DigestState::Loaded);
+
+        // A failure after a digest is held does not hide the digest.
+        app.update(Action::OwnerDigestFailed {
+            alias: OBS_ALIAS.to_string(),
+        });
+        assert_eq!(inbox_state(&app, OBS_ALIAS), DigestState::Loaded);
+    }
+
+    /// 37-04: a reparse whose reader panicked (`digest: None`) marks the project
+    /// unreadable; the next reparse that delivers a digest clears it. A project
+    /// whose folder is gone is unreadable through its presence, not the set.
+    #[tokio::test]
+    async fn a_panicked_reparse_marks_the_project_unreadable() {
+        use crate::state_reader::owner_items::OwnerDigest;
+        use crate::ui::screens::inbox::DigestState;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, _rx) = obs_app(dir.path());
+        let state = crate::state_reader::ProjectState::default();
+        app.ctx
+            .owner_digests
+            .insert(OBS_ALIAS.to_string(), OwnerDigest::default());
+        assert_eq!(inbox_state(&app, OBS_ALIAS), DigestState::Loaded);
+
+        app.update(Action::ProjectStateLoaded {
+            alias: OBS_ALIAS.to_string(),
+            state: Box::new(state.clone()),
+            digest: None,
+        });
+        assert!(!app.ctx.owner_digests.contains_key(OBS_ALIAS));
+        assert_eq!(inbox_state(&app, OBS_ALIAS), DigestState::Unreadable);
+
+        app.update(Action::ProjectStateLoaded {
+            alias: OBS_ALIAS.to_string(),
+            state: Box::new(state.clone()),
+            digest: Some(Box::new(OwnerDigest::default())),
+        });
+        assert!(app.ctx.owner_digest_failed.is_empty());
+        assert_eq!(inbox_state(&app, OBS_ALIAS), DigestState::Loaded);
+
+        let mut gone = state;
+        gone.presence = crate::state_reader::ProjectPresence::FolderMissing;
+        app.update(Action::ProjectStateLoaded {
+            alias: OBS_ALIAS.to_string(),
+            state: Box::new(gone),
+            digest: None,
+        });
+        assert_eq!(inbox_state(&app, OBS_ALIAS), DigestState::Unreadable);
+        assert!(
+            app.ctx.owner_digest_failed.is_empty(),
+            "the presence says it; the set holds only storable aliases"
+        );
+    }
+
+    /// 37-04: removing a project prunes its unreadable mark.
+    #[tokio::test]
+    async fn unregistering_prunes_the_failed_set() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, _rx) = obs_app(dir.path());
+        app.update(Action::OwnerDigestFailed {
+            alias: OBS_ALIAS.to_string(),
+        });
+        assert!(app.ctx.owner_digest_failed.contains(OBS_ALIAS));
+        app.ctx.config.projects.remove(OBS_ALIAS);
+        app.prune_driver_maps();
+        assert!(app.ctx.owner_digest_failed.is_empty());
+    }
+
+    /// A temp project with two pending UAT phases (`01-alpha`, `02-beta`).
+    fn two_phase_project(root: &std::path::Path) {
+        copy_owner_fixture("uat-pending", root);
+        let uat = std::fs::read_to_string(root.join(".planning/phases/01-alpha/01-UAT.md"))
+            .expect("read the UAT");
+        let beta = root.join(".planning/phases/02-beta");
+        std::fs::create_dir_all(&beta).expect("create phase dir");
+        std::fs::write(beta.join("02-UAT.md"), uat.replace("Phase 01", "Phase 02"))
+            .expect("write the second UAT");
+        // The reader walks the roadmap's phases: list the second one too.
+        let roadmap = root.join(".planning/ROADMAP.md");
+        let mut text = std::fs::read_to_string(&roadmap).expect("read the roadmap");
+        text = text.replace(
+            "### Phase 01: Alpha",
+            "- [ ] **Phase 02: Beta** - the second phase of this fixture\n\n### Phase 01: Alpha",
+        );
+        text.push_str("\n### Phase 02: Beta\n\n**Goal**: a second row\n**Depends on**: Phase 01\n");
+        std::fs::write(&roadmap, text).expect("write the roadmap");
+    }
+
+    /// Rewrite the UAT of `phase_dir` and let the watcher refresh land.
+    async fn refresh_after(
+        app: &mut App,
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<Action>,
+        root: &std::path::Path,
+        file: &str,
+        edit: impl FnOnce(&str) -> String,
+    ) {
+        let path = root.join(file);
+        let text = std::fs::read_to_string(&path).expect("read the file");
+        std::fs::write(&path, edit(&text)).expect("rewrite the file");
+        app.ctx.last_refresh.remove(OBS_ALIAS);
+        app.update(planning_change(root));
+        deliver_reparse(app, rx).await;
+    }
+
+    /// The phases of the visible inbox rows, in order.
+    fn inbox_phases(app: &App) -> Vec<String> {
+        crate::ui::screens::inbox::visible_rows(&app.ctx)
+            .iter()
+            .map(|row| row.src.group.phase.clone())
+            .collect()
+    }
+
+    /// Put the inbox cursor on the row of `phase`.
+    fn cursor_on(app: &mut App, phase: &str) {
+        use crate::ui::screens::inbox::{visible_rows, InboxStop};
+        let rows = visible_rows(&app.ctx);
+        let at = rows
+            .iter()
+            .position(|row| row.src.group.phase == phase)
+            .expect("a row for the phase");
+        app.ctx.inbox_view.cursor = Some(InboxStop::Row(rows[at].key()));
+        app.ctx.inbox_view.cursor_index = at;
+    }
+
+    /// The phase of the row the cursor resolves to now.
+    fn cursor_phase(app: &App) -> Option<String> {
+        use crate::ui::screens::inbox::{cursor_pos, stop_rows};
+        let rows = stop_rows(&app.ctx);
+        cursor_pos(&app.ctx, &rows)
+            .and_then(|at| rows.get(at))
+            .map(|row| row.src.group.phase.clone())
+    }
+
+    /// SC3 / D-10: a UAT flipped to passed leaves the inbox on the next watcher
+    /// refresh, and a cursor resting on it moves to the next row (else the
+    /// previous).
+    #[tokio::test]
+    async fn sc3_a_passed_uat_leaves_the_inbox_and_the_cursor_moves_on() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path();
+        two_phase_project(root);
+        let (mut app, mut rx) = obs_app(root);
+        app.update(planning_change(root));
+        deliver_reparse(&mut app, &mut rx).await;
+        assert_eq!(inbox_phases(&app), ["01", "02"], "both phases wait");
+
+        let pass_all = |text: &str| {
+            text.replace("result: [pending]", "result: pass")
+                .replace("result: pending", "result: pass")
+        };
+        // The cursor rests on the first row; it passes: the cursor moves to the
+        // row that took its place, the next one.
+        cursor_on(&mut app, "01");
+        refresh_after(
+            &mut app,
+            &mut rx,
+            root,
+            ".planning/phases/01-alpha/01-UAT.md",
+            pass_all,
+        )
+        .await;
+        let after = inbox_phases(&app);
+        assert!(!after.contains(&"01".to_owned()), "{after:?}");
+        assert_eq!(cursor_phase(&app).as_deref(), Some("02"));
+
+        // The last row passes: the cursor moves to the previous row, which is
+        // none here, so the inbox is empty and there is no cursor at all.
+        refresh_after(
+            &mut app,
+            &mut rx,
+            root,
+            ".planning/phases/02-beta/02-UAT.md",
+            pass_all,
+        )
+        .await;
+        assert!(inbox_phases(&app).is_empty());
+        assert_eq!(cursor_phase(&app), None);
+        assert_eq!(app.ctx.inbox_view.cursor, None);
+    }
+
+    /// SC3: the last of two rows passes and the cursor falls back to the previous.
+    #[tokio::test]
+    async fn sc3_the_cursor_falls_back_to_the_previous_row_when_the_last_one_passes() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path();
+        two_phase_project(root);
+        let (mut app, mut rx) = obs_app(root);
+        app.update(planning_change(root));
+        deliver_reparse(&mut app, &mut rx).await;
+        cursor_on(&mut app, "02");
+        refresh_after(
+            &mut app,
+            &mut rx,
+            root,
+            ".planning/phases/02-beta/02-UAT.md",
+            |text| {
+                text.replace("result: [pending]", "result: pass")
+                    .replace("result: pending", "result: pass")
+            },
+        )
+        .await;
+        assert_eq!(inbox_phases(&app), ["01"]);
+        assert_eq!(cursor_phase(&app).as_deref(), Some("01"));
+    }
+
+    /// SC3: a file that gains a matching `audit_acknowledged` marker leaves the
+    /// inbox the same way; stripping the marker brings it back.
+    #[tokio::test]
+    async fn sc3_an_acknowledged_file_leaves_the_inbox() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path();
+        copy_owner_fixture("uat-ack-match", root);
+        let uat = root.join(".planning/phases/01-alpha/01-UAT.md");
+        let acknowledged = std::fs::read_to_string(&uat).expect("read the UAT");
+        // The same file without its marker: the owner has not acknowledged it.
+        let bare: String = {
+            let mut skip = false;
+            acknowledged
+                .lines()
+                .filter(|line| {
+                    if line.starts_with("audit_acknowledged:") {
+                        skip = true;
+                        return false;
+                    }
+                    if skip && line.starts_with("  ") {
+                        return false;
+                    }
+                    skip = false;
+                    true
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+                + "\n"
+        };
+        std::fs::write(&uat, &bare).expect("strip the marker");
+        let (mut app, mut rx) = obs_app(root);
+        app.update(planning_change(root));
+        deliver_reparse(&mut app, &mut rx).await;
+        assert_eq!(inbox_phases(&app), ["01"], "unacknowledged work is listed");
+        cursor_on(&mut app, "01");
+
+        // The marker arrives (a `/gsd-audit-uat` acknowledgement): the row goes.
+        refresh_after(
+            &mut app,
+            &mut rx,
+            root,
+            ".planning/phases/01-alpha/01-UAT.md",
+            |_| acknowledged.clone(),
+        )
+        .await;
+        assert!(inbox_phases(&app).is_empty(), "{:?}", inbox_phases(&app));
+        assert_eq!(cursor_phase(&app), None);
+
+        // Without the marker it is back, and the cursor can rest on it again.
+        refresh_after(
+            &mut app,
+            &mut rx,
+            root,
+            ".planning/phases/01-alpha/01-UAT.md",
+            |_| bare.clone(),
+        )
+        .await;
+        assert_eq!(inbox_phases(&app), ["01"]);
+    }
+
+    /// WR-06: a write the 500 ms dedup drops is not lost. The alias is marked and
+    /// the first tick after its window re-parses it, so the digest catches the
+    /// last write of a burst (a UAT row flipped right after the previous parse).
+    #[tokio::test]
+    async fn a_write_inside_the_reparse_window_is_reparsed_on_a_later_tick() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path();
+        copy_owner_fixture("uat-pending", root);
+        let (mut app, mut rx) = obs_app(root);
+
+        app.update(planning_change(root));
+        deliver_reparse(&mut app, &mut rx).await;
+        let first = app.ctx.owner_digests[OBS_ALIAS].test;
+        let dispatched = app.ctx.reparse_dispatches;
+
+        let uat = root.join(".planning/phases/01-alpha/01-UAT.md");
+        let text = std::fs::read_to_string(&uat).expect("read the UAT file");
+        std::fs::write(&uat, text.replacen("result: pending", "result: pass", 1))
+            .expect("rewrite the UAT file");
+        // The previous re-parse just started: this write is inside its window.
+        app.ctx
+            .last_refresh
+            .insert(OBS_ALIAS.to_string(), std::time::Instant::now());
+        app.update(planning_change(root));
+        assert_eq!(app.ctx.reparse_dispatches, dispatched, "the dedup holds");
+        assert!(app.reparse_pending.contains(OBS_ALIAS), "but remembers");
+        app.update(Action::Tick);
+        assert_eq!(
+            app.ctx.reparse_dispatches, dispatched,
+            "not before the window has passed"
+        );
+
+        let past = std::time::Instant::now()
+            .checked_sub(std::time::Duration::from_millis(600))
+            .expect("an instant 600 ms ago");
+        app.ctx.last_refresh.insert(OBS_ALIAS.to_string(), past);
+        app.update(Action::Tick);
+        assert_eq!(
+            app.ctx.reparse_dispatches,
+            dispatched + 1,
+            "the trailing edge"
+        );
+        assert!(app.reparse_pending.is_empty());
+        deliver_reparse(&mut app, &mut rx).await;
+        assert_eq!(
+            app.ctx.owner_digests[OBS_ALIAS].test,
+            first - 1,
+            "the dropped write reached the digest"
+        );
+
+        app.update(Action::Tick);
+        assert_eq!(
+            app.ctx.reparse_dispatches,
+            dispatched + 1,
+            "one trailing re-parse, not one per tick"
+        );
+    }
+
+    /// WR-07: ages are whole days counted at read time, so a project whose digest
+    /// shows an age is re-parsed once per UTC hour; a digest without ages is not,
+    /// and neither is the first sweep or a second sweep in the same hour.
+    #[tokio::test]
+    async fn the_owner_age_sweep_re_parses_aged_digests_once_an_hour() {
+        use crate::config::RegisteredProject;
+        use crate::state_reader::owner_items::{Hidden, OwnerDigest};
+        use chrono::TimeZone;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, _rx) = obs_app(dir.path());
+        app.ctx.config.projects.insert(
+            "clean".to_string(),
+            RegisteredProject {
+                path: dir.path().join("clean"),
+                added: "2026-07-29".to_string(),
+                driver_opt_in: None,
+                extra: Default::default(),
+            },
+        );
+        app.ctx.owner_digests.insert(
+            OBS_ALIAS.to_string(),
+            OwnerDigest {
+                hidden: Hidden {
+                    todos: 2,
+                    todos_oldest_days: Some(3),
+                    ..Hidden::default()
+                },
+                ..OwnerDigest::default()
+            },
+        );
+        app.ctx
+            .owner_digests
+            .insert("clean".to_string(), OwnerDigest::default());
+
+        let t0 = chrono::Utc
+            .with_ymd_and_hms(2026, 11, 14, 9, 5, 0)
+            .single()
+            .expect("a valid instant");
+        let before = app.ctx.reparse_dispatches;
+        app.sweep_owner_ages(t0);
+        assert_eq!(
+            app.ctx.reparse_dispatches, before,
+            "the first sweep records"
+        );
+        app.sweep_owner_ages(t0 + chrono::Duration::minutes(50));
+        assert_eq!(app.ctx.reparse_dispatches, before, "same hour");
+        app.sweep_owner_ages(t0 + chrono::Duration::minutes(60));
+        assert_eq!(
+            app.ctx.reparse_dispatches,
+            before + 1,
+            "the next hour re-parses the aged project only"
+        );
+        assert!(app.ctx.last_refresh.contains_key(OBS_ALIAS));
+        assert!(!app.ctx.last_refresh.contains_key("clean"));
+        app.sweep_owner_ages(t0 + chrono::Duration::minutes(70));
+        assert_eq!(app.ctx.reparse_dispatches, before + 1, "once per hour");
+    }
+
+    /// D-02 / Pitfall 1: a digest-only change redraws and re-sorts but never
+    /// posts `Updated:`; a changed state still does.
+    #[tokio::test]
+    async fn a_digest_only_change_redraws_without_an_updated_message() {
+        use crate::state_reader::owner_items::OwnerDigest;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, _rx) = obs_app(dir.path());
+        let state = crate::state_reader::ProjectState::default();
+        app.ctx
+            .project_states
+            .insert(OBS_ALIAS.to_string(), state.clone());
+        app.ctx
+            .owner_digests
+            .insert(OBS_ALIAS.to_string(), OwnerDigest::default());
+        app.needs_redraw = false;
+        app.ctx.status_message = None;
+
+        let changed = OwnerDigest {
+            test: 3,
+            ..OwnerDigest::default()
+        };
+        app.update(Action::ProjectStateLoaded {
+            alias: OBS_ALIAS.to_string(),
+            state: Box::new(state.clone()),
+            digest: Some(Box::new(changed.clone())),
+        });
+        assert_eq!(app.ctx.owner_digests[OBS_ALIAS], changed);
+        assert!(app.needs_redraw, "a digest change redraws");
+        assert!(
+            app.ctx.status_message.is_none(),
+            "a digest-only change must not post an Updated message"
+        );
+
+        let mut moved = state;
+        moved.paused = true;
+        app.update(Action::ProjectStateLoaded {
+            alias: OBS_ALIAS.to_string(),
+            state: Box::new(moved),
+            digest: Some(Box::new(changed)),
+        });
+        let message = app.ctx.status_message.as_ref().map(|(m, _)| m.as_str());
+        assert_eq!(message, Some("Updated: proj"));
+    }
+
+    /// D-02: under attention first, an unchanged state with a new digest that
+    /// carries owner work moves the project up, without an `Updated:` message.
+    #[tokio::test]
+    async fn a_digest_only_change_re_sorts_under_attention_first() {
+        use crate::config::RegisteredProject;
+        use crate::state_reader::owner_items::OwnerDigest;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, _rx) = obs_app(dir.path());
+        app.ctx.config.projects.insert(
+            "alpha".to_string(),
+            RegisteredProject {
+                path: dir.path().to_path_buf(),
+                added: "2026-07-29".to_string(),
+                driver_opt_in: None,
+                extra: Default::default(),
+            },
+        );
+        let state = crate::state_reader::ProjectState::default();
+        for alias in ["alpha", OBS_ALIAS] {
+            app.ctx
+                .project_states
+                .insert(alias.to_string(), state.clone());
+            app.ctx
+                .owner_digests
+                .insert(alias.to_string(), OwnerDigest::default());
+        }
+        app.ctx.sort_mode = crate::ui::screens::SortMode::AttentionFirst;
+        app.ctx.recompute_filtered_aliases();
+        assert_eq!(app.ctx.filtered_aliases, ["alpha", OBS_ALIAS]);
+        app.ctx.status_message = None;
+
+        app.update(Action::ProjectStateLoaded {
+            alias: OBS_ALIAS.to_string(),
+            state: Box::new(state),
+            digest: Some(Box::new(OwnerDigest {
+                test: 1,
+                ..OwnerDigest::default()
+            })),
+        });
+        assert_eq!(
+            app.ctx.filtered_aliases,
+            [OBS_ALIAS, "alpha"],
+            "the digest alone moved the project to the owner-work rank"
+        );
+        assert!(
+            app.ctx.status_message.is_none(),
+            "no Updated: message for a digest-only change"
+        );
+    }
+
+    /// The digest-only first fill arrives without a re-parse and without a message.
+    #[tokio::test]
+    async fn a_first_fill_digest_arrives_without_a_reparse() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path();
+        copy_owner_fixture("uat-pending", root);
+        let (mut app, mut rx) = obs_app(root);
+        app.ctx.project_states.insert(
+            OBS_ALIAS.to_string(),
+            state_reader::parse_project_state(&root.join(".planning")),
+        );
+
+        let before = app.ctx.reparse_dispatches;
+        app.ctx.schedule_owner_digest(OBS_ALIAS, root);
+        assert_eq!(
+            app.ctx.reparse_dispatches, before,
+            "no re-parse is scheduled"
+        );
+
+        let action = tokio::time::timeout(std::time::Duration::from_secs(10), rx.recv())
+            .await
+            .expect("an OwnerDigestLoaded within 10 s")
+            .expect("the channel stays open");
+        assert!(matches!(action, Action::OwnerDigestLoaded { .. }));
+        app.update(action);
+
+        assert!(app.ctx.owner_digests[OBS_ALIAS].test > 0);
+        assert!(app.ctx.status_message.is_none());
+        assert_eq!(app.ctx.reparse_dispatches, before);
+    }
+
+    /// RESEARCH Pitfall 2: a reparse digest is always newer than a first-fill one.
+    #[tokio::test]
+    async fn a_first_fill_never_replaces_a_reparse_digest() {
+        use crate::state_reader::owner_items::OwnerDigest;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, _rx) = obs_app(dir.path());
+        let d1 = OwnerDigest {
+            test: 1,
+            ..OwnerDigest::default()
+        };
+        let d2 = OwnerDigest {
+            test: 2,
+            ..OwnerDigest::default()
+        };
+        app.ctx
+            .owner_digests
+            .insert(OBS_ALIAS.to_string(), d1.clone());
+        app.update(Action::OwnerDigestLoaded {
+            alias: OBS_ALIAS.to_string(),
+            digest: Box::new(d2),
+        });
+        assert_eq!(app.ctx.owner_digests[OBS_ALIAS], d1);
+    }
+
+    /// WR-01 (D-09): a project whose `.planning/` or folder is gone holds no digest,
+    /// so its `You` cell stays empty instead of the clean `·`, it has no owner rank
+    /// and the summary neither counts it nor waits for it.
+    #[tokio::test]
+    async fn a_project_without_planning_holds_no_owner_digest() {
+        use crate::state_reader::owner_items::OwnerDigest;
+        use crate::ui::screens::owner::{owner_numbers, owner_totals, you_cell_line};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, _rx) = obs_app(dir.path());
+        let present = ProjectState::default();
+        app.update(Action::ProjectStateLoaded {
+            alias: OBS_ALIAS.to_string(),
+            state: Box::new(present),
+            digest: Some(Box::new(OwnerDigest {
+                test: 2,
+                ..OwnerDigest::default()
+            })),
+        });
+        assert_eq!(app.ctx.owner_digests[OBS_ALIAS].test, 2, "the control arm");
+
+        for presence in [ProjectPresence::NoPlanning, ProjectPresence::FolderMissing] {
+            app.needs_redraw = false;
+            app.update(Action::ProjectStateLoaded {
+                alias: OBS_ALIAS.to_string(),
+                state: Box::new(ProjectState {
+                    presence,
+                    ..ProjectState::default()
+                }),
+                digest: Some(Box::new(OwnerDigest::default())),
+            });
+            assert!(
+                !app.ctx.owner_digests.contains_key(OBS_ALIAS),
+                "{presence:?}: the reader's empty digest must not be stored"
+            );
+            app.update(Action::OwnerDigestLoaded {
+                alias: OBS_ALIAS.to_string(),
+                digest: Box::new(OwnerDigest::default()),
+            });
+            assert!(
+                !app.ctx.owner_digests.contains_key(OBS_ALIAS),
+                "{presence:?}: nor a first fill"
+            );
+            let cell = you_cell_line(
+                app.ctx
+                    .owner_digests
+                    .get(OBS_ALIAS)
+                    .map(owner_numbers)
+                    .as_ref(),
+                21,
+            );
+            assert!(
+                !cell.spans.iter().any(|s| s.content.contains('\u{b7}')),
+                "{presence:?}: an absent value, never the clean dot"
+            );
+            app.ctx.recompute_filtered_aliases();
+            assert_eq!(app.ctx.filtered_aliases, [OBS_ALIAS]);
+            let totals = owner_totals(app.ctx.summary_owner_rows());
+            assert_eq!(
+                (totals.visible, totals.pending),
+                (0, 0),
+                "{presence:?}: neither a clean row nor one loading forever"
+            );
+        }
+    }
+
+    /// WR-04: a panic in the owner reader is caught, so the reparse still delivers
+    /// the parsed state; the project then holds no digest (unknown, not clean).
+    #[tokio::test]
+    async fn an_owner_reader_panic_still_delivers_the_project_state() {
+        use crate::state_reader::owner_items::OwnerDigest;
+        let caught = AppContext::guarded_owner_digest(OBS_ALIAS, || {
+            panic!("a synthetic reader panic");
+        });
+        assert_eq!(caught, None, "the panic is caught, not propagated");
+        let read = AppContext::guarded_owner_digest(OBS_ALIAS, || OwnerDigest {
+            test: 1,
+            ..OwnerDigest::default()
+        });
+        assert_eq!(read.map(|d| d.test), Some(1), "the control arm");
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, _rx) = obs_app(dir.path());
+        app.update(Action::ProjectStateLoaded {
+            alias: OBS_ALIAS.to_string(),
+            state: Box::new(ProjectState::default()),
+            digest: Some(Box::new(OwnerDigest {
+                test: 2,
+                ..OwnerDigest::default()
+            })),
+        });
+        assert!(app.ctx.owner_digests.contains_key(OBS_ALIAS));
+        app.needs_redraw = false;
+
+        let moved = ProjectState {
+            paused: true,
+            ..ProjectState::default()
+        };
+        app.update(Action::ProjectStateLoaded {
+            alias: OBS_ALIAS.to_string(),
+            state: Box::new(moved),
+            digest: caught.map(Box::new),
+        });
+        assert!(
+            app.ctx.project_states[OBS_ALIAS].paused,
+            "the parsed state lands although the reader panicked"
+        );
+        assert!(
+            !app.ctx.owner_digests.contains_key(OBS_ALIAS),
+            "unknown numbers: no digest, never the previous moment"
+        );
+        assert!(app.needs_redraw);
+    }
+
+    #[tokio::test]
+    async fn a_first_fill_for_an_unregistered_alias_is_dropped() {
+        use crate::state_reader::owner_items::OwnerDigest;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut app, _rx) = obs_app(dir.path());
+        app.update(Action::OwnerDigestLoaded {
+            alias: "gone".to_string(),
+            digest: Box::new(OwnerDigest::default()),
+        });
+        assert!(!app.ctx.owner_digests.contains_key("gone"));
+        app.update(Action::OwnerDigestLoaded {
+            alias: OBS_ALIAS.to_string(),
+            digest: Box::new(OwnerDigest::default()),
+        });
+        assert!(
+            app.ctx.owner_digests.contains_key(OBS_ALIAS),
+            "the control arm: a registered alias is filled"
         );
     }
 
@@ -5644,6 +6909,75 @@ mod tests {
         assert_eq!(launcher_runs[0].0, LAUNCHER_RUN);
     }
 
+    /// 37 D-16: the acknowledge child's answer sets the (escaped) status line and
+    /// clears the busy entry of exactly its `(alias, file)`.
+    #[test]
+    fn owner_acknowledged_sets_the_status_and_clears_busy() {
+        let mut app = App::new_for_test();
+        app.ctx
+            .owner_ack_busy
+            .insert(("p".to_string(), "03-UAT.md".to_string()));
+        app.ctx
+            .owner_ack_busy
+            .insert(("p".to_string(), "04-UAT.md".to_string()));
+        app.needs_redraw = false;
+        app.update(Action::OwnerAcknowledged {
+            alias: "p".to_string(),
+            file: "03-UAT.md".to_string(),
+            outcome: "Acknowledge failed: bad\u{1b}[2J line".to_string(),
+        });
+        let (text, _) = app.ctx.status_message.clone().expect("status line");
+        assert!(text.starts_with("Acknowledge failed: bad"), "{text:?}");
+        let stamp = app.ctx.status_message.as_ref().expect("status line").1;
+        assert!(
+            stamp > std::time::Instant::now() + std::time::Duration::from_secs(5),
+            "the outcome outlives the usual 3 s"
+        );
+        app.update(Action::Tick);
+        assert!(app.ctx.status_message.is_some(), "a tick keeps it");
+        assert!(!text.chars().any(char::is_control), "{text:?}");
+        assert!(app.needs_redraw);
+        assert_eq!(
+            app.ctx.owner_ack_busy.iter().collect::<Vec<_>>(),
+            [&("p".to_string(), "04-UAT.md".to_string())],
+            "only the answered file leaves the busy set"
+        );
+    }
+
+    /// 37-07 D-09: `WriteOsc52` is held for the main loop (never written here) and
+    /// asks for a redraw so the frame precedes the sequence.
+    #[test]
+    fn a_write_osc52_action_is_held_for_the_main_loop() {
+        let mut app = App::new_for_test();
+        app.needs_redraw = false;
+        assert!(app.pending_osc52.is_none());
+        let sequence = crate::clipboard::osc52("a\nb\n");
+        app.process_screen_action(ScreenAction::WriteOsc52(sequence.clone()));
+        assert_eq!(app.pending_osc52.as_deref(), Some(sequence.as_str()));
+        assert!(app.needs_redraw);
+        assert_eq!(app.pending_osc52.take(), Some(sequence));
+        assert!(app.pending_osc52.is_none());
+    }
+
+    /// 37-07 D-09: the clipboard tool's answer sets the (escaped) status line.
+    #[test]
+    fn clipboard_copied_sets_the_status() {
+        let mut app = App::new_for_test();
+        app.needs_redraw = false;
+        app.update(Action::ClipboardCopied {
+            outcome: "Copied 7 lines via wl-copy".to_string(),
+        });
+        let (text, _) = app.ctx.status_message.clone().expect("status line");
+        assert_eq!(text, "Copied 7 lines via wl-copy");
+        assert!(app.needs_redraw);
+        app.update(Action::ClipboardCopied {
+            outcome: "Copy failed: x\u{1b}[2J".to_string(),
+        });
+        let (text, _) = app.ctx.status_message.clone().expect("status line");
+        assert!(text.starts_with("Copy failed: x"), "{text:?}");
+        assert!(!text.chars().any(char::is_control), "{text:?}");
+    }
+
     #[test]
     fn launcher_stop_stopped_strips_terminal_controls_from_the_report() {
         let mut app = App::new_for_test();
@@ -5700,9 +7034,11 @@ mod tests {
 
         let dir = tempfile::tempdir().expect("temp dir");
         let (mut app, _rx) = obs_app(dir.path());
-        // `save_config` must land somewhere real, or the removal reports a save
-        // failure and returns before it reaches the cleanup block.
+        // The removal re-reads `config.json`, so the registry must be on disk, and
+        // somewhere real, or the removal reports a save failure and returns before
+        // it reaches the cleanup block.
         app.ctx.config_path = dir.path().join("config.json");
+        crate::config::save_config(&app.ctx.config, &app.ctx.config_path).unwrap();
 
         app.ctx
             .last_refresh
@@ -5758,6 +7094,14 @@ mod tests {
             app.ctx
                 .last_refresh
                 .insert(alias.to_string(), std::time::Instant::now());
+            app.ctx.owner_digests.insert(
+                alias.to_string(),
+                crate::state_reader::owner_items::OwnerDigest::default(),
+            );
+            app.ctx.owner_digest_failed.insert(alias.to_string());
+            app.ctx
+                .settle_pending
+                .insert(crate::ui::screens::settle_pending::PendingSettle::for_alias_test(alias));
             // Keyed alias THEN milestone. This fixture used to insert the alias
             // as the map's only key, which is how it passed while the real map
             // was keyed by milestone and the prune emptied it every pass.
@@ -5782,6 +7126,8 @@ mod tests {
             view_cache,
             last_refresh,
             archive_cache,
+            owner_digests,
+            owner_digest_failed,
 
             // Alias-keyed but deliberately NOT pruned, with the reason on the
             // field: `project_states` is the registry's own mirror and is
@@ -5822,16 +7168,45 @@ mod tests {
             active_sessions: _,
             // PID-keyed (a session's multiplexer location), not per alias.
             session_locations: _,
+            // The Owner inbox's cursor identity (37-03): one value, not a map. A
+            // vanished project's row simply stops resolving and the cursor clamps
+            // to its neighbor on the next frame, so there is nothing to prune.
+            inbox_view: _,
+            // Keyed by (alias, file) but drained by its own answer: every
+            // acknowledge child sends `OwnerAcknowledged` (even after a runner
+            // panic) and the handler removes the entry, so a removed project's
+            // entry cannot outlive the child's 10 s budget (37 D-16).
+            owner_ack_busy: _,
+            // One flag, not a map: the copy's answer clears it.
+            owner_copy_busy: _,
+            // Alias-keyed (quick 261118-v6l): pruned with the registry, asserted below.
+            settle_pending,
         } = &app.ctx;
 
         assert!(!view_cache.contains_key(GONE), "view_cache leaked");
         assert!(!last_refresh.contains_key(GONE), "last_refresh leaked");
         assert!(!archive_cache.has_alias(GONE), "archive_cache leaked");
+        assert!(!owner_digests.contains_key(GONE), "owner_digests leaked");
+        assert!(!owner_digest_failed.contains(GONE), "failed set leaked");
+        assert_eq!(
+            settle_pending.len(),
+            1,
+            "settle_pending: the gone alias's entry is dropped, the registered one kept"
+        );
+        assert!(
+            settle_pending
+                .entries()
+                .iter()
+                .all(|e| e.alias == OBS_ALIAS),
+            "settle_pending leaked"
+        );
+        assert!(owner_digest_failed.contains(OBS_ALIAS));
 
         // The control arm for all of them at once: the registered alias kept
         // everything, so none of the assertions above passed because the prune
         // cleared the map.
         assert!(last_refresh.contains_key(OBS_ALIAS));
+        assert!(owner_digests.contains_key(OBS_ALIAS));
         assert!(archive_cache.get(OBS_ALIAS, "v1.0").is_some());
         let kept = view_cache
             .get(OBS_ALIAS)
@@ -9355,5 +10730,156 @@ mod tests {
         // No landing is in progress, so the finished resolver session is not live.
         assert_eq!(stream.info.live, crate::oneoff::store::LiveState::Finished);
         assert_eq!(stream.info.soft_cap_usd, None);
+    }
+
+    // -----------------------------------------------------------------------
+    // Registry writes keep other processes' edits (quick 261125-kfc)
+    // -----------------------------------------------------------------------
+
+    fn registered(path: &Path, added: &str) -> crate::config::RegisteredProject {
+        crate::config::RegisteredProject {
+            path: path.to_path_buf(),
+            added: added.to_owned(),
+            driver_opt_in: None,
+            extra: Default::default(),
+        }
+    }
+
+    /// Write a registry holding `aliases`, each at `root/<alias>`, to `root/config.json`.
+    fn seed_registry(root: &Path, aliases: &[(&str, &str)]) -> PathBuf {
+        let mut config = Config::new();
+        for (alias, added) in aliases {
+            let dir = root.join(alias);
+            std::fs::create_dir_all(&dir).unwrap();
+            config
+                .projects
+                .insert((*alias).to_owned(), registered(&dir, added));
+        }
+        let path = root.join("config.json");
+        crate::config::save_config(&config, &path).unwrap();
+        path
+    }
+
+    /// What another process (the CLI, a second TUI) does to the file.
+    fn other_writer(root: &Path, config_path: &Path, remove: &str, add: (&str, &str)) {
+        let mut config = crate::config::load_config(config_path).unwrap();
+        config.projects.remove(remove);
+        let dir = root.join(add.0);
+        std::fs::create_dir_all(&dir).unwrap();
+        config
+            .projects
+            .insert(add.0.to_owned(), registered(&dir, add.1));
+        crate::config::save_config(&config, config_path).unwrap();
+    }
+
+    fn sorted_keys(config: &Config) -> Vec<String> {
+        let mut keys: Vec<String> = config.projects.keys().cloned().collect();
+        keys.sort();
+        keys
+    }
+
+    /// A session whose cwd is a GSD-marked project root named `name` under `root`.
+    fn marked_session(root: &Path, name: &str) -> ClaudeSession {
+        let dir = root.join(name);
+        std::fs::create_dir_all(dir.join(".planning")).unwrap();
+        std::fs::write(dir.join(".planning/STATE.md"), "# State\n").unwrap();
+        ClaudeSession {
+            pid: 1,
+            kind: crate::session_detector::SessionKind::Claude,
+            session_id: None,
+            working_dir: dir,
+            start_time: None,
+            tty: None,
+        }
+    }
+
+    /// The public entry refuses every tempdir root by design (jx7), so the tests
+    /// inject this temp-guard-free registration.
+    fn register_without_the_temp_guard(
+        config: &mut Config,
+        sessions: &[ClaudeSession],
+    ) -> Vec<(String, PathBuf)> {
+        registry::auto_register_from_sessions_with_temp_root(config, sessions, None)
+    }
+
+    #[test]
+    fn auto_registration_keeps_registry_edits_another_process_made() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = seed_registry(dir.path(), &[("a", "2026-01-01"), ("b", "2026-01-01")]);
+        let mut app = App::new(path.clone()).unwrap();
+        // Another process removes `a` and adds `c` while this TUI runs.
+        other_writer(dir.path(), &path, "a", ("c", "2026-02-02"));
+
+        app.active_sessions = vec![marked_session(dir.path(), "fresh-proj")];
+        app.auto_register_new_sessions_using(register_without_the_temp_guard);
+
+        let on_disk = crate::config::load_config(&path).unwrap();
+        assert_eq!(sorted_keys(&on_disk), ["b", "c", "fresh-proj"]);
+        assert_eq!(on_disk.projects["c"].added, "2026-02-02");
+        assert!(!on_disk.projects.contains_key("a"));
+        assert_eq!(sorted_keys(&app.ctx.config), sorted_keys(&on_disk));
+        assert!(app.ctx.project_states.contains_key("fresh-proj"));
+        assert!(app.ctx.project_states.contains_key("c"));
+        assert!(!app.ctx.project_states.contains_key("a"));
+        assert_eq!(
+            app.ctx.status_message.as_ref().map(|(m, _)| m.as_str()),
+            Some("Auto-registered: fresh-proj")
+        );
+    }
+
+    #[test]
+    fn auto_registration_still_registers_in_memory_when_the_config_cannot_be_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::create_dir(&path).unwrap();
+        let mut app = App::new_for_test();
+        app.ctx.config_path = path.clone();
+
+        app.active_sessions = vec![marked_session(dir.path(), "fresh-proj")];
+        app.auto_register_new_sessions_using(register_without_the_temp_guard);
+
+        assert!(app.ctx.config.projects.contains_key("fresh-proj"));
+        assert!(app.ctx.project_states.contains_key("fresh-proj"));
+        assert!(path.is_dir(), "the unreadable path was left alone");
+    }
+
+    #[test]
+    fn the_session_poll_adopts_a_registry_another_process_changed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = seed_registry(dir.path(), &[("a", "2026-01-01")]);
+        let mut app = App::new(path.clone()).unwrap();
+        assert!(app.ctx.config.projects.contains_key("a"));
+
+        // The new entry is longer than the old one, so the file length moves even
+        // when both writes land inside one coarse mtime tick.
+        other_writer(dir.path(), &path, "a", ("c-longer", "2026-02-02"));
+        app.reload_config_if_changed();
+
+        assert_eq!(sorted_keys(&app.ctx.config), ["c-longer"]);
+        assert!(app.ctx.project_states.contains_key("c-longer"));
+        assert!(!app.ctx.project_states.contains_key("a"));
+
+        // The file is unchanged now: a second call reloads nothing.
+        app.ctx
+            .config
+            .projects
+            .insert("sentinel".to_owned(), registered(dir.path(), "x"));
+        app.reload_config_if_changed();
+        assert!(app.ctx.config.projects.contains_key("sentinel"));
+    }
+
+    #[test]
+    fn a_registry_that_vanishes_or_stops_parsing_is_not_adopted() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = seed_registry(dir.path(), &[("a", "2026-01-01")]);
+        let mut app = App::new(path.clone()).unwrap();
+
+        std::fs::write(&path, "{ this is not json, and it is longer than before").unwrap();
+        app.reload_config_if_changed();
+        assert_eq!(sorted_keys(&app.ctx.config), ["a"]);
+
+        std::fs::remove_file(&path).unwrap();
+        app.reload_config_if_changed();
+        assert_eq!(sorted_keys(&app.ctx.config), ["a"]);
     }
 }

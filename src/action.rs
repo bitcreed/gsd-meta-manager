@@ -1,4 +1,5 @@
 use crate::state_reader::git_ops::{GitCommitDetail, GitLogEntry};
+use crate::state_reader::owner_items::OwnerDigest;
 use crate::state_reader::ProjectState;
 use crossterm::event::KeyEvent;
 
@@ -46,6 +47,11 @@ pub enum Action {
         alias: String,
         // Boxed: ProjectState dwarfs every other variant (clippy::large_enum_variant)
         state: Box<ProjectState>,
+        /// The owner digest computed in the same blocking task, right after the
+        /// parse (36 D-01). Boxed for the same reason as `state`. `None` when the
+        /// owner reader panicked: the state still arrives, the project holds no
+        /// digest (WR-04).
+        digest: Option<Box<OwnerDigest>>,
     },
     GitLogLoaded {
         alias: String,
@@ -177,6 +183,24 @@ pub enum Action {
         alias: String,
         marker: crate::ui::screens::driver_run::LauncherMarker,
     },
+    /// One project's owner digest, computed off the render thread without a
+    /// re-parse: the first fill at startup and after a registration (36 D-03).
+    ///
+    /// Sent by `AppContext::schedule_owner_digest`. The handler fills an alias
+    /// that is registered and has no digest yet; a digest delivered by
+    /// `ProjectStateLoaded` is never older and is never replaced. Plain data, so
+    /// `Action` stays `Clone`.
+    OwnerDigestLoaded {
+        alias: String,
+        digest: Box<OwnerDigest>,
+    },
+    /// The owner reader for `alias` could not produce a digest and will not
+    /// without a new trigger (37-04, coordinator directive 2): the digest-only
+    /// first fill panicked. The inbox shows the project as unreadable instead of
+    /// loading forever. Plain data, so `Action` stays `Clone`.
+    OwnerDigestFailed {
+        alias: String,
+    },
     /// The user confirmed stopping launcher run `run_id` of `alias` from the Driver
     /// tab (28-07, D-11).
     ///
@@ -195,6 +219,24 @@ pub enum Action {
         alias: String,
         run_id: String,
         report: String,
+    },
+    /// The owner inbox's acknowledge child finished (37 D-15, D-16).
+    ///
+    /// `outcome` is the already-composed status line (done, failed with gsd-core's
+    /// own refusal line, or timed out); the handler escapes it, sets the status and
+    /// clears the busy entry for `(alias, file)`, where `file` is the project-relative path the busy set is keyed by. Plain data, so `Action` stays
+    /// `Clone`.
+    OwnerAcknowledged {
+        alias: String,
+        file: String,
+        outcome: String,
+    },
+    /// The clipboard tool finished (37-07, D-09). Sent by the blocking task that
+    /// ran it; `outcome` is the whole status line (`Copied 7 lines via wl-copy` or
+    /// `Copy failed: ...`), escaped by the handler. Plain data, so `Action` stays
+    /// `Clone`.
+    ClipboardCopied {
+        outcome: String,
     },
     /// A Driver-tab steering key asked for one edit to a launcher run's
     /// `DIRECTION.md` body (30-04, D-14, D-15).
@@ -488,6 +530,32 @@ mod tests {
             scanned.clone(),
             Action::LauncherMarkerScanned { .. }
         ));
+
+        let acknowledged = Action::OwnerAcknowledged {
+            alias: "proj".to_string(),
+            file: "03-UAT.md".to_string(),
+            outcome: "Acknowledged 03-UAT.md via gsd-core (uncommitted)".to_string(),
+        };
+        assert!(matches!(
+            acknowledged.clone(),
+            Action::OwnerAcknowledged { .. }
+        ));
+
+        let copied = Action::ClipboardCopied {
+            outcome: "Copied 1 line via wl-copy".to_string(),
+        };
+        assert!(matches!(copied.clone(), Action::ClipboardCopied { .. }));
+
+        let filled = Action::OwnerDigestLoaded {
+            alias: "proj".to_string(),
+            digest: Box::new(OwnerDigest::default()),
+        };
+        assert!(matches!(filled.clone(), Action::OwnerDigestLoaded { .. }));
+
+        let failed = Action::OwnerDigestFailed {
+            alias: "proj".to_string(),
+        };
+        assert!(matches!(failed.clone(), Action::OwnerDigestFailed { .. }));
 
         let steered = Action::DriverSteered {
             alias: "proj".to_string(),

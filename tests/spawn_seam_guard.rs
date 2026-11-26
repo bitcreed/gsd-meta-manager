@@ -46,6 +46,8 @@ const SPAWN_ALLOWLIST: &[&str] = &[
     // reason to allow, and its output is discarded rather than reproduced. No
     // agent.
     "src/envelope/scan.rs",
+    // wl-copy / xclip / xsel / pbcopy / clip.exe with the checklist on stdin. No agent.
+    "src/clipboard.rs",
     // The TUI's blocking `$EDITOR` shell-out. No agent.
     "src/main.rs",
     // `git init` and the project-creation hook shell-out. No agent.
@@ -63,6 +65,9 @@ const SPAWN_ALLOWLIST: &[&str] = &[
     // herdr CLI reads (pane list, pane process-info) and focus (agent focus, tab
     // focus); launch goes over the socket, which is not a spawn. No agent.
     "src/multiplexer/herdr.rs",
+    // Test-only: `cp` writes fixture scripts so no test thread holds their write
+    // descriptor across another thread's fork (ETXTBSY). No agent.
+    "src/multiplexer/fixtures.rs",
     // tmux `new-window`, `list-panes`, `select-window` and `select-pane`, and
     // the live direct-exec test. No agent.
     "src/multiplexer/tmux.rs",
@@ -70,7 +75,10 @@ const SPAWN_ALLOWLIST: &[&str] = &[
     // agent), `systemctl`, `git` for the push mirror, `claude setup-token` and
     // `gh`. Every launcher spawn lives in this one file, so this is the one
     // entry. The agent is reached only through `bwrap`, or through the explicit
-    // degraded spawn of 28-04; nothing else in `src/launcher/` may spawn.
+    // degraded spawn of 28-04; nothing else in `src/launcher/` may spawn. It
+    // also runs gsd-core's own acknowledge writer for the owner inbox (37
+    // D-15: `run_bounded_with_stderr_env`, a bounded direct child after an
+    // explicit Yes). No agent.
     "src/launcher/process.rs",
 ];
 

@@ -655,7 +655,7 @@ fn gate_for(
     }
 
     // 6. G7.
-    if inference.uat_status.is_outstanding() {
+    if inference.uat_status.is_upstream_blocking() {
         return Some((RouterReason::GateUatOutstanding, target_phase.to_string()));
     }
 

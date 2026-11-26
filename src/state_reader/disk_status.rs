@@ -103,7 +103,7 @@ impl VerificationStatus {
     /// Classify a raw frontmatter value. Case-insensitive on the known arms;
     /// anything else is carried verbatim by [`VerificationStatus::Unknown`].
     pub fn from_raw(raw: &str) -> Self {
-        let trimmed = raw.trim();
+        let trimmed = strip_one_quote_pair(raw.trim());
         match trimmed.to_ascii_lowercase().as_str() {
             "passed" => VerificationStatus::Passed,
             "gaps_found" => VerificationStatus::GapsFound,
@@ -159,6 +159,10 @@ pub enum UatStatus {
     InProgress,
     /// UAT failed — outstanding.
     Failed,
+    /// UAT checks are underway (`/gsd-verify-work` writes this status while items
+    /// are open). Outstanding for the owner, but NOT in upstream's
+    /// `BLOCKING_UAT_FM_STATUSES`, so it never gates the router.
+    Testing,
     /// Any other value, carried verbatim. **Not outstanding**: this repository's
     /// own phase 19 carries `status: deferred`, which is a human's explicit
     /// decision to proceed and must not read as an unanswered gate.
@@ -168,7 +172,7 @@ pub enum UatStatus {
 impl UatStatus {
     /// Classify a raw frontmatter value. Case-insensitive on the known arms.
     pub fn from_raw(raw: &str) -> Self {
-        let trimmed = raw.trim();
+        let trimmed = strip_one_quote_pair(raw.trim());
         match trimmed.to_ascii_lowercase().as_str() {
             "partial" => UatStatus::Partial,
             "diagnosed" => UatStatus::Diagnosed,
@@ -176,6 +180,7 @@ impl UatStatus {
             "blocked" => UatStatus::Blocked,
             "in_progress" => UatStatus::InProgress,
             "failed" => UatStatus::Failed,
+            "testing" => UatStatus::Testing,
             _ => UatStatus::Other(trimmed.to_string()),
         }
     }
@@ -190,15 +195,17 @@ impl UatStatus {
             UatStatus::Blocked => "blocked",
             UatStatus::InProgress => "in_progress",
             UatStatus::Failed => "failed",
+            UatStatus::Testing => "testing",
             UatStatus::Other(observed) => observed,
         }
     }
 
     /// Whether this status sets the outstanding-UAT gate (G7).
     ///
-    /// The set is `uat-predicate.cjs:30-32`'s, taken as written. Everything
-    /// outside it — including `passed` and `deferred` — is not a gate.
-    pub fn is_outstanding(&self) -> bool {
+    /// The set is `uat-predicate.cjs`'s `BLOCKING_UAT_FM_STATUSES`, taken as
+    /// written. Everything outside it, including `passed`, `deferred` and
+    /// [`UatStatus::Testing`], is not a gate. The router's G7 uses this predicate.
+    pub fn is_upstream_blocking(&self) -> bool {
         matches!(
             self,
             UatStatus::Partial
@@ -209,6 +216,27 @@ impl UatStatus {
                 | UatStatus::Failed
         )
     }
+
+    /// Whether this status is outstanding for the owner: the upstream set plus
+    /// [`UatStatus::Testing`]. The item half of the owner predicate (a non-terminal
+    /// status with at least one open item) lives in the owner reader, because this
+    /// enum carries no item data.
+    pub fn is_owner_outstanding(&self) -> bool {
+        self.is_upstream_blocking() || matches!(self, UatStatus::Testing)
+    }
+}
+
+/// Strip exactly one matching pair of `"` or `'` around a frontmatter scalar.
+fn strip_one_quote_pair(value: &str) -> &str {
+    for quote in ['"', '\''] {
+        if let Some(inner) = value
+            .strip_prefix(quote)
+            .and_then(|rest| rest.strip_suffix(quote))
+        {
+            return inner.trim();
+        }
+    }
+    value
 }
 
 /// The planned and realised token cost of ONE plan, as GSD records them.
@@ -403,6 +431,51 @@ fn parse_review_disposition(content: &str) -> Option<ReviewDisposition> {
     (counts.total() > 0).then_some(counts)
 }
 
+/// `std::fs::read_to_string` for a file inside a project that may belong to somebody
+/// else: the open never blocks (a FIFO named like an artifact cannot park the
+/// reader) and anything but a regular file is an error, as a directory already was.
+/// At most [`READ_TEXT_CAP`] bytes are read: a larger file is an error, so a hostile
+/// project cannot make the reader allocate without bound (WR-03). Symlinks are
+/// followed, as before.
+pub(crate) fn read_text_file(path: impl AsRef<Path>) -> std::io::Result<String> {
+    use std::io::Read;
+    let path = path.as_ref();
+    #[cfg(unix)]
+    let file = {
+        use std::os::unix::fs::OpenOptionsExt;
+        let flags = rustix::fs::OFlags::NONBLOCK.bits();
+        let custom = i32::try_from(flags)
+            .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "open flags"))?;
+        std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(custom)
+            .open(path)?
+    };
+    #[cfg(not(unix))]
+    let file = std::fs::File::open(path)?;
+    if !file.metadata()?.file_type().is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "not a regular file",
+        ));
+    }
+    let too_large =
+        || std::io::Error::new(std::io::ErrorKind::InvalidInput, "larger than the read cap");
+    if file.metadata()?.len() > READ_TEXT_CAP {
+        return Err(too_large());
+    }
+    // The length can grow after the check: bound the read itself too.
+    let mut text = String::new();
+    file.take(READ_TEXT_CAP + 1).read_to_string(&mut text)?;
+    if text.len() as u64 > READ_TEXT_CAP {
+        return Err(too_large());
+    }
+    Ok(text)
+}
+
+/// The most [`read_text_file`] reads: 1 MiB, the cap of the owner-items reader.
+const READ_TEXT_CAP: u64 = 1 << 20;
+
 /// The sorted-first ledger in `names`, read through the cap and counted.
 /// Every failure mode — none, unreadable, no rows — is `None`.
 fn read_review_disposition(phase_dir: &Path, mut names: Vec<String>) -> Option<ReviewDisposition> {
@@ -444,7 +517,7 @@ pub struct DiskInference {
     /// The `status` read from the phase's `*-UAT.md` frontmatter (G7).
     ///
     /// Presence is `has_uat`; whether anyone still owes an answer is this.
-    /// [`UatStatus::is_outstanding`] is the gate predicate.
+    /// [`UatStatus::is_upstream_blocking`] is the gate predicate.
     pub uat_status: UatStatus,
     /// A phase-directory `.continue-here.md` carrying **at least one
     /// blocking-severity row** (G13).
@@ -800,7 +873,7 @@ fn plan_frontmatter_superseded(content: &str) -> bool {
 /// `DEFECT.FRONTMATTER-SCALAR-BROAD-GREP` class, one step further).
 fn read_verification_status(phase_dir: &Path, names: Vec<String>) -> VerificationStatus {
     let Some(content) = select_phase_report(phase_dir, &names, "VERIFICATION.md")
-        .and_then(|name| std::fs::read_to_string(phase_dir.join(name)).ok())
+        .and_then(|name| read_text_file(phase_dir.join(name)).ok())
     else {
         return VerificationStatus::Missing;
     };
@@ -901,7 +974,7 @@ fn leading_block(content: &str) -> LeadingBlock {
 /// yields [`UatStatus::Missing`].
 fn read_uat_status(phase_dir: &Path, names: Vec<String>) -> UatStatus {
     select_phase_report(phase_dir, &names, "UAT.md")
-        .and_then(|name| std::fs::read_to_string(phase_dir.join(name)).ok())
+        .and_then(|name| read_text_file(phase_dir.join(name)).ok())
         .and_then(|content| leading_frontmatter_value(&content, "status"))
         .map(|raw| UatStatus::from_raw(&raw))
         .unwrap_or_default()
@@ -999,7 +1072,7 @@ fn continue_here_has_blocking_row(content: &str) -> bool {
 ///
 /// Fail-safe: an absent or unreadable marker is "no gate observed".
 fn phase_continue_here_blocking(phase_dir: &Path) -> bool {
-    std::fs::read_to_string(phase_dir.join(".continue-here.md"))
+    read_text_file(phase_dir.join(".continue-here.md"))
         .map(|content| continue_here_has_blocking_row(&content))
         .unwrap_or(false)
 }
@@ -1115,7 +1188,7 @@ pub(crate) fn infer_disk_status_with(
                 .map(|m| m.len() <= MAX_WAVES_MANIFEST_BYTES)
                 .unwrap_or(false);
             if small {
-                waves_manifest = std::fs::read_to_string(entry.path())
+                waves_manifest = read_text_file(entry.path())
                     .ok()
                     .and_then(|raw| plan_waves::parse_waves_manifest(&raw))
                     .filter(|m| !m.waves.is_empty());
@@ -1212,7 +1285,7 @@ pub(crate) fn infer_disk_status_with(
         if name == "PLAN.md" || name.ends_with("-PLAN.md") {
             // Read ONCE. The superseded check and `estimate.tokens` are two
             // readings of the same bytes, not two reads of the same file.
-            let content = std::fs::read_to_string(entry.path()).ok();
+            let content = read_text_file(entry.path()).ok();
             if let Some(content) = content.as_deref() {
                 if plan_frontmatter_superseded(content) {
                     continue;
@@ -1337,7 +1410,7 @@ pub(crate) fn infer_disk_status_with(
         // A genuine new read, bounded by the phase's plan count, inside the
         // once-per-refresh scan that already reads every `*-PLAN.md`. An
         // unreadable summary records nothing and disturbs no count.
-        if let Ok(content) = std::fs::read_to_string(phase_dir.join(name)) {
+        if let Ok(content) = read_text_file(phase_dir.join(name)) {
             if let Some(actual) = frontmatter_token_count(&content, "actuals") {
                 plan_actuals.insert(plan_id.clone(), actual);
             }
@@ -1843,6 +1916,28 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::tempdir;
+
+    #[test]
+    fn read_text_file_refuses_a_file_over_one_mib_and_reads_exactly_one_mib() {
+        let dir = tempdir().unwrap();
+        let exact = dir.path().join("exact.md");
+        fs::write(&exact, "x".repeat(READ_TEXT_CAP as usize)).unwrap();
+        assert_eq!(
+            read_text_file(&exact).unwrap().len() as u64,
+            READ_TEXT_CAP,
+            "exactly the cap is read"
+        );
+        let over = dir.path().join("over.md");
+        fs::write(&over, "x".repeat(READ_TEXT_CAP as usize + 1)).unwrap();
+        assert!(read_text_file(&over).is_err(), "one byte over is refused");
+        // A sparse file: the length is huge, no byte of it is read.
+        let sparse = dir.path().join("sparse.md");
+        fs::File::create(&sparse).unwrap().set_len(1 << 32).unwrap();
+        assert!(
+            read_text_file(&sparse).is_err(),
+            "a sparse giant is refused"
+        );
+    }
 
     #[test]
     fn test_empty_directory_returns_empty() {
@@ -2458,7 +2553,7 @@ mod tests {
             .unwrap();
             let result = infer_disk_status(dir.path());
             assert!(
-                result.uat_status.is_outstanding(),
+                result.uat_status.is_upstream_blocking(),
                 "`{raw}` is in GSD's blocking UAT set and must set the gate"
             );
             assert_eq!(result.uat_status.as_str(), raw);
@@ -2482,12 +2577,71 @@ mod tests {
             .unwrap();
             let result = infer_disk_status(dir.path());
             assert!(
-                !result.uat_status.is_outstanding(),
+                !result.uat_status.is_upstream_blocking(),
                 "`{raw}` is outside GSD's blocking set; a gate that fires on \
                  everything is as useless as one that fires on nothing"
             );
             assert_eq!(result.uat_status, UatStatus::Other(raw.to_string()));
+            assert!(
+                !result.uat_status.is_owner_outstanding(),
+                "`{raw}` is terminal for the owner too (D-03)"
+            );
         }
+    }
+
+    #[test]
+    fn test_testing_uat_is_owner_outstanding_but_not_upstream_blocking() {
+        for raw in [
+            "testing",
+            "TESTING",
+            "\"testing\"",
+            "'testing'",
+            " Testing ",
+        ] {
+            let status = UatStatus::from_raw(raw);
+            assert_eq!(status, UatStatus::Testing, "{raw}");
+            assert!(status.is_owner_outstanding(), "{raw}");
+            assert!(!status.is_upstream_blocking(), "{raw}");
+            assert_eq!(status.as_str(), "testing");
+        }
+        for raw in ["testing2", "test", "\"testing'"] {
+            assert!(
+                matches!(UatStatus::from_raw(raw), UatStatus::Other(_)),
+                "{raw}"
+            );
+        }
+        for raw in [
+            "partial",
+            "diagnosed",
+            "pending",
+            "blocked",
+            "in_progress",
+            "failed",
+        ] {
+            assert!(UatStatus::from_raw(raw).is_owner_outstanding(), "{raw}");
+        }
+    }
+
+    #[test]
+    fn test_quoted_statuses_classify_like_bare_ones() {
+        assert_eq!(
+            VerificationStatus::from_raw("\"gaps_found\""),
+            VerificationStatus::GapsFound
+        );
+        assert_eq!(
+            VerificationStatus::from_raw("'human_needed'"),
+            VerificationStatus::HumanNeeded
+        );
+        assert_eq!(UatStatus::from_raw("\"pending\""), UatStatus::Pending);
+        // A lone quote is kept, and a value in Other is the unquoted text.
+        assert_eq!(
+            UatStatus::from_raw("\""),
+            UatStatus::Other("\"".to_string())
+        );
+        assert_eq!(
+            UatStatus::from_raw("'deferred'"),
+            UatStatus::Other("deferred".to_string())
+        );
     }
 
     #[test]
@@ -2495,7 +2649,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let result = infer_disk_status(dir.path());
         assert_eq!(result.uat_status, UatStatus::Missing);
-        assert!(!result.uat_status.is_outstanding());
+        assert!(!result.uat_status.is_upstream_blocking());
         assert!(!result.has_uat);
     }
 

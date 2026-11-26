@@ -270,6 +270,7 @@ src/
 │   ├── disk_status.rs       Infer phase status from on-disk artifacts
 │   ├── plan_waves.rs, phase_num.rs, workstreams.rs, driver_frontmatter.rs
 │   ├── config_json.rs       Parse `.planning/config.json` (GSD project config)
+│   ├── config_set.rs        Plan the gsd-tools `config-set` calls for a Config-tab save
 │   ├── config_write.rs, config_secrets.rs, gsd_install.rs
 │   └── git_ops.rs           Shell out to `git log` / `git diff --stat`
 ├── launcher/                sandboxed driver launcher: run, sandbox, egress/, auth, push, stop, ...

@@ -658,9 +658,61 @@ impl std::fmt::Debug for Untrusted {
     }
 }
 
+/// The longest project-authored string, in characters, before it is cut.
+pub const MAX_TEXT_CHARS: usize = 200;
+
+/// Cut `value` to [`MAX_TEXT_CHARS`] characters, appending one `…` when it cut.
+pub fn cap_chars(value: String) -> String {
+    if value.chars().count() <= MAX_TEXT_CHARS {
+        return value;
+    }
+    let mut cut: String = value.chars().take(MAX_TEXT_CHARS).collect();
+    cut.push('…');
+    cut
+}
+
+/// An escaped value, capped at [`MAX_TEXT_CHARS`].
+pub fn cap_rendered(rendered: Rendered) -> String {
+    cap_chars(String::from(rendered))
+}
+
+/// Project-authored text for a machine-readable or plain-text output: escaped for
+/// a terminal, then capped. Shared by `status` and `inbox`.
+pub fn terminal_capped(value: &str) -> String {
+    // Fast path for the overwhelmingly common case (printable ASCII, short): the
+    // escaping passes are the identity there, which
+    // `terminal_capped_fast_path_agrees_with_the_full_pipeline` pins for every
+    // printable ASCII byte. The cold-run budget of `inbox` (OWN-12) needs it.
+    if value.len() <= MAX_TEXT_CHARS && value.bytes().all(|b| (0x20..0x7f).contains(&b)) {
+        return value.to_string();
+    }
+    cap_rendered(render_for_terminal(value))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn terminal_capped_fast_path_agrees_with_the_full_pipeline() {
+        for byte in 0x20u8..0x7f {
+            let one = (byte as char).to_string();
+            for text in [
+                one.clone(),
+                format!("a{one}b"),
+                format!(" {one} "),
+                format!("{one}{one}  {one}"),
+            ] {
+                assert_eq!(
+                    terminal_capped(&text),
+                    cap_rendered(render_for_terminal(&text)),
+                    "{text:?}"
+                );
+            }
+        }
+        let long = "x".repeat(MAX_TEXT_CHARS + 1);
+        assert_eq!(terminal_capped(&long).chars().count(), MAX_TEXT_CHARS + 1);
+    }
 
     /// **A control for `Display for Rendered`, in both directions.**
     ///
@@ -2725,5 +2777,17 @@ mod tests {
                  that printed the empty string."
             );
         }
+    }
+
+    #[test]
+    fn cap_cuts_a_long_value_and_leaves_a_short_one_alone() {
+        let long = cap_chars("y".repeat(500));
+        assert_eq!(long.chars().count(), MAX_TEXT_CHARS + 1);
+        assert!(long.ends_with('\u{2026}'));
+        assert_eq!(cap_chars("short".to_string()), "short");
+        assert_eq!(
+            cap_chars("z".repeat(MAX_TEXT_CHARS)).chars().count(),
+            MAX_TEXT_CHARS
+        );
     }
 }

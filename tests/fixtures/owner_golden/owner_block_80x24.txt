@@ -1,0 +1,9 @@
+Owner ── sample · v2.2 closes after: test 12 · decide 1 · unblock 5 · … 1-7 of 8
+  TEST    ph 21           android-fac…   2 checks  closes phase      29 d stale 
+  TEST    ph 24           clock-faces    6 checks  closes phase      2 d        
+  TEST    ph 22           notif-copy               all checks pass…  2 d        
+  TEST    ph 25           first-unlock   3 checks  + fix 1           2 d        
+  DECIDE  debug           widget-tap-…             awaiting your c…  2 d        
+  DECIDE  ws v14 handoff  voice-pass               paused                       
+  FIX     ph 25           quota-clip     1 check   1 failed check,…             
+▸ Old debt (6)   ▸ Acknowledged (8 files)   ▸ Todos 11 (oldest 96 d)            

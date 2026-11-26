@@ -31,6 +31,30 @@ pub(crate) fn exec_lock() -> MutexGuard<'static, ()> {
     EXEC_LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// Write an executable fixture script at `path` without this process ever
+/// holding a write descriptor on it.
+///
+/// `EXEC_LOCK` only serializes the tests that take it; any other test thread in
+/// the same binary that spawns a process (git, mkfifo, ...) can fork while a
+/// plain `fs::write` has the script open, and the child keeps that descriptor
+/// until it execs, failing our exec with ETXTBSY. Writing the body to a sibling
+/// file and letting a `cp` child create the script means the only writer of the
+/// script's inode is that child, which has exited before we return.
+#[cfg(unix)]
+pub(crate) fn write_script(path: &std::path::Path, body: &str) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let src = path.with_extension("body");
+    std::fs::write(&src, body).expect("script body");
+    let status = std::process::Command::new("cp")
+        .arg(&src)
+        .arg(path)
+        .status()
+        .expect("spawn cp");
+    assert!(status.success(), "cp {} failed: {status}", path.display());
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+}
+
 /// A process table in a temporary directory.
 pub(crate) struct FakeProc {
     dir: tempfile::TempDir,
@@ -133,8 +157,6 @@ impl World {
     /// `tmux list-panes -a -F ...` prints.
     #[cfg(unix)]
     pub(crate) fn new(pane_list: &str, list_panes: &str) -> Self {
-        use std::os::unix::fs::PermissionsExt;
-
         let guard = exec_lock();
         let dir = tempfile::tempdir().expect("tempdir");
         let log = dir.path().join("log");
@@ -166,8 +188,7 @@ impl World {
         );
         let write = |name: &str, body: &str| -> &'static str {
             let path = dir.path().join(name);
-            std::fs::write(&path, body).expect("script");
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+            write_script(&path, body);
             Box::leak(path.to_string_lossy().into_owned().into_boxed_str())
         };
         let herdr: &'static HerdrBackend = Box::leak(Box::new(HerdrBackend::with_program(write(

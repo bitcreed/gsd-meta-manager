@@ -1587,7 +1587,6 @@ mod tests {
         use super::*;
         use crate::session_detector::SessionKind;
         use crate::text::Untrusted;
-        use std::os::unix::fs::PermissionsExt;
 
         // The one lock every fixture-script test in this crate takes (see
         // `fixtures::EXEC_LOCK`): ETXTBSY comes from a fork on ANY other test
@@ -1684,8 +1683,7 @@ mod tests {
                 dir = dir.path().display(),
             );
             let program = dir.path().join("herdr");
-            std::fs::write(&program, script).unwrap();
-            std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+            crate::multiplexer::fixtures::write_script(&program, &script);
             let backend: &'static HerdrBackend = Box::leak(Box::new(HerdrBackend {
                 program: Box::leak(program.to_string_lossy().into_owned().into_boxed_str()),
             }));

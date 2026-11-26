@@ -1,0 +1,12 @@
+Owner ── sample · v2.2 closes after: test 12 · decide 1 · unblock 5 · fix 1 · not built 1                     1-10 of 16
+> TEST    ph 21           android-faces    2 checks  closes phase                29 d stale   /gsd-verify-work 21       
+    check 0                                                                                                             
+    check 1                                                                                                             
+    file phases/21/21-UAT.md                                                                                            
+  TEST    ph 24           clock-faces      6 checks  closes phase                2 d          /gsd-verify-work 24       
+  TEST    ph 22           notif-copy                 all checks passed, run /gsd-verify-work 22 to finalize             
+  TEST    ph 25           first-unlock     3 checks  + fix 1                     2 d          /gsd-verify-work 25       
+  DECIDE  debug           widget-tap-bug             awaiting your confirmation  2 d          /gsd-debug                
+  DECIDE  ws v14 handoff  voice-pass                 paused                                   /gsd-resume-work --ws v14 
+  FIX     ph 25           quota-clip       1 check   1 failed check, 1 gap                    /gsd-plan-phase 25 --gaps 
+▾ Old debt (6): v1.1 ph 04, v1.2 ph 08 …   ▸ Acknowledged (8 files)   ▸ Todos 11 (oldest 96 d)                          

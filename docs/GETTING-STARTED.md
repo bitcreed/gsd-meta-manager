@@ -70,14 +70,21 @@ On first launch:
 - The dashboard appears with an empty project list.
 - A log file is created under `dirs::data_local_dir() + "gsd-meta-manager/"`
   (typically `~/.local/share/gsd-meta-manager/gsd-meta-manager.log.<date>`).
-- Active `claude` sessions whose working directory contains `.planning/` are
-  auto-registered. If you happen to have a Claude session running in a GSD
+- Active `claude` sessions whose working directory is a GSD project are
+  auto-registered. A GSD project here means its `.planning/` holds
+  `STATE.md`, `ROADMAP.md`, `PROJECT.md` or `config.json`; an empty
+  `.planning/`, or one holding only gsd-meta-manager's own
+  `.planning/meta-manager/`, does not count. Folders under the system temp dir
+  are never auto-registered, so test fixtures and scratch checkouts stay out of
+  the list; `add` still registers them. Folders inside gsd-meta-manager's own data dir
+  (`~/.local/share/gsd-meta-manager/` on Linux), such as the private clones one-off
+  runs work in, are never auto-registered either. If you happen to have a Claude session running in a GSD
   project, it will appear immediately; otherwise the list stays empty until
   you register a project manually. A git linked worktree (such as an agent
   worktree under `.claude/worktrees/`) is never registered itself. A session
   running inside one, or in any subdirectory of it, resolves to its main
-  worktree, and that main worktree is auto-registered instead when it has
-  `.planning/` and is not already registered, so many concurrent agent
+  worktree, and that main worktree is auto-registered instead when it is a GSD
+  project and is not already registered, so many concurrent agent
   sessions of one project yield a single entry. `add` still refuses a linked
   worktree and names the main worktree to register instead, and stale worktree
   entries are pruned from the config on launch.
@@ -166,7 +173,7 @@ keystrokes:
   selected row's value opens it. A Queue double-click does nothing — `Enter`
   there marks the action done. `M` turns the mouse off and on; while it is on,
   use Shift+drag to select text (terminal-dependent)
-- `?` — show the help overlay
+- `?` — show the help overlay (a key pressed there highlights the rows that list it)
 - `q` — quit (on the dashboard)
 
 ### Reading the Waves pane
@@ -198,6 +205,23 @@ a phase not started yet (`not started`, every wave open), a completed phase
 `Plans (no wave metadata)` list) and no plans at all
 (`No plans yet — /gsd-plan-phase N`). Below 100 columns, focusing the pane
 widens it to the full width under a one-line breadcrumb.
+
+### Acting on owner work
+
+`i` on the dashboard opens the inbox: everything that waits on you, across every
+registered project. The same rows appear for one project in the Owner block at
+the top of its Phases tab. On either screen the footer lists the keys that work
+on the selected row, and `Enter` on a group opens an **action menu** with the
+command or target behind each key, and the reason when an action cannot run
+right now. Press the action's letter, or `j` / `k` and `Enter`, to run it; `Esc`
+closes the menu. `Space` or `→` expands a group to its checks and source file,
+and `Enter` on a check or file line opens that file read-only at that place.
+`x` (settle) and `A` (acknowledge) always show a default-No confirmation before
+anything runs. `A` only hides a file until it changes (nothing is recorded and the phase
+stays open); `x` records checks as skipped (won't do, deferred permanently or moved to phase M)
+so the phase can close. `x` always launches GSD in a new session, next to any session
+already running in the project. A row still settling offers `x` stop waiting, which
+clears its badge after a confirmation. See [the README](../README.md#owner-inbox) for the full key list.
 
 ## Common setup issues
 

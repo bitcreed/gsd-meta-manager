@@ -1,3 +1,4 @@
+pub mod ack_confirm;
 pub mod add_project;
 pub mod confirm_popup;
 pub mod create_project;
@@ -10,11 +11,20 @@ pub mod driver_run;
 pub mod driver_steer;
 pub mod enqueue;
 pub mod help;
+pub mod inbox;
 pub mod normal;
 pub mod oneoff;
 pub mod oneoff_viewer;
+pub mod owner;
+pub mod owner_actions;
+pub mod owner_block;
+pub mod owner_file_view;
+pub mod owner_row_actions;
+pub mod owner_settle;
 pub mod preferences;
 pub mod queue_delete_confirm;
+pub mod settle_pending;
+pub mod settle_popup;
 
 /// The render-surface census and its behavioural probe (CR-01).
 ///
@@ -360,6 +370,13 @@ pub enum ScreenAction {
     /// `App` owns the desired state and shows the status message; the binary's
     /// main loop applies it to the terminal. Never written to `config.json`.
     ToggleMouseCapture,
+    /// Ask the terminal to set its clipboard (37-07, D-09): the string is a
+    /// complete OSC 52 sequence.
+    ///
+    /// Like [`ScreenAction::ToggleMouseCapture`], `App` only holds it
+    /// (`App::pending_osc52`); the binary's main loop writes it to the terminal
+    /// after the frame, never from `render` or a key handler.
+    WriteOsc52(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -1030,6 +1047,12 @@ pub struct ProjectViewCache {
     /// `Enter`/`Space` on a wave or merged row; per project, in memory only,
     /// the `roadmap_fold_toggles` pattern ([inferred I-4]).
     pub waves_toggles: std::collections::HashSet<(String, Option<u32>)>,
+    /// The Phases tab's Owner block view state (36-04, D-18): the expanded
+    /// groups, open folds, cursor stop and fold sub-cursor, all row IDENTITIES
+    /// (`GroupKey`, `Fold`, `Stop`), never indices, so they survive a digest
+    /// refresh the way `waves_cursor` survives a roadmap reload. Per project, in
+    /// memory only; a restart resets it.
+    pub owner_block: owner_block::OwnerBlockState,
     /// What the Roadmap tab's cursor rests on: a phase (by `phase_key`) or a
     /// band row. `None` means "resolve to the default" (the active phase,
     /// else the first phase not done). A reader-generated key, not
@@ -1343,6 +1366,59 @@ pub struct AppContext {
     ///   production, and the count is a legitimate diagnostic in its own right
     ///   that Phase 18's driver surface may want to render.
     pub reparse_dispatches: u64,
+    /// Per-alias owner digest: what waits on the human, in the current milestone
+    /// and archived (36 D-02).
+    ///
+    /// * A **sibling map**, like `agent_views` below, and for the same reason: it
+    ///   must not live on `ProjectState`. That type's derived `PartialEq` drives
+    ///   the `Updated: {alias}` message and is compared by the driver loop, `next`
+    ///   and the router; a digest field there would make every UAT row flipped to
+    ///   `pass` look like a project change.
+    /// * Filled by the reparse task (`ProjectStateLoaded.digest`) and, once per
+    ///   alias, by the digest-only first fill (`OwnerDigestLoaded`); never on the
+    ///   render path. An alias without an entry renders a blank `You` cell, never
+    ///   `·` (absent data must not read as clean, D-09). A project whose folder or
+    ///   `.planning/` is gone holds no entry (WR-01); surfaces read through
+    ///   [`AppContext::owner_digest`], never this map directly.
+    /// * Removed with the project's state when it is removed from the dashboard
+    ///   (WR-02), and pruned with the other alias-keyed maps in
+    ///   `App::prune_driver_maps` as the backstop.
+    pub owner_digests: HashMap<String, crate::state_reader::owner_items::OwnerDigest>,
+    /// Aliases whose owner digest cannot arrive until a new trigger (37-04,
+    /// coordinator directive 2): the reader panicked in the reparse task
+    /// (`ProjectStateLoaded { digest: None }`) or in the first fill
+    /// (`Action::OwnerDigestFailed`). The inbox shows them as `unreadable`
+    /// instead of `loading`, so absent data is never counted as clean and never
+    /// loads forever; there is no timer. A later digest for the alias clears the
+    /// entry and `App::prune_driver_maps` drops an unregistered alias.
+    pub owner_digest_failed: std::collections::HashSet<String>,
+    /// The `(alias, project-relative file)` pairs whose acknowledge child is running
+    /// (37 D-16): a second `A` for the same file says so instead of starting
+    /// another writer. Inserted when Yes starts the child, removed by the
+    /// `OwnerAcknowledged` handler; a child that never answers is bounded by its
+    /// 10 s budget, and the runner always sends a result.
+    pub owner_ack_busy: std::collections::HashSet<(String, String)>,
+    /// A clipboard tool is running (37-07, IN-06): a second `y` says so instead of
+    /// stacking another `wl-copy` or `xclip`. Set when the copy starts, cleared by
+    /// the `ClipboardCopied` handler; the runner always answers.
+    pub owner_copy_busy: bool,
+    /// The Owner inbox's view state (37-03, D-10): the cursor identity and the
+    /// scroll offset. It lives on the context rather than on `InboxScreen` so a
+    /// popup pushed above the inbox can repaint it as its background, and `i`
+    /// on the dashboard resets it so every visit starts on the first row.
+    pub inbox_view: inbox::InboxViewState,
+    /// What each settle Yes left behind: the `settling…` badge on the settled row
+    /// until its checks leave the list (quick 261118-v6l).
+    ///
+    /// * **In memory only**: the app writes nothing to a project. It survives
+    ///   refreshes, screen switches and the inbox's `i` reset (which is why it is
+    ///   not in `inbox_view`), and is gone after a restart. It is not on
+    ///   `ProjectState` either, whose `PartialEq` drives `Updated:`.
+    /// * Alias-keyed: `App::prune_driver_maps` drops the entries of an
+    ///   unregistered alias.
+    /// * Written by `owner_settle::launch_and_track` (Yes) and by the App's refresh
+    ///   (`ProjectStateLoaded`) and tick; read by the inbox and the Owner block.
+    pub settle_pending: settle_pending::PendingSettles,
     /// Per-alias running-agents view, from the agents scan (AGENT-05, D-C01).
     ///
     /// * A **sibling map**, shaped like `driver_output` above, for the same
@@ -1473,20 +1549,25 @@ pub(crate) fn state_has_attention_evidence(state: &ProjectState) -> bool {
 
 /// Where a project sorts under [`SortMode::AttentionFirst`]: lower is sooner.
 ///
-/// Three ranks and no more, because the sort is stable and alphabetical order is
+/// Four ranks and no more, because the sort is stable and alphabetical order is
 /// preserved within each: rank 0 is a project waiting on a human, rank 1 is one
-/// being driven right now, and rank 2 is everything else. Driven-and-live ranks
-/// **below** needs-a-human deliberately — a live run needs nothing from the
-/// user, while a parked one does.
+/// with owner work (decide, test or fix in the current milestone, 36 D-13),
+/// rank 2 is one being driven right now, and rank 3 is everything else.
+/// Driven-and-live ranks **below** needs-a-human deliberately — a live run needs
+/// nothing from the user, while a parked one does. Owner work ranks above a
+/// driven run because it is the user's own to-do list. The owner rank needs no
+/// experimental flag; the driven rank keeps its gate in `attention_rank_for`.
 ///
 /// Pure, so the ordering is testable without a dashboard.
-pub fn attention_rank(needs_human: bool, driven_and_live: bool) -> u8 {
+pub fn attention_rank(needs_human: bool, has_owner_work: bool, driven_and_live: bool) -> u8 {
     if needs_human {
         0
-    } else if driven_and_live {
+    } else if has_owner_work {
         1
-    } else {
+    } else if driven_and_live {
         2
+    } else {
+        3
     }
 }
 
@@ -1834,6 +1915,124 @@ impl AppContext {
         });
     }
 
+    /// Run gsd-core's acknowledge writer for `req` on a blocking task (37 D-15,
+    /// D-16) and answer with [`crate::action::Action::OwnerAcknowledged`].
+    pub(crate) fn start_owner_acknowledge(&mut self, req: owner_actions::AckRequest) {
+        self.start_owner_acknowledge_with(req, owner_actions::run_ack);
+    }
+
+    /// [`Self::start_owner_acknowledge`] with the runner injected, so a test never
+    /// starts a real child.
+    ///
+    /// Refuses visibly without an event channel (the result could not be reported),
+    /// refuses a second run for the same `(alias, project-relative file)`, then marks the file busy,
+    /// sets `Acknowledging {file} via gsd-core...` and runs `run` on
+    /// `spawn_blocking`. The task always answers, even when the runner panics, so
+    /// the busy entry cannot stick.
+    pub(crate) fn start_owner_acknowledge_with<F>(&mut self, req: owner_actions::AckRequest, run: F)
+    where
+        F: FnOnce(&owner_actions::AckRequest) -> String + Send + 'static,
+    {
+        let file = req.target.name().to_owned();
+        // Busy is keyed by the project-relative path: two workstreams or a
+        // current and an archived milestone share a basename (IN-01).
+        let busy_key = req.target.rel_file.clone();
+        let Some(tx) = self.event_tx.clone() else {
+            self.status_message = Some((
+                format!("Cannot acknowledge {file}: this session has no event channel"),
+                std::time::Instant::now(),
+            ));
+            self.needs_redraw = true;
+            return;
+        };
+        if !self
+            .owner_ack_busy
+            .insert((req.alias.clone(), busy_key.clone()))
+        {
+            self.status_message = Some((
+                format!("Already acknowledging {file}"),
+                std::time::Instant::now(),
+            ));
+            self.needs_redraw = true;
+            return;
+        }
+        self.status_message = Some((
+            format!("Acknowledging {file} via gsd-core..."),
+            std::time::Instant::now(),
+        ));
+        self.needs_redraw = true;
+        let alias = req.alias.clone();
+        tokio::task::spawn_blocking(move || {
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(&req)))
+                .unwrap_or_else(|_| {
+                    "Acknowledge failed: the runner stopped unexpectedly".to_owned()
+                });
+            let _ = tx.send(crate::action::Action::OwnerAcknowledged {
+                alias,
+                file: busy_key,
+                outcome,
+            });
+        });
+    }
+
+    /// Copy `text` (`lines` lines) with the native clipboard `tool` on a blocking
+    /// task (37-07, D-09) and answer with [`crate::action::Action::ClipboardCopied`].
+    // The unit tests go through the `owner_actions` seam instead of this wrapper.
+    #[cfg_attr(test, allow(dead_code))]
+    pub(crate) fn start_copy(&mut self, tool: crate::clipboard::Tool, text: String, lines: usize) {
+        self.start_copy_with(tool, text, lines, |tool, text| {
+            crate::clipboard::copy_with_tool(tool, text, std::time::Duration::from_secs(2))
+        });
+    }
+
+    /// [`Self::start_copy`] with the runner injected, so no test starts a real
+    /// clipboard tool.
+    ///
+    /// Refuses visibly without an event channel (the result could not be
+    /// reported). It claims nothing before the tool answered: the status line
+    /// says `Copied ...` only from the answer. The task always answers, even when
+    /// the runner panics.
+    pub(crate) fn start_copy_with<F>(
+        &mut self,
+        tool: crate::clipboard::Tool,
+        text: String,
+        lines: usize,
+        run: F,
+    ) where
+        F: FnOnce(crate::clipboard::Tool, &str) -> Result<(), String> + Send + 'static,
+    {
+        let Some(tx) = self.event_tx.clone() else {
+            self.status_message = Some((
+                "Copy failed: this session has no event channel".to_owned(),
+                std::time::Instant::now(),
+            ));
+            self.needs_redraw = true;
+            return;
+        };
+        if std::mem::replace(&mut self.owner_copy_busy, true) {
+            self.status_message = Some((
+                "Already copying; wait for it to finish".to_owned(),
+                std::time::Instant::now(),
+            ));
+            self.needs_redraw = true;
+            return;
+        }
+        tokio::task::spawn_blocking(move || {
+            let result =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(tool, &text)))
+                    .unwrap_or_else(|_| Err("stopped unexpectedly".to_owned()));
+            let outcome = match result {
+                Ok(()) => format!(
+                    "Copied {} via {}",
+                    owner_actions::line_count(lines),
+                    tool.name()
+                ),
+                Err(why) => format!("Copy failed: {} {why}", tool.name()),
+            };
+            let _ = tx.send(crate::action::Action::ClipboardCopied { outcome });
+        });
+    }
+
     /// Re-read the selected launcher run when the cache holds no detail **for it**
     /// (30-02): after the highlight moved onto a run, or back from the legacy rows.
     /// A no-op when the selection is not a launcher run or its detail is present.
@@ -1852,6 +2051,72 @@ impl AppContext {
             return;
         };
         self.schedule_selected_run_refresh(alias, &path, &run_id);
+    }
+
+    /// Compute one project's owner digest on a blocking task and send it back as
+    /// [`Action::OwnerDigestLoaded`] (36 D-03, the first fill).
+    ///
+    /// Digest-only: it clones the state already parsed for `alias` and never calls
+    /// `parse_project_state`, so `reparse_dispatches` and the OBS-06 guarantee keep
+    /// their meaning. It is the only second dispatch site next to
+    /// `App::schedule_reparse`. Silent without an event channel or a stored state.
+    /// `pub` because `src/main.rs` is the binary crate.
+    pub fn schedule_owner_digest(&self, alias: &str, project_path: &std::path::Path) {
+        let Some(tx) = &self.event_tx else {
+            return;
+        };
+        let Some(state) = self.project_states.get(alias).cloned() else {
+            return;
+        };
+        // A gone folder or a missing `.planning/` has no owner state to read; the
+        // handler would refuse the empty digest anyway (WR-01).
+        if state.presence != crate::state_reader::ProjectPresence::Present {
+            return;
+        }
+        let tx = tx.clone();
+        let alias = alias.to_string();
+        let planning_dir = project_path.join(".planning");
+        let stale_days = self.config.preferences.owner_stale_days();
+        tokio::task::spawn_blocking(move || {
+            // A reader panic logs and reports the failure: the row keeps no
+            // digest, which reads as unreadable, never as clean and never as
+            // loading forever (D-09, WR-04, 37-04).
+            let Some(digest) = Self::guarded_owner_digest(&alias, || {
+                crate::state_reader::owner_items::read_owner_digest(
+                    &planning_dir,
+                    &state,
+                    chrono::Utc::now(),
+                    stale_days,
+                )
+            }) else {
+                let _ = tx.send(crate::action::Action::OwnerDigestFailed { alias });
+                return;
+            };
+            let _ = tx.send(crate::action::Action::OwnerDigestLoaded {
+                alias,
+                digest: Box::new(digest),
+            });
+        });
+    }
+
+    /// Run the owner reader `read` for `alias` behind `catch_unwind` (WR-04).
+    ///
+    /// The reader parses project-authored files, the same class of input the
+    /// agents scan and the session-location task already guard this way. Inside
+    /// the reparse task a panic would otherwise kill the task before its send and
+    /// lose the freshly parsed `ProjectState` with it. `None` means the reader
+    /// panicked; the panic is logged.
+    pub(crate) fn guarded_owner_digest(
+        alias: &str,
+        read: impl FnOnce() -> crate::state_reader::owner_items::OwnerDigest,
+    ) -> Option<crate::state_reader::owner_items::OwnerDigest> {
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(read)) {
+            Ok(digest) => Some(digest),
+            Err(_) => {
+                tracing::error!(alias, "the owner reader panicked; no owner digest");
+                None
+            }
+        }
     }
 
     /// This alias's [`attention_rank`], from the state this context holds.
@@ -1874,7 +2139,76 @@ impl AppContext {
                 .get(alias)
                 .and_then(|cache| cache.launcher_marker)
                 .is_some_and(|marker| marker.class == Some(driver_run::MarkerClass::Driven));
-        attention_rank(self.needs_attention_for(alias), driven_and_live)
+        let has_owner_work = self
+            .owner_digest(alias)
+            .map(owner::owner_numbers)
+            .is_some_and(|n| owner::has_owner_work(&n));
+        attention_rank(
+            self.needs_attention_for(alias),
+            has_owner_work,
+            driven_and_live,
+        )
+    }
+
+    /// Whether `alias`'s last parsed state says its folder or its `.planning/` is
+    /// gone. No state yet is not "unavailable": it is still loading.
+    pub(crate) fn owner_state_unavailable(&self, alias: &str) -> bool {
+        self.project_states
+            .get(alias)
+            .is_some_and(|state| state.presence != crate::state_reader::ProjectPresence::Present)
+    }
+
+    /// Whether a digest for `alias` may be stored (WR-01): the alias is registered
+    /// and its folder and `.planning/` are not known to be gone.
+    ///
+    /// For a missing folder or a project without `.planning/` the reader finds
+    /// nothing and returns an empty digest, which every owner surface would read as
+    /// "nothing waits on you". Absent data must not read as clean (D-09), so such a
+    /// project holds no digest: its `You` cell stays empty, it has no owner rank,
+    /// `/y` never matches it, and the summary leaves it out.
+    pub(crate) fn owner_digest_storable(&self, alias: &str) -> bool {
+        self.config.projects.contains_key(alias) && !self.owner_state_unavailable(alias)
+    }
+
+    /// `alias`'s owner digest as every owner surface reads it (cell, summary, rank,
+    /// `/y`, Owner block): `None` while it loads, and `None` for a project whose
+    /// folder or `.planning/` is gone even if an older digest is still in the map
+    /// (WR-01). The store refuses such digests too; this is the read-side half, so a
+    /// state written by another path cannot leave a clean-looking digest showing.
+    pub(crate) fn owner_digest(
+        &self,
+        alias: &str,
+    ) -> Option<&crate::state_reader::owner_items::OwnerDigest> {
+        if self.owner_state_unavailable(alias) {
+            return None;
+        }
+        self.owner_digests.get(alias)
+    }
+
+    /// The visible rows the `You:` summary sums (D-11), each with its digest or
+    /// `None` while one is loading. A row whose folder or `.planning/` is gone has
+    /// no owner state and is left out rather than counted as loading forever or as
+    /// a clean project (WR-01).
+    pub(crate) fn summary_owner_rows(
+        &self,
+    ) -> impl Iterator<Item = Option<&crate::state_reader::owner_items::OwnerDigest>> {
+        self.filtered_aliases
+            .iter()
+            .filter(|alias| !self.owner_state_unavailable(alias))
+            .map(|alias| self.owner_digests.get(alias))
+    }
+
+    /// Whether `alias` passes the `/y [lane]` filter (D-14): no digest never
+    /// matches; no lane means any owner work; a lane means its count is above 0.
+    pub(crate) fn owner_work_matches(&self, alias: &str, lane: Option<owner::OwnerLane>) -> bool {
+        let Some(digest) = self.owner_digest(alias) else {
+            return false;
+        };
+        let numbers = owner::owner_numbers(digest);
+        match lane {
+            None => owner::has_owner_work(&numbers),
+            Some(lane) => owner::lane_count(&numbers, lane) > 0,
+        }
     }
 
     /// Get the alias of the currently selected project, if any.
@@ -1903,6 +2237,117 @@ impl AppContext {
             .and_then(|alias| self.filtered_aliases.iter().position(|a| *a == alias))
             .unwrap_or_else(|| self.table_state.selected().unwrap_or(0).min(last));
         self.table_state.select(Some(index));
+    }
+
+    /// Start tracking a project that just entered the registry: watch its
+    /// `.planning/` directory (when it is one), parse and record its state, and
+    /// schedule its owner digest.
+    ///
+    /// The order matters: `schedule_owner_digest` reads the `project_states`
+    /// entry, so the state goes in first.
+    pub(crate) fn track_project(&mut self, alias: &str, path: &std::path::Path) {
+        let planning_dir = path.join(".planning");
+        if planning_dir.is_dir() {
+            if let Some(ref mut watcher) = self.watcher {
+                if let Err(e) = watcher.watch(&planning_dir) {
+                    tracing::warn!(
+                        alias = %alias,
+                        path = %planning_dir.display(),
+                        error = %e,
+                        "registry: watcher.watch failed",
+                    );
+                }
+            }
+        }
+
+        let state = crate::state_reader::parse_project_state(&planning_dir);
+        self.change_tracker.record_initial(alias, &state);
+        self.project_states.insert(alias.to_string(), state);
+        self.schedule_owner_digest(alias, path);
+    }
+
+    /// Stop tracking a project that left the registry: unwatch its `.planning/`
+    /// directory and drop every per-alias map entry.
+    pub(crate) fn forget_project(&mut self, alias: &str, path: &std::path::Path) {
+        // Unwatch the project's .planning/ directory
+        if let Some(ref mut watcher) = self.watcher {
+            let planning_dir = path.join(".planning");
+            let _ = watcher.unwatch(&planning_dir);
+        }
+
+        self.project_states.remove(alias);
+        self.detail_sub_view_per_project.remove(alias);
+        self.last_refresh.remove(alias);
+        // The owner digest and the Owner block's view state go with the state
+        // (WR-02): an alias re-registered before the next prune would otherwise
+        // keep the removed project's numbers, and the handler refuses a first
+        // fill for an alias that already holds a digest.
+        self.owner_digests.remove(alias);
+        if let Some(cache) = self.view_cache.get_mut(alias) {
+            cache.owner_block = Default::default();
+        }
+
+        // `registry::remove_project` cleans none of the maps above (it takes a
+        // `&mut Config` and has no access to `AppContext` at all), so this is the
+        // **immediate** path, and `App::prune_driver_maps` is the backstop for
+        // every removal that does not come through here (D-27).
+    }
+
+    /// Make `fresh` the registry the TUI works with and bring the per-project
+    /// state in line with it.
+    ///
+    /// The one way the TUI's registry changes after startup is by adopting a
+    /// config that was read from or written to disk (quick 261125-kfc): an alias
+    /// new to the TUI gets project state, a `.planning/` watch and an owner
+    /// digest; an alias that vanished (or now points elsewhere) loses them. Entries
+    /// whose other fields changed (a driver opt-in) are simply replaced.
+    pub fn adopt_config(&mut self, fresh: crate::config::Config) {
+        let old = std::mem::replace(&mut self.config, fresh);
+
+        let vanished: Vec<(String, std::path::PathBuf)> = old
+            .projects
+            .iter()
+            .filter(|(alias, entry)| {
+                self.config
+                    .projects
+                    .get(*alias)
+                    .is_none_or(|now| now.path != entry.path)
+            })
+            .map(|(alias, entry)| (alias.clone(), entry.path.clone()))
+            .collect();
+        let added: Vec<(String, std::path::PathBuf)> = self
+            .config
+            .projects
+            .iter()
+            .filter(|(alias, entry)| {
+                old.projects
+                    .get(*alias)
+                    .is_none_or(|before| before.path != entry.path)
+            })
+            .map(|(alias, entry)| (alias.clone(), entry.path.clone()))
+            .collect();
+
+        for (alias, path) in &vanished {
+            self.forget_project(alias, path);
+        }
+        for (alias, path) in &added {
+            self.track_project(alias, path);
+        }
+
+        if !vanished.is_empty() || !added.is_empty() {
+            self.recompute_filtered_aliases();
+            if self.filtered_aliases.is_empty() {
+                self.table_state.select(None);
+            } else {
+                let selected = self
+                    .table_state
+                    .selected()
+                    .unwrap_or(0)
+                    .min(self.filtered_aliases.len() - 1);
+                self.table_state.select(Some(selected));
+            }
+        }
+        self.needs_redraw = true;
     }
 
     pub fn recompute_filtered_aliases(&mut self) {
@@ -1954,6 +2399,12 @@ impl AppContext {
                     // every alias, so `needs_human` alone decides (OBS-07).
                     FilterColumn::NeedsHuman => {
                         matches_any_column() && self.needs_attention_for(alias)
+                    }
+                    // Same shape: the term narrows across every column and the
+                    // owner-work predicate (optionally one lane) decides alone
+                    // when the term is empty (OWN-18).
+                    FilterColumn::OwnerWork(lane) => {
+                        matches_any_column() && self.owner_work_matches(alias, lane)
                     }
                 }
             })
@@ -2425,6 +2876,12 @@ mod tests {
             error_message: None,
             event_tx: None,
             reparse_dispatches: 0,
+            owner_digests: HashMap::new(),
+            owner_digest_failed: std::collections::HashSet::new(),
+            owner_ack_busy: std::collections::HashSet::new(),
+            owner_copy_busy: false,
+            inbox_view: inbox::InboxViewState::default(),
+            settle_pending: Default::default(),
             agent_views: HashMap::new(),
             agents_scan_in_flight: false,
             sort_mode: SortMode::default(),
@@ -2457,6 +2914,15 @@ mod tests {
             class: Some(driver_run::MarkerClass::Driven),
             any_live: true,
         });
+    }
+
+    /// Give `alias` an owner digest, as the reparse task would.
+    pub(super) fn owe(
+        ctx: &mut AppContext,
+        alias: &str,
+        digest: crate::state_reader::owner_items::OwnerDigest,
+    ) {
+        ctx.owner_digests.insert(alias.to_string(), digest);
     }
 
     /// Mark `alias` as paused, which is one of the needs-human sources.
@@ -2870,13 +3336,191 @@ mod tests {
         );
 
         assert_eq!(
-            attention_rank(true, true),
+            attention_rank(true, false, true),
             0,
             "needs-a-human outranks driven-and-live: a live run needs nothing \
              from the user, a parked one does"
         );
-        assert_eq!(attention_rank(false, true), 1);
-        assert_eq!(attention_rank(false, false), 2);
+        assert_eq!(attention_rank(false, false, true), 2);
+        assert_eq!(attention_rank(false, false, false), 3);
+    }
+
+    use crate::state_reader::owner_items::{ArchivedCounts, OwnerDigest};
+
+    /// A counts-only digest for the owner-work tests.
+    fn digest(test: usize, decide: usize, fix_phases: usize, fix_debug: usize) -> OwnerDigest {
+        OwnerDigest {
+            test,
+            decide,
+            fix_phases,
+            fix_debug,
+            ..OwnerDigest::default()
+        }
+    }
+
+    #[test]
+    fn the_attention_rank_table_covers_every_combination() {
+        for driven in [false, true] {
+            for owner in [false, true] {
+                assert_eq!(attention_rank(true, owner, driven), 0, "{owner} {driven}");
+            }
+        }
+        assert_eq!(attention_rank(false, true, true), 1);
+        assert_eq!(attention_rank(false, true, false), 1);
+        assert_eq!(attention_rank(false, false, true), 2);
+        assert_eq!(attention_rank(false, false, false), 3);
+    }
+
+    #[test]
+    fn attention_first_puts_owner_work_between_humans_and_driven_runs() {
+        let mut ctx = ctx_with_aliases(&["alpha", "bravo", "charlie", "delta", "echo"]);
+        ctx.experimental = true;
+        pause(&mut ctx, "echo");
+        owe(&mut ctx, "delta", digest(1, 0, 0, 0));
+        owe(&mut ctx, "bravo", digest(0, 2, 0, 0));
+        drive(&mut ctx, "charlie");
+        ctx.sort_mode = SortMode::AttentionFirst;
+        assert_eq!(
+            ctx.sorted_aliases(),
+            vec!["echo", "bravo", "delta", "charlie", "alpha"],
+            "needs a human, then owner work, then driven, then the rest"
+        );
+        // Owner work plus driven ranks 1; needs a human plus owner work ranks 0.
+        drive(&mut ctx, "delta");
+        owe(&mut ctx, "echo", digest(4, 0, 0, 0));
+        assert_eq!(ctx.attention_rank_for("delta"), 1);
+        assert_eq!(ctx.attention_rank_for("echo"), 0);
+        assert_eq!(ctx.attention_rank_for("charlie"), 2);
+        assert_eq!(ctx.attention_rank_for("alpha"), 3);
+        // The owner rank does not depend on the experimental flag.
+        ctx.experimental = false;
+        assert_eq!(ctx.attention_rank_for("bravo"), 1);
+        assert_eq!(
+            ctx.attention_rank_for("charlie"),
+            3,
+            "the driven gate holds"
+        );
+    }
+
+    #[test]
+    fn blocked_and_archived_debt_alone_is_not_owner_work() {
+        let mut ctx = ctx_with_aliases(&["alpha", "bravo"]);
+        owe(
+            &mut ctx,
+            "alpha",
+            OwnerDigest {
+                blocked: 4,
+                archived: ArchivedCounts {
+                    test: 3,
+                    ..ArchivedCounts::default()
+                },
+                ..OwnerDigest::default()
+            },
+        );
+        assert_eq!(ctx.attention_rank_for("alpha"), 3);
+        drive(&mut ctx, "alpha");
+        ctx.experimental = true;
+        assert_eq!(ctx.attention_rank_for("alpha"), 2);
+        owe(
+            &mut ctx,
+            "alpha",
+            OwnerDigest {
+                blocked: 4,
+                archived: ArchivedCounts {
+                    test: 3,
+                    ..ArchivedCounts::default()
+                },
+                test: 1,
+                ..OwnerDigest::default()
+            },
+        );
+        assert_eq!(ctx.attention_rank_for("alpha"), 1);
+    }
+
+    #[test]
+    fn owner_work_ordering_is_stable_inside_a_rank() {
+        let mut ctx = ctx_with_aliases(&["delta", "alpha", "charlie", "bravo"]);
+        for alias in ["delta", "charlie", "alpha"] {
+            owe(&mut ctx, alias, digest(1, 0, 0, 0));
+        }
+        ctx.sort_mode = SortMode::AttentionFirst;
+        assert_eq!(
+            ctx.sorted_aliases(),
+            vec!["alpha", "charlie", "delta", "bravo"]
+        );
+    }
+
+    #[test]
+    fn an_empty_registry_sorts_and_filters_to_an_empty_list() {
+        let mut ctx = ctx_with_aliases(&[]);
+        ctx.sort_mode = SortMode::AttentionFirst;
+        ctx.filter_text = "/y".to_string();
+        ctx.recompute_filtered_aliases();
+        assert!(ctx.filtered_aliases.is_empty());
+        assert!(ctx.sorted_aliases().is_empty());
+    }
+
+    #[test]
+    fn the_owner_work_filter_parses_every_form() {
+        use crate::app::{parse_filter, FilterColumn};
+        use crate::ui::screens::owner::OwnerLane::{Decide, Fix, Test};
+        let f = |term: &str, lane| (term.to_string(), FilterColumn::OwnerWork(lane));
+        assert_eq!(parse_filter("api/y"), f("api", None));
+        assert_eq!(parse_filter("/y"), f("", None));
+        assert_eq!(parse_filter("/y test"), f("", Some(Test)));
+        assert_eq!(parse_filter("api/yt"), f("api", Some(Test)));
+        assert_eq!(parse_filter("/y decide"), f("", Some(Decide)));
+        assert_eq!(parse_filter("/yd"), f("", Some(Decide)));
+        assert_eq!(parse_filter("/y fix"), f("", Some(Fix)));
+        assert_eq!(parse_filter("/yf"), f("", Some(Fix)));
+        assert_eq!(
+            parse_filter("/y bogus"),
+            ("/y bogus".to_string(), FilterColumn::All)
+        );
+        assert_eq!(
+            parse_filter("/h"),
+            (String::new(), FilterColumn::NeedsHuman)
+        );
+        assert_eq!(parse_filter("x/n"), ("x".to_string(), FilterColumn::Name));
+        assert_eq!(parse_filter("x/p"), ("x".to_string(), FilterColumn::Phase));
+        assert_eq!(parse_filter("x/s"), ("x".to_string(), FilterColumn::Status));
+    }
+
+    #[test]
+    fn owner_work_filters_select_by_lane() {
+        let mut ctx = ctx_with_aliases(&["lime-debug", "maple", "nettle", "oak", "pine"]);
+        owe(&mut ctx, "lime-debug", digest(0, 0, 0, 2));
+        owe(&mut ctx, "maple", digest(3, 0, 1, 0));
+        owe(&mut ctx, "nettle", digest(0, 1, 0, 0));
+        owe(
+            &mut ctx,
+            "oak",
+            OwnerDigest {
+                blocked: 5,
+                ..OwnerDigest::default()
+            },
+        );
+        // `pine` has no digest and never matches.
+        for (filter, expected) in [
+            ("/y", vec!["lime-debug", "maple", "nettle"]),
+            ("/y test", vec!["maple"]),
+            ("/yt", vec!["maple"]),
+            ("/y decide", vec!["nettle"]),
+            ("/yd", vec!["nettle"]),
+            ("/y fix", vec!["lime-debug", "maple"]),
+            ("/yf", vec!["lime-debug", "maple"]),
+            ("lime/y", vec!["lime-debug"]),
+            ("/y bogus", vec![]),
+            ("/y blocked", vec![]),
+        ] {
+            ctx.filter_text = filter.to_string();
+            ctx.recompute_filtered_aliases();
+            assert_eq!(ctx.filtered_aliases, expected, "{filter:?}");
+        }
+        ctx.owner_digests.clear();
+        ctx.filter_text = "/y".to_string();
+        ctx.recompute_filtered_aliases();
+        assert!(ctx.filtered_aliases.is_empty(), "no digests, no match");
     }
 
     #[test]
@@ -3271,5 +3915,63 @@ mod tests {
                 );
             }
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // adopt_config (quick 261125-kfc)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn adopting_a_registry_tracks_new_aliases_and_forgets_vanished_ones() {
+        use crate::config::RegisteredProject;
+
+        let mut ctx = ctx_with_aliases(&["keep", "gone"]);
+        ctx.last_refresh
+            .insert("gone".to_string(), std::time::Instant::now());
+        ctx.owner_digests.insert(
+            "gone".to_string(),
+            crate::state_reader::owner_items::OwnerDigest::default(),
+        );
+        ctx.detail_sub_view_per_project
+            .insert("gone".to_string(), crate::app::DetailSubView::default());
+        // The row of `gone` is selected, and it is the last one on screen.
+        ctx.filtered_aliases.sort_by_key(|a| a == "gone");
+        let last = ctx.filtered_aliases.len() - 1;
+        assert_eq!(ctx.filtered_aliases[last], "gone");
+        ctx.table_state.select(Some(last));
+
+        let mut fresh = ctx.config.clone();
+        fresh.projects.remove("gone");
+        fresh.projects.insert(
+            "new".to_string(),
+            RegisteredProject {
+                path: PathBuf::from("/nonexistent/new"),
+                added: "2026-08-01".to_string(),
+                driver_opt_in: None,
+                extra: Default::default(),
+            },
+        );
+        ctx.adopt_config(fresh);
+
+        assert!(ctx.project_states.contains_key("new"));
+        assert!(!ctx.project_states.contains_key("gone"));
+        assert!(!ctx.last_refresh.contains_key("gone"));
+        assert!(!ctx.owner_digests.contains_key("gone"));
+        assert!(!ctx.detail_sub_view_per_project.contains_key("gone"));
+        assert_eq!(ctx.filtered_aliases, ["keep", "new"]);
+        let selected = ctx.table_state.selected().expect("a row stays selected");
+        assert!(selected < ctx.filtered_aliases.len());
+        assert!(ctx.needs_redraw);
+    }
+
+    #[test]
+    fn adopting_an_empty_registry_clears_the_selection() {
+        let mut ctx = ctx_with_aliases(&["only"]);
+        ctx.table_state.select(Some(0));
+        let mut fresh = ctx.config.clone();
+        fresh.projects.clear();
+        ctx.adopt_config(fresh);
+        assert!(ctx.filtered_aliases.is_empty());
+        assert_eq!(ctx.table_state.selected(), None);
     }
 }

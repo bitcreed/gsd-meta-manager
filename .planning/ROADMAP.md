@@ -11,6 +11,7 @@
 - ✅ **v1.6.0 GSD 1.8.0 Catch-up** - 1 quick task + 2 fast tasks (shipped 2026-07-22)
 - ✅ **v2.0 Autonomous Orchestration** - Phases 14-31 (shipped 2026-10-29 as v2.0.0; Phases 19, 21, 22, 23 closed by supersession; Phase 32 deferred to backlog 999.8)
 - ✅ **v2.3.0 Multiplexer Backends** - Phase 33 (shipped 2026-11-10 as v2.3.0; number 32 skipped, it names the deferred v2.0 phase now backlog 999.8)
+- 🚧 **v2.5.0 Owner Inbox** - Phases 34-39 (in progress, started 2026-11-14)
 
 ## Phases
 
@@ -122,6 +123,201 @@ Requirements: `.planning/milestones/v2.3.0-REQUIREMENTS.md` (MUX-01..07, all Com
 - [x] **Phase 33: Terminal multiplexer backend seam + herdr support** - `MultiplexerBackend` seam replacing `terminal_switch.rs`, tmux migrated, herdr launch and focus, innermost-wins nesting (2/2 plans; completed 2026-11-10, re-verified after review fixes)
 
 </details>
+
+### 🚧 v2.5.0 Owner Inbox (In Progress)
+
+Requirements: `.planning/REQUIREMENTS.md` (OWN-01..OWN-31). Source of truth: `.planning/research/OWNER-INBOX-UX.md` (section 6 phase split, section 7 decision defaults D1-D12).
+
+- [ ] **Phase 34: Owner items reader + inbox CLI** - Native per-item UAT/VERIFICATION reader matching `audit-uat` (conformance oracle), owner lanes and rules, `inbox [--json]`, `owner` counts in `status --json`
+- [x] **Phase 35: Decisions, code-needed and gates** - Debug, handoff, context-question, gaps_found and todo signals plus the milestone gate (`closes_after`), surfaced in `inbox` and `status` (completed 2026-11-14)
+- [ ] **Phase 36: Dashboard and detail** - `You` column, summary line, `has owner work` sort rank, `/y` filter and the Owner block on the detail Phases tab (UI, human UAT)
+- [ ] **Phase 37: Inbox screen and actions** - Cross-project inbox screen (`i`) with run command (`v`), acknowledge via gsd-core (`A`) and copy checklist (`y`) (UI, human UAT)
+- [ ] **Phase 38: Inbox digest and triage hygiene** - Short `inbox` digest with ranked next actions, `inbox <alias>`/`--lane`/`--all`, phases collapsed in multi-project views, stale fold, duplicate-UAT merge, `decision?`/`looks resolved` labels
+- [ ] **Phase 39: Check actions through GSD** - Won't-do and defer/move actions on a check or phase that launch a GSD command with a plain-language instruction and file a todo for the target phase (UI, human UAT)
+
+### Phase 34: Owner items reader + inbox CLI
+
+**Goal:** On any machine, `gsd-meta-manager inbox` answers "what checks do I have to run?" for every registered project in one call, read natively from the files (no gsd-core process spawned), with per-item results that match gsd-core's `audit-uat` and the owner's rules (lanes, dedup, acknowledged, archived and deferred handling, closeable-by-testing) applied on top.
+**Requirements**: OWN-01, OWN-02, OWN-03, OWN-04, OWN-05, OWN-06, OWN-07, OWN-09, OWN-11, OWN-12, OWN-13, OWN-14, OWN-15
+**Depends on:** Nothing (first phase of v2.5.0)
+**Verification:** Automatic (conformance oracle, fixtures, golden output)
+**Plans:** 6/6 plans executed
+
+Plans:
+**Wave 1**
+- [x] 34-01-PLAN.md — Tracer: thinnest end-to-end `inbox --json`, shared CLI targets, schema v1, `audit-uat` oracle harness and source scan
+
+**Wave 2** *(blocked on Wave 1 completion)*
+- [x] 34-06-PLAN.md — Shared engines: markdown sectionizer, FAILSAFE frontmatter, acknowledgment (R4), hostile-input tests
+
+**Wave 3** *(blocked on Wave 2 completion)*
+- [x] 34-02-PLAN.md — UAT parser parity with gsd-core 1.21.0 (parse-gap tally, fenced blocks, block scalars, `## Gaps` bullets/tables)
+- [x] 34-03-PLAN.md — VERIFICATION, deferred-items, workstreams, archives, no-phases case; parse cache with eviction
+- [x] 34-04-PLAN.md — `testing` status, owner rules R2/R3/R5/R6/R7, `owner` counts in `status --json` and `status --skill`
+
+**Wave 4** *(blocked on Wave 3 completion)*
+- [x] 34-05-PLAN.md — Owner-number fixtures, plain checklist with `--lane`/`--include`, README `inbox` section, timing test, container pre-tag run
+
+**Success Criteria** (what must be TRUE):
+1. On the owner's machine `gsd-meta-manager inbox` lists the missing UATs for all 20 registered projects in one call; wordoclock reports 18 open checks (not 39 or 41), and projects without a phases directory (bitcreed.us, starlink-rv-tracker, usbeehive) return empty groups, not an error.
+2. The per-item (file, test, result, category) set equals `gsd-tools query audit-uat --raw` for every fixture under `tests/fixtures/owner/`, and the oracle test is green in `./scripts/pre-tag-check.sh --container`; a source scan proves nothing under `src/` spawns `audit-uat`.
+3. Acknowledged files stay hidden while their snapshot matches and resurface when it changes or the marker is malformed; archived and deferred items never enter current counts, and a `status: testing` UAT with open items counts as outstanding.
+4. `inbox --json` emits deterministic schema v1 (`gsd-meta-manager/inbox`) with `status`-style exit codes, plain `inbox` prints a checklist grouped by lane with working `--lane`/`--include` filters, and `status --json` carries additive `owner` counts documented in `status --skill`.
+5. A cold `inbox --json` over 20 projects finishes in under 1 s, parses are cached by (path, mtime, len), and hostile inputs (oversize, symlink escape, invalid UTF-8, unterminated frontmatter) neither panic nor escape `render_for_terminal`.
+
+### Phase 35: Decisions, code-needed and gates
+
+**Goal:** The inbox also says what waits on the owner's ruling (Decide), where code is needed (Fix) and what blocks the milestone: debug sessions, paused handoffs, context questions, `gaps_found` verifications and the todo count are read natively, and each project reports which phases close after which lane work.
+**Requirements**: OWN-08, OWN-10 (extends OWN-13 and OWN-15 delivered in Phase 34)
+**Depends on:** Phase 34
+**Verification:** Automatic (one fixture per signal-table row)
+**Plans:** 4/4 plans complete
+
+Plans:
+**Wave 1**
+- [x] 35-01-PLAN.md — Tracer: debug sessions end to end (Layer A scanDebugSessions port, Decide/Fix lanes, `decide`/`fix_debug` in `inbox` and `status`), audit-open oracle harness
+
+**Wave 2** *(blocked on Wave 1 completion)*
+- [x] 35-02-PLAN.md — CONTEXT open questions: deriveOpenQuestions port with digest acknowledgment, RESOLVED/ANSWERED/CLOSED filter, `summary.archived.decide`
+
+**Wave 3** *(blocked on Wave 2 completion)*
+- [x] 35-03-PLAN.md — Handoffs (stale-flagged), phase checkpoints, empty `gaps_found` as Fix, todo count and oldest age, SC1 fixture CLI test
+
+**Wave 4** *(blocked on Wave 3 completion)*
+- [x] 35-04-PLAN.md — `closes_after` milestone gate, clean VERIFICATION names with `why_human`, hostile/timing/container close-out and live SC1/SC2 checks
+
+**Success Criteria** (what must be TRUE):
+1. `inbox --json --lane decide` lists sentriq's 5 debug sessions awaiting confirmation and usbee's paused handoff.
+2. `closes_after` for wordoclock names phases 20-25 with the right lane totals, limited to the current milestone.
+3. Each Decide/Fix signal in report section 4 is read from its stated fields; debug status is normalized (`-`/`_`, case), `knowledge-base.md` is ignored, and RESOLVED/ANSWERED open-question bullets are filtered out.
+4. `inbox --json` and `status --json` carry the new lanes and gate data additively; existing key paths in `tests/inbox_cli.rs` and `tests/status_cli.rs` stay unchanged.
+
+### Phase 36: Dashboard and detail
+
+**Goal:** From the dashboard the owner sees at a glance which projects need him and why, without the hard-stop `❢` badge changing meaning, and the detail Phases tab shows the full owner work for one project.
+**Requirements**: OWN-16, OWN-17, OWN-18, OWN-19 (plus the help-overlay and README part of OWN-23)
+**Depends on:** Phase 35
+**Verification:** Automatic buffer snapshots plus human UAT
+**UI hint**: yes
+**Plans:** 4/4 plans executed
+
+Plans:
+**Wave 1**
+- [x] 36-01-PLAN.md — Tracer: owner digest from the reparse task and a startup/registration first fill into `AppContext.owner_digests`, the `You` column at >= 100 columns, fleet buffer tests
+
+**Wave 2** *(blocked on Wave 1 completion)*
+- [x] 36-02-PLAN.md — `You:` summary line with `[i] inbox`, `has owner work` AttentionFirst rank, `/y [lane]` filter, help and README (dashboard part)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+- [x] 36-03-PLAN.md — Owner block drawn on the detail Phases tab: shared `closes after` wording, header, group rows, collapsed folds line, zero-row gate, escape coverage
+
+**Wave 4** *(blocked on Wave 3 completion)*
+- [x] 36-04-PLAN.md — Owner block interaction and docs: `DetailFocus::Owner`, expandable groups, opening folds, refresh-safe cursor and scroll, footers, help and README (block part)
+
+**Success Criteria** (what must be TRUE):
+1. At 120 columns the owner can read off the dashboard which three projects to test first; the `You` cell shows at most two lanes in fixed order for the current milestone, a dim `·` when clean, and is hidden below 100 columns.
+2. A project with only blocked or archived items shows no lane text, and the summary line totals (with `[i] inbox`) equal the sum of the visible cells.
+3. AttentionFirst ranks `has owner work` and `/y [lane]` filters by it, while `needs_human` and the `❢` badge are unchanged; no existing snapshot test changes except for the added column.
+4. The detail Phases tab shows the Owner block with expandable groups, the `closes after` header and collapsed Old debt / Acknowledged / Todos folds.
+
+**Human UAT** (from report section 6): cell wording; column at 100 and 140 columns.
+
+### Phase 37: Inbox screen and actions
+
+**Goal:** The owner triages all owner work across projects on one screen and acts on it in a few keys: run the group's GSD command in the right project, acknowledge through gsd-core, or copy the checklist, with the app itself writing nothing into any project.
+**Requirements**: OWN-20, OWN-21, OWN-22, OWN-23
+**Depends on:** Phase 36
+**Verification:** Automatic snapshots plus human UAT
+**UI hint**: yes
+**Plans:** 7/7 plans executed
+
+Plans:
+**Wave 1**
+- [x] 37-01-PLAN.md — Tracer: Decide-lane noise rule: planned-phase CONTEXT questions leave the lanes into `hidden.planned_questions`, top-level question units, fixtures, schema pins and README rows (D-17..D-19)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+- [x] 37-02-PLAN.md — Tracer: typed `RunCommand` on every owner group (`command` derived from it, unchanged on every fixture) and the Owner block byte-identity pin (D-11 reader side)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+- [x] 37-03-PLAN.md — Tracer: `i`, `j`, `v` starts the group's command (SC1): `InboxScreen` rows and ordering, `owner_actions` focus-or-launch with launch-time re-validation, D-21 `v`, `i` help and README rows
+
+**Wave 4** *(blocked on Wave 3 completion)*
+- [x] 37-04-PLAN.md — Legible and live: unreadable vs loading (no forever-loading), SC3 refresh, column narrowing, header/fold/footer ladders, lane filters, empty states, SC2 at 100x30
+
+**Wave 5** *(blocked on Wave 4 completion)*
+- [x] 37-05-PLAN.md — Drill-in: `o` read-only viewer, expand, folds, scroll, `g` to the project on the same group, D-21 `o`
+
+**Wave 6** *(blocked on Wave 5 completion)*
+- [x] 37-06-PLAN.md — `A` via gsd-core `audit-open acknowledge` after a confirm popup: env-scrubbed bounded child, guard edits, oracle round trip, D-21 `A`
+
+**Wave 7** *(blocked on Wave 6 completion)*
+- [x] 37-07-PLAN.md — `y` copy checklist (native tool or OSC 52), D-21 `y`, full footer, help overlay and README Owner inbox section
+
+**Success Criteria** (what must be TRUE):
+1. From the dashboard, `i`, `j`, `v` starts `/gsd-verify-work N` in the right project in 3 keys or fewer, through `multiplexer::launch` (focusing an existing session when one is live), with the argv built only from the validated phase token and workstream name via `ExecArgv::new`.
+2. The inbox screen is legible at 100x30, filters lanes with `1-4`/`a`, follows the ordering rule, expands groups, and supports `g` go to project, `o` open file and `y` copy checklist.
+3. `A` launches `gsd-tools audit-open acknowledge …` only after a confirm popup, and the row disappears on the next watcher refresh without a restart; after a UAT passes, its row likewise disappears.
+4. The help overlay and README ("Owner inbox" section plus the `inbox` schema) describe every key and the CLI contract.
+
+**Human UAT** (from report section 6): ordering in the inbox; launch into the real multiplexer (tmux/herdr); acknowledge round trip on a throwaway project.
+
+### Phase 38: Inbox digest and triage hygiene
+
+**Goal:** Plain `gsd-meta-manager inbox` answers "what should I do next?" in one screen instead of a wall of checks: a short digest with totals, the `closes after` gate and the few next actions with the best payoff, with full detail one flag away, phases collapsed in every multi-project view, old and duplicated items folded, and likely rulings or already-resolved rows labeled (never hidden or moved).
+**Requirements**: OWN-24, OWN-25, OWN-26, OWN-27, OWN-28
+**Depends on:** Phase 37
+**Verification:** Automatic (fixtures, golden CLI output, buffer snapshots) plus one human readability check
+**UI hint**: yes
+**Plans:** 4/4 plans executed
+
+Plans:
+**Wave 1**
+- [x] 38-01-PLAN.md — Tracer: plain `inbox` prints the digest (triage model: same-phase merge, 90-day fold, D-07 ranking; `fold_days`; `--all` byte-identical; D-02 view dispatch), then the full D-03 layout and 25-line budget, the labels matcher and the shared `entry_checklist` (D-01..D-03, D-06..D-11)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+- [x] 38-02-PLAN.md — Tracer: `inbox ALIAS` prints one project's full checklist with merged entries, label suffixes and the STALE section; three D-13 fixtures and the `inbox-alias.txt` golden (D-04, D-08, D-09, D-11, D-13)
+- [x] 38-04-PLAN.md — Tracer: TUI inbox on the triage model: one row per same-phase pair, Stale fold row, `A`/`g`/`v`/`y` on merged rows; aligned checks column (inbox and Owner block), dimmed labels, help overlay, escape guard (D-06, D-08..D-11 TUI)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+- [x] 38-03-PLAN.md — Tracer: `inbox --lane` collapsed lane view, 51-step fixture, digest and lane goldens with the line budget; additive `--json` keys (`labels`, `folded_stale`, `entry_files`, `next_actions`, `stale_folded`), README, `status --skill`, D-14 evidence (D-05, D-12, D-13)
+
+**Success Criteria** (what must be TRUE):
+1. Plain `inbox` on the owner's machine prints a digest of about 15-25 lines: totals, the per-project `closes after` block and the top ~5 next actions ranked by payoff (fewest checks per phase closed first; older items rank lower), each naming project, phase and command.
+2. `inbox <alias>` prints the full checklist for one project, `inbox --lane test|decide|fix|blocked` prints one lane across projects, and `inbox --all` reproduces the pre-phase full output byte for byte on the fixtures.
+3. In the CLI digest and lane views and in the TUI inbox (`i`), a phase is one collapsed entry (count + action) by default; a scripted checklist UAT with 51 numbered steps reads as one entry, never 51 rows.
+4. Items older than ~90 days fold into one stale line; two UAT files for the same phase merge into one entry (fixture modeled on sentriq phase 43, which today lists twice); the `1 check`/`2 checks` column lines up in the TUI (buffer snapshot).
+5. Rows matching the decision keywords (`Owner decision`, ratify, approve, accept, review, OK, ...) carry a `decision?` label and rows whose text says resolved/fixed-by carry `looks resolved`, in the CLI, the TUI and as additive `--json` fields; no row changes lane or disappears because of a label.
+6. `inbox --json` keeps every existing key path (schema pins in `tests/inbox_cli.rs` unchanged); all new data is additive.
+
+**Human UAT:** the digest reads as a useful one-screen answer on the owner's real projects.
+
+### Phase 39: Check actions through GSD
+
+**Goal:** The owner can decide what happens to a check or a whole phase from the inbox or the Owner block (won't do it, or defer/move it to phase M) in a few keys, and every such decision goes through GSD: the app launches a GSD command with a prepared plain-language instruction stating his intent and files a todo for the target phase, writing nothing into the project itself.
+**Requirements**: OWN-29, OWN-30, OWN-31
+**Depends on:** Phase 38
+**Verification:** Automatic (argv/instruction unit tests, oracle round trip on a throwaway project) plus human UAT
+**UI hint**: yes
+**Plans:** 3/3 plans executed
+
+Plans:
+**Wave 1**
+- [x] 39-01-PLAN.md — Tracer: inbox `x` on a TEST/BLOCKED phase row → chooser (won't do / deferred permanently) → reason → default-No confirm popup with the exact argv → `/gsd-verify-work N <instruction>` via `multiplexer::launch`; refusals, recheck on Yes, live-session focus (D-01..D-03, D-05, D-07, D-08, D-10, D-12)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+- [x] 39-02-PLAN.md — Item-level cursor in the inbox and Owner block, Owner block `x`, and Move to phase M with the phase picker and a todo requested by instruction (D-04, D-06, D-09)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+- [x] 39-03-PLAN.md — Live-session clipboard copy (OSC 52), read-only proof (source scan, gsd-core oracle on temp copies, 12-cell flow matrix with tree snapshots), help/footer/README for `x` (D-11, D-13)
+
+**Success Criteria** (what must be TRUE):
+1. On a check row or a phase row in the TUI inbox and the detail Owner block, the owner can pick "won't do" (with a reason) or "defer/move to phase M"; the existing `A` acknowledge keeps working unchanged.
+2. Each action launches a GSD command in the right project (for example `/gsd-verify-work N`) through the existing launch path, with a prepared plain-language instruction such as "the user will not perform test K: <reason>" or "defer test K as a follow-up to phase M".
+3. A defer/move also files a todo for the target phase through gsd-core (`gsd-tools todo …` or `/gsd-capture`), so the moved check shows up again when phase M runs.
+4. A confirm popup shows the exact command and instruction text before anything launches; cancel launches nothing.
+5. A source scan and a round trip on a throwaway project prove the app writes no GSD file itself; all changes come from the launched GSD command or `gsd-tools`.
+
+**Human UAT:** won't-do and defer round trips in the real multiplexer on a throwaway project; the instruction wording reads right to the owner.
 
 ---
 

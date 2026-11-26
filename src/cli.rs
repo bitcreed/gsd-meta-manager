@@ -258,6 +258,54 @@ pub enum Commands {
         #[arg(long, required = true)]
         json: bool,
     },
+    // The owner's open items across projects (Phase 34, D-18). Read-only like
+    // `status`: no registry write, no lock, no journal and no log file, so `main`
+    // dispatches it before `init_tracing`. The positional is `projects`, not
+    // `alias`, for the same `tests/spawn_seam_guard.rs` reason as `Status`.
+    /// What waits on you across every registered project or the named ones: a short digest by default (read-only)
+    Inbox {
+        /// Aliases of registered projects, or paths to directories containing .planning/
+        /// (default: every registered project)
+        projects: Vec<String>,
+        /// Print the inbox as one JSON document on stdout
+        #[arg(long)]
+        json: bool,
+        /// Print the full checklist (every lane section and item, the output before the digest)
+        #[arg(long)]
+        all: bool,
+        /// List only these lanes (comma-separated; default: all four)
+        #[arg(long, value_delimiter = ',')]
+        lane: Vec<InboxLane>,
+        /// Also list these otherwise hidden sections (comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        include: Vec<InboxInclude>,
+    },
+}
+
+/// The lanes `inbox --lane` accepts.
+#[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InboxLane {
+    /// Checks to run
+    Test,
+    /// Decisions to take
+    Decide,
+    /// Failed checks that need a plan
+    Fix,
+    /// Checks waiting on something
+    Blocked,
+}
+
+/// The sections `inbox --include` adds.
+#[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InboxInclude {
+    /// Items of archived milestones
+    Archived,
+    /// Deferred items
+    Deferred,
+    /// Acknowledged files
+    Acknowledged,
+    /// Pending todos
+    Todos,
 }
 
 /// The verbs of `driver`.
@@ -1134,6 +1182,73 @@ mod tests {
         };
         assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
         assert_eq!(err.exit_code(), 2, "argparse parity: usage errors exit 2");
+    }
+
+    #[test]
+    fn inbox_parses_without_targets() {
+        let cli = checked(&["inbox"]).expect("parses");
+        match cli.command {
+            Some(Commands::Inbox {
+                projects,
+                json,
+                all,
+                lane,
+                include,
+            }) => {
+                assert!(projects.is_empty());
+                assert!(!json);
+                assert!(!all);
+                assert!(lane.is_empty());
+                assert!(include.is_empty());
+            }
+            _ => panic!("did not resolve to Commands::Inbox"),
+        }
+    }
+
+    #[test]
+    fn inbox_parses_comma_separated_lanes_and_includes() {
+        let cli = checked(&[
+            "inbox",
+            "b",
+            "a",
+            "--json",
+            "--all",
+            "--lane",
+            "test,blocked",
+            "--include",
+            "archived,todos",
+        ])
+        .expect("parses");
+        match cli.command {
+            Some(Commands::Inbox {
+                projects,
+                json,
+                all,
+                lane,
+                include,
+            }) => {
+                assert_eq!(projects, ["b", "a"]);
+                assert!(json);
+                assert!(all);
+                assert_eq!(lane, [InboxLane::Test, InboxLane::Blocked]);
+                assert_eq!(include, [InboxInclude::Archived, InboxInclude::Todos]);
+            }
+            _ => panic!("did not resolve to Commands::Inbox"),
+        }
+    }
+
+    #[test]
+    fn inbox_with_an_unknown_lane_is_a_usage_error() {
+        let err = match checked(&["inbox", "--lane", "sideways"]) {
+            Err(err) => err,
+            Ok(_) => panic!("an unknown lane must be refused"),
+        };
+        assert_eq!(err.exit_code(), 2);
+    }
+
+    #[test]
+    fn inbox_refuses_deferred_as_a_lane() {
+        assert!(checked(&["inbox", "--lane", "deferred"]).is_err());
     }
 
     fn driver_action(args: &[&str]) -> Result<DriverAction, clap::Error> {

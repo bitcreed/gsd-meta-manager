@@ -39,7 +39,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::Duration;
 
-use crate::bounded_output::{stdout_within, stdout_within_with_stderr, BoundedOutput};
+use crate::bounded_output::{
+    stdout_within, try_stdout_within_with_stderr, BoundedFailure, BoundedOutput,
+};
 use crate::journal::redact::{redact, redact_value};
 
 /// A stream-json line longer than this is skipped when looking for the result, and is
@@ -448,9 +450,45 @@ pub fn run_bounded_with_stderr(
     extra_env: &[(&str, &str)],
     budget: Duration,
 ) -> Option<(BoundedOutput, String)> {
-    use std::io::{Read, Seek, SeekFrom};
+    run_bounded_with_stderr_env(program, args, cwd, &[], extra_env, budget)
+}
 
-    let mut sink = tempfile::tempfile().ok()?;
+/// [`run_bounded_with_stderr`] with `remove_env`: every named variable is removed
+/// from the child's inherited environment **before** `extra_env` is applied, so an
+/// entry of `extra_env` still wins over a removal of the same name.
+///
+/// The owner inbox's acknowledge child uses it (37 D-15, T-37-18): gsd-core picks
+/// the workstream a write lands in from `GSD_WORKSTREAM` and from session-keyed
+/// pointers, and an inherited value could send the write to a file other than the
+/// one the owner confirmed.
+pub fn run_bounded_with_stderr_env(
+    program: &str,
+    args: &[OsString],
+    cwd: Option<&Path>,
+    remove_env: &[&str],
+    extra_env: &[(&str, &str)],
+    budget: Duration,
+) -> Option<(BoundedOutput, String)> {
+    try_run_bounded_with_stderr_env(program, args, cwd, remove_env, extra_env, budget).ok()
+}
+
+/// [`run_bounded_with_stderr_env`] that says why there is no result (Phase 37
+/// WR-02): a spawn error, an unusable stderr sink and a budget overrun are three
+/// different things to tell the owner. A stderr file that cannot be read back
+/// after the child finished is **not** a failure: the output is returned with an
+/// empty last line, so a finished child's exit is never reported as a timeout.
+pub fn try_run_bounded_with_stderr_env(
+    program: &str,
+    args: &[OsString],
+    cwd: Option<&Path>,
+    remove_env: &[&str],
+    extra_env: &[(&str, &str)],
+    budget: Duration,
+) -> Result<(BoundedOutput, String), BoundedFailure> {
+    let mut sink = tempfile::tempfile().map_err(|err| BoundedFailure::Sink(err.kind()))?;
+    let stderr = sink
+        .try_clone()
+        .map_err(|err| BoundedFailure::Sink(err.kind()))?;
     let mut cmd = Command::new(program);
     cmd.args(args);
     if let Some(cwd) = cwd {
@@ -461,18 +499,15 @@ pub fn run_bounded_with_stderr(
             cmd.env_remove(key);
         }
     }
+    for key in remove_env {
+        cmd.env_remove(key);
+    }
     for (key, value) in extra_env {
         cmd.env(key, value);
     }
-    let output = stdout_within_with_stderr(&mut cmd, budget, Stdio::from(sink.try_clone().ok()?))?;
-
-    let len = sink.seek(SeekFrom::End(0)).ok()?;
-    sink.seek(SeekFrom::Start(len.saturating_sub(STDERR_TAIL_BYTES)))
-        .ok()?;
-    let mut tail = Vec::new();
-    sink.take(STDERR_TAIL_BYTES).read_to_end(&mut tail).ok()?;
-    let line = last_line_of_tail(&tail, len > STDERR_TAIL_BYTES);
-    Some((output, line))
+    let output = try_stdout_within_with_stderr(&mut cmd, budget, Stdio::from(stderr))?;
+    let line = stderr_line_of(&mut sink);
+    Ok((output, line))
 }
 
 /// What [`run_capped`] returns: the stdout read up to the caps, and whether the
@@ -754,6 +789,37 @@ mod tests {
                 "a token fragment {run:?} leaked: {line}"
             );
         }
+    }
+
+    /// 37 D-15: a name in `remove_env` is gone from the child, and an `extra_env`
+    /// entry of the same name is applied after the removal and wins.
+    #[test]
+    fn run_bounded_with_stderr_env_removes_names_before_extra_env() {
+        let args = [
+            OsString::from("-c"),
+            OsString::from("printf '%s' \"${HOME-absent}\""),
+        ];
+        let run = |remove: &[&str], extra: &[(&str, &str)]| {
+            let (output, _) = run_bounded_with_stderr_env(
+                "sh",
+                &args,
+                None,
+                remove,
+                extra,
+                Duration::from_secs(20),
+            )
+            .expect("sh runs");
+            String::from_utf8_lossy(&output.stdout).into_owned()
+        };
+        assert_eq!(run(&["HOME"], &[]), "absent");
+        assert_eq!(run(&["HOME"], &[("HOME", "kept")]), "kept");
+        // The plain wrapper removes nothing.
+        let (output, _) = run_bounded_with_stderr("sh", &args, None, &[], Duration::from_secs(20))
+            .expect("sh runs");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            std::env::var("HOME").unwrap_or_else(|_| "absent".to_owned())
+        );
     }
 
     // ---- SAFE-04: the capture pump between the master's stdio and launch-N.jsonl ----

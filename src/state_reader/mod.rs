@@ -1,11 +1,13 @@
 pub mod backlog;
 pub mod config_json;
 pub mod config_secrets;
+pub mod config_set;
 pub mod config_write;
 pub mod disk_status;
 pub mod driver_frontmatter;
 pub mod git_ops;
 pub mod gsd_install;
+pub mod owner_items;
 pub mod phase_num;
 pub mod plan_waves;
 pub mod queue_md;

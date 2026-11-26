@@ -1,6 +1,9 @@
 use super::driver_confirm::{DriverAction, DriverConfirmScreen};
 use super::enqueue::EnqueueScreen;
 use super::help::HelpScreen;
+use super::owner_actions;
+use super::owner_block;
+use super::owner_row_actions;
 use super::queue_delete_confirm::QueueDeleteConfirmScreen;
 use super::{AppContext, Screen, ScreenAction};
 use crate::action::Action;
@@ -78,7 +81,7 @@ pub(super) const PAGE_SCROLL_LINES: u16 = 20;
 /// on the CARRIER ([`crate::text::Untrusted`]) rather than on the escape helper.
 /// A `GitLogEntry` field reaches a cell through `entry.field.shown()` and never
 /// through here.
-fn shown(value: &str) -> String {
+pub(super) fn shown(value: &str) -> String {
     crate::text::render_for_terminal(value).to_string()
 }
 
@@ -836,6 +839,34 @@ pub struct DetailScreen {
     /// `PageUp`/`PageDown` move the pane cursor by; `0` before the first frame,
     /// which the keys treat as a one-row page.
     waves_viewport_rows: Cell<u16>,
+    /// Rows the Owner block took in the last Phases-tab frame (`0` when none was
+    /// drawn): what the last frame drew, read by the keys and the footer so focus
+    /// never enters an invisible block (36-04, D-20).
+    owner_block_rows: Cell<u16>,
+    /// Whether the block the last frame drew has a cursor stop: only then does `↑`
+    /// enter it, so only then does the footer name it.
+    owner_block_stops: Cell<bool>,
+    /// Whether the last frame drew the Owner block as focused while `focus` is
+    /// still `Content` (quick 261118-tm6): the phase list was empty, so the block
+    /// is the tab's only focusable level. The render cannot write `focus`, so it
+    /// records this instead and the next key or mouse event makes it real
+    /// ([`Self::take_owner_landing`]) before acting — the key lands on the cursor
+    /// the frame showed, never on an invisible list.
+    owner_landing: Cell<bool>,
+    /// First visible body row of the Owner block, kept across frames so the
+    /// window follows the cursor by whole rows. Render-written, as `waves_offset`
+    /// is: the render cannot mutate the view cache.
+    owner_offset: Cell<usize>,
+    /// Body rows the Owner block showed in the last frame: the page `PgUp` and
+    /// `PgDn` move the cursor by; `0` before the first frame (a one-stop page).
+    owner_viewport_rows: Cell<u16>,
+    /// The open Owner row action menu (Enter on a group or debug row, quick
+    /// 261119-f5b): the row it belongs to and the selected entry. The entries are
+    /// recomputed from the shared row action model every frame and every key.
+    menu: std::cell::RefCell<Option<owner_row_actions::ActionMenu>>,
+    /// The cursor row's cells in the last Phases-tab frame: where the menu hangs
+    /// from (`None` when the row is scrolled out of the window).
+    menu_anchor: Cell<Option<Rect>>,
     /// Which level of the view has the keyboard: the tab bar or the tab's
     /// content (quick 260926-1t1). Content on every opening.
     focus: DetailFocus,
@@ -946,6 +977,10 @@ pub(crate) struct DetailRegions {
     /// The two Config scope labels (`Project`, `Global`), on the Config tab
     /// only (quick 260927-t3s, I-8).
     pub config_scope_tabs: Vec<ConfigScopeRegion>,
+    /// The Phases tab's Owner block, when drawn (IN-04). The block is
+    /// keyboard-only, so the wheel over it scrolls nothing rather than the phase
+    /// list below it.
+    pub owner_block: Option<Rect>,
 }
 
 /// One drawn Roadmap fold glyph: the two cells of its `"{glyph} "` span and
@@ -1118,9 +1153,14 @@ impl DetailRegions {
     /// pane; inside a text scroll pane it is that pane (quick 260926-kes);
     /// otherwise inside content but outside the sub-tab strip it is the
     /// content; anywhere else — the tab bar, the strip, the footer — nothing,
-    /// so the wheel never switches tabs ([inferred I-10]).
+    /// so the wheel never switches tabs ([inferred I-10]). The keyboard-only
+    /// Owner block is nothing too, so a wheel step over it neither scrolls the
+    /// phase list nor takes its focus away (IN-04).
     pub(crate) fn wheel_target(&self, column: u16, row: u16) -> WheelTarget {
         let at = ratatui::layout::Position::new(column, row);
+        if self.owner_block.is_some_and(|b| b.contains(at)) {
+            return WheelTarget::Nothing;
+        }
         if self.waves_pane.is_some_and(|p| p.contains(at)) {
             return WheelTarget::WavesPane;
         }
@@ -1178,6 +1218,13 @@ pub(crate) enum DetailFocus {
     /// is no second flag that must agree with this one. It means nothing off
     /// the Config tab; `handle_key` resets it to `Content` anywhere else.
     ScopeStrip,
+    /// The Phases tab's Owner block (36-04, D-20): `j`/`k` walk its rows,
+    /// `Enter`/`Space` expand a group or fold, `Esc` returns to the phase list.
+    ///
+    /// Modeled on `Pane`: one enum value and never a view-cache flag, so no
+    /// second flag has to agree with it. It means nothing off the Phases tab;
+    /// `handle_key` resets it to `Content` anywhere else.
+    Owner,
 }
 
 impl DetailScreen {
@@ -1203,6 +1250,13 @@ impl DetailScreen {
             roadmap_list_viewport: Cell::new(0),
             waves_offset: Cell::new(0),
             waves_viewport_rows: Cell::new(0),
+            owner_block_rows: Cell::new(0),
+            owner_block_stops: Cell::new(false),
+            owner_landing: Cell::new(false),
+            owner_offset: Cell::new(0),
+            owner_viewport_rows: Cell::new(0),
+            menu: std::cell::RefCell::new(None),
+            menu_anchor: Cell::new(None),
             focus: DetailFocus::Content,
             regions: std::cell::RefCell::default(),
             phase_list_offset: Cell::new(0),
@@ -1244,6 +1298,7 @@ impl DetailScreen {
             dropdown: None,
             scroll_panes: Vec::new(),
             config_scope_tabs: Vec::new(),
+            owner_block: None,
         };
     }
 
@@ -1415,6 +1470,11 @@ impl DetailScreen {
         switch_to_sub_view(&self.alias, target, ctx)
     }
 
+    /// Record this frame's Owner block rect (IN-04).
+    fn record_owner_block(&self, block: Rect) {
+        self.regions.borrow_mut().owner_block = Some(block);
+    }
+
     /// Record this frame's sub-tab strip rect.
     fn record_sub_tab_strip(&self, strip: Rect) {
         self.regions.borrow_mut().sub_tab_strip = Some(strip);
@@ -1529,6 +1589,47 @@ impl DetailScreen {
         let screen = Self::new(alias);
         let _ = switch_to_sub_view(&screen.alias, sub_view, ctx);
         screen
+    }
+
+    /// The inbox's `g` (37-05, D-07): the Phases tab with the Owner block focused
+    /// on the group `key`, when that identity is one of the block's cursor stops
+    /// for this project's digest (a current row, or a row of an open fold);
+    /// otherwise the tab top with focus on the content, so the first key after
+    /// opening acts normally. The block's own state in `ctx.view_cache` carries
+    /// the cursor, exactly as if the owner had walked there.
+    pub(crate) fn opened_on_owner(
+        alias: String,
+        key: &owner_block::GroupKey,
+        ctx: &mut AppContext,
+    ) -> Self {
+        let mut screen = Self::opened_on(alias, DetailSubView::Pipeline, ctx);
+        let unavailable = ctx.owner_state_unavailable(&screen.alias);
+        let Some(digest) = ctx
+            .owner_digests
+            .get(&screen.alias)
+            .filter(|_| !unavailable)
+        else {
+            return screen;
+        };
+        let view = &mut ctx
+            .view_cache
+            .entry(screen.alias.clone())
+            .or_default()
+            .owner_block;
+        let stops = owner_block::skeleton(digest, view).stops;
+        let wanted = owner_block::Stop::Row(key.clone());
+        if let Some(index) = stops.iter().position(|stop| *stop == wanted) {
+            view.cursor = Some(wanted);
+            view.cursor_index = index;
+            screen.focus = DetailFocus::Owner;
+        }
+        screen
+    }
+
+    /// Whether the Owner block holds the keyboard (tests).
+    #[cfg(test)]
+    pub(crate) fn owner_focused(&self) -> bool {
+        self.focus == DetailFocus::Owner
     }
 
     /// Open on the Config tab already switched to the Global scope: the
@@ -2097,6 +2198,670 @@ impl DetailScreen {
         }
     }
 
+    /// A key while the Phases tab's Owner block has the keyboard (36-04, D-20).
+    ///
+    /// Same contract as [`Self::handle_waves_pane_key`]: `Some(action)` consumes
+    /// the key, `None` lets it fall through to the main match. `Enter`/`Space` only
+    /// toggle view state; `v` runs and `o` opens the selected group's file
+    /// through the same `owner_actions` functions the inbox uses (37-03, 37-05,
+    /// D-21), `A` opens the acknowledge popup (37-06), `y` copies the group's
+    /// checklist (37-07), `x` opens the settle chooser for the selected group, or
+    /// for the one check under the item sub-cursor (39-02, D-04, D-05; `j`/`k`
+    /// walk the drawn items and file lines of an expanded row; Enter on one opens
+    /// the file there, quick 261118-u4e), and `e` is swallowed so it never
+    /// reaches Content (where it would enqueue).
+    fn handle_owner_block_key(
+        &mut self,
+        code: KeyCode,
+        modifiers: KeyModifiers,
+        ctx: &mut AppContext,
+    ) -> Option<ScreenAction> {
+        use owner_block::{Move, Moved};
+        // Digits, `D`, `[`, `]`, `?`, `Tab` and `q` need no digest.
+        match code {
+            KeyCode::Char('q') => {
+                ctx.needs_redraw = true;
+                return Some(ScreenAction::Pop);
+            }
+            KeyCode::Char('?') | KeyCode::Tab => return None,
+            KeyCode::Char(c) if c.is_ascii_digit() || matches!(c, 'D' | '[' | ']') => {
+                self.focus = DetailFocus::Content;
+                ctx.needs_redraw = true;
+                return None;
+            }
+            _ => {}
+        }
+        // Nothing left to focus (the digest went away, or a refresh left only the
+        // Todos fold or no row at all): hand focus back AND consume the key
+        // (WR-05). The last frame may still have advertised the Owner keys, so
+        // falling through would run `Enter` or `e` as a phase-list key.
+        let unavailable = ctx.owner_state_unavailable(&self.alias);
+        let Some(digest) = ctx.owner_digests.get(&self.alias).filter(|_| !unavailable) else {
+            self.focus = DetailFocus::Content;
+            ctx.needs_redraw = true;
+            return Some(ScreenAction::None);
+        };
+        let view = &mut ctx
+            .view_cache
+            .entry(self.alias.clone())
+            .or_default()
+            .owner_block;
+        owner_block::clamp(view, digest);
+        let sk = owner_block::skeleton(digest, view);
+        if self.owner_block_rows.get() == 0 || sk.stops.is_empty() {
+            self.focus = DetailFocus::Content;
+            ctx.needs_redraw = true;
+            return Some(ScreenAction::None);
+        }
+        let page = isize::try_from(self.owner_viewport_rows.get().max(1)).unwrap_or(1);
+        let on_fold_line = view.cursor == Some(owner_block::Stop::FoldLine);
+        let mut moved = Moved::Within;
+        let mut run = false;
+        let mut open = false;
+        let mut open_sub = false;
+        let mut acknowledge = false;
+        let mut copy = false;
+        let mut settle = false;
+        let mut menu_row: Option<owner_block::GroupKey> = None;
+        // The side-effecting letters act only unchorded (WR-01).
+        let plain = owner_actions::is_plain_action_key(modifiers);
+        match code {
+            KeyCode::Char('y') if plain => copy = true,
+            KeyCode::Char('x') if plain => settle = true,
+            KeyCode::Char('v') if plain => run = true,
+            KeyCode::Char('o') if plain => open = true,
+            KeyCode::Char('A') if plain => acknowledge = true,
+            KeyCode::Char('j') | KeyCode::Down => {
+                moved = owner_block::step_with_items(view, digest, &sk.stops, true)
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                moved = owner_block::step_with_items(view, digest, &sk.stops, false)
+            }
+            KeyCode::Char('g') => {
+                owner_block::move_cursor(view, &sk.stops, Move::First);
+            }
+            KeyCode::Char('G') => {
+                owner_block::move_cursor(view, &sk.stops, Move::Last);
+            }
+            KeyCode::PageDown => {
+                owner_block::move_cursor(view, &sk.stops, Move::By(page));
+            }
+            KeyCode::PageUp => {
+                owner_block::move_cursor(view, &sk.stops, Move::By(-page));
+            }
+            // Enter on a check or `file PATH` line opens the file there (quick
+            // 261118-u4e); on a group or debug row it opens the action menu (quick
+            // 261119-f5b); on the fold line, and Space anywhere, it toggles.
+            KeyCode::Enter if view.sub_stop().is_some() => open_sub = true,
+            KeyCode::Enter => match view.cursor.clone() {
+                Some(owner_block::Stop::Row(key)) => menu_row = Some(key),
+                _ => {
+                    owner_block::toggle(view, &sk.folds);
+                }
+            },
+            KeyCode::Char(' ') => {
+                owner_block::toggle(view, &sk.folds);
+            }
+            KeyCode::Left | KeyCode::Char('h') if on_fold_line => {
+                owner_block::fold_step(view, &sk.folds, false)
+            }
+            KeyCode::Right | KeyCode::Char('l') if on_fold_line => {
+                owner_block::fold_step(view, &sk.folds, true)
+            }
+            // Right/`l` expand and Left/`h` collapse the row (I-3, I-4).
+            KeyCode::Left | KeyCode::Char('h') => {
+                owner_block::set_expanded(view, false);
+            }
+            KeyCode::Right | KeyCode::Char('l') => {
+                owner_block::set_expanded(view, true);
+            }
+            // An empty phase list is no level to return to (quick 261118-tm6):
+            // `Esc` goes up to the tab bar instead.
+            KeyCode::Esc => {
+                self.focus = if self.phase_list_empty(ctx) {
+                    DetailFocus::TabBar
+                } else {
+                    DetailFocus::Content
+                };
+            }
+            // `e`, `←`/`→` off the fold line and every other key.
+            _ => {}
+        }
+        match moved {
+            // Below the last stop is the phase list; an empty one is nothing to
+            // land on, so the cursor stays (quick 261118-tm6).
+            Moved::PastLast if self.phase_list_empty(ctx) => {}
+            Moved::PastLast => self.focus = DetailFocus::Content,
+            Moved::PastFirst => self.focus = DetailFocus::TabBar,
+            Moved::Within => {}
+        }
+        if let Some(key) = menu_row {
+            self.open_owner_menu(ctx, &key);
+        }
+        if run {
+            return Some(self.owner_run(ctx, &mut owner_actions::launch_real));
+        }
+        if open {
+            return Some(self.owner_open(ctx));
+        }
+        if open_sub {
+            return Some(self.owner_open_sub(ctx));
+        }
+        if acknowledge {
+            return Some(self.owner_ack(ctx));
+        }
+        if copy {
+            return Some(self.owner_copy(ctx));
+        }
+        if settle {
+            return Some(self.owner_settle(ctx));
+        }
+        ctx.needs_redraw = true;
+        Some(ScreenAction::None)
+    }
+
+    /// The entries of the open menu, `None` when it no longer applies: the Owner
+    /// block lost the keyboard or the Phases tab, its row vanished from the digest,
+    /// or the cursor left it (I-9).
+    fn owner_menu_actions(
+        &self,
+        menu: &owner_row_actions::ActionMenu,
+        current_view: &DetailSubView,
+        ctx: &AppContext,
+    ) -> Option<Vec<owner_row_actions::RowAction>> {
+        if self.focus != DetailFocus::Owner
+            || *current_view != DetailSubView::Pipeline
+            || menu.alias != self.alias
+        {
+            return None;
+        }
+        let digest = ctx.owner_digest(&self.alias)?;
+        let view = ctx
+            .view_cache
+            .get(&self.alias)
+            .map(|cache| &cache.owner_block)?;
+        let sk = owner_block::skeleton(digest, view);
+        let at = owner_block::resolve_cursor(view, &sk.stops)?;
+        let owner_block::Stop::Row(key) = &sk.stops[at] else {
+            return None;
+        };
+        if *key != menu.key || view.sub_stop().is_some() {
+            return None;
+        }
+        let src = owner_block::row_src_for(digest, key)?;
+        Some(owner_row_actions::row_actions(
+            ctx,
+            owner_row_actions::Host::OwnerBlock,
+            &self.alias,
+            &src,
+            None,
+            view.expanded.contains(key),
+        ))
+    }
+
+    /// The screen with the Owner block focused and its action menu open on the row
+    /// the view's cursor rests on: the render-escape probe's menu state.
+    #[cfg(test)]
+    pub(crate) fn with_owner_menu_open(mut self, ctx: &mut AppContext) -> Self {
+        self.focus = DetailFocus::Owner;
+        let key =
+            ctx.view_cache
+                .get(&self.alias)
+                .and_then(|cache| match &cache.owner_block.cursor {
+                    Some(owner_block::Stop::Row(key)) => Some(key.clone()),
+                    _ => None,
+                });
+        if let Some(key) = key {
+            self.open_owner_menu(ctx, &key);
+        }
+        self
+    }
+
+    /// Enter on a group or debug row: open its action menu.
+    fn open_owner_menu(&mut self, ctx: &mut AppContext, key: &owner_block::GroupKey) {
+        let actions = {
+            let Some(digest) = ctx.owner_digest(&self.alias) else {
+                return;
+            };
+            let Some(src) = owner_block::row_src_for(digest, key) else {
+                return;
+            };
+            let expanded = ctx
+                .view_cache
+                .get(&self.alias)
+                .is_some_and(|cache| cache.owner_block.expanded.contains(key));
+            owner_row_actions::row_actions(
+                ctx,
+                owner_row_actions::Host::OwnerBlock,
+                &self.alias,
+                &src,
+                None,
+                expanded,
+            )
+        };
+        *self.menu.get_mut() =
+            owner_row_actions::ActionMenu::open(&self.alias, key.clone(), &actions);
+        ctx.needs_redraw = true;
+    }
+
+    /// `x` on the Owner block (39-02, D-03, D-04, D-05): the settle chooser for the
+    /// one check under the item sub-cursor, or for the whole phase entry of the
+    /// row under the cursor, through [`owner_settle::settle_open`], the function
+    /// the inbox's `x` calls, drawn over this detail view. The fold line says what
+    /// to select; every other refusal comes from the target builder.
+    fn owner_settle(&mut self, ctx: &mut AppContext) -> ScreenAction {
+        let outcome = {
+            let Some(digest) = ctx.owner_digest(&self.alias) else {
+                return ScreenAction::None;
+            };
+            let view = ctx
+                .view_cache
+                .get(&self.alias)
+                .map(|cache| cache.owner_block.clone())
+                .unwrap_or_default();
+            let sk = owner_block::skeleton(digest, &view);
+            let Some(at) = owner_block::resolve_cursor(&view, &sk.stops) else {
+                return ScreenAction::None;
+            };
+            match &sk.stops[at] {
+                owner_block::Stop::FoldLine => {
+                    Err(super::owner_row_actions::SETTLE_FOLD_LINE_REFUSAL.to_owned())
+                }
+                // A row whose settle is still running offers to stop waiting (quick
+                // 261125-khh, D-04): the default-No confirm the inbox's `x` opens.
+                owner_block::Stop::Row(key) => {
+                    let pending = owner_block::row_src_for(digest, key).and_then(|src| {
+                        let words =
+                            super::owner_row_actions::pending_settle(ctx, &self.alias, &src)?
+                                .words
+                                .clone();
+                        Some((src, words))
+                    });
+                    match pending {
+                        Some((src, words)) => Ok(ScreenAction::Push(Box::new(
+                            super::settle_popup::SettleStopScreen::new(
+                                super::ack_confirm::AckHost::Detail(self.alias.clone()),
+                                self.alias.clone(),
+                                src,
+                                words,
+                            ),
+                        ))),
+                        None => super::owner_settle::settle_open(
+                            ctx,
+                            &self.alias,
+                            key,
+                            view.item_cursor.as_deref(),
+                            super::ack_confirm::AckHost::Detail(self.alias.clone()),
+                        ),
+                    }
+                }
+            }
+        };
+        ctx.needs_redraw = true;
+        match outcome {
+            Ok(action) => action,
+            Err(message) => {
+                ctx.status_message = Some((message, std::time::Instant::now()));
+                ScreenAction::None
+            }
+        }
+    }
+
+    /// `y` on the Owner block (37-07, D-09, D-21): copy the group under the cursor
+    /// as the CLI prints it, through [`owner_actions::copy_text`] and
+    /// [`owner_actions::copy`], the functions the inbox's `y` calls. The fold line
+    /// says what to select.
+    fn owner_copy(&mut self, ctx: &mut AppContext) -> ScreenAction {
+        // What the cursor rests on, read before the copy borrows the context.
+        enum Pick {
+            Fold(Option<owner_block::Fold>),
+            Text(Result<(String, usize), String>),
+        }
+        let pick = {
+            let Some(digest) = ctx.owner_digest(&self.alias) else {
+                return ScreenAction::None;
+            };
+            let view = ctx
+                .view_cache
+                .get(&self.alias)
+                .map(|cache| cache.owner_block.clone())
+                .unwrap_or_default();
+            let sk = owner_block::skeleton(digest, &view);
+            let Some(at) = owner_block::resolve_cursor(&view, &sk.stops) else {
+                return ScreenAction::None;
+            };
+            match &sk.stops[at] {
+                owner_block::Stop::FoldLine => {
+                    Pick::Fold(owner_block::resolved_fold(&view, &sk.folds))
+                }
+                owner_block::Stop::Row(key) => {
+                    let groups = owner_block::groups_for_copy(digest, key);
+                    Pick::Text(if groups.is_empty() {
+                        Err("Group is no longer listed; nothing copied".to_owned())
+                    } else {
+                        owner_actions::copy_text(&self.alias, &groups)
+                    })
+                }
+            }
+        };
+        ctx.needs_redraw = true;
+        // The fold line copies what the inbox's fold line does, for this project
+        // only (quick 261119-f5b, I-15).
+        let outcome = match pick {
+            Pick::Fold(fold) => owner_actions::fold_copy(ctx, fold, Some(&self.alias)),
+            Pick::Text(text) => text.map(|(text, lines)| owner_actions::copy(ctx, text, lines)),
+        };
+        match outcome {
+            Ok(action) => action,
+            Err(message) => {
+                ctx.status_message = Some((message, std::time::Instant::now()));
+                ScreenAction::None
+            }
+        }
+    }
+
+    /// `A` on the Owner block (37-06, D-21): the confirm popup for the file of the
+    /// group under the cursor, through [`owner_actions::ack_open`], the function
+    /// the inbox's `A` calls, drawn over this detail view. Same refusals, same
+    /// popup, same copy; the fold line says what to select.
+    fn owner_ack(&mut self, ctx: &mut AppContext) -> ScreenAction {
+        let outcome = {
+            let Some(digest) = ctx.owner_digest(&self.alias) else {
+                return ScreenAction::None;
+            };
+            let view = ctx
+                .view_cache
+                .get(&self.alias)
+                .map(|cache| cache.owner_block.clone())
+                .unwrap_or_default();
+            let sk = owner_block::skeleton(digest, &view);
+            let Some(at) = owner_block::resolve_cursor(&view, &sk.stops) else {
+                return ScreenAction::None;
+            };
+            match &sk.stops[at] {
+                owner_block::Stop::FoldLine => {
+                    Err("Select a group row to acknowledge it".to_owned())
+                }
+                owner_block::Stop::Row(key) => match owner_block::group_for(digest, key) {
+                    Some(group) => owner_actions::ack_open(
+                        ctx,
+                        &self.alias,
+                        &group,
+                        super::ack_confirm::AckHost::Detail(self.alias.clone()),
+                    ),
+                    None if key.lane == "blocked" => Err(
+                        "Cannot acknowledge a BLOCKED row: gsd-core has no category for it"
+                            .to_owned(),
+                    ),
+                    None => Err("Group is no longer listed; nothing acknowledged".to_owned()),
+                },
+            }
+        };
+        ctx.needs_redraw = true;
+        match outcome {
+            Ok(action) => action,
+            Err(message) => {
+                ctx.status_message = Some((message, std::time::Instant::now()));
+                ScreenAction::None
+            }
+        }
+    }
+
+    /// `o` on the Owner block (37-05, D-21): the group under the cursor's source
+    /// file in the read-only viewer, through [`owner_actions::open_target`], the
+    /// function the inbox's `o` calls. The fold line says what to select.
+    fn owner_open(&mut self, ctx: &mut AppContext) -> ScreenAction {
+        let outcome = {
+            let Some(digest) = ctx.owner_digest(&self.alias) else {
+                return ScreenAction::None;
+            };
+            let view = ctx
+                .view_cache
+                .get(&self.alias)
+                .map(|cache| cache.owner_block.clone())
+                .unwrap_or_default();
+            let sk = owner_block::skeleton(digest, &view);
+            let Some(at) = owner_block::resolve_cursor(&view, &sk.stops) else {
+                return ScreenAction::None;
+            };
+            match &sk.stops[at] {
+                owner_block::Stop::FoldLine => {
+                    Err("Select a group row to open its file".to_owned())
+                }
+                owner_block::Stop::Row(key) => {
+                    let files = owner_block::files_for(digest, key);
+                    owner_actions::open_target(ctx, &self.alias, &files)
+                }
+            }
+        };
+        ctx.needs_redraw = true;
+        match outcome {
+            Ok(action) => action,
+            Err(message) => {
+                ctx.status_message = Some((message, std::time::Instant::now()));
+                ScreenAction::None
+            }
+        }
+    }
+
+    /// Enter on a check or `file PATH` line of the Owner block (quick 261118-u4e,
+    /// I-2): the file in the read-only viewer at that check, or at the group's
+    /// place for a file line, through [`owner_actions::open_at`], the function
+    /// the inbox's Enter calls. A sub-stop that no longer resolves falls back to
+    /// `o`. Opens the in-app viewer only, never an editor (T-37-16).
+    fn owner_open_sub(&mut self, ctx: &mut AppContext) -> ScreenAction {
+        let outcome = {
+            let Some(digest) = ctx.owner_digest(&self.alias) else {
+                return ScreenAction::None;
+            };
+            let view = ctx
+                .view_cache
+                .get(&self.alias)
+                .map(|cache| cache.owner_block.clone())
+                .unwrap_or_default();
+            let sk = owner_block::skeleton(digest, &view);
+            let Some(at) = owner_block::resolve_cursor(&view, &sk.stops) else {
+                return ScreenAction::None;
+            };
+            let resolved = match (&sk.stops[at], view.sub_stop()) {
+                (owner_block::Stop::Row(key), Some(stop)) => owner_block::row_src_for(digest, key)
+                    .and_then(|src| match stop {
+                        owner_block::SubStop::Item(id) => {
+                            let (group, item) = owner_block::item_source(Some(digest), &src, &id)?;
+                            Some(owner_actions::open_at(
+                                ctx,
+                                &self.alias,
+                                &group.file,
+                                Some(&group),
+                                Some(&item),
+                            ))
+                        }
+                        owner_block::SubStop::File(path) => {
+                            let group = owner_block::file_source(Some(digest), &src, &path);
+                            Some(owner_actions::open_at(
+                                ctx,
+                                &self.alias,
+                                &path,
+                                group.as_ref(),
+                                None,
+                            ))
+                        }
+                    }),
+                _ => None,
+            };
+            match resolved {
+                Some(outcome) => outcome,
+                None => return self.owner_open(ctx),
+            }
+        };
+        ctx.needs_redraw = true;
+        match outcome {
+            Ok(action) => action,
+            Err(message) => {
+                ctx.status_message = Some((message, std::time::Instant::now()));
+                ScreenAction::None
+            }
+        }
+    }
+
+    /// `v` on the Owner block (37-03, D-21): run the group under the cursor through
+    /// [`owner_actions::run_group`], the same function the inbox's `v` calls. The
+    /// result is the status line; the fold line and a vanished or BLOCKED row get
+    /// their own copy. `launch` is a parameter so tests record instead of launching.
+    fn owner_run(
+        &mut self,
+        ctx: &mut AppContext,
+        launch: &mut dyn FnMut(&owner_actions::RunPlan) -> String,
+    ) -> ScreenAction {
+        let message = {
+            let Some(digest) = ctx.owner_digest(&self.alias) else {
+                return ScreenAction::None;
+            };
+            let view = ctx
+                .view_cache
+                .get(&self.alias)
+                .map(|cache| cache.owner_block.clone())
+                .unwrap_or_default();
+            let sk = owner_block::skeleton(digest, &view);
+            let Some(at) = owner_block::resolve_cursor(&view, &sk.stops) else {
+                return ScreenAction::None;
+            };
+            match &sk.stops[at] {
+                owner_block::Stop::FoldLine => "Select a group row to run its command".to_owned(),
+                owner_block::Stop::Row(key) => match owner_block::group_for(digest, key) {
+                    Some(group) => owner_actions::run_group(ctx, &self.alias, &group, launch),
+                    None if key.lane == "blocked" => {
+                        "No command for BLOCKED work: unblock it first".to_owned()
+                    }
+                    None => "No command for this row".to_owned(),
+                },
+            }
+        };
+        ctx.status_message = Some((message, std::time::Instant::now()));
+        ctx.needs_redraw = true;
+        ScreenAction::None
+    }
+
+    /// The Phases tab's footer while its Owner block has the keyboard (36-04, D-20;
+    /// quick 261119-f5b): the keys that act on the row under the cursor, from the
+    /// shared row action model, cut to `width`. `Esc` names where it goes: the tab
+    /// bar when the phase list is empty (quick 261118-tm6).
+    fn owner_block_footer(&self, ctx: &AppContext, width: usize) -> Line<'static> {
+        use super::owner_row_actions::{self as row_actions, Chrome, Enter, Host};
+        let chrome = if self.phase_list_empty(ctx) {
+            Chrome::TabBar
+        } else {
+            Chrome::Phases
+        };
+        let bare = |chrome| {
+            row_actions::footer_spans(Host::OwnerBlock, &[], Enter::Nothing, false, chrome, width)
+        };
+        let Some(digest) = ctx.owner_digest(&self.alias) else {
+            return bare(chrome);
+        };
+        let view = ctx
+            .view_cache
+            .get(&self.alias)
+            .map(|cache| cache.owner_block.clone())
+            .unwrap_or_default();
+        let sk = owner_block::skeleton(digest, &view);
+        let Some(at) = owner_block::resolve_cursor(&view, &sk.stops) else {
+            return bare(chrome);
+        };
+        match &sk.stops[at] {
+            owner_block::Stop::FoldLine => {
+                let fold = owner_block::resolved_fold(&view, &sk.folds);
+                let open = fold.is_some_and(|fold| view.open_folds.contains(&fold));
+                let enter = if fold.is_none() {
+                    Enter::Nothing
+                } else if open {
+                    Enter::CloseFold
+                } else {
+                    Enter::OpenFold
+                };
+                let actions = row_actions::fold_line_actions(fold, open);
+                row_actions::footer_spans(Host::OwnerBlock, &actions, enter, true, chrome, width)
+            }
+            owner_block::Stop::Row(key) => {
+                let Some(src) = owner_block::row_src_for(digest, key) else {
+                    return bare(chrome);
+                };
+                let expanded = view.expanded.contains(key);
+                let sub = view.sub_stop().filter(|_| expanded);
+                let actions = row_actions::row_actions(
+                    ctx,
+                    Host::OwnerBlock,
+                    &self.alias,
+                    &src,
+                    sub.as_ref(),
+                    expanded,
+                );
+                let enter = if sub.is_some() {
+                    Enter::View
+                } else {
+                    Enter::Actions
+                };
+                row_actions::footer_spans(Host::OwnerBlock, &actions, enter, false, chrome, width)
+            }
+        }
+    }
+
+    /// Whether the Phases tab's phase list has no row (its "No phases found"
+    /// state, or no state at all): no cursor to draw, so never a focus target
+    /// (quick 261118-tm6).
+    fn phase_list_empty(&self, ctx: &AppContext) -> bool {
+        ctx.project_states
+            .get(&self.alias)
+            .is_none_or(|s| s.scoped_phase_count() == 0)
+    }
+
+    /// Make the last frame's empty-list landing real (quick 261118-tm6): the
+    /// frame drew the Owner block's first stop as the cursor while `focus` was
+    /// `Content`, so the keyboard moves there before the event acts. A landing
+    /// the event can no longer honor (another tab, another level, the block
+    /// gone) is simply dropped.
+    fn take_owner_landing(&mut self, current_view: &DetailSubView, ctx: &mut AppContext) {
+        if !self.owner_landing.replace(false)
+            || self.focus != DetailFocus::Content
+            || *current_view != DetailSubView::Pipeline
+        {
+            return;
+        }
+        self.enter_owner_block(ctx, true);
+    }
+
+    /// Enter the Owner block when the last frame drew one with a cursor stop:
+    /// on its last stop from the first phase row below it (`↑`/`k`, D-20), on
+    /// its first from the tab bar above it or as an empty list's landing
+    /// (quick 261118-tm6). `false` leaves everything as it was.
+    fn enter_owner_block(&mut self, ctx: &mut AppContext, first: bool) -> bool {
+        if self.owner_block_rows.get() == 0 {
+            return false;
+        }
+        let unavailable = ctx.owner_state_unavailable(&self.alias);
+        let Some(digest) = ctx.owner_digests.get(&self.alias).filter(|_| !unavailable) else {
+            return false;
+        };
+        let view = &mut ctx
+            .view_cache
+            .entry(self.alias.clone())
+            .or_default()
+            .owner_block;
+        owner_block::clamp(view, digest);
+        let sk = owner_block::skeleton(digest, view);
+        if sk.stops.is_empty() {
+            return false;
+        }
+        if first {
+            owner_block::enter_first(view, &sk.stops);
+        } else {
+            owner_block::enter_last(view, &sk.stops);
+        }
+        self.focus = DetailFocus::Owner;
+        ctx.needs_redraw = true;
+        true
+    }
+
     /// A key while the Config tab's scope strip has the keyboard (quick
     /// 260929-g9u, D-01, D-02).
     ///
@@ -2406,7 +3171,7 @@ const DISCOVERY_LAUNCHERS: &[&str] = &["xdg-terminal-exec", "x-terminal-emulator
 /// where it is a pure function of injected facts and can be asserted for
 /// environments nobody is running in — including the exact one the bug was
 /// reported from.
-fn resolve_launch_plan() -> crate::multiplexer::LaunchPlan {
+pub(crate) fn resolve_launch_plan() -> crate::multiplexer::LaunchPlan {
     let (env, backends) = crate::multiplexer::detect_current();
     crate::multiplexer::plan_launch(
         env,
@@ -2450,7 +3215,7 @@ fn resolve_launch_plan() -> crate::multiplexer::LaunchPlan {
 /// silent** — the emulator rejects the flag and the operator sees the failure —
 /// which is the direction prohibition 3 asks for: an emulator that cannot be
 /// driven by an argv is reported, not silently handled by quoting.
-fn terminal_program_separator(term: &str) -> &'static str {
+pub(crate) fn terminal_program_separator(term: &str) -> &'static str {
     let stem = term.rsplit('/').next().unwrap_or(term);
     match stem {
         "gnome-terminal" => "--",
@@ -2681,6 +3446,91 @@ fn mux_launch_argv() -> Result<crate::multiplexer::ExecArgv, crate::multiplexer:
     crate::multiplexer::ExecArgv::new(argv)
 }
 
+/// The program vector handed to the innermost multiplexer's `open` for an Owner
+/// inbox command (37-03, D-13): `env`, `claude`, and the command string as ONE
+/// element. Same leading `env` as [`mux_launch_argv`], for the same reason (tmux
+/// hands a single-element program to `sh -c`).
+///
+/// **CWE-88 (T-37-04).** The only untrusted-derived element is the command, and
+/// it is the `Display` of a typed [`RunCommand`](crate::state_reader::owner_items::RunCommand)
+/// whose phase and workstream the caller re-validated with `is_command_token` /
+/// `is_workstream_name` at launch. It is one element, so a space inside it never
+/// splits into a second argument, and it starts with `/` so `claude` reads it as a
+/// slash command, not an option. The project path travels as the cwd, never as a
+/// `cd` string.
+pub(crate) fn owner_mux_argv(
+    cmd: &crate::state_reader::owner_items::RunCommand,
+) -> Result<crate::multiplexer::ExecArgv, crate::multiplexer::MuxError> {
+    let mut argv = owner_scrubbed_program();
+    argv.push(cmd.to_string());
+    crate::multiplexer::ExecArgv::new(argv)
+}
+
+/// `env -u VAR ... claude`: the program an Owner inbox launch runs, with the
+/// workstream and session-pointer variables the acknowledge child also drops
+/// (`owner_actions::ACK_ENV_REMOVE`) removed from the new session's environment.
+/// Inherited from this TUI they would make a root-scoped command (`--ws` absent)
+/// resolve to another workstream (37 IN-02). Every element is authored here.
+fn owner_scrubbed_program() -> Vec<String> {
+    let mut argv = vec!["env".to_string()];
+    for var in super::owner_actions::ACK_ENV_REMOVE {
+        argv.push("-u".to_string());
+        argv.push((*var).to_string());
+    }
+    argv.extend(claude_launch_args());
+    argv
+}
+
+/// The GUI-terminal argv for an Owner inbox command: the separator from
+/// [`terminal_program_separator`], the scrubbed `env -u VAR ... claude` program
+/// of [`owner_scrubbed_program`], then the validated command as one final
+/// element. Every element but the last is authored here (separator, `env`, the
+/// `-u VAR` pairs and `claude`); the last is the re-validated command string.
+/// Pinned by `owner_terminal_argv_carries_no_untrusted_element_and_is_pinned_at_three`.
+pub(crate) fn owner_terminal_argv(
+    term: &str,
+    cmd: &crate::state_reader::owner_items::RunCommand,
+) -> Vec<String> {
+    let mut argv = vec![terminal_program_separator(term).to_string()];
+    argv.extend(owner_scrubbed_program());
+    argv.push(cmd.to_string());
+    argv
+}
+
+/// The program vector handed to the innermost multiplexer's `open` for a settle
+/// (`x`, 39): the scrubbed `env -u VAR ... claude` program and the prompt as ONE
+/// element.
+///
+/// **CWE-88 (T-39-01).** The only untrusted-derived element is the prompt: the
+/// `Display` of a typed [`RunCommand`](crate::state_reader::owner_items::RunCommand)
+/// (phase and workstream re-validated by the caller with `is_command_token` /
+/// `is_workstream_name`), a space, and an instruction built only from values that
+/// went through `owner_settle::clean`. It is one element, so a space inside it never
+/// splits into a second argument, and it starts with `/` so `claude` reads it as a
+/// slash command, not an option. The project path travels as the cwd.
+pub(crate) fn settle_mux_argv(
+    plan: &super::owner_settle::SettlePlan,
+) -> Result<crate::multiplexer::ExecArgv, crate::multiplexer::MuxError> {
+    let mut argv = owner_scrubbed_program();
+    argv.push(plan.prompt());
+    crate::multiplexer::ExecArgv::new(argv)
+}
+
+/// The GUI-terminal argv for a settle: the separator from
+/// [`terminal_program_separator`], the scrubbed program of
+/// [`owner_scrubbed_program`], then the prompt as one final element (see
+/// [`settle_mux_argv`]). Pinned by
+/// `settle_argv_is_the_scrubbed_program_and_one_prompt_element`.
+pub(crate) fn settle_terminal_argv(
+    term: &str,
+    plan: &super::owner_settle::SettlePlan,
+) -> Vec<String> {
+    let mut argv = vec![terminal_program_separator(term).to_string()];
+    argv.extend(owner_scrubbed_program());
+    argv.push(plan.prompt());
+    argv
+}
+
 /// The argv for launching a NEW Claude session. Same shape, same reason — see
 /// [`resume_terminal_argv`]. The project path used to be interpolated into the
 /// same interpreter program string here and now travels through
@@ -2707,6 +3557,17 @@ fn mux_launch_argv() -> Result<crate::multiplexer::ExecArgv, crate::multiplexer:
 fn launch_terminal_argv(term: &str) -> Vec<String> {
     let mut argv = vec![terminal_program_separator(term).to_string()];
     argv.extend(claude_launch_args());
+    argv
+}
+
+/// `env -u VAR ... claude`, the test twin of `owner_scrubbed_program`.
+#[cfg(test)]
+pub(crate) fn scrubbed_program() -> Vec<String> {
+    let mut argv = vec!["env".to_owned()];
+    for var in crate::ui::screens::owner_actions::ACK_ENV_REMOVE {
+        argv.extend(["-u".to_owned(), (*var).to_owned()]);
+    }
+    argv.push("claude".to_owned());
     argv
 }
 
@@ -3813,14 +4674,24 @@ crate::ui::screens::adjudicate_screen!(
      render — Backlog expanded, Archive at its phase list and file list \
      depths, Browse at its file view. Arrival is recorded per state by \
      DETAIL_TAB_ARRIVAL against the chrome baseline, so a populated cache \
-     the render never reads is reported rather than counted.",
+     the render never reads is reported rather than counted. Since 36-03 the \
+     Phases tab also draws the Owner block (header, group rows and fold line \
+     from `ctx.owner_digests`, every project-authored string reaching a cell \
+     through `shown()`); the state \"Phases tab with an Owner block\" probes it \
+     with a hostile digest. Since 36-04 the block also draws expansion lines \
+     and open-fold rows, probed by the state \"Phases tab with an expanded Owner \
+     block\". Since quick 261119-f5b it also draws the Owner row action menu \
+     (an overlay whose entries carry the row's run command, the source file's \
+     name, the project alias and the reason an action is blocked, all through \
+     `shown()`), probed by the state \"Phases tab with the Owner action menu \
+     open\".",
 );
 
 impl Screen for DetailScreen {
     fn handle_key(
         &mut self,
         code: KeyCode,
-        _modifiers: KeyModifiers,
+        modifiers: KeyModifiers,
         ctx: &mut AppContext,
     ) -> ScreenAction {
         // Read through `effective_sub_view`: with the experimental surfaces off
@@ -3835,6 +4706,27 @@ impl Screen for DetailScreen {
             ctx.experimental,
         );
         let current_idx = tab_index(&current_view);
+
+        // An open Owner row action menu owns every key (quick 261119-f5b),
+        // above every other arm: a letter or Enter closes it and is handled as if
+        // typed (the exact hotkey path), Esc and `q` only close it, nothing pops,
+        // moves focus or switches tab under it. A menu whose row vanished or whose
+        // level lost the keyboard is dropped and the key acts normally.
+        if let Some(mut menu) = self.menu.get_mut().take() {
+            if let Some(actions) = self.owner_menu_actions(&menu, &current_view, ctx) {
+                ctx.needs_redraw = true;
+                return match menu.key(&actions, code, modifiers) {
+                    owner_row_actions::MenuKey::Stay => {
+                        *self.menu.get_mut() = Some(menu);
+                        ScreenAction::None
+                    }
+                    owner_row_actions::MenuKey::Close => ScreenAction::None,
+                    owner_row_actions::MenuKey::Run(key) => {
+                        self.handle_key(key, KeyModifiers::NONE, ctx)
+                    }
+                };
+            }
+        }
 
         // The Roadmap tab's cursor keys (D-A10).
         let on_roadmap = current_view == DetailSubView::RoadmapViz;
@@ -3871,6 +4763,9 @@ impl Screen for DetailScreen {
             return ScreenAction::ToggleMouseCapture;
         }
 
+        // The key acts on the cursor the last frame drew (quick 261118-tm6).
+        self.take_owner_landing(&current_view, ctx);
+
         // The tab-bar level (quick 260926-1t1, D-01, D-02). AFTER both Config
         // intercepts, so an arrow or a `q` typed into a value or the filter is
         // still text (T-1t1-02); BEFORE the main match, so no content arm —
@@ -3890,8 +4785,13 @@ impl Screen for DetailScreen {
                 // Descend with NO other state change ([inferred I-3]: Space
                 // too — on Queue it would otherwise mark an item done).
                 // On Config the level below the tab bar is the scope strip
-                // (quick 260929-g9u, D-01).
+                // (quick 260929-g9u, D-01); on Phases it is the Owner block's
+                // first stop when the last frame drew one (quick 261118-tm6).
                 KeyCode::Down | KeyCode::Char('j') | KeyCode::Enter | KeyCode::Char(' ') => {
+                    if current_view == DetailSubView::Pipeline && self.enter_owner_block(ctx, true)
+                    {
+                        return ScreenAction::None;
+                    }
                     self.focus = if current_view == DetailSubView::Defaults {
                         DetailFocus::ScopeStrip
                     } else {
@@ -3940,6 +4840,16 @@ impl Screen for DetailScreen {
             if current_view != DetailSubView::Pipeline {
                 self.focus = DetailFocus::Content;
             } else if let Some(action) = self.handle_waves_pane_key(code, ctx) {
+                return action;
+            }
+        }
+
+        // The Owner-block level (36-04, D-20): the Phases tab only, right after
+        // the Pane block, so no phase-list arm is reachable while it has focus.
+        if self.focus == DetailFocus::Owner {
+            if current_view != DetailSubView::Pipeline {
+                self.focus = DetailFocus::Content;
+            } else if let Some(action) = self.handle_owner_block_key(code, modifiers, ctx) {
                 return action;
             }
         }
@@ -4257,6 +5167,12 @@ impl Screen for DetailScreen {
                 // bar (D-01), or on Config to its scope strip (quick
                 // 260929-g9u, D-01). Otherwise each tab's arm runs unchanged.
                 if self.content_at_first_row(&current_view, ctx) {
+                    // The vertical order is tab bar, Owner block, phase list:
+                    // from the first phase `↑` enters the block when one is drawn.
+                    if current_view == DetailSubView::Pipeline && self.enter_owner_block(ctx, false)
+                    {
+                        return ScreenAction::None;
+                    }
                     self.focus = if current_view == DetailSubView::Defaults {
                         DetailFocus::ScopeStrip
                     } else {
@@ -6306,6 +7222,11 @@ impl Screen for DetailScreen {
             Paragraph::new(Line::from(tab_bar_footer_spans(ctx.experimental)))
         } else if self.focus == DetailFocus::Pane && sub_view == DetailSubView::Pipeline {
             Paragraph::new(Line::from(waves_pane_footer_spans()))
+        } else if (self.focus == DetailFocus::Owner || self.owner_landing.get())
+            && sub_view == DetailSubView::Pipeline
+            && self.owner_block_rows.get() > 0
+        {
+            Paragraph::new(self.owner_block_footer(ctx, usize::from(footer_area.width)))
         } else if self.focus == DetailFocus::ScopeStrip && sub_view == DetailSubView::Defaults {
             Paragraph::new(Line::from(config_scope_footer_spans()))
         } else if backlog_focused {
@@ -6314,9 +7235,29 @@ impl Screen for DetailScreen {
             // The Driver tab's hints follow the selection (30-01): only keys that
             // act on it are named.
             let keys = super::driver_run::driver_keys(ctx, &self.alias);
-            build_footer(&sub_view, footer_area.width, ctx.experimental, &keys)
+            build_footer(
+                &sub_view,
+                footer_area.width,
+                ctx.experimental,
+                &keys,
+                self.owner_block_rows.get() > 0 && self.owner_block_stops.get(),
+            )
         };
         frame.render_widget(footer, footer_area);
+
+        // The Owner row action menu, on top of everything (quick 261119-f5b).
+        let actions = self
+            .menu
+            .borrow()
+            .as_ref()
+            .and_then(|menu| self.owner_menu_actions(menu, &sub_view, ctx));
+        owner_row_actions::render_open_menu(
+            frame,
+            area,
+            self.menu_anchor.get(),
+            &self.menu,
+            actions,
+        );
     }
 
     fn name(&self) -> &str {
@@ -6347,6 +7288,16 @@ impl Screen for DetailScreen {
         if self.config_text_entry_active(&current_view, ctx) {
             return ScreenAction::None;
         }
+        // An open Owner action menu swallows every click and wheel step (quick
+        // 261119-f5b, I-8): nothing under it switches tab, focus or selection.
+        if let Some(menu) = self.menu.get_mut().take() {
+            if self.owner_menu_actions(&menu, &current_view, ctx).is_some() {
+                *self.menu.get_mut() = Some(menu);
+                return ScreenAction::None;
+            }
+        }
+        // As for a key: the event meets the focus the last frame drew.
+        self.take_owner_landing(&current_view, ctx);
         match input {
             MouseInput::Click {
                 double: true,
@@ -7453,7 +8404,111 @@ impl DetailScreen {
         }
     }
 
+    /// The Phases tab: the Owner block (36-03, D5) above the phase list and
+    /// pipeline split, which keeps the remaining area. The block draws only from
+    /// `ctx.owner_digests` (memory), takes zero rows when it has nothing to show,
+    /// the tab is short, or a focused Waves pane owns the whole tab.
     fn render_pipeline_tab(&self, frame: &mut Frame, area: Rect, ctx: &AppContext) {
+        self.owner_block_rows.set(0);
+        self.owner_block_stops.set(false);
+        self.owner_landing.set(false);
+        self.menu_anchor.set(None);
+        if let (Some(state), Some(digest)) = (
+            ctx.project_states.get(&self.alias),
+            ctx.owner_digest(&self.alias),
+        ) {
+            let default_view = owner_block::OwnerBlockState::default();
+            let view = ctx
+                .view_cache
+                .get(&self.alias)
+                .map_or(&default_view, |cache| &cache.owner_block);
+            let model = owner_block::block_model_with(
+                &self.alias,
+                &state.milestone,
+                digest,
+                view,
+                area.width,
+                Some((&ctx.settle_pending, std::time::Instant::now())),
+            );
+            let mut height = owner_block::block_height(&model, area.height);
+            if self.focus == DetailFocus::Pane
+                && area.width < roadmap_view::ROADMAP_SIDE_BY_SIDE_MIN_COLS
+            {
+                height = 0;
+            }
+            if height > 0 {
+                self.owner_block_rows.set(height);
+                self.owner_block_stops.set(!model.stops.is_empty());
+                // An empty phase list has no cursor to draw, so the block is the
+                // focused level, drawn on its first stop (quick 261118-tm6); the
+                // next event makes that real (`take_owner_landing`).
+                let landing = self.focus == DetailFocus::Content
+                    && !model.stops.is_empty()
+                    && state.scoped_phase_count() == 0;
+                self.owner_landing.set(landing);
+                let cursor = if landing {
+                    Some(0)
+                } else {
+                    (self.focus == DetailFocus::Owner)
+                        .then(|| owner_block::resolve_cursor(view, &model.stops))
+                        .flatten()
+                };
+                let cursor = cursor.map(|stop| owner_block::Cursor {
+                    stop,
+                    fold: owner_block::resolved_fold(view, &model.folds),
+                    item_line: model
+                        .stops
+                        .get(stop)
+                        .zip(view.sub_stop().filter(|_| !landing))
+                        .and_then(|(at, sub)| match at {
+                            owner_block::Stop::Row(key) => {
+                                owner_block::sub_stop_line(&model, key, &sub)
+                            }
+                            owner_block::Stop::FoldLine => None,
+                        }),
+                });
+                let window = owner_block::window_rows(&model, height);
+                let mut offset = owner_block::follow_offset(
+                    &model,
+                    cursor.map(|c| c.stop),
+                    self.owner_offset.get(),
+                    window,
+                );
+                // D-04: the selected item stays in view, by the least scroll.
+                if let Some(line) = cursor.and_then(|c| c.item_line).filter(|_| window > 0) {
+                    if line < offset {
+                        offset = line;
+                    } else if line >= offset + window {
+                        offset = line + 1 - window;
+                    }
+                    offset = offset.min(model.body.len().saturating_sub(window));
+                }
+                self.owner_offset.set(offset);
+                self.owner_viewport_rows
+                    .set(u16::try_from(window).unwrap_or(u16::MAX));
+                let parts =
+                    Layout::vertical([Constraint::Length(height), Constraint::Min(0)]).split(area);
+                owner_block::render_owner_block(frame, parts[0], &model, cursor, offset);
+                self.record_owner_block(parts[0]);
+                // The cursor row's cells: the action menu hangs from them.
+                if let Some(line) = cursor
+                    .and_then(|c| model.stop_lines.get(c.stop).copied().flatten())
+                    .filter(|line| *line >= offset && *line < offset + window)
+                {
+                    self.menu_anchor.set(Some(Rect {
+                        y: parts[0].y + 1 + u16::try_from(line - offset).unwrap_or(0),
+                        height: 1,
+                        ..parts[0]
+                    }));
+                }
+                self.render_phases_body(frame, parts[1], ctx);
+                return;
+            }
+        }
+        self.render_phases_body(frame, area, ctx);
+    }
+
+    fn render_phases_body(&self, frame: &mut Frame, area: Rect, ctx: &AppContext) {
         let alias = &self.alias;
         let state = ctx.project_states.get(alias);
         let cache = ctx.view_cache.get(alias);
@@ -7564,13 +8619,21 @@ impl DetailScreen {
         // `List`: it is the rect the phase rows occupy, the click target.
         let list_block = Block::default().borders(Borders::RIGHT).title(" Phases ");
         let list_inner = list_block.inner(left_area);
-        let list = List::new(items)
-            .highlight_style(
-                Style::default()
-                    .add_modifier(Modifier::BOLD)
-                    .fg(Color::Cyan),
-            )
-            .highlight_symbol("> ");
+        // One cursor on screen (quick 261118-tm6): while the Owner block has the
+        // keyboard the list keeps its selection (the right pane still shows that
+        // phase) but draws no `> ` marker, so the block's is the only one.
+        let owner_has_focus = self.focus == DetailFocus::Owner || self.owner_landing.get();
+        let list = if owner_has_focus {
+            List::new(items).highlight_symbol("  ")
+        } else {
+            List::new(items)
+                .highlight_style(
+                    Style::default()
+                        .add_modifier(Modifier::BOLD)
+                        .fg(Color::Cyan),
+                )
+                .highlight_symbol("> ")
+        };
 
         // Seeded with the offset the previous frame left, and stored back
         // (quick 260926-dyf, [inferred I-12]).
@@ -9310,7 +10373,7 @@ fn substage_table(inf: &DiskInference) -> [(&'static str, bool, u8); 16] {
 
 /// `spans` cut to at most `cols` cells, the cut marked with `…` in the style of
 /// the span it fell in — [`fit_cells`] for a styled line.
-fn fit_spans(spans: Vec<Span<'static>>, cols: usize) -> Line<'static> {
+pub(super) fn fit_spans(spans: Vec<Span<'static>>, cols: usize) -> Line<'static> {
     let line = Line::from(spans);
     if line.width() <= cols {
         return line;
@@ -11159,23 +12222,45 @@ fn child_line(
 /// One footer token: its spans, their width in cells, and its drop priority.
 ///
 /// `drop_priority` 3 goes first when the footer is too wide, then 2, then 1;
-/// within a priority the rightmost goes first. `0` is never dropped.
-struct FooterToken {
+/// within a priority the rightmost goes first. `0` is never dropped. A token may
+/// carry a `short` form (quick 261119-f5b): [`fit_footer`] switches every long
+/// label to its short form before it drops a priority-1 token.
+pub(crate) struct FooterToken {
     spans: Vec<Span<'static>>,
     cells: usize,
     drop_priority: u8,
+    /// The spans and width this token falls back to before it may be dropped.
+    short: Option<(Vec<Span<'static>>, usize)>,
 }
 
 impl FooterToken {
     /// A key hint in the shipped construction: `Span::styled("[x]", BOLD)` then
     /// `Span::raw("kill  ")`.
     fn hint(key: &'static str, rest: &'static str, drop_priority: u8) -> Self {
-        let bold = Style::default().add_modifier(Modifier::BOLD);
+        Self::owned(key.to_owned(), rest.to_owned(), drop_priority)
+    }
+
+    /// [`hint`](Self::hint) with owned text (a label that carries a command).
+    pub(crate) fn owned(key: String, rest: String, drop_priority: u8) -> Self {
+        let (spans, cells) = Self::hint_spans(key, rest);
         FooterToken {
-            cells: Span::raw(key).width() + Span::raw(rest).width(),
-            spans: vec![Span::styled(key, bold), Span::raw(rest)],
+            cells,
+            spans,
             drop_priority,
+            short: None,
         }
+    }
+
+    fn hint_spans(key: String, rest: String) -> (Vec<Span<'static>>, usize) {
+        let bold = Style::default().add_modifier(Modifier::BOLD);
+        let cells = Span::raw(key.clone()).width() + Span::raw(rest.clone()).width();
+        (vec![Span::styled(key, bold), Span::raw(rest)], cells)
+    }
+
+    /// The form this token falls back to when the footer is still too wide.
+    pub(crate) fn with_short(mut self, key: String, rest: String) -> Self {
+        self.short = Some(Self::hint_spans(key, rest));
+        self
     }
 
     fn muted(text: &'static str, drop_priority: u8) -> Self {
@@ -11183,8 +12268,65 @@ impl FooterToken {
             cells: Span::raw(text).width(),
             spans: vec![Span::styled(text, Style::default().fg(Color::DarkGray))],
             drop_priority,
+            short: None,
         }
     }
+
+    /// Switch to the short form; whether there was one.
+    fn shorten(&mut self) -> bool {
+        match self.short.take() {
+            Some((spans, cells)) => {
+                self.spans = spans;
+                self.cells = cells;
+                true
+            }
+            None => false,
+        }
+    }
+}
+
+/// Lay `tokens` out after the two-cell lead and before `[?]help`, dropping what
+/// does not fit in `width` cells: priority 3 first, then 2, then every long label
+/// is switched to its short form, then priority 1; the rightmost token goes first
+/// within a priority and a token is never split. The lead and `[?]help` are never
+/// dropped, so `[?]help` ends the line at every width. The one fit function of the
+/// Driver footer and the Owner row footers.
+pub(crate) fn fit_footer(mut tokens: Vec<FooterToken>, width: usize) -> Vec<Span<'static>> {
+    let fixed = Span::raw("  ").width() + Span::raw("[?]help").width();
+    let mut total = fixed + tokens.iter().map(|token| token.cells).sum::<usize>();
+    while total > width {
+        let Some(highest) = tokens.iter().map(|token| token.drop_priority).max() else {
+            break;
+        };
+        // Priority 0 would mean "never dropped"; none is created, but the guard
+        // keeps a future one from looping.
+        if highest == 0 {
+            break;
+        }
+        if highest == 1 && tokens.iter().any(|token| token.short.is_some()) {
+            for token in &mut tokens {
+                let before = token.cells;
+                if token.shorten() {
+                    total = total - before + token.cells;
+                }
+            }
+            continue;
+        }
+        let Some(index) = tokens
+            .iter()
+            .rposition(|token| token.drop_priority == highest)
+        else {
+            break;
+        };
+        total -= tokens.remove(index).cells;
+    }
+
+    let bold = Style::default().add_modifier(Modifier::BOLD);
+    let mut spans: Vec<Span<'static>> = vec![Span::raw("  ")];
+    spans.extend(tokens.into_iter().flat_map(|token| token.spans));
+    spans.push(Span::styled("[?]", bold));
+    spans.push(Span::raw("help"));
+    spans
 }
 
 /// The Driver tab's footer hints (30-01, UI-SPEC "Footer").
@@ -11241,32 +12383,7 @@ fn driver_footer_spans(width: u16, keys: &super::driver_run::DriverKeys) -> Vec<
         ));
     }
 
-    let fixed = Span::raw("  ").width() + Span::raw("[?]help").width();
-    let mut total = fixed + tokens.iter().map(|token| token.cells).sum::<usize>();
-    while total > usize::from(width) {
-        let Some(highest) = tokens.iter().map(|token| token.drop_priority).max() else {
-            break;
-        };
-        // Priority 0 would mean "never dropped"; none is created, but the guard
-        // keeps a future one from looping.
-        if highest == 0 {
-            break;
-        }
-        let Some(index) = tokens
-            .iter()
-            .rposition(|token| token.drop_priority == highest)
-        else {
-            break;
-        };
-        total -= tokens.remove(index).cells;
-    }
-
-    let bold = Style::default().add_modifier(Modifier::BOLD);
-    let mut spans: Vec<Span<'static>> = vec![Span::raw("  ")];
-    spans.extend(tokens.into_iter().flat_map(|token| token.spans));
-    spans.push(Span::styled("[?]", bold));
-    spans.push(Span::raw("help"));
-    spans
+    fit_footer(tokens, usize::from(width))
 }
 
 /// The footer while the TAB BAR has focus (quick 260926-1t1, D-07): only the
@@ -11325,6 +12442,7 @@ fn footer_spans(
     width: u16,
     experimental: bool,
     driver_keys: &super::driver_run::DriverKeys,
+    owner_block_drawn: bool,
 ) -> Vec<Span<'static>> {
     if matches!(sub_view, DetailSubView::Driver) {
         return driver_footer_spans(width, driver_keys);
@@ -11340,6 +12458,9 @@ fn footer_spans(
     // 260929-g9u), so its lead names that level instead of the tab bar.
     let up = if matches!(sub_view, DetailSubView::Defaults) {
         "scope  "
+    } else if owner_block_drawn && matches!(sub_view, DetailSubView::Pipeline) {
+        // `↑` from the first phase enters the Owner block above it (36-04).
+        "owner  "
     } else {
         "tab bar  "
     };
@@ -11533,12 +12654,14 @@ fn build_footer(
     width: u16,
     experimental: bool,
     driver_keys: &super::driver_run::DriverKeys,
+    owner_block_drawn: bool,
 ) -> Paragraph<'static> {
     Paragraph::new(Line::from(footer_spans(
         sub_view,
         width,
         experimental,
         driver_keys,
+        owner_block_drawn,
     )))
 }
 
@@ -13591,13 +14714,15 @@ enum PersistOutcome {
 }
 
 /// Apply one edit to the active config, persist it, and surface a status
-/// message (quick 261019-guw).
+/// message (quick 261019-guw, 261116-kft).
 ///
-/// The edit arrives as a closure and is applied to a FRESH read of the file
-/// inside gsd-core's lock ([`crate::state_reader::config_write`]), never to the
-/// cached snapshot, so a `gsd config-set` that landed since the tab loaded is
-/// not lost. The cache is replaced only after a successful write: a failed save
-/// leaves the display equal to disk.
+/// Project scope: the edit is saved by the user's own gsd-tools
+/// (`config-set`), never written here ([`save_project_config`]); the cache is
+/// then refreshed from disk. Global scope: gsd-core has no writer for
+/// `defaults.json`, so the edit is applied to a FRESH read inside the
+/// installer lock and written atomically
+/// ([`crate::state_reader::config_write`], 261116-kft D-02). Either way a failed
+/// save leaves the display equal to disk.
 ///
 /// The destination comes from [`config_write_path`]; the global path is the
 /// one resolved into the cache, never re-read from `$HOME` here (I-7). With no
@@ -13609,7 +14734,7 @@ fn persist_active_config(
     mutate: impl FnOnce(&mut crate::state_reader::config_json::GsdConfig) -> bool,
 ) -> PersistOutcome {
     use super::DefaultsEditTarget;
-    use crate::state_reader::config_write::{update_gsd_config, ConfigWriteTarget, LockPolicy};
+    use crate::state_reader::config_write::{update_global_defaults, LockPolicy};
     let target = cache.defaults_edit_target;
     let user_path = cache.defaults_user_path.clone();
     let Some(active) = active_config_mut(cache) else {
@@ -13622,29 +14747,256 @@ fn persist_active_config(
             PersistOutcome::NotApplied
         };
     };
-    let write_target = match (target, project_path) {
-        (DefaultsEditTarget::Project, Some(root)) => ConfigWriteTarget::Project {
-            config_path: path,
-            project_root: root.to_path_buf(),
-        },
-        _ => ConfigWriteTarget::GlobalDefaults { path },
-    };
-    let flavor = write_target.flavor();
-    match update_gsd_config(&write_target, LockPolicy::tui(flavor), active, mutate) {
+    let now = std::time::Instant::now;
+    if let (DefaultsEditTarget::Project, Some(root)) = (target, project_path) {
+        return match save_project_config(root, active, mutate) {
+            ProjectSave::Saved { fresh, changed } => {
+                if let Some(fresh) = fresh {
+                    *active = fresh;
+                }
+                let label = if changed {
+                    "Config saved"
+                } else {
+                    "Config unchanged"
+                };
+                *status_message = Some((label.to_string(), now()));
+                PersistOutcome::Applied
+            }
+            ProjectSave::NotApplied => PersistOutcome::NotApplied,
+            ProjectSave::Failed { status, fresh } => {
+                if let Some(fresh) = fresh {
+                    *active = fresh;
+                }
+                *status_message = Some((status, now()));
+                PersistOutcome::Failed
+            }
+        };
+    }
+    match update_global_defaults(&path, LockPolicy::tui(), active, mutate) {
         Ok(Some(fresh)) => {
             *active = fresh;
-            let label = match target {
-                DefaultsEditTarget::Project => "Config saved",
-                DefaultsEditTarget::Global => "Defaults saved",
-            };
-            *status_message = Some((label.to_string(), std::time::Instant::now()));
+            *status_message = Some(("Defaults saved".to_string(), now()));
             PersistOutcome::Applied
         }
         Ok(None) => PersistOutcome::NotApplied,
         Err(err) => {
-            *status_message = Some((err.status_text(flavor), std::time::Instant::now()));
+            *status_message = Some((err.status_text(), now()));
             PersistOutcome::Failed
         }
+    }
+}
+
+/// The whole-edit budget for a project save's gsd-tools children (D-07,
+/// [INFERRED I-kft-3]): one `config-set` takes about 150 ms (node startup).
+const CONFIG_SET_BUDGET: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// What [`save_project_config`] did. Off Linux/macOS only `Failed` is built.
+#[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
+enum ProjectSave {
+    /// Every planned call succeeded (or there was none: `changed` is false).
+    /// `fresh` is the config re-read from disk, when it parsed.
+    Saved {
+        fresh: Option<crate::state_reader::config_json::GsdConfig>,
+        changed: bool,
+    },
+    /// The edit closure changed nothing it recognised; nothing ran.
+    NotApplied,
+    /// Refused or failed; `status` is the status line, `fresh` the config on
+    /// disk afterwards when it parsed.
+    Failed {
+        status: String,
+        fresh: Option<crate::state_reader::config_json::GsdConfig>,
+    },
+}
+
+/// Save one project-scope Config-tab edit through gsd-tools (quick 261116-kft).
+/// Synchronous on purpose: it runs in the key handler, bounded by
+/// [`CONFIG_SET_BUDGET`].
+fn save_project_config(
+    root: &std::path::Path,
+    cached: &crate::state_reader::config_json::GsdConfig,
+    mutate: impl FnOnce(&mut crate::state_reader::config_json::GsdConfig) -> bool,
+) -> ProjectSave {
+    save_project_config_within(root, cached, CONFIG_SET_BUDGET, mutate)
+}
+
+/// Off Linux/macOS the bounded runner does not exist: refuse before any I/O.
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn save_project_config_within(
+    _root: &std::path::Path,
+    _cached: &crate::state_reader::config_json::GsdConfig,
+    _budget: std::time::Duration,
+    _mutate: impl FnOnce(&mut crate::state_reader::config_json::GsdConfig) -> bool,
+) -> ProjectSave {
+    ProjectSave::Failed {
+        status: "Config NOT saved: running gsd-tools is not supported on this platform".to_string(),
+        fresh: None,
+    }
+}
+
+/// Read and parse `<root>/.planning/config.json` with the bounded reader.
+/// `Ok(None)` when the file is absent; `Err` carries the refusal status.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn read_project_config(
+    path: &std::path::Path,
+) -> Result<Option<crate::state_reader::config_json::GsdConfig>, String> {
+    use crate::state_reader::config_json::parse_gsd_config;
+    use crate::state_reader::config_write::{read_bounded, CONFIG_READ_CAP};
+    const UNPARSEABLE: &str =
+        "Config NOT saved: the file on disk no longer parses — press r to reload";
+    match read_bounded(path, CONFIG_READ_CAP, true) {
+        Ok(bytes) => String::from_utf8(bytes)
+            .ok()
+            .and_then(|text| parse_gsd_config(&text))
+            .map(Some)
+            .ok_or_else(|| UNPARSEABLE.to_string()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("Config NOT saved: {}", e.kind())),
+    }
+}
+
+/// The reason a gsd-tools child gave: its last stderr line, else its first
+/// stdout line. A secret value is replaced by `<redacted>` BEFORE the cap and
+/// the escape (D-06: gsd-core echoes some keys in plaintext).
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn gsd_tools_reason(stderr_line: &str, stdout: &[u8], secret: Option<&str>) -> String {
+    const REASON_CAP: usize = 120;
+    let stdout = String::from_utf8_lossy(stdout);
+    let raw = Some(stderr_line.trim())
+        .filter(|l| !l.is_empty())
+        .or_else(|| stdout.lines().map(str::trim).find(|l| !l.is_empty()))
+        .unwrap_or("gsd-tools failed without a message");
+    let redacted = match secret {
+        Some(value) if !value.is_empty() => raw.replace(value, "<redacted>"),
+        _ => raw.to_string(),
+    };
+    let capped: String = redacted.chars().take(REASON_CAP).collect();
+    shown(&capped)
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn save_project_config_within(
+    root: &std::path::Path,
+    cached: &crate::state_reader::config_json::GsdConfig,
+    budget: std::time::Duration,
+    mutate: impl FnOnce(&mut crate::state_reader::config_json::GsdConfig) -> bool,
+) -> ProjectSave {
+    use crate::bounded_output::BoundedFailure as F;
+    use crate::state_reader::config_secrets::is_secret_key;
+    use crate::state_reader::config_set::plan_config_set;
+    let fail = |status: String, fresh| ProjectSave::Failed { status, fresh };
+    if owner_actions::active_workstream_is_set(root) {
+        return fail(
+            "Config NOT saved: an active workstream is set (.planning/active-workstream), so gsd-tools would write that workstream's config, not this one"
+                .to_string(),
+            None,
+        );
+    }
+    let path = root.join(".planning").join("config.json");
+    let (base, from_disk) = match read_project_config(&path) {
+        Ok(Some(c)) => (c, true),
+        Ok(None) => (cached.clone(), false),
+        Err(status) => return fail(status, None),
+    };
+    let disk = || from_disk.then(|| base.clone());
+    let mut edited = base.clone();
+    if !mutate(&mut edited) {
+        return ProjectSave::NotApplied;
+    }
+    let plan = match plan_config_set(&base, &edited) {
+        Ok(plan) => plan,
+        Err(refusal) => {
+            return fail(
+                format!(
+                    "Config NOT saved: {}: {}",
+                    shown(&refusal.key),
+                    refusal.reason_text()
+                ),
+                disk(),
+            )
+        }
+    };
+    if plan.is_empty() {
+        return ProjectSave::Saved {
+            fresh: disk(),
+            changed: false,
+        };
+    }
+    let Some(launcher) = owner_actions::resolve_launcher() else {
+        return fail(
+            "Config NOT saved: gsd-tools.cjs not found. Install: npx -y @opengsd/gsd-core@latest --claude --local"
+                .to_string(),
+            disk(),
+        );
+    };
+    if launcher.program == "node"
+        && !owner_actions::on_path(std::env::var_os("PATH").as_deref(), "node")
+    {
+        return fail(
+            "Config NOT saved: node not found on PATH".to_string(),
+            disk(),
+        );
+    }
+
+    let deadline = std::time::Instant::now() + budget;
+    let total = plan.len();
+    let mut failure: Option<(usize, String)> = None;
+    for (done, call) in plan.iter().enumerate() {
+        let secret = if is_secret_key(call.key()) {
+            call.value()
+        } else {
+            None
+        };
+        let timed_out = || {
+            format!(
+                "gsd-tools timed out after {} s; nothing is confirmed — press r to reload",
+                budget.as_secs()
+            )
+        };
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            failure = Some((done, timed_out()));
+            break;
+        }
+        let mut argv = launcher.prefix_args.clone();
+        argv.extend(call.args());
+        match owner_actions::run_gsd_tools(&launcher.program, &argv, root, left) {
+            Ok((true, _, _)) => {
+                tracing::info!(key = %call.key(), "config-set done");
+            }
+            Ok((false, stdout, stderr_line)) => {
+                let reason = gsd_tools_reason(&stderr_line, &stdout, secret);
+                tracing::warn!(key = %call.key(), %reason, "config-set failed");
+                failure = Some((done, reason));
+                break;
+            }
+            Err(f) => {
+                let reason = match f {
+                    F::TimedOut => timed_out(),
+                    F::Spawn(kind) | F::Sink(kind) => {
+                        format!("could not start gsd-tools ({kind}); nothing was run")
+                    }
+                    F::Io(kind) => format!(
+                        "lost gsd-tools while it ran ({kind}); nothing is confirmed — press r to reload"
+                    ),
+                };
+                tracing::warn!(key = %call.key(), ?f, "config-set did not finish");
+                failure = Some((done, reason));
+                break;
+            }
+        }
+    }
+    let fresh = read_project_config(&path).ok().flatten();
+    match failure {
+        None => ProjectSave::Saved {
+            fresh,
+            changed: true,
+        },
+        Some((0, reason)) => fail(format!("Config NOT saved: {reason}"), fresh),
+        Some((done, reason)) => fail(
+            format!("Config partly saved ({done} of {total} changes): {reason}"),
+            fresh,
+        ),
     }
 }
 
@@ -18683,6 +20035,7 @@ mod tests {
             width,
             experimental,
             &super::super::driver_run::DriverKeys::default(),
+            false,
         )
         .iter()
         .map(|s| s.content.as_ref())
@@ -20495,6 +21848,12 @@ mod tests {
             error_message: None,
             event_tx: None,
             reparse_dispatches: 0,
+            owner_digests: HashMap::new(),
+            owner_digest_failed: Default::default(),
+            owner_ack_busy: Default::default(),
+            owner_copy_busy: false,
+            inbox_view: Default::default(),
+            settle_pending: Default::default(),
             agent_views: HashMap::new(),
             agents_scan_in_flight: false,
             sort_mode: crate::ui::screens::SortMode::default(),
@@ -24285,6 +25644,152 @@ mod tests {
         }
     }
 
+    /// The Owner inbox's GUI argv (37-03, T-37-04): the separator, the authored
+    /// scrubbed program (`env -u VAR ... claude`, IN-02), then the validated command
+    /// as ONE final element. An extra element, or a command split on its spaces,
+    /// fails here. (The name predates IN-02, when the argv had three elements; the
+    /// 37-03 plan's acceptance check refers to it.)
+    #[test]
+    fn owner_terminal_argv_carries_no_untrusted_element_and_is_pinned_at_three() {
+        use crate::state_reader::owner_items::{RunCommand, RunVerb};
+        let commands = [
+            RunCommand {
+                verb: RunVerb::VerifyWork,
+                phase: Some("24".to_owned()),
+                workstream: None,
+            },
+            RunCommand {
+                verb: RunVerb::PlanPhaseGaps,
+                phase: Some("16".to_owned()),
+                workstream: Some("v14".to_owned()),
+            },
+            RunCommand {
+                verb: RunVerb::Debug,
+                phase: None,
+                workstream: None,
+            },
+        ];
+        for (term, expected_separator) in [
+            ("kitty", "-e"),
+            ("alacritty", "-e"),
+            ("gnome-terminal", "--"),
+            ("xterm", "-e"),
+            ("ptyxis", "--"),
+            ("xdg-terminal-exec", "--"),
+            ("x-terminal-emulator", "-e"),
+            ("wezterm", "-e"),
+            ("/usr/bin/gnome-terminal", "--"),
+        ] {
+            for command in &commands {
+                assert_eq!(
+                    owner_terminal_argv(term, command),
+                    [
+                        vec![expected_separator.to_string()],
+                        scrubbed_program(),
+                        vec![command.to_string()]
+                    ]
+                    .concat(),
+                    "owner_terminal_argv({term:?}, {command}) must be the separator, the \
+                     program name and the command as one element"
+                );
+            }
+        }
+        // The multiplexer vector has the same shape behind a leading `env`.
+        let mux = owner_mux_argv(&commands[0]).expect("a valid argv");
+        assert_eq!(
+            mux.as_slice(),
+            [scrubbed_program(), vec!["/gsd-verify-work 24".to_owned()]].concat()
+        );
+        // IN-02: the session selectors are removed, never inherited.
+        for var in ["GSD_WORKSTREAM", "GSD_SESSION_KEY", "TMUX_PANE"] {
+            let at = mux.as_slice().iter().position(|e| e == var).expect(var);
+            assert_eq!(mux.as_slice()[at - 1], "-u");
+        }
+    }
+
+    /// T-39-01: a settle's argv is the scrubbed program plus the prompt as ONE
+    /// element, for every terminal, even when the prompt holds spaces,
+    /// typographic quotes and `--ws alpha`.
+    #[test]
+    fn settle_argv_is_the_scrubbed_program_and_one_prompt_element() {
+        use crate::state_reader::owner_items::{RunCommand, RunVerb};
+        use crate::ui::screens::owner_block::GroupKey;
+        use crate::ui::screens::owner_settle::{
+            CheckRef, Outcome, SettleChoice, SettleDraft, SettlePlan, SettleScope, SettleTarget,
+        };
+        let plan = SettlePlan {
+            draft: SettleDraft {
+                target: SettleTarget {
+                    alias: "alder-api".to_owned(),
+                    key: GroupKey {
+                        lane: "test",
+                        kind: "uat",
+                        scope_label: None,
+                        workstream: Some("alpha".to_owned()),
+                        phase: "03".to_owned(),
+                        file: "03-UAT.md".to_owned(),
+                    },
+                    command: RunCommand {
+                        verb: RunVerb::VerifyWork,
+                        phase: Some("03".to_owned()),
+                        workstream: Some("alpha".to_owned()),
+                    },
+                    scope: SettleScope::Phase,
+                    checks: vec![CheckRef {
+                        file: "03-UAT.md".to_owned(),
+                        noun: "test",
+                        number: "2".to_owned(),
+                        name: "Saving a note".to_owned(),
+                    }],
+                },
+                cwd: std::path::PathBuf::from("/nonexistent/alder-api"),
+                live_session: None,
+            },
+            choice: SettleChoice {
+                outcome: Outcome::WontDo,
+                reason: "it\u{2019}s \u{201c}quoted\u{201d} --ws alpha".to_owned(),
+                move_to: None,
+            },
+        };
+        let prompt = plan.prompt();
+        assert!(
+            prompt.starts_with("/gsd-verify-work 03 --ws alpha "),
+            "{prompt}"
+        );
+        assert!(prompt.contains(' '));
+        for (term, expected_separator) in [
+            ("kitty", "-e"),
+            ("alacritty", "-e"),
+            ("gnome-terminal", "--"),
+            ("xterm", "-e"),
+            ("ptyxis", "--"),
+            ("xdg-terminal-exec", "--"),
+            ("x-terminal-emulator", "-e"),
+            ("wezterm", "-e"),
+            ("/usr/bin/gnome-terminal", "--"),
+        ] {
+            assert_eq!(
+                settle_terminal_argv(term, &plan),
+                [
+                    vec![expected_separator.to_string()],
+                    scrubbed_program(),
+                    vec![prompt.clone()]
+                ]
+                .concat(),
+                "settle_terminal_argv({term:?}) must be the separator, the program and the \
+                 prompt as one element"
+            );
+        }
+        let mux = settle_mux_argv(&plan).expect("a valid argv");
+        assert_eq!(
+            mux.as_slice(),
+            [scrubbed_program(), vec![prompt.clone()]].concat()
+        );
+        let program = scrubbed_program();
+        assert_eq!(mux.as_slice().len(), program.len() + 1);
+        assert!(mux.as_slice().last().unwrap().starts_with('/'));
+    }
+
     /// **The capability half of the fix** (T-21-27-06, prohibition 2).
     ///
     /// Every launcher [`resolve_launch_plan`] can return, plus the unbounded
@@ -25573,71 +27078,258 @@ mod tests {
             .unwrap_or_default()
     }
 
-    #[test]
-    fn config_save_takes_and_releases_the_planning_lock() {
-        use crate::state_reader::config_json::parse_gsd_config;
-        let (mut ctx, mut screen, proj_td, _home_td) = config_save_fixture();
-        flip_commit_docs(&mut screen, &mut ctx);
-        let planning = proj_td.path().join(".planning");
-        let on_disk =
-            parse_gsd_config(&std::fs::read_to_string(planning.join("config.json")).unwrap())
-                .expect("the file parses");
-        assert_eq!(on_disk.commit_docs, Some(false), "the edit reached disk");
-        assert!(!planning.join(".lock").exists(), "the lock is released");
-        let leftovers: Vec<_> = std::fs::read_dir(&planning)
-            .unwrap()
-            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-            .filter(|n| n.contains(".tmp-") || n.contains(".stale-"))
-            .collect();
-        assert!(leftovers.is_empty(), "no temp or stale file: {leftovers:?}");
-        assert_eq!(status_text(&ctx), "Config saved");
+    /// A fake gsd-tools: `sh -c <script> gsd-tools <args>`, forced as this
+    /// thread's launcher. No test runs this machine's gsd-core (I-kft-11).
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn force_fake_gsd_tools(script: &str) {
+        owner_actions::force_launcher(Some(crate::state_reader::queue_md::GsdToolsCmd {
+            program: "sh".to_string(),
+            prefix_args: vec![
+                "-c".to_string(),
+                script.to_string(),
+                "gsd-tools".to_string(),
+            ],
+        }));
     }
 
+    /// The `argv.log` a fake gsd-tools wrote in the project root, if any.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn argv_log(root: &std::path::Path) -> Option<String> {
+        std::fs::read_to_string(root.join("argv.log")).ok()
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn cached_config(ctx: &AppContext) -> crate::state_reader::config_json::GsdConfig {
+        ctx.view_cache[TEST_ALIAS].defaults_config.clone().unwrap()
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn disk_config(root: &std::path::Path) -> crate::state_reader::config_json::GsdConfig {
+        crate::state_reader::config_json::parse_gsd_config(
+            &std::fs::read_to_string(root.join(".planning/config.json")).unwrap(),
+        )
+        .unwrap()
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn same_config(
+        a: &crate::state_reader::config_json::GsdConfig,
+        b: &crate::state_reader::config_json::GsdConfig,
+    ) -> bool {
+        serde_json::to_value(a).unwrap() == serde_json::to_value(b).unwrap()
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
-    fn config_save_refuses_while_a_live_gsd_holds_the_planning_lock() {
+    fn config_save_runs_gsd_tools_config_set_and_reloads_from_disk() {
         let (mut ctx, mut screen, proj_td, _home_td) = config_save_fixture();
-        let planning = proj_td.path().join(".planning");
-        let lock = planning.join(".lock");
-        let body = format!(
-            r#"{{"pid":1,"cwd":"{}","acquired":"2026-10-19T00:00:00.000Z"}}"#,
-            proj_td.path().display()
+        force_fake_gsd_tools(
+            r#"echo "$*" >> argv.log; printf '{"mode":"yolo","commit_docs":false}' > .planning/config.json"#,
         );
-        std::fs::write(&lock, &body).unwrap();
-        let config_before = std::fs::read(planning.join("config.json")).unwrap();
-        let cached_before = ctx.view_cache[TEST_ALIAS]
-            .defaults_config
-            .as_ref()
-            .unwrap()
-            .commit_docs;
-
-        let started = std::time::Instant::now();
         flip_commit_docs(&mut screen, &mut ctx);
-        assert!(
-            started.elapsed() >= std::time::Duration::from_millis(1900),
-            "the save waits out the TUI budget"
+        let root = proj_td.path();
+        assert_eq!(
+            argv_log(root).as_deref(),
+            Some("config-set commit_docs false\n")
         );
+        assert!(same_config(&cached_config(&ctx), &disk_config(root)));
+        assert_eq!(cached_config(&ctx).commit_docs, Some(false));
+        assert_eq!(status_text(&ctx), "Config saved");
+        let names: Vec<_> = std::fs::read_dir(root.join(".planning"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["config.json".to_string()],
+            "the TUI creates nothing in .planning/"
+        );
+    }
 
-        assert_eq!(
-            std::fs::read(planning.join("config.json")).unwrap(),
-            config_before
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn config_save_reports_the_gsd_tools_refusal_and_keeps_the_cache_equal_to_disk() {
+        let (mut ctx, mut screen, proj_td, _home_td) = config_save_fixture();
+        let root = proj_td.path();
+        let before = std::fs::read(root.join(".planning/config.json")).unwrap();
+        force_fake_gsd_tools(
+            r#"echo "$*" >> argv.log; echo 'warning: defaults.json ignored' >&2; echo 'Error: Invalid value' >&2; exit 1"#,
         );
+        flip_commit_docs(&mut screen, &mut ctx);
+        assert_eq!(status_text(&ctx), "Config NOT saved: Error: Invalid value");
         assert_eq!(
-            std::fs::read_to_string(&lock).unwrap(),
-            body,
-            "the lock is untouched"
+            std::fs::read(root.join(".planning/config.json")).unwrap(),
+            before
         );
-        assert_eq!(
-            ctx.view_cache[TEST_ALIAS]
-                .defaults_config
-                .as_ref()
-                .unwrap()
-                .commit_docs,
-            cached_before,
-            "the cache still equals disk"
-        );
+        assert!(same_config(&cached_config(&ctx), &disk_config(root)));
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn config_save_without_gsd_tools_refuses_and_writes_nothing() {
+        let (mut ctx, mut screen, proj_td, _home_td) = config_save_fixture();
+        let root = proj_td.path();
+        let before = std::fs::read(root.join(".planning/config.json")).unwrap();
+        owner_actions::force_launcher(None);
+        flip_commit_docs(&mut screen, &mut ctx);
         let status = status_text(&ctx);
-        assert!(status.contains("Config NOT saved"), "{status}");
-        assert!(status.contains("pid 1"), "{status}");
+        assert!(
+            status.starts_with("Config NOT saved: gsd-tools.cjs not found"),
+            "{status}"
+        );
+        assert_eq!(
+            std::fs::read(root.join(".planning/config.json")).unwrap(),
+            before
+        );
+        assert_eq!(cached_config(&ctx).commit_docs, Some(true));
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn config_save_sets_model_profile_through_its_own_command() {
+        let (_ctx, _screen, proj_td, _home_td) = config_save_fixture();
+        let root = proj_td.path();
+        force_fake_gsd_tools(r#"echo "$*" >> argv.log"#);
+        let cached = disk_config(root);
+        let out = save_project_config(root, &cached, |c| {
+            c.model_profile = "quality".into();
+            true
+        });
+        assert!(matches!(out, ProjectSave::Saved { changed: true, .. }));
+        assert_eq!(
+            argv_log(root).as_deref(),
+            Some("config-set-model-profile quality\n")
+        );
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn config_save_of_a_secret_never_shows_the_value() {
+        use crate::state_reader::config_json::ApiKeySetting;
+        let (_ctx, _screen, proj_td, _home_td) = config_save_fixture();
+        let root = proj_td.path();
+        let cached = disk_config(root);
+        let secret = "sk-very-secret-value";
+        let set = |c: &mut crate::state_reader::config_json::GsdConfig| {
+            c.brave_search = Some(ApiKeySetting::Key(secret.into()));
+            true
+        };
+        force_fake_gsd_tools(r#"echo "$*" >> argv.log; echo "{\"value\":\"$3\"}""#);
+        let mut status_message = None;
+        let mut cache = ctx_cache_for(root);
+        let outcome = persist_active_config(Some(root), &mut cache, &mut status_message, set);
+        assert_eq!(outcome, PersistOutcome::Applied);
+        let status = status_message.unwrap().0;
+        assert_eq!(status, "Config saved");
+
+        // A failing child that echoes the value: the status is redacted.
+        force_fake_gsd_tools(r#"echo "Error: bad key $3 for $2" >&2; exit 1"#);
+        match save_project_config(root, &cached, set) {
+            ProjectSave::Failed { status, .. } => {
+                assert!(status.contains("<redacted>"), "{status}");
+                assert!(!status.contains(secret), "{status}");
+            }
+            _ => panic!("expected a failure"),
+        }
+    }
+
+    /// A Project-scope view cache over `root`'s config.json.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn ctx_cache_for(root: &std::path::Path) -> super::super::ProjectViewCache {
+        super::super::ProjectViewCache {
+            defaults_config: Some(disk_config(root)),
+            ..Default::default()
+        }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn config_save_refuses_an_active_workstream_and_an_unparseable_file() {
+        let (_ctx, _screen, proj_td, _home_td) = config_save_fixture();
+        let root = proj_td.path();
+        let cached = disk_config(root);
+        force_fake_gsd_tools(r#"echo "$*" >> argv.log"#);
+        let flip = |c: &mut crate::state_reader::config_json::GsdConfig| {
+            c.commit_docs = Some(false);
+            true
+        };
+        std::fs::write(root.join(".planning/active-workstream"), "ws1\n").unwrap();
+        match save_project_config(root, &cached, flip) {
+            ProjectSave::Failed { status, .. } => {
+                assert!(status.contains("an active workstream is set"), "{status}")
+            }
+            _ => panic!("expected the workstream refusal"),
+        }
+        std::fs::remove_file(root.join(".planning/active-workstream")).unwrap();
+        std::fs::write(root.join(".planning/config.json"), "{not json").unwrap();
+        match save_project_config(root, &cached, flip) {
+            ProjectSave::Failed { status, .. } => {
+                assert!(status.contains("no longer parses"), "{status}")
+            }
+            _ => panic!("expected the parse refusal"),
+        }
+        assert_eq!(argv_log(root), None, "no child ran");
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn config_save_refuses_a_value_gsd_tools_would_retype() {
+        let (_ctx, _screen, proj_td, _home_td) = config_save_fixture();
+        let root = proj_td.path();
+        let cached = disk_config(root);
+        force_fake_gsd_tools(r#"echo "$*" >> argv.log"#);
+        match save_project_config(root, &cached, |c| {
+            c.phase_naming = Some("12".into());
+            true
+        }) {
+            ProjectSave::Failed { status, .. } => {
+                assert!(
+                    status.starts_with("Config NOT saved: phase_naming: "),
+                    "{status}"
+                );
+                assert!(!status.contains("12"), "{status}");
+            }
+            _ => panic!("expected the coercion refusal"),
+        }
+        assert_eq!(argv_log(root), None);
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn config_save_reports_a_partial_save_and_a_timeout() {
+        let (_ctx, _screen, proj_td, _home_td) = config_save_fixture();
+        let root = proj_td.path();
+        let cached = disk_config(root);
+        let two = |c: &mut crate::state_reader::config_json::GsdConfig| {
+            c.commit_docs = Some(false);
+            c.response_language = Some("Deutsch".into());
+            true
+        };
+        // commit_docs sorts first; fail on the second key.
+        force_fake_gsd_tools(
+            r#"echo "$*" >> argv.log; if [ "$2" = response_language ]; then echo 'Error: nope' >&2; exit 1; fi; printf '{"mode":"yolo","commit_docs":false}' > .planning/config.json"#,
+        );
+        match save_project_config(root, &cached, two) {
+            ProjectSave::Failed { status, fresh } => {
+                assert_eq!(status, "Config partly saved (1 of 2 changes): Error: nope");
+                assert!(same_config(&fresh.unwrap(), &disk_config(root)));
+            }
+            _ => panic!("expected a partial save"),
+        }
+
+        force_fake_gsd_tools("exec sleep 30");
+        let started = std::time::Instant::now();
+        match save_project_config_within(root, &cached, std::time::Duration::from_secs(1), |c| {
+            c.commit_docs = Some(true);
+            c.parallelization = Some(false);
+            true
+        }) {
+            ProjectSave::Failed { status, .. } => {
+                assert!(status.contains("timed out after 1 s"), "{status}")
+            }
+            _ => panic!("expected a timeout"),
+        }
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
     }
 
     #[test]
@@ -25730,7 +27422,12 @@ mod tests {
                 .expect("a commit_docs row")
         };
 
-        // A project-scope edit: commit_docs -> false.
+        // A project-scope edit: commit_docs -> false, saved by a fake
+        // gsd-tools (quick 261116-kft).
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        force_fake_gsd_tools(
+            r#"printf '{"mode":"yolo","commit_docs":false}' > .planning/config.json"#,
+        );
         let idx = commit_docs_idx(&ctx);
         ctx.view_cache
             .get_mut(TEST_ALIAS)
@@ -27365,11 +29062,16 @@ mod tests {
 
     #[test]
     fn roadmap_footer_does_not_advertise_v() {
-        let footer: String =
-            footer_spans(&DetailSubView::RoadmapViz, 200, false, &Default::default())
-                .iter()
-                .map(|s| s.content.to_string())
-                .collect();
+        let footer: String = footer_spans(
+            &DetailSubView::RoadmapViz,
+            200,
+            false,
+            &Default::default(),
+            false,
+        )
+        .iter()
+        .map(|s| s.content.to_string())
+        .collect();
         assert!(!footer.contains("[v]"), "{footer}");
         assert!(footer.contains("[e]"), "{footer}");
     }
@@ -27382,6 +29084,7 @@ mod tests {
                 200,
                 experimental,
                 &Default::default(),
+                false,
             )
             .iter()
             .map(|s| s.content.to_string())
@@ -31485,6 +33188,7 @@ mod tests {
             dropdown: None,
             scroll_panes: Vec::new(),
             config_scope_tabs: Vec::new(),
+            owner_block: None,
         };
         assert_eq!(
             regions.click_target(3, 6),
@@ -36114,6 +37818,2539 @@ mod tests {
                 .agents_selected = agent_line_index(&view, index);
             screen.agents_enter(&mut ctx);
             assert_eq!(opened(&ctx), want, "from {path}");
+        }
+    }
+
+    // ── Owner block on the Phases tab (36-03) ───────────────────────────────
+
+    /// `waves_ctx` with two phases and `milestone` set, parked on Phases.
+    fn owner_ctx(digest: Option<crate::state_reader::owner_items::OwnerDigest>) -> AppContext {
+        let a = waves_inference(&[("1-01", None, Some(1))], &[]);
+        let b = waves_inference(&[("2-01", None, Some(1))], &[]);
+        let mut ctx = waves_ctx(vec![("1", "One", a), ("2", "Two", b)], "1");
+        ctx.project_states
+            .get_mut(TEST_ALIAS)
+            .expect("state")
+            .milestone = "v2.2".to_string();
+        if let Some(digest) = digest {
+            ctx.owner_digests.insert(TEST_ALIAS.to_string(), digest);
+        }
+        ctx
+    }
+
+    /// Draw only the Phases tab into a `width`x`height` backend, one line per row.
+    fn render_phases_at(
+        screen: &DetailScreen,
+        ctx: &AppContext,
+        width: u16,
+        height: u16,
+    ) -> Vec<String> {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("backend");
+        terminal
+            .draw(|frame| screen.render_pipeline_tab(frame, frame.area(), ctx))
+            .expect("draw the Phases tab");
+        let buffer = terminal.backend().buffer().clone();
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buffer.cell((x, y)).map_or(" ", |c| c.symbol()).to_string())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    fn sample() -> crate::state_reader::owner_items::OwnerDigest {
+        super::owner_block::sample_owner_digest()
+    }
+
+    #[test]
+    fn an_empty_or_missing_digest_leaves_the_phases_tab_unchanged() {
+        let screen = DetailScreen::new(TEST_ALIAS.to_string());
+        let none = owner_ctx(None);
+        let empty = owner_ctx(Some(
+            crate::state_reader::owner_items::OwnerDigest::default(),
+        ));
+        for (w, h) in [(80, 24), (120, 30), (140, 40)] {
+            assert_eq!(
+                render_phases_at(&screen, &none, w, h),
+                render_phases_at(&screen, &empty, w, h),
+                "{w}x{h}"
+            );
+            assert!(!render_phases_at(&screen, &none, w, h)
+                .join("\n")
+                .contains("Owner"));
+        }
+        // Only acknowledged, archived-zero and Deferred groups with no todos: nothing.
+        let mut quiet = sample();
+        quiet.groups.retain(|g| {
+            g.acknowledged || g.lane == crate::state_reader::owner_items::Lane::Deferred
+        });
+        quiet.groups.retain(|g| !g.acknowledged);
+        quiet.archived = Default::default();
+        quiet.hidden = Default::default();
+        let quiet = owner_ctx(Some(quiet));
+        assert_eq!(
+            render_phases_at(&screen, &none, 120, 30),
+            render_phases_at(&screen, &quiet, 120, 30)
+        );
+    }
+
+    #[test]
+    fn the_owner_block_hides_below_twelve_tab_rows() {
+        let screen = DetailScreen::new(TEST_ALIAS.to_string());
+        let ctx = owner_ctx(Some(sample()));
+        let none = owner_ctx(None);
+        let short = render_phases_at(&screen, &ctx, 120, 11);
+        assert_eq!(short, render_phases_at(&screen, &none, 120, 11));
+        let tall = render_phases_at(&screen, &ctx, 120, 12);
+        assert!(tall[0].starts_with("Owner "), "{}", tall[0]);
+        // The cap at 12 rows is 4: header, two body rows, the fold line.
+        assert!(tall[3].contains("Old debt"), "{tall:#?}");
+        assert!(tall[4].contains("Phases"), "{tall:#?}");
+    }
+
+    #[test]
+    fn the_owner_block_draws_above_no_phases_found() {
+        let screen = DetailScreen::new(TEST_ALIAS.to_string());
+        let mut ctx = test_ctx();
+        ctx.project_states.insert(
+            TEST_ALIAS.to_string(),
+            crate::state_reader::ProjectState::default(),
+        );
+        ctx.owner_digests.insert(TEST_ALIAS.to_string(), sample());
+        let rows = render_phases_at(&screen, &ctx, 120, 30);
+        assert!(rows[0].starts_with("Owner "), "{}", rows[0]);
+        let found = rows
+            .iter()
+            .position(|r| r.contains("No phases found"))
+            .expect("No phases found");
+        assert!(found > 1, "{rows:#?}");
+    }
+
+    #[test]
+    fn the_full_tab_waves_pane_hides_the_owner_block() {
+        let mut ctx = tracer_ctx();
+        ctx.owner_digests.insert(TEST_ALIAS.to_string(), sample());
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        assert!(render_detail_to_text_at(&screen, &ctx, 80, 24).contains("Owner "));
+        press(&mut screen, &mut ctx, KeyCode::Right);
+        assert_eq!(screen.focus, DetailFocus::Pane);
+        let text = render_detail_to_text_at(&screen, &ctx, 80, 24);
+        assert!(!text.contains("Owner "), "{text}");
+        assert!(text.contains("Waves"), "{text}");
+    }
+
+    #[test]
+    fn sc4_the_owner_block_heads_the_phases_tab_at_120x30() {
+        let screen = DetailScreen::new(TEST_ALIAS.to_string());
+        let ctx = owner_ctx(Some(sample()));
+        let text = render_detail_to_text_at(&screen, &ctx, 120, 30);
+        let lines: Vec<&str> = text.lines().collect();
+        let header = lines
+            .iter()
+            .position(|l| l.contains("Owner "))
+            .expect("header");
+        assert!(
+            lines[header].contains("sample") || lines[header].contains("proj"),
+            "{text}"
+        );
+        assert!(
+            lines[header].contains("v2.2 closes after: test 12"),
+            "{text}"
+        );
+        let block = &lines[header..];
+        let row = |needle: &str| {
+            block
+                .iter()
+                .find(|l| l.contains(needle))
+                .copied()
+                .unwrap_or_else(|| panic!("{needle}: {text}"))
+        };
+        let closes = row("clock-faces");
+        assert!(
+            closes.contains("TEST")
+                && closes.contains("6 checks")
+                && closes.contains("closes phase"),
+            "{closes}"
+        );
+        assert!(closes.contains("/gsd-verify-work 24"), "{closes}");
+        assert!(row("+ fix 1").contains("first-unlock"));
+        assert!(row("all checks passed, run /gsd-verify-work 22 to finalize").contains("TEST"));
+        assert!(row("awaiting your confirmation").contains("/gsd-debug"));
+        assert!(row("ws v14 handoff").contains("/gsd-resume-work --ws v14"));
+        assert!(row("1 failed check, 1 gap").contains("/gsd-plan-phase 25 --gaps"));
+        assert!(row("2 device \u{b7} 1 third party \u{b7} 1 other").contains("BLOCKED"));
+        let fold = row("Old debt (6)");
+        assert!(
+            fold.contains("Acknowledged (8 files)") && fold.contains("Todos 11 (oldest 96 d)"),
+            "{fold}"
+        );
+        // The phase list still renders below the block.
+        assert!(block.iter().any(|l| l.contains("Phases")), "{text}");
+        assert!(text.contains("One") && text.contains("Two"), "{text}");
+    }
+
+    #[test]
+    fn the_owner_block_row_grid_drops_command_then_age() {
+        let screen = DetailScreen::new(TEST_ALIAS.to_string());
+        let ctx = owner_ctx(Some(sample()));
+        let row_at = |w: u16, h: u16| {
+            render_phases_at(&screen, &ctx, w, h)
+                .into_iter()
+                .find(|l| l.contains("clock-faces"))
+                .expect("the ph 24 row")
+        };
+        let w100 = row_at(100, 30);
+        assert!(
+            w100.contains("/gsd-ve") && w100.contains("2 d"),
+            "the command is kept (cut to the room left): {w100}"
+        );
+        for (w, h) in [(99, 30), (80, 24)] {
+            let row = row_at(w, h);
+            assert!(!row.contains("/gsd-verify-work"), "{w}: {row}");
+            assert!(row.contains("2 d"), "{w}: {row}");
+        }
+        let w79 = row_at(79, 30);
+        assert!(
+            !w79.contains("/gsd-verify-work") && !w79.contains("2 d"),
+            "{w79}"
+        );
+        assert!(
+            w79.contains("closes phase") && w79.contains("clock-faces"),
+            "{w79}"
+        );
+        assert!(
+            !w79.contains('\u{2026}'),
+            "the name ends in an ellipsis only after both are gone: {w79}"
+        );
+        // A long name is cut only once the command and the age are gone.
+        let mut long = sample();
+        for g in &mut long.groups {
+            if g.phase == "24" {
+                g.phase_name = "n".repeat(80);
+            }
+        }
+        let ctx = owner_ctx(Some(long));
+        let cut = |w: u16| {
+            render_phases_at(&screen, &ctx, w, 30)
+                .into_iter()
+                .find(|l| l.contains("nnnn"))
+                .expect("the long-name row")
+        };
+        assert!(cut(79).contains('\u{2026}'));
+        assert!(!cut(79).contains("2 d"));
+    }
+
+    #[test]
+    fn a_fold_only_block_has_no_body() {
+        let screen = DetailScreen::new(TEST_ALIAS.to_string());
+        let mut digest = crate::state_reader::owner_items::OwnerDigest::default();
+        digest.hidden.todos = 4;
+        digest.hidden.todos_oldest_days = Some(9);
+        let ctx = owner_ctx(Some(digest));
+        let rows = render_phases_at(&screen, &ctx, 120, 30);
+        assert!(rows[0].starts_with("Owner "), "{}", rows[0]);
+        assert!(rows[1].contains("Todos 4 (oldest 9 d)"), "{}", rows[1]);
+        assert!(rows[2].contains("Phases"), "{}", rows[2]);
+    }
+
+    #[test]
+    fn a_clipped_block_shows_its_row_range() {
+        let screen = DetailScreen::new(TEST_ALIAS.to_string());
+        let ctx = owner_ctx(Some(sample()));
+        // 16 tab rows: the cap is 6, so 4 of the 8 body rows fit.
+        let rows = render_phases_at(&screen, &ctx, 120, 16);
+        assert!(rows[0].trim_end().ends_with(" 1-4 of 8"), "{}", rows[0]);
+        assert!(
+            rows[5].contains("Old debt"),
+            "the fold line stays pinned: {rows:#?}"
+        );
+        assert!(rows[1].contains("TEST"), "{rows:#?}");
+        // Nothing is clipped on a tall tab: no hint.
+        let tall = render_phases_at(&screen, &ctx, 120, 40);
+        assert!(!tall[0].contains(" of 8"), "{}", tall[0]);
+    }
+
+    #[test]
+    fn a_click_in_the_owner_block_selects_no_phase() {
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        let mut ctx = owner_ctx(Some(sample()));
+        let text = render_detail_to_text_at(&screen, &ctx, 120, 30);
+        let before = ctx
+            .view_cache
+            .get(TEST_ALIAS)
+            .map_or(0, |c| c.pipeline_selected);
+        let header = text
+            .lines()
+            .position(|l| l.contains("Owner "))
+            .expect("header");
+        for offset in 0..4u16 {
+            let row = u16::try_from(header).expect("row") + offset;
+            let _ = screen.handle_mouse(
+                MouseInput::Click {
+                    column: 10,
+                    row,
+                    double: false,
+                },
+                &mut ctx,
+            );
+            assert_eq!(
+                ctx.view_cache
+                    .get(TEST_ALIAS)
+                    .map_or(0, |c| c.pipeline_selected),
+                before,
+                "row {row}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_long_text_digest_stays_inside_the_block() {
+        let screen = DetailScreen::new(TEST_ALIAS.to_string());
+        let long = format!("{}\u{1b}[31m", "z".repeat(300));
+        let mut digest = sample();
+        for g in &mut digest.groups {
+            g.phase_name = long.clone();
+            g.phase = long.clone();
+            g.command = Some(long.clone());
+            if let crate::state_reader::owner_items::Scope::Archived { label, .. } = &mut g.scope {
+                *label = long.clone();
+            }
+        }
+        digest.closes_after.lane_phases.test = vec![long.clone(); 3];
+        digest.closes_after.not_built = vec![long.clone()];
+        let ctx = owner_ctx(Some(digest.clone()));
+        for w in [80u16, 120] {
+            let rows = render_phases_at(&screen, &ctx, w, 30);
+            let joined = rows.join("\n");
+            assert!(
+                joined.chars().all(|c| c == '\n' || !c.is_control()),
+                "no raw control on screen at {w}"
+            );
+            let model = super::owner_block::block_model(
+                TEST_ALIAS,
+                "v2.2",
+                &digest,
+                &Default::default(),
+                w,
+            );
+            for line in model.body.iter().chain(model.fold_line.iter()) {
+                assert!(line.width() <= usize::from(w), "{w}");
+            }
+            assert!(rows[0].starts_with("Owner "));
+        }
+    }
+
+    // ── Owner block focus, expansion, folds, scroll (36-04) ─────────────────
+
+    use super::owner_block::{Fold, GroupKey, OwnerBlockState, Stop};
+
+    fn owner_draw(screen: &DetailScreen, ctx: &AppContext) -> String {
+        render_detail_to_text_at(screen, ctx, 120, 30)
+    }
+
+    fn owner_view_of(ctx: &AppContext) -> OwnerBlockState {
+        ctx.view_cache
+            .get(TEST_ALIAS)
+            .map(|c| c.owner_block.clone())
+            .unwrap_or_default()
+    }
+
+    /// The identity of the sample's phase 24 TEST group (six checks).
+    fn key_24() -> GroupKey {
+        GroupKey {
+            lane: "test",
+            kind: "uat",
+            scope_label: None,
+            workstream: None,
+            phase: "24".to_owned(),
+            file: "phases/24/24-UAT.md".to_owned(),
+        }
+    }
+
+    /// The screen after one frame (so the block's rows are known to the keys).
+    fn owner_screen(ctx: &AppContext) -> DetailScreen {
+        let screen = DetailScreen::new(TEST_ALIAS.to_string());
+        owner_draw(&screen, ctx);
+        screen
+    }
+
+    fn key(screen: &mut DetailScreen, ctx: &mut AppContext, code: KeyCode) -> ScreenAction {
+        let action = screen.handle_key(code, KeyModifiers::NONE, ctx);
+        owner_draw(screen, ctx);
+        action
+    }
+
+    /// A block that draws only the non-selectable Todos fold has no cursor stop, so
+    /// the footer must not offer `[↑]owner` (UI review, Experience Design).
+    #[test]
+    fn the_footer_names_the_owner_block_only_when_it_has_a_stop() {
+        use crate::state_reader::owner_items::{Hidden, OwnerDigest};
+        let todos_only = OwnerDigest {
+            hidden: Hidden {
+                todos: 3,
+                todos_oldest_days: Some(5),
+                ..Hidden::default()
+            },
+            ..OwnerDigest::default()
+        };
+        let ctx = owner_ctx(Some(todos_only));
+        let screen = owner_screen(&ctx);
+        assert!(screen.owner_block_rows.get() > 0, "the Todos fold draws");
+        let drawn = owner_draw(&screen, &ctx);
+        let footer = drawn.lines().last().unwrap_or_default().to_owned();
+        assert!(footer.contains("tab bar"), "{footer}");
+        assert!(!footer.contains("owner"), "{footer}");
+        let ctx = owner_ctx(Some(sample()));
+        let screen = owner_screen(&ctx);
+        let drawn = owner_draw(&screen, &ctx);
+        let footer = drawn
+            .lines()
+            .rev()
+            .find(|l| l.contains("[\u{2191}]"))
+            .unwrap_or_default()
+            .to_owned();
+        assert!(footer.contains("owner"), "{footer}");
+    }
+
+    #[test]
+    fn owner_block_focus_path() {
+        let mut ctx = owner_ctx(Some(sample()));
+        let mut screen = owner_screen(&ctx);
+        assert!(screen.owner_block_rows.get() > 0);
+        // `↑` from phase row 0 enters the block on its last stop, the fold line.
+        key(&mut screen, &mut ctx, KeyCode::Up);
+        assert_eq!(screen.focus, DetailFocus::Owner);
+        assert_eq!(owner_view_of(&ctx).cursor, Some(Stop::FoldLine));
+        // One up: the last group row (BLOCKED); one down: the fold line again.
+        key(&mut screen, &mut ctx, KeyCode::Char('k'));
+        assert!(matches!(owner_view_of(&ctx).cursor, Some(Stop::Row(k)) if k.lane == "blocked"));
+        key(&mut screen, &mut ctx, KeyCode::Char('j'));
+        assert_eq!(owner_view_of(&ctx).cursor, Some(Stop::FoldLine));
+        // Past the last stop: back to the phase list, selection unchanged.
+        key(&mut screen, &mut ctx, KeyCode::Down);
+        assert_eq!(screen.focus, DetailFocus::Content);
+        assert_eq!(ctx.view_cache[TEST_ALIAS].pipeline_selected, 0);
+        // Up from the first stop goes to the tab bar.
+        key(&mut screen, &mut ctx, KeyCode::Up);
+        key(&mut screen, &mut ctx, KeyCode::Char('g'));
+        assert!(matches!(owner_view_of(&ctx).cursor, Some(Stop::Row(k)) if k.phase == "21"));
+        key(&mut screen, &mut ctx, KeyCode::Up);
+        assert_eq!(screen.focus, DetailFocus::TabBar);
+        // Esc returns to the list, a second Esc goes to the tab bar.
+        screen.focus = DetailFocus::Content;
+        key(&mut screen, &mut ctx, KeyCode::Up);
+        assert_eq!(screen.focus, DetailFocus::Owner);
+        key(&mut screen, &mut ctx, KeyCode::Esc);
+        assert_eq!(screen.focus, DetailFocus::Content);
+        key(&mut screen, &mut ctx, KeyCode::Esc);
+        assert_eq!(screen.focus, DetailFocus::TabBar);
+        // `G` reaches the last stop; `q` leaves the detail view.
+        screen.focus = DetailFocus::Owner;
+        key(&mut screen, &mut ctx, KeyCode::Char('g'));
+        key(&mut screen, &mut ctx, KeyCode::Char('G'));
+        assert_eq!(owner_view_of(&ctx).cursor, Some(Stop::FoldLine));
+        let action = screen.handle_key(KeyCode::Char('q'), KeyModifiers::NONE, &mut ctx);
+        assert!(matches!(action, ScreenAction::Pop));
+    }
+
+    /// Quick 261118-tm6 (owner report): the vertical order is tab bar, Owner
+    /// block, phase list, so `↓` from the tab bar reaches the block first, and
+    /// walking down through it reaches the phase list.
+    #[test]
+    fn tab_bar_down_on_the_phases_tab_enters_the_owner_block_first() {
+        for descend in [
+            KeyCode::Down,
+            KeyCode::Char('j'),
+            KeyCode::Enter,
+            KeyCode::Char(' '),
+        ] {
+            let mut ctx = owner_ctx(Some(sample()));
+            let mut screen = owner_screen(&ctx);
+            screen.focus = DetailFocus::TabBar;
+            owner_draw(&screen, &ctx);
+            key(&mut screen, &mut ctx, descend);
+            assert_eq!(screen.focus, DetailFocus::Owner, "{descend:?}");
+            assert!(
+                matches!(owner_view_of(&ctx).cursor, Some(Stop::Row(k)) if k.phase == "21"),
+                "{descend:?}: the first stop"
+            );
+            key(&mut screen, &mut ctx, KeyCode::Char('G'));
+            key(&mut screen, &mut ctx, KeyCode::Down);
+            assert_eq!(screen.focus, DetailFocus::Content, "{descend:?}");
+            assert_eq!(ctx.view_cache[TEST_ALIAS].pipeline_selected, 0);
+        }
+        // No block drawn: the tab bar descends to the phase list as before.
+        let mut ctx = owner_ctx(None);
+        let mut screen = owner_screen(&ctx);
+        screen.focus = DetailFocus::TabBar;
+        owner_draw(&screen, &ctx);
+        key(&mut screen, &mut ctx, KeyCode::Down);
+        assert_eq!(screen.focus, DetailFocus::Content);
+    }
+
+    /// `owner_ctx` with an empty phase list.
+    fn no_phases_owner_ctx() -> AppContext {
+        let mut ctx = owner_ctx(Some(sample()));
+        ctx.project_states.insert(
+            TEST_ALIAS.to_string(),
+            crate::state_reader::ProjectState::default(),
+        );
+        ctx
+    }
+
+    /// The drawn row holding `needle`.
+    fn drawn_row<'a>(text: &'a str, needle: &str) -> &'a str {
+        text.lines()
+            .find(|l| l.contains(needle))
+            .unwrap_or_else(|| panic!("no row with {needle:?}:\n{text}"))
+    }
+
+    /// Quick 261118-tm6 (owner report): with "No phases found" the list has
+    /// nothing to focus, so the Owner block holds the keyboard visibly from the
+    /// first frame and the first key acts on the cursor that frame drew.
+    #[test]
+    fn with_no_phases_the_owner_block_holds_visible_focus() {
+        let mut ctx = no_phases_owner_ctx();
+        let screen = DetailScreen::new(TEST_ALIAS.to_string());
+        let drawn = owner_draw(&screen, &ctx);
+        assert!(drawn.contains("No phases found"), "{drawn}");
+        let first = drawn_row(&drawn, "21");
+        assert!(
+            first.trim_start().starts_with("> "),
+            "first row focused:\n{drawn}"
+        );
+        let footer = drawn.lines().last().unwrap_or_default();
+        assert!(footer.contains("[Enter]actions"), "{footer}");
+        assert!(footer.contains("[Esc]tab bar"), "{footer}");
+        // The first `j` moves inside the block, from the first stop.
+        let mut screen = screen;
+        key(&mut screen, &mut ctx, KeyCode::Char('j'));
+        assert_eq!(screen.focus, DetailFocus::Owner);
+        let second = owner_block::skeleton(&sample(), &owner_view_of(&ctx)).stops[1].clone();
+        assert_eq!(owner_view_of(&ctx).cursor, Some(second));
+        // Past the last stop there is no list to land on: the cursor stays.
+        key(&mut screen, &mut ctx, KeyCode::Char('G'));
+        key(&mut screen, &mut ctx, KeyCode::Down);
+        assert_eq!(screen.focus, DetailFocus::Owner);
+        assert_eq!(owner_view_of(&ctx).cursor, Some(Stop::FoldLine));
+        // `Esc` goes to the tab bar, and `↓` comes straight back to the block.
+        key(&mut screen, &mut ctx, KeyCode::Esc);
+        assert_eq!(screen.focus, DetailFocus::TabBar);
+        key(&mut screen, &mut ctx, KeyCode::Down);
+        assert_eq!(screen.focus, DetailFocus::Owner);
+        // `↑` from the first stop also reaches the tab bar.
+        key(&mut screen, &mut ctx, KeyCode::Char('g'));
+        key(&mut screen, &mut ctx, KeyCode::Up);
+        assert_eq!(screen.focus, DetailFocus::TabBar);
+    }
+
+    /// Quick 261118-tm6: `↑` on an empty list acts on the block the frame showed
+    /// focused (its first stop leaves upward), not a jump onto its last stop.
+    #[test]
+    fn with_no_phases_up_leaves_the_block_it_showed_focused() {
+        let mut ctx = no_phases_owner_ctx();
+        let mut screen = owner_screen(&ctx);
+        key(&mut screen, &mut ctx, KeyCode::Up);
+        assert_eq!(screen.focus, DetailFocus::TabBar);
+    }
+
+    /// Quick 261118-tm6: one cursor on screen. While the Owner block has the
+    /// keyboard the phase list drops its `> ` marker; back on the list it shows.
+    #[test]
+    fn only_the_focused_level_draws_a_cursor_marker() {
+        let mut ctx = owner_ctx(Some(sample()));
+        let mut screen = owner_screen(&ctx);
+        let on_list = owner_draw(&screen, &ctx);
+        assert!(drawn_row(&on_list, "One").contains("> "), "{on_list}");
+        key(&mut screen, &mut ctx, KeyCode::Up);
+        assert_eq!(screen.focus, DetailFocus::Owner);
+        let on_block = owner_draw(&screen, &ctx);
+        let list_row = drawn_row(&on_block, "One");
+        let list_cell = list_row.split('\u{2502}').next().unwrap_or(list_row);
+        assert!(!list_cell.contains("> "), "{on_block}");
+    }
+
+    #[test]
+    fn without_a_block_up_still_reaches_the_tab_bar() {
+        for digest in [
+            None,
+            Some(crate::state_reader::owner_items::OwnerDigest::default()),
+        ] {
+            let mut ctx = owner_ctx(digest);
+            let mut screen = owner_screen(&ctx);
+            assert_eq!(screen.owner_block_rows.get(), 0);
+            key(&mut screen, &mut ctx, KeyCode::Up);
+            assert_eq!(screen.focus, DetailFocus::TabBar);
+        }
+        // A tab too short for the block draws none either.
+        let mut ctx = owner_ctx(Some(sample()));
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        render_detail_to_text_at(&screen, &ctx, 120, 14);
+        assert_eq!(screen.owner_block_rows.get(), 0);
+        key(&mut screen, &mut ctx, KeyCode::Up);
+        assert_eq!(screen.focus, DetailFocus::TabBar);
+    }
+
+    #[test]
+    fn owner_block_swallows_action_keys() {
+        let mut ctx = owner_ctx(Some(sample()));
+        let mut screen = owner_screen(&ctx);
+        key(&mut screen, &mut ctx, KeyCode::Up);
+        let before = owner_view_of(&ctx);
+        let action = key(&mut screen, &mut ctx, KeyCode::Char('e'));
+        assert!(matches!(action, ScreenAction::None));
+        assert_eq!(screen.focus, DetailFocus::Owner);
+        for (expand, collapse) in [
+            (KeyCode::Right, KeyCode::Left),
+            (KeyCode::Char('l'), KeyCode::Char('h')),
+        ] {
+            // Off the fold line `→`/`l` expand the row and `←`/`h` collapse it
+            // (quick 261119-f5b); neither leaves the block.
+            key(&mut screen, &mut ctx, KeyCode::Char('k'));
+            let action = key(&mut screen, &mut ctx, expand);
+            assert!(matches!(action, ScreenAction::None));
+            assert_eq!(owner_view_of(&ctx).expanded.len(), 1, "{expand:?}");
+            let action = key(&mut screen, &mut ctx, collapse);
+            assert!(matches!(action, ScreenAction::None));
+            assert_eq!(screen.focus, DetailFocus::Owner);
+            assert!(owner_view_of(&ctx).expanded.is_empty(), "{collapse:?}");
+            key(&mut screen, &mut ctx, KeyCode::Char('j'));
+        }
+        let after = owner_view_of(&ctx);
+        assert_eq!(before.cursor, after.cursor);
+        assert!(after.expanded.is_empty() && after.open_folds.is_empty());
+        assert!(ctx.status_message.is_none() && ctx.error_message.is_none());
+    }
+
+    /// 39-02, D-05: `x` on the fold line says what to select; Ctrl-x and Alt-x do
+    /// nothing at all (WR-01).
+    #[test]
+    fn owner_block_x_on_the_fold_line_says_what_to_select() {
+        let mut ctx = owner_ctx(Some(sample()));
+        let mut screen = owner_screen(&ctx);
+        key(&mut screen, &mut ctx, KeyCode::Up);
+        assert_eq!(owner_view_of(&ctx).cursor, Some(Stop::FoldLine));
+        let action = key(&mut screen, &mut ctx, KeyCode::Char('x'));
+        assert!(matches!(action, ScreenAction::None));
+        assert_eq!(
+            ctx.status_message.as_ref().map(|(m, _)| m.as_str()),
+            Some("Select a check or a group row to settle it")
+        );
+        assert_eq!(screen.focus, DetailFocus::Owner);
+    }
+
+    #[test]
+    fn owner_block_chorded_x_does_nothing() {
+        let mut ctx = owner_ctx(Some(sample()));
+        let mut screen = owner_screen(&ctx);
+        key(&mut screen, &mut ctx, KeyCode::Up);
+        for modifiers in [KeyModifiers::CONTROL, KeyModifiers::ALT] {
+            let action = screen.handle_key(KeyCode::Char('x'), modifiers, &mut ctx);
+            assert!(matches!(action, ScreenAction::None));
+        }
+        assert!(ctx.status_message.is_none());
+        assert_eq!(screen.focus, DetailFocus::Owner);
+    }
+
+    /// 39-02, D-04: with the cursor on an item line, `v`, `o`, `A` and `y` act on
+    /// the parent group exactly as on the row: same action, same status, same
+    /// recorded launch and copy.
+    #[test]
+    fn owner_block_row_keys_on_an_item_act_on_the_parent() {
+        use crate::config::RegisteredProject;
+        let probes = crate::clipboard::ClipboardProbes {
+            os: "linux",
+            wayland_display: true,
+            display: true,
+            on_path: vec!["wl-copy"],
+        };
+        let describe = |action: &ScreenAction| match action {
+            ScreenAction::None => "none".to_owned(),
+            ScreenAction::Pop => "pop".to_owned(),
+            ScreenAction::Push(screen) => format!("push {}", screen.name()),
+            ScreenAction::Replace(screen) => format!("replace {}", screen.name()),
+            ScreenAction::WriteOsc52(sequence) => format!("osc52 {sequence}"),
+            _ => "other".to_owned(),
+        };
+        let outcome = |code: char, on_item: bool| {
+            let mut ctx = owner_ctx(Some(sample()));
+            ctx.config.projects.insert(
+                TEST_ALIAS.to_string(),
+                RegisteredProject {
+                    path: std::path::PathBuf::from("/nonexistent/proj"),
+                    added: "2026-07-29".to_string(),
+                    driver_opt_in: None,
+                    extra: Default::default(),
+                },
+            );
+            owner_actions::force_launcher(Some(owner_actions::test_launcher()));
+            owner_actions::force_clipboard(Some(probes.clone()));
+            let mut screen = owner_screen(&ctx);
+            key(&mut screen, &mut ctx, KeyCode::Up);
+            {
+                let view = &mut ctx
+                    .view_cache
+                    .entry(TEST_ALIAS.to_string())
+                    .or_default()
+                    .owner_block;
+                view.cursor = Some(Stop::Row(key_24()));
+                view.expanded.insert(key_24());
+                if on_item {
+                    view.item_cursor = Some("check 0".to_owned());
+                }
+            }
+            let mut ran: Vec<String> = Vec::new();
+            let action = if code == 'v' {
+                screen.owner_run(&mut ctx, &mut |plan| {
+                    ran.push(plan.command.to_string());
+                    "ran".to_owned()
+                })
+            } else {
+                key(&mut screen, &mut ctx, KeyCode::Char(code))
+            };
+            let result = (
+                describe(&action),
+                ctx.status_message.as_ref().map(|(m, _)| m.clone()),
+                ran,
+                owner_actions::seam_ran(),
+                owner_view_of(&ctx).cursor,
+                screen.focus == DetailFocus::Owner,
+            );
+            owner_actions::force_clipboard(None);
+            result
+        };
+        for code in ['v', 'o', 'A', 'y'] {
+            let (on_row, on_item) = (outcome(code, false), outcome(code, true));
+            assert_eq!(on_row, on_item, "{code}");
+            assert!(
+                on_row.0 != "none"
+                    || on_row.1.is_some()
+                    || !on_row.2.is_empty()
+                    || !on_row.3.is_empty(),
+                "{code} did something"
+            );
+        }
+    }
+
+    #[test]
+    fn owner_block_v_runs_the_selected_group() {
+        use crate::config::RegisteredProject;
+        let mut ctx = owner_ctx(Some(sample()));
+        ctx.config.projects.insert(
+            TEST_ALIAS.to_string(),
+            RegisteredProject {
+                path: std::path::PathBuf::from("/nonexistent/proj"),
+                added: "2026-07-29".to_string(),
+                driver_opt_in: None,
+                extra: Default::default(),
+            },
+        );
+        let mut screen = owner_screen(&ctx);
+        let at = |ctx: &mut AppContext, stop: Stop| {
+            ctx.view_cache
+                .entry(TEST_ALIAS.to_string())
+                .or_default()
+                .owner_block
+                .cursor = Some(stop);
+        };
+        let mut runs: Vec<(std::path::PathBuf, String)> = Vec::new();
+        let mut run = |ctx: &mut AppContext, screen: &mut DetailScreen| {
+            ctx.status_message = None;
+            screen.owner_run(ctx, &mut |plan| {
+                runs.push((plan.cwd.clone(), plan.command.to_string()));
+                "ran".to_owned()
+            });
+            ctx.status_message.as_ref().map(|(m, _)| m.clone())
+        };
+        // A TEST row: one recorded launch for exactly that group.
+        at(&mut ctx, Stop::Row(key_24()));
+        assert_eq!(run(&mut ctx, &mut screen).as_deref(), Some("ran"));
+        // The fold line is not a group.
+        at(&mut ctx, Stop::FoldLine);
+        assert_eq!(
+            run(&mut ctx, &mut screen).as_deref(),
+            Some("Select a group row to run its command")
+        );
+        // A BLOCKED aggregate row has no command.
+        let digest = sample();
+        let blocked = digest
+            .groups
+            .iter()
+            .find(|g| g.lane == crate::state_reader::owner_items::Lane::Blocked)
+            .expect("a BLOCKED group");
+        at(&mut ctx, Stop::Row(GroupKey::aggregate(blocked)));
+        assert_eq!(
+            run(&mut ctx, &mut screen).as_deref(),
+            Some("No command for BLOCKED work: unblock it first")
+        );
+        assert_eq!(
+            runs,
+            [(
+                std::path::PathBuf::from("/nonexistent/proj"),
+                "/gsd-verify-work 24".to_owned()
+            )]
+        );
+    }
+
+    /// D-21 (37-07): `y` on a group row copies that group the way the inbox does
+    /// (the CLI's checklist lines); a BLOCKED aggregate copies every group of the
+    /// phase; the fold line says what to select. `e` and `x` stay swallowed.
+    #[test]
+    fn owner_block_y_copies_the_selected_group() {
+        use crate::ui::screens::owner_actions::{force_clipboard, seam_ran};
+        let mut ctx = owner_ctx(Some(sample()));
+        let mut screen = owner_screen(&ctx);
+        key(&mut screen, &mut ctx, KeyCode::Up);
+        assert_eq!(screen.focus, DetailFocus::Owner);
+        let at = |ctx: &mut AppContext, stop: Stop| {
+            ctx.view_cache
+                .entry(TEST_ALIAS.to_string())
+                .or_default()
+                .owner_block
+                .cursor = Some(stop);
+        };
+        let digest = sample();
+        let group_24 = digest
+            .groups
+            .iter()
+            .find(|g| GroupKey::of(g) == key_24())
+            .expect("the 24 group")
+            .clone();
+        let (want, lines) =
+            owner_actions::copy_text(TEST_ALIAS, std::slice::from_ref(&group_24)).expect("text");
+        // A native tool: the runner gets exactly that group's checklist.
+        force_clipboard(Some(crate::clipboard::ClipboardProbes {
+            os: "linux",
+            wayland_display: true,
+            display: true,
+            on_path: vec!["wl-copy"],
+        }));
+        at(&mut ctx, Stop::Row(key_24()));
+        let action = key(&mut screen, &mut ctx, KeyCode::Char('y'));
+        assert!(matches!(action, ScreenAction::None));
+        assert_eq!(
+            seam_ran(),
+            [(crate::clipboard::Tool::WlCopy, want.clone(), lines)]
+        );
+        assert_eq!(screen.focus, DetailFocus::Owner);
+        // No native tool: OSC 52 with an honest status.
+        force_clipboard(None);
+        let ScreenAction::WriteOsc52(sequence) = key(&mut screen, &mut ctx, KeyCode::Char('y'))
+        else {
+            panic!("OSC 52 without a tool");
+        };
+        assert_eq!(sequence, crate::clipboard::osc52(&want));
+        assert_eq!(
+            ctx.status_message.as_ref().map(|(m, _)| m.as_str()),
+            Some(
+                format!(
+                    "Sent {lines} lines to the terminal clipboard (OSC 52; the terminal must allow it)"
+                )
+                .as_str()
+            )
+        );
+        // The fold line over Old debt copies this project's old-debt checklist, the
+        // inbox's fold-line copy narrowed to one project (quick 261119-f5b, I-15).
+        at(&mut ctx, Stop::FoldLine);
+        ctx.status_message = None;
+        let ScreenAction::WriteOsc52(sequence) = key(&mut screen, &mut ctx, KeyCode::Char('y'))
+        else {
+            panic!("Old debt copies from the fold line");
+        };
+        let (old, _) = owner_actions::old_debt_text(&ctx, Some(TEST_ALIAS)).expect("old debt");
+        assert!(old.starts_with("OLD DEBT"), "{old}");
+        assert_eq!(sequence, crate::clipboard::osc52(&old));
+        // Over Acknowledged it refuses with the inbox's wording.
+        ctx.view_cache
+            .entry(TEST_ALIAS.to_string())
+            .or_default()
+            .owner_block
+            .fold_cursor = Some(Fold::Acknowledged);
+        ctx.status_message = None;
+        let action = key(&mut screen, &mut ctx, KeyCode::Char('y'));
+        assert!(matches!(action, ScreenAction::None));
+        assert_eq!(
+            ctx.status_message.as_ref().map(|(m, _)| m.as_str()),
+            Some("Nothing to copy: acknowledged items are hidden until their file changes")
+        );
+        // A BLOCKED aggregate copies the items of all its groups, one heading each.
+        let blocked = digest
+            .groups
+            .iter()
+            .find(|g| g.lane == crate::state_reader::owner_items::Lane::Blocked)
+            .expect("a BLOCKED group");
+        let parts: Vec<_> = digest
+            .groups
+            .iter()
+            .filter(|g| {
+                g.lane == crate::state_reader::owner_items::Lane::Blocked
+                    && g.workstream == blocked.workstream
+                    && g.phase == blocked.phase
+            })
+            .cloned()
+            .collect();
+        assert!(parts.len() > 1, "the sample has a two-file BLOCKED phase");
+        let (all, _) = owner_actions::copy_text(TEST_ALIAS, &parts).expect("text");
+        at(&mut ctx, Stop::Row(GroupKey::aggregate(blocked)));
+        let ScreenAction::WriteOsc52(sequence) = key(&mut screen, &mut ctx, KeyCode::Char('y'))
+        else {
+            panic!("OSC 52 without a tool");
+        };
+        assert_eq!(sequence, crate::clipboard::osc52(&all));
+    }
+
+    /// D-21 (37-06): `A` on a group row of the Owner block opens the same confirm
+    /// popup the inbox does, drawn over this detail view; the fold line and a BLOCKED
+    /// row say why not; nothing runs and the block's own state does not change.
+    #[test]
+    fn owner_block_a_opens_the_acknowledge_popup() {
+        use crate::config::RegisteredProject;
+        let mut ctx = owner_ctx(Some(sample()));
+        ctx.config.projects.insert(
+            TEST_ALIAS.to_string(),
+            RegisteredProject {
+                path: std::path::PathBuf::from("/nonexistent/proj"),
+                added: "2026-07-29".to_string(),
+                driver_opt_in: None,
+                extra: Default::default(),
+            },
+        );
+        owner_actions::force_launcher(Some(owner_actions::test_launcher()));
+        let mut screen = owner_screen(&ctx);
+        key_press_up(&mut screen, &mut ctx);
+        let at = |ctx: &mut AppContext, stop: Stop| {
+            ctx.view_cache
+                .entry(TEST_ALIAS.to_string())
+                .or_default()
+                .owner_block
+                .cursor = Some(stop);
+        };
+        at(&mut ctx, Stop::Row(key_24()));
+        let before = owner_view_of(&ctx);
+        let action = key(&mut screen, &mut ctx, KeyCode::Char('A'));
+        let ScreenAction::Push(popup) = action else {
+            panic!("`A` pushes the confirm popup");
+        };
+        assert_eq!(popup.name(), "ack_confirm");
+        assert!(ctx.status_message.is_none(), "{:?}", ctx.status_message);
+        assert!(ctx.owner_ack_busy.is_empty(), "nothing runs before Yes");
+        assert_eq!(screen.focus, DetailFocus::Owner);
+        let after = owner_view_of(&ctx);
+        assert_eq!(before.cursor, after.cursor);
+        assert_eq!(before.expanded, after.expanded);
+        // The fold line is not a group.
+        at(&mut ctx, Stop::FoldLine);
+        let action = key(&mut screen, &mut ctx, KeyCode::Char('A'));
+        assert!(matches!(action, ScreenAction::None));
+        assert_eq!(
+            ctx.status_message.as_ref().map(|(m, _)| m.as_str()),
+            Some("Select a group row to acknowledge it")
+        );
+        // A BLOCKED aggregate has no category.
+        let digest = sample();
+        let blocked = digest
+            .groups
+            .iter()
+            .find(|g| g.lane == crate::state_reader::owner_items::Lane::Blocked)
+            .expect("a BLOCKED group");
+        at(&mut ctx, Stop::Row(GroupKey::aggregate(blocked)));
+        let action = key(&mut screen, &mut ctx, KeyCode::Char('A'));
+        assert!(matches!(action, ScreenAction::None));
+        assert_eq!(
+            ctx.status_message.as_ref().map(|(m, _)| m.as_str()),
+            Some("Cannot acknowledge a BLOCKED row: gsd-core has no category for it")
+        );
+    }
+
+    /// D-21 (37-05): `o` on a group row of the Owner block opens the same read-only
+    /// viewer the inbox does, through `owner_actions::open_target`; on the fold line
+    /// it says what to select; the block's own state does not change.
+    #[test]
+    fn owner_block_o_opens_the_viewer() {
+        use crate::config::RegisteredProject;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let phase = dir.path().join(".planning/phases/24-clock");
+        std::fs::create_dir_all(&phase).unwrap();
+        std::fs::write(phase.join("24-UAT.md"), "# Phase 24 UAT\n").unwrap();
+        let mut digest = sample();
+        let group = digest
+            .groups
+            .iter_mut()
+            .find(|g| g.phase == "24" && g.lane == crate::state_reader::owner_items::Lane::Test)
+            .expect("the phase 24 TEST group");
+        group.file = ".planning/phases/24-clock/24-UAT.md".to_owned();
+        let wanted = GroupKey::of(group);
+        let mut ctx = owner_ctx(Some(digest));
+        ctx.config.projects.insert(
+            TEST_ALIAS.to_string(),
+            RegisteredProject {
+                path: dir.path().to_path_buf(),
+                added: "2026-07-29".to_string(),
+                driver_opt_in: None,
+                extra: Default::default(),
+            },
+        );
+        let mut screen = owner_screen(&ctx);
+        key_press_up(&mut screen, &mut ctx);
+        let at = |ctx: &mut AppContext, stop: Stop| {
+            ctx.view_cache
+                .entry(TEST_ALIAS.to_string())
+                .or_default()
+                .owner_block
+                .cursor = Some(stop);
+        };
+        at(&mut ctx, Stop::Row(wanted.clone()));
+        let before = owner_view_of(&ctx);
+        let action = key(&mut screen, &mut ctx, KeyCode::Char('o'));
+        let ScreenAction::Push(viewer) = action else {
+            panic!("`o` pushes the viewer");
+        };
+        assert_eq!(viewer.name(), "owner_file_view");
+        assert_eq!(
+            screen.focus,
+            DetailFocus::Owner,
+            "the block keeps the keyboard"
+        );
+        assert_eq!(owner_view_of(&ctx).cursor, before.cursor);
+        // WR-01: a chord is not the action key, and the block swallows it.
+        for modifiers in [KeyModifiers::CONTROL, KeyModifiers::ALT] {
+            for letter in ['o', 'v', 'A', 'y'] {
+                let action = screen.handle_key(KeyCode::Char(letter), modifiers, &mut ctx);
+                assert!(
+                    matches!(action, ScreenAction::None),
+                    "{modifiers:?}+{letter} must do nothing"
+                );
+                assert!(ctx.status_message.is_none(), "{modifiers:?}+{letter}");
+                assert_eq!(screen.focus, DetailFocus::Owner);
+            }
+        }
+        // The fold line is not a group.
+        at(&mut ctx, Stop::FoldLine);
+        let action = key(&mut screen, &mut ctx, KeyCode::Char('o'));
+        assert!(matches!(action, ScreenAction::None));
+        assert_eq!(
+            ctx.status_message.as_ref().map(|(m, _)| m.as_str()),
+            Some("Select a group row to open its file")
+        );
+        // A row whose file is gone says so.
+        std::fs::remove_file(phase.join("24-UAT.md")).unwrap();
+        at(&mut ctx, Stop::Row(wanted));
+        let action = key(&mut screen, &mut ctx, KeyCode::Char('o'));
+        assert!(matches!(action, ScreenAction::None));
+        assert_eq!(
+            ctx.status_message.as_ref().map(|(m, _)| m.as_str()),
+            Some("Cannot open .planning/phases/24-clock/24-UAT.md: not readable")
+        );
+    }
+
+    fn key_press_up(screen: &mut DetailScreen, ctx: &mut AppContext) {
+        key(screen, ctx, KeyCode::Up);
+    }
+
+    /// Quick 261118-u4e (I-1..I-4): in the Owner block, Enter on a check line or
+    /// the `file PATH` line of an expanded group opens the read-only viewer at the
+    /// right line, focus and cursor stay, Enter on the row and Space still toggle.
+    #[test]
+    fn owner_block_enter_on_a_check_or_file_line_opens_the_viewer_there() {
+        use super::owner_block::SubStop;
+        use crate::config::RegisteredProject;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let phase = dir.path().join(".planning/phases/24-clock");
+        std::fs::create_dir_all(&phase).unwrap();
+        let headings: String = (0..6)
+            .map(|n| format!("### {}. check {n}\nresult: pending\n\n", n + 1))
+            .collect();
+        std::fs::write(
+            phase.join("24-UAT.md"),
+            format!("# Phase 24 UAT\n\nSummary line.\n\n{headings}"),
+        )
+        .unwrap();
+        let mut digest = sample();
+        let group = digest
+            .groups
+            .iter_mut()
+            .find(|g| g.phase == "24" && g.lane == crate::state_reader::owner_items::Lane::Test)
+            .expect("the phase 24 TEST group");
+        group.file = ".planning/phases/24-clock/24-UAT.md".to_owned();
+        let wanted = GroupKey::of(group);
+        let file = group.file.clone();
+        let mut ctx = owner_ctx(Some(digest));
+        ctx.config.projects.insert(
+            TEST_ALIAS.to_string(),
+            RegisteredProject {
+                path: dir.path().to_path_buf(),
+                added: "2026-07-29".to_string(),
+                driver_opt_in: None,
+                extra: Default::default(),
+            },
+        );
+        let mut screen = owner_screen(&ctx);
+        key_press_up(&mut screen, &mut ctx);
+        assert_eq!(screen.focus, DetailFocus::Owner);
+        let set = |ctx: &mut AppContext, sub: Option<SubStop>| {
+            let view = &mut ctx
+                .view_cache
+                .entry(TEST_ALIAS.to_string())
+                .or_default()
+                .owner_block;
+            view.cursor = Some(Stop::Row(wanted.clone()));
+            view.expanded.insert(wanted.clone());
+            view.set_sub_stop(sub);
+        };
+        // The viewer's rows at 80x24, and the one the marker is on.
+        let rows_of = |viewer: &dyn Screen, ctx: &AppContext| -> Vec<String> {
+            use ratatui::backend::TestBackend;
+            use ratatui::Terminal;
+            let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("backend");
+            terminal
+                .draw(|frame| viewer.render(frame, frame.area(), ctx))
+                .expect("draw");
+            let buffer = terminal.backend().buffer().clone();
+            (0..24u16)
+                .map(|y| {
+                    (0..80u16)
+                        .map(|x| buffer[(x, y)].symbol().to_owned())
+                        .collect()
+                })
+                .collect()
+        };
+        let marked = |viewer: &dyn Screen, ctx: &AppContext| -> String {
+            let marker = crate::ui::glyphs::POINTER_RIGHT;
+            let rows: Vec<String> = rows_of(viewer, ctx)
+                .into_iter()
+                .filter(|row| row.contains(marker))
+                .collect();
+            assert_eq!(rows.len(), 1, "one marked line: {rows:?}");
+            rows[0].clone()
+        };
+        // Enter on the check line of "check 3" marks its heading.
+        set(&mut ctx, Some(SubStop::Item("check 3".to_owned())));
+        let before = owner_view_of(&ctx);
+        let ScreenAction::Push(viewer) = key(&mut screen, &mut ctx, KeyCode::Enter) else {
+            panic!("Enter on a check line pushes the viewer");
+        };
+        assert_eq!(viewer.name(), "owner_file_view");
+        assert!(
+            marked(&*viewer, &ctx).contains("4. check 3"),
+            "{}",
+            marked(&*viewer, &ctx)
+        );
+        assert_eq!(
+            screen.focus,
+            DetailFocus::Owner,
+            "the block keeps the keyboard"
+        );
+        let after = owner_view_of(&ctx);
+        assert_eq!(after.cursor, before.cursor);
+        assert_eq!(after.sub_stop(), before.sub_stop());
+        assert!(after.expanded.contains(&wanted));
+        // Enter on the file line marks the group's first check.
+        set(&mut ctx, Some(SubStop::File(file.clone())));
+        let ScreenAction::Push(viewer) = key(&mut screen, &mut ctx, KeyCode::Enter) else {
+            panic!("Enter on a file line pushes the viewer");
+        };
+        assert!(
+            marked(&*viewer, &ctx).contains("1. check 0"),
+            "{}",
+            marked(&*viewer, &ctx)
+        );
+        assert_eq!(
+            owner_view_of(&ctx).sub_stop(),
+            Some(SubStop::File(file.clone()))
+        );
+        // Enter on the row opens its action menu and changes no expansion; Space
+        // collapses it, and so does Space on a sub-row.
+        set(&mut ctx, None);
+        let action = key(&mut screen, &mut ctx, KeyCode::Enter);
+        assert!(matches!(action, ScreenAction::None));
+        assert!(
+            screen.menu.borrow().is_some(),
+            "Enter on a row opens the menu"
+        );
+        assert!(owner_view_of(&ctx).expanded.contains(&wanted));
+        key(&mut screen, &mut ctx, KeyCode::Esc);
+        assert!(screen.menu.borrow().is_none());
+        assert_eq!(screen.focus, DetailFocus::Owner, "Esc only closed the menu");
+        let action = key(&mut screen, &mut ctx, KeyCode::Char(' '));
+        assert!(matches!(action, ScreenAction::None));
+        assert!(!owner_view_of(&ctx).expanded.contains(&wanted));
+        set(&mut ctx, Some(SubStop::Item("check 1".to_owned())));
+        let action = key(&mut screen, &mut ctx, KeyCode::Char(' '));
+        assert!(matches!(action, ScreenAction::None));
+        assert!(!owner_view_of(&ctx).expanded.contains(&wanted));
+        assert_eq!(owner_view_of(&ctx).sub_stop(), None);
+        // `o` on a sub-row still opens the row's file, at the top (D-04).
+        set(&mut ctx, Some(SubStop::File(file.clone())));
+        let ScreenAction::Push(viewer) = key(&mut screen, &mut ctx, KeyCode::Char('o')) else {
+            panic!("`o` pushes the viewer");
+        };
+        let top = rows_of(&*viewer, &ctx);
+        assert!(
+            !top.iter()
+                .any(|row| row.contains(crate::ui::glyphs::POINTER_RIGHT)),
+            "{top:?}"
+        );
+        // A file that is gone is a status line, nothing pushed.
+        std::fs::remove_file(phase.join("24-UAT.md")).unwrap();
+        set(&mut ctx, Some(SubStop::Item("check 3".to_owned())));
+        let action = key(&mut screen, &mut ctx, KeyCode::Enter);
+        assert!(matches!(action, ScreenAction::None));
+        assert_eq!(
+            ctx.status_message.as_ref().map(|(m, _)| m.as_str()),
+            Some("Cannot open .planning/phases/24-clock/24-UAT.md: not readable")
+        );
+        // A check a refresh made vanish is dropped by the clamp before the key
+        // runs, so Enter acts on the row (a toggle), never on a stale line.
+        ctx.status_message = None;
+        set(&mut ctx, Some(SubStop::Item("check 3".to_owned())));
+        for g in &mut ctx.owner_digests.get_mut(TEST_ALIAS).unwrap().groups {
+            g.items.retain(|i| i.id != "check 3");
+        }
+        let action = key(&mut screen, &mut ctx, KeyCode::Enter);
+        assert!(matches!(action, ScreenAction::None));
+        assert!(ctx.status_message.is_none());
+        assert_eq!(owner_view_of(&ctx).sub_stop(), None);
+    }
+
+    /// The selected `file PATH` line of the Owner block is highlighted in place
+    /// and its row shows no gutter.
+    #[test]
+    fn owner_block_highlights_the_selected_file_line_in_place() {
+        use super::owner_block::SubStop;
+        let mut ctx = owner_ctx(Some(sample()));
+        let mut screen = owner_screen(&ctx);
+        key_press_up(&mut screen, &mut ctx);
+        {
+            let view = &mut ctx
+                .view_cache
+                .entry(TEST_ALIAS.to_string())
+                .or_default()
+                .owner_block;
+            view.cursor = Some(Stop::Row(key_24()));
+            view.expanded.insert(key_24());
+        }
+        let plain = owner_draw(&screen, &ctx);
+        let mut ctx2 = owner_ctx(Some(sample()));
+        let mut screen2 = owner_screen(&ctx2);
+        key_press_up(&mut screen2, &mut ctx2);
+        {
+            let view = &mut ctx2
+                .view_cache
+                .entry(TEST_ALIAS.to_string())
+                .or_default()
+                .owner_block;
+            view.cursor = Some(Stop::Row(key_24()));
+            view.expanded.insert(key_24());
+        }
+        for _ in 0..5 {
+            key(&mut screen2, &mut ctx2, KeyCode::Char('j'));
+        }
+        assert_eq!(
+            owner_view_of(&ctx2).sub_stop(),
+            Some(SubStop::Item("check 4".to_owned()))
+        );
+        key(&mut screen2, &mut ctx2, KeyCode::Char('j'));
+        assert_eq!(
+            owner_view_of(&ctx2).sub_stop(),
+            Some(SubStop::File(key_24().file))
+        );
+        let on_file = owner_draw(&screen2, &ctx2);
+        // The text moves nowhere: only the row's `> ` gutter differs. (The footer,
+        // the last line, names the selected line's keys and is left out.)
+        let body = plain.lines().count() - 1;
+        let differing: Vec<(&str, &str)> = plain
+            .lines()
+            .zip(on_file.lines())
+            .take(body)
+            .filter(|(a, b)| a != b)
+            .collect();
+        assert_eq!(plain.lines().count(), on_file.lines().count());
+        assert_eq!(differing.len(), 1, "{differing:#?}");
+        assert_eq!(differing[0].0.replacen('>', " ", 1), differing[0].1);
+    }
+
+    #[test]
+    fn owner_block_digits_reset_focus() {
+        for c in ['1', '3', 'D', '[', ']'] {
+            let mut ctx = owner_ctx(Some(sample()));
+            let mut screen = owner_screen(&ctx);
+            key(&mut screen, &mut ctx, KeyCode::Up);
+            assert_eq!(screen.focus, DetailFocus::Owner);
+            screen.handle_key(KeyCode::Char(c), KeyModifiers::NONE, &mut ctx);
+            assert_ne!(screen.focus, DetailFocus::Owner, "{c}");
+        }
+        let mut ctx = owner_ctx(Some(sample()));
+        let mut screen = owner_screen(&ctx);
+        key(&mut screen, &mut ctx, KeyCode::Up);
+        screen.handle_key(KeyCode::Char('3'), KeyModifiers::NONE, &mut ctx);
+        assert_ne!(stored_view(&ctx), DetailSubView::Pipeline);
+        // `?` and Tab fall through with the focus kept.
+        let mut ctx = owner_ctx(Some(sample()));
+        let mut screen = owner_screen(&ctx);
+        key(&mut screen, &mut ctx, KeyCode::Up);
+        screen.handle_key(KeyCode::Char('?'), KeyModifiers::NONE, &mut ctx);
+        assert_eq!(screen.focus, DetailFocus::Owner);
+    }
+
+    /// IN-04: the Owner block is keyboard-only, so a wheel step over it neither
+    /// moves the phase-list cursor nor takes the block's focus; below it the wheel
+    /// still scrolls the phase list.
+    #[test]
+    fn the_wheel_over_the_owner_block_scrolls_nothing() {
+        let mut ctx = owner_ctx(Some(sample()));
+        let mut screen = owner_screen(&ctx);
+        key(&mut screen, &mut ctx, KeyCode::Up);
+        assert_eq!(screen.focus, DetailFocus::Owner);
+        let block = screen.regions().owner_block.expect("the block was drawn");
+        let selected = ctx.view_cache[TEST_ALIAS].pipeline_selected;
+        for down in [true, false] {
+            let action = mouse_wheel(&mut screen, &mut ctx, block.x + 2, block.y + 1, down);
+            assert!(matches!(action, ScreenAction::None));
+            assert_eq!(screen.focus, DetailFocus::Owner, "down: {down}");
+            assert_eq!(ctx.view_cache[TEST_ALIAS].pipeline_selected, selected);
+        }
+        assert_eq!(
+            screen.regions().wheel_target(block.x + 2, block.bottom()),
+            WheelTarget::Content,
+            "the phase list below the block still takes the wheel"
+        );
+    }
+
+    /// WR-05: when a refresh leaves the focused block with nothing to stop on (only
+    /// the Todos fold, or no digest at all), the next key hands focus back to the
+    /// phase list and is consumed. The frame still advertised the Owner keys, so
+    /// `Enter` must not open a phase-list item and `e` must not enqueue.
+    #[test]
+    fn a_block_left_without_stops_consumes_the_next_key() {
+        use crate::state_reader::owner_items::{Hidden, OwnerDigest};
+        let todos_only = OwnerDigest {
+            hidden: Hidden {
+                todos: 3,
+                todos_oldest_days: Some(5),
+                ..Hidden::default()
+            },
+            ..OwnerDigest::default()
+        };
+        for (code, digest) in [
+            (KeyCode::Enter, Some(todos_only.clone())),
+            (KeyCode::Char('e'), Some(todos_only)),
+            (KeyCode::Enter, None),
+            (KeyCode::Char('e'), None),
+            (KeyCode::Esc, None),
+        ] {
+            let mut ctx = owner_ctx(Some(sample()));
+            let mut screen = owner_screen(&ctx);
+            key(&mut screen, &mut ctx, KeyCode::Up);
+            assert_eq!(screen.focus, DetailFocus::Owner);
+            match digest {
+                Some(digest) => {
+                    ctx.owner_digests.insert(TEST_ALIAS.to_string(), digest);
+                    owner_draw(&screen, &ctx);
+                    assert!(
+                        screen.owner_block_rows.get() > 0,
+                        "the Todos fold line still draws"
+                    );
+                }
+                None => {
+                    ctx.owner_digests.remove(TEST_ALIAS);
+                }
+            }
+            let selected = ctx.view_cache[TEST_ALIAS].pipeline_selected;
+            let action = screen.handle_key(code, KeyModifiers::NONE, &mut ctx);
+            assert!(
+                matches!(action, ScreenAction::None),
+                "{code:?}: consumed, not run as a phase-list key"
+            );
+            assert_eq!(screen.focus, DetailFocus::Content, "{code:?}");
+            assert_eq!(ctx.view_cache[TEST_ALIAS].pipeline_selected, selected);
+            assert!(
+                ctx.status_message.is_none() && ctx.error_message.is_none(),
+                "{code:?}: nothing ran"
+            );
+        }
+    }
+
+    /// The sample with the phase 24 group's first check carrying detail parts.
+    fn detailed_sample() -> crate::state_reader::owner_items::OwnerDigest {
+        let mut digest = sample();
+        let group = digest
+            .groups
+            .iter_mut()
+            .find(|g| g.phase == "24" && g.items.len() == 6)
+            .expect("phase 24");
+        group.items[0].test = Some("3".to_owned());
+        group.items[0].expected = Some("the clock face wraps".to_owned());
+        group.items[0].reason = Some("needs a device".to_owned());
+        digest
+    }
+
+    #[test]
+    fn space_expands_and_collapses_a_group() {
+        let mut ctx = owner_ctx(Some(detailed_sample()));
+        let mut screen = owner_screen(&ctx);
+        key(&mut screen, &mut ctx, KeyCode::Up);
+        key(&mut screen, &mut ctx, KeyCode::Char('g'));
+        key(&mut screen, &mut ctx, KeyCode::Char('j'));
+        assert!(matches!(owner_view_of(&ctx).cursor, Some(Stop::Row(k)) if k == key_24()));
+        let collapsed = owner_draw(&screen, &ctx);
+        assert!(!collapsed.contains("check 0"), "{collapsed}");
+        // Enter opens the menu and expands nothing; Space expands.
+        key(&mut screen, &mut ctx, KeyCode::Enter);
+        assert!(screen.menu.borrow().is_some());
+        assert!(owner_view_of(&ctx).expanded.is_empty());
+        key(&mut screen, &mut ctx, KeyCode::Esc);
+        let action = key(&mut screen, &mut ctx, KeyCode::Char(' '));
+        assert!(matches!(action, ScreenAction::None));
+        assert!(owner_view_of(&ctx).expanded.contains(&key_24()));
+        let model = super::owner_block::block_model(
+            TEST_ALIAS,
+            "v2.2",
+            ctx.owner_digests.get(TEST_ALIAS).expect("digest"),
+            &owner_view_of(&ctx),
+            120,
+        );
+        let lines: Vec<String> = model
+            .body
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        let at = lines
+            .iter()
+            .position(|l| l.contains("clock-faces"))
+            .expect("row");
+        // Five items (the first carries its number), the detail line, the
+        // overflow line, then the file.
+        assert!(lines[at + 1].ends_with("3 check 0"), "{lines:#?}");
+        assert_eq!(
+            lines[at + 2].trim_start(),
+            "expected: the clock face wraps \u{b7} reason: needs a device"
+        );
+        for n in 1..5 {
+            assert!(
+                lines[at + 2 + n].ends_with(&format!("check {n}")),
+                "{lines:#?}"
+            );
+        }
+        assert_eq!(lines[at + 7].trim_start(), "\u{2026} 1 more");
+        assert_eq!(lines[at + 8].trim_start(), "file phases/24/24-UAT.md");
+        assert!(!lines.iter().any(|l| l.contains("check 5")));
+        // The other groups stay collapsed.
+        assert!(lines[at + 9].contains("TEST"), "{lines:#?}");
+        // The block, scrolled to the group, draws its items inside the cap.
+        let text = owner_draw(&screen, &ctx);
+        assert!(
+            text.contains("3 check 0") && text.contains("expected: the clock face"),
+            "{text}"
+        );
+        // Space collapses, then Space expands again.
+        key(&mut screen, &mut ctx, KeyCode::Char(' '));
+        assert!(owner_view_of(&ctx).expanded.is_empty());
+        key(&mut screen, &mut ctx, KeyCode::Char(' '));
+        assert!(owner_view_of(&ctx).expanded.contains(&key_24()));
+        // Expansion survives leaving the block, and the gutter goes blank.
+        key(&mut screen, &mut ctx, KeyCode::Esc);
+        assert!(owner_view_of(&ctx).expanded.contains(&key_24()));
+        assert!(owner_draw(&screen, &ctx).contains("3 check 0"));
+    }
+
+    #[test]
+    fn sc4_an_expanded_group_shows_its_checks_beside_the_collapsed_rows() {
+        let mut ctx = owner_ctx(Some(detailed_sample()));
+        let mut screen = owner_screen(&ctx);
+        key(&mut screen, &mut ctx, KeyCode::Up);
+        key(&mut screen, &mut ctx, KeyCode::Char('g'));
+        key(&mut screen, &mut ctx, KeyCode::Char('j'));
+        key(&mut screen, &mut ctx, KeyCode::Char(' '));
+        // Walk past the expansion (five items, the file line, then the next row;
+        // D-04, quick 261118-u4e) so its tail (overflow, file) is in the window.
+        for _ in 0..7 {
+            key(&mut screen, &mut ctx, KeyCode::Char('j'));
+        }
+        let text = owner_draw(&screen, &ctx);
+        assert!(text.contains("check 4"), "{text}");
+        assert!(text.contains("\u{2026} 1 more"), "{text}");
+        assert!(text.contains("file phases/24/24-UAT.md"), "{text}");
+        assert!(
+            text.contains("all checks passed, run /gsd-verify-work 22"),
+            "{text}"
+        );
+        assert!(
+            text.contains("Old debt (6)") && text.contains("Todos 11"),
+            "{text}"
+        );
+        assert!(text.contains("Phases"), "{text}");
+        // Back at the group the detail line and the first items show.
+        for _ in 0..7 {
+            key(&mut screen, &mut ctx, KeyCode::Char('k'));
+        }
+        let text = owner_draw(&screen, &ctx);
+        assert!(
+            text.contains("3 check 0") && text.contains("expected: the clock face"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn the_cursor_row_is_marked_only_while_focused() {
+        let mut ctx = owner_ctx(Some(sample()));
+        let mut screen = owner_screen(&ctx);
+        let rows = |screen: &DetailScreen, ctx: &AppContext| {
+            let text = owner_draw(screen, ctx);
+            text.lines()
+                .filter(|l| l.starts_with("> ") && !l.contains('\u{2502}'))
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        };
+        assert!(rows(&screen, &ctx).is_empty());
+        key(&mut screen, &mut ctx, KeyCode::Up);
+        key(&mut screen, &mut ctx, KeyCode::Char('g'));
+        let marked = rows(&screen, &ctx);
+        assert_eq!(marked.len(), 1, "{marked:?}");
+        assert!(
+            marked[0].contains("TEST") && marked[0].contains("ph 21"),
+            "{marked:?}"
+        );
+        // The cursor row is BOLD and Cyan.
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 30)).expect("backend");
+        terminal
+            .draw(|f| screen.render(f, f.area(), &ctx))
+            .expect("draw");
+        let buffer = terminal.backend().buffer().clone();
+        let y = (0..30u16)
+            .find(|y| buffer.cell((0, *y)).is_some_and(|c| c.symbol() == ">"))
+            .expect("cursor row");
+        let cell = buffer.cell((3, y)).expect("cell");
+        assert_eq!(cell.fg, Color::Cyan);
+        assert!(cell.modifier.contains(Modifier::BOLD));
+        // The fold line takes the marker too.
+        key(&mut screen, &mut ctx, KeyCode::Char('G'));
+        let marked = rows(&screen, &ctx);
+        assert_eq!(marked.len(), 1);
+        assert!(marked[0].contains("Old debt"), "{marked:?}");
+        // Leaving focus draws no cursor and keeps the cursor identity.
+        key(&mut screen, &mut ctx, KeyCode::Esc);
+        assert!(rows(&screen, &ctx).is_empty());
+        assert!(owner_view_of(&ctx).cursor.is_some());
+    }
+
+    #[test]
+    fn the_footer_names_the_owner_block() {
+        let mut ctx = owner_ctx(Some(sample()));
+        let mut screen = owner_screen(&ctx);
+        let footer = |screen: &DetailScreen, ctx: &AppContext| {
+            owner_draw(screen, ctx)
+                .lines()
+                .last()
+                .unwrap_or("")
+                .to_owned()
+        };
+        assert!(
+            footer(&screen, &ctx).contains("[\u{2191}]owner"),
+            "{}",
+            footer(&screen, &ctx)
+        );
+        key(&mut screen, &mut ctx, KeyCode::Up);
+        // `↑` enters on the fold line (Old debt): its own keys, no row action.
+        assert_eq!(
+            footer(&screen, &ctx).trim_end(),
+            "  [j/k]move  [\u{2190}/\u{2192}]fold  [Enter]open  [y]copy  [Esc]phases  [q]uit  [?]help"
+        );
+        // On a row: the keys that act on it, with `v`'s command (no `[g]oto`: the
+        // Owner block is already in the project). A project that is not registered
+        // has no command to run, so `[v]` is absent there.
+        ctx.view_cache
+            .entry(TEST_ALIAS.to_string())
+            .or_default()
+            .owner_block
+            .cursor = Some(Stop::Row(key_24()));
+        assert!(!footer(&screen, &ctx).contains("[v]"));
+        ctx.config.projects.insert(
+            TEST_ALIAS.to_string(),
+            crate::config::RegisteredProject {
+                path: std::path::PathBuf::from("/nonexistent/proj"),
+                added: "2026-07-29".to_string(),
+                driver_opt_in: None,
+                extra: Default::default(),
+            },
+        );
+        assert_eq!(
+            footer(&screen, &ctx).trim_end(),
+            "  [Enter]actions  [v]run /gsd-verify-work 24  [x]settle  [o]pen  [A]ck  [y]copy  [Space]expand  [Esc]phases  [?]help"
+        );
+        // Without a block the lead stays `tab bar`.
+        let ctx = owner_ctx(None);
+        let screen = owner_screen(&ctx);
+        assert!(footer(&screen, &ctx).contains("[\u{2191}]tab bar"));
+    }
+
+    #[test]
+    fn focus_pane_below_100_columns_still_takes_the_whole_tab() {
+        let mut ctx = tracer_ctx();
+        ctx.owner_digests.insert(TEST_ALIAS.to_string(), sample());
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        render_detail_to_text_at(&screen, &ctx, 80, 24);
+        assert!(screen.owner_block_rows.get() > 0);
+        press(&mut screen, &mut ctx, KeyCode::Right);
+        assert_eq!(screen.focus, DetailFocus::Pane);
+        let text = render_detail_to_text_at(&screen, &ctx, 80, 24);
+        assert!(!text.contains("Owner "), "{text}");
+        assert_eq!(screen.owner_block_rows.get(), 0);
+        // `Left` comes back, the block draws again, and `↑` enters it.
+        press(&mut screen, &mut ctx, KeyCode::Left);
+        render_detail_to_text_at(&screen, &ctx, 80, 24);
+        press(&mut screen, &mut ctx, KeyCode::Up);
+        assert_eq!(screen.focus, DetailFocus::Owner);
+    }
+
+    #[test]
+    fn the_fold_line_walks_and_opens_old_debt_and_acknowledged() {
+        let mut ctx = owner_ctx(Some(sample()));
+        let mut screen = owner_screen(&ctx);
+        key(&mut screen, &mut ctx, KeyCode::Up);
+        assert_eq!(owner_view_of(&ctx).cursor, Some(Stop::FoldLine));
+        // Todos is never selectable: `→` stops at Acknowledged.
+        key(&mut screen, &mut ctx, KeyCode::Right);
+        key(&mut screen, &mut ctx, KeyCode::Right);
+        key(&mut screen, &mut ctx, KeyCode::Right);
+        key(&mut screen, &mut ctx, KeyCode::Enter);
+        let view = owner_view_of(&ctx);
+        assert_eq!(view.fold_cursor, Some(Fold::Acknowledged));
+        assert!(view.open_folds.contains(&Fold::Acknowledged));
+        let text = owner_draw(&screen, &ctx);
+        assert!(text.contains("\u{25be} Acknowledged"), "{text}");
+        assert!(text.contains("\u{25b8} Old debt"), "{text}");
+        // The acknowledged groups are stops now, ahead of the fold line.
+        key(&mut screen, &mut ctx, KeyCode::Char('k'));
+        assert!(matches!(owner_view_of(&ctx).cursor, Some(Stop::Row(k)) if k.phase == "18"));
+        key(&mut screen, &mut ctx, KeyCode::Char('j'));
+        // `←` back to Old debt and open it: archived rows under milestone headers.
+        key(&mut screen, &mut ctx, KeyCode::Left);
+        key(&mut screen, &mut ctx, KeyCode::Enter);
+        assert!(owner_view_of(&ctx).open_folds.contains(&Fold::OldDebt));
+        let model = super::owner_block::block_model(
+            TEST_ALIAS,
+            "v2.2",
+            ctx.owner_digests.get(TEST_ALIAS).expect("digest"),
+            &owner_view_of(&ctx),
+            120,
+        );
+        let lines: Vec<String> = model
+            .body
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        let headers: Vec<&str> = lines
+            .iter()
+            .map(|l| l.trim())
+            .filter(|l| *l == "v1.1" || *l == "v1.2")
+            .collect();
+        assert_eq!(headers, ["v1.1", "v1.2"], "{lines:#?}");
+        for phase in ["ph 04", "ph 08", "ph 09"] {
+            assert!(
+                lines.iter().any(|l| l.contains(phase)),
+                "{phase}: {lines:#?}"
+            );
+        }
+        assert!(lines
+            .iter()
+            .any(|l| l.contains("old-work") && l.contains("/gsd-verify-work 04")));
+        // Sub-headers are not stops; the archived rows are.
+        assert_eq!(model.stops.len(), 8 + 3 + 2 + 1);
+        // A digest without acknowledged groups makes Acknowledged a non-stop.
+        let mut digest = sample();
+        digest.groups.retain(|g| !g.acknowledged);
+        ctx.owner_digests.insert(TEST_ALIAS.to_string(), digest);
+        key(&mut screen, &mut ctx, KeyCode::Right);
+        assert_eq!(owner_view_of(&ctx).fold_cursor, Some(Fold::OldDebt));
+        assert!(!owner_view_of(&ctx).open_folds.contains(&Fold::Acknowledged));
+    }
+
+    #[test]
+    fn owner_block_state_survives_a_digest_refresh() {
+        let mut ctx = owner_ctx(Some(detailed_sample()));
+        let mut screen = owner_screen(&ctx);
+        key(&mut screen, &mut ctx, KeyCode::Up);
+        key(&mut screen, &mut ctx, KeyCode::Char('g'));
+        key(&mut screen, &mut ctx, KeyCode::Char('j'));
+        key(&mut screen, &mut ctx, KeyCode::Char(' '));
+        // Another group expanded, then the cursor moved to the debug row (`j`
+        // walks the expanded row's item lines first, D-04).
+        for _ in 0..12 {
+            if matches!(owner_view_of(&ctx).cursor, Some(Stop::Row(ref k)) if k.kind == "debug") {
+                break;
+            }
+            key(&mut screen, &mut ctx, KeyCode::Char('j'));
+        }
+        let on = owner_view_of(&ctx).cursor.clone();
+        assert!(
+            matches!(on, Some(Stop::Row(ref k)) if k.kind == "debug"),
+            "{on:?}"
+        );
+        key(&mut screen, &mut ctx, KeyCode::Char(' '));
+        // The refresh drops the cursor's group and every group but two.
+        let mut digest = detailed_sample();
+        digest.groups.retain(|g| g.phase == "24" || g.phase == "21");
+        ctx.owner_digests.insert(TEST_ALIAS.to_string(), digest);
+        key(&mut screen, &mut ctx, KeyCode::Char('j'));
+        let view = owner_view_of(&ctx);
+        assert!(
+            view.expanded.contains(&key_24()),
+            "the surviving group stays open"
+        );
+        assert_eq!(view.expanded.len(), 1, "the vanished group is dropped");
+        let stops = {
+            let model = super::owner_block::block_model(
+                TEST_ALIAS,
+                "v2.2",
+                ctx.owner_digests.get(TEST_ALIAS).expect("digest"),
+                &view,
+                120,
+            );
+            model.stops
+        };
+        assert!(stops.contains(view.cursor.as_ref().expect("cursor")));
+        // A refresh down to nothing at all must not panic either.
+        ctx.owner_digests.insert(
+            TEST_ALIAS.to_string(),
+            crate::state_reader::owner_items::OwnerDigest::default(),
+        );
+        owner_draw(&screen, &ctx);
+        key(&mut screen, &mut ctx, KeyCode::Char('j'));
+        assert_eq!(screen.focus, DetailFocus::Content);
+        owner_draw(&screen, &ctx);
+    }
+
+    #[test]
+    fn owner_block_scrolls_with_the_cursor() {
+        let mut ctx = owner_ctx(Some(sample()));
+        let mut screen = DetailScreen::new(TEST_ALIAS.to_string());
+        let draw = |screen: &DetailScreen, ctx: &AppContext| {
+            render_detail_to_text_at(screen, ctx, 120, 16)
+        };
+        let step = |screen: &mut DetailScreen, ctx: &mut AppContext, code: KeyCode| {
+            screen.handle_key(code, KeyModifiers::NONE, ctx);
+            draw(screen, ctx)
+        };
+        let text = draw(&screen, &ctx);
+        // 8 rows, a window of fewer: the header carries the range.
+        let window = usize::from(screen.owner_viewport_rows.get());
+        assert!(window > 0 && window < 8, "{window}: {text}");
+        assert!(text.contains(" 1-"), "{text}");
+        assert!(!text.contains("2 device"), "{text}");
+        step(&mut screen, &mut ctx, KeyCode::Up);
+        let text = step(&mut screen, &mut ctx, KeyCode::Char('k'));
+        assert!(
+            text.contains("2 device"),
+            "the BLOCKED row scrolled into view: {text}"
+        );
+        assert!(
+            text.contains(&format!(" {}-8 of 8", 8 - window + 1)),
+            "{text}"
+        );
+        // The fold line stays the last row of the block.
+        let lines: Vec<&str> = text.lines().collect();
+        let blocked = lines
+            .iter()
+            .position(|l| l.contains("2 device"))
+            .expect("row");
+        assert!(lines[blocked + 1].contains("Old debt"), "{text}");
+        // `g` scrolls back; `PgDn` moves by the viewport rows.
+        let text = step(&mut screen, &mut ctx, KeyCode::Char('g'));
+        assert!(text.contains(" 1-"), "{text}");
+        step(&mut screen, &mut ctx, KeyCode::PageDown);
+        assert_eq!(owner_view_of(&ctx).cursor_index, window);
+        step(&mut screen, &mut ctx, KeyCode::PageUp);
+        assert_eq!(owner_view_of(&ctx).cursor_index, 0);
+    }
+
+    #[test]
+    fn an_expanded_long_text_block_stays_inside_the_block() {
+        let long = format!("{}\u{1b}[31m", "z".repeat(300));
+        let mut digest = sample();
+        for g in &mut digest.groups {
+            g.phase_name = long.clone();
+            g.command = Some(long.clone());
+            g.file = long.clone();
+            if let crate::state_reader::owner_items::Scope::Archived { label, .. } = &mut g.scope {
+                *label = long.clone();
+            }
+            for item in &mut g.items {
+                item.name = long.clone();
+                item.expected = Some(long.clone());
+                item.reason = Some(long.clone());
+                item.gaps = (0..3)
+                    .map(|_| crate::state_reader::owner_items::OwnerGap {
+                        name: long.clone(),
+                        result: long.clone(),
+                        reason: Some(long.clone()),
+                    })
+                    .collect();
+            }
+        }
+        let skeleton = super::owner_block::skeleton(&digest, &OwnerBlockState::default());
+        let mut view = OwnerBlockState::default();
+        view.open_folds.insert(Fold::OldDebt);
+        view.open_folds.insert(Fold::Acknowledged);
+        let all = super::owner_block::skeleton(&digest, &view);
+        for stop in all.stops.iter().chain(&skeleton.stops) {
+            if let Stop::Row(key) = stop {
+                view.expanded.insert(key.clone());
+            }
+        }
+        for w in [80u16, 120] {
+            let model = super::owner_block::block_model(TEST_ALIAS, "v2.2", &digest, &view, w);
+            assert!(model.body.len() > 40, "{}", model.body.len());
+            for line in model.body.iter().chain(model.fold_line.iter()) {
+                assert!(line.width() <= usize::from(w), "{w}: {}", line.width());
+            }
+            let mut ctx = owner_ctx(Some(digest.clone()));
+            ctx.view_cache
+                .entry(TEST_ALIAS.to_string())
+                .or_default()
+                .owner_block = view.clone();
+            let rows = render_phases_at(&DetailScreen::new(TEST_ALIAS.to_string()), &ctx, w, 30);
+            assert!(
+                rows.join("\n")
+                    .chars()
+                    .all(|c| c == '\n' || !c.is_control()),
+                "no raw control at {w}"
+            );
+        }
+    }
+
+    // ── Row action footer and hotkeys (quick 261119-f5b) ───────────────────────
+
+    use crate::ui::screens::owner_block::SubStop;
+    use crate::ui::screens::owner_row_actions::{
+        self as row_actions, fixture, ActionId, Availability, Host,
+    };
+    use crate::ui::screens::owner_settle;
+
+    /// The Owner block over the row-action fixture digest: the project registered
+    /// at a path that is not on disk (nothing launches), both folds open, focus on
+    /// the block.
+    fn actions_ctx() -> (DetailScreen, AppContext) {
+        let mut ctx = owner_ctx(Some(fixture::digest()));
+        ctx.config.projects.insert(
+            TEST_ALIAS.to_string(),
+            crate::config::RegisteredProject {
+                path: std::path::PathBuf::from("/nonexistent/proj"),
+                added: "2026-07-29".to_string(),
+                driver_opt_in: None,
+                extra: Default::default(),
+            },
+        );
+        {
+            let view = &mut ctx
+                .view_cache
+                .entry(TEST_ALIAS.to_string())
+                .or_default()
+                .owner_block;
+            view.open_folds.insert(Fold::OldDebt);
+            view.open_folds.insert(Fold::Acknowledged);
+        }
+        let mut screen = owner_screen(&ctx);
+        key(&mut screen, &mut ctx, KeyCode::Up);
+        assert_eq!(screen.focus, DetailFocus::Owner);
+        (screen, ctx)
+    }
+
+    /// Put the Owner block's cursor on `key`, expanded or not, on `sub` when given.
+    fn park_owner(ctx: &mut AppContext, key: &GroupKey, expanded: bool, sub: Option<SubStop>) {
+        let view = &mut ctx
+            .view_cache
+            .entry(TEST_ALIAS.to_string())
+            .or_default()
+            .owner_block;
+        view.cursor = Some(Stop::Row(key.clone()));
+        if expanded {
+            view.expanded.insert(key.clone());
+        } else {
+            view.expanded.remove(key);
+        }
+        view.set_sub_stop(sub);
+    }
+
+    /// The footer line the Phases tab draws, at `width` columns.
+    fn owner_footer(screen: &DetailScreen, ctx: &AppContext, width: u16) -> String {
+        render_detail_to_text_at(screen, ctx, width, 30)
+            .lines()
+            .last()
+            .unwrap_or("")
+            .trim_end()
+            .to_owned()
+    }
+
+    fn row_keys(ctx: &AppContext) -> Vec<(GroupKey, owner_block::RowSrc)> {
+        let digest = ctx.owner_digest(TEST_ALIAS).expect("digest");
+        let view = owner_view_of(ctx);
+        owner_block::skeleton(digest, &view)
+            .stops
+            .into_iter()
+            .filter_map(|stop| match stop {
+                Stop::Row(key) => owner_block::row_src_for(digest, &key).map(|src| (key, src)),
+                Stop::FoldLine => None,
+            })
+            .collect()
+    }
+
+    fn drawn_keys(footer: &str) -> Vec<String> {
+        let mut keys = Vec::new();
+        let mut rest = footer;
+        while let Some(open) = rest.find('[') {
+            let Some(close) = rest[open..].find(']') else {
+                break;
+            };
+            keys.push(rest[open + 1..open + close].to_owned());
+            rest = &rest[open + close + 1..];
+        }
+        keys
+    }
+
+    fn ready_letters(
+        ctx: &AppContext,
+        src: &owner_block::RowSrc,
+        sub: Option<&SubStop>,
+        expanded: bool,
+    ) -> Vec<String> {
+        row_actions::row_actions(ctx, Host::OwnerBlock, TEST_ALIAS, src, sub, expanded)
+            .iter()
+            .filter(|a| a.is_ready() && a.id != ActionId::Toggle)
+            .map(|a| a.key_label.to_owned())
+            .collect()
+    }
+
+    fn action_letters(keys: &[String]) -> Vec<String> {
+        keys.iter()
+            .filter(|k| matches!(k.as_str(), "v" | "x" | "o" | "A" | "y" | "g"))
+            .cloned()
+            .collect()
+    }
+
+    /// Every row kind and sub-stop of the fixture: the Owner block's footer names
+    /// exactly the ready actions (never `[g]`, never a blocked key), the Enter word
+    /// of what Enter does there, and ends with `[?]help`.
+    #[test]
+    fn the_owner_footer_names_exactly_what_works_on_every_row() {
+        let (screen, mut ctx) = actions_ctx();
+        let rows = row_keys(&ctx);
+        assert!(rows.len() >= 10, "{}", rows.len());
+        for (key, src) in &rows {
+            park_owner(&mut ctx, key, false, None);
+            let footer = owner_footer(&screen, &ctx, 250);
+            let keys = drawn_keys(&footer);
+            assert_eq!(
+                action_letters(&keys),
+                ready_letters(&ctx, src, None, false),
+                "{key:?}: {footer}"
+            );
+            assert!(!keys.contains(&"g".to_owned()), "{footer}");
+            assert!(footer.contains("[Enter]actions"), "{footer}");
+            assert!(footer.contains("[Space]expand"), "{footer}");
+            assert!(footer.ends_with("[?]help"), "{footer}");
+            assert!(
+                footer.contains("[Esc]phases") && footer.contains("[q]uit"),
+                "{footer}"
+            );
+            park_owner(&mut ctx, key, true, None);
+            let open = owner_footer(&screen, &ctx, 250);
+            assert!(
+                open.contains("[Enter]actions") && open.contains("[Space]collapse"),
+                "{open}"
+            );
+            let stops = owner_block::row_sub_stops(src);
+            for sub in stops.iter().take(1).chain(stops.last()) {
+                park_owner(&mut ctx, key, true, Some(sub.clone()));
+                let footer = owner_footer(&screen, &ctx, 250);
+                assert!(footer.contains("[Enter]view"), "{sub:?}: {footer}");
+                assert!(footer.contains("[Space]collapse"), "{sub:?}: {footer}");
+                assert_eq!(
+                    action_letters(&drawn_keys(&footer)),
+                    ready_letters(&ctx, src, Some(sub), true),
+                    "{sub:?}: {footer}"
+                );
+            }
+        }
+    }
+
+    /// At 100 and 80 columns the Owner block's footer fits, ends with `[?]help` and
+    /// names only ready keys; `v`'s command shows at 100 and drops at 80.
+    #[test]
+    fn the_owner_footer_fits_100_and_80_columns() {
+        let (screen, mut ctx) = actions_ctx();
+        for (key, src) in &row_keys(&ctx) {
+            park_owner(&mut ctx, key, false, None);
+            let ready = ready_letters(&ctx, src, None, false);
+            for width in [100u16, 80] {
+                let footer = owner_footer(&screen, &ctx, width);
+                assert!(
+                    footer.chars().count() <= usize::from(width),
+                    "{width}: {footer}"
+                );
+                assert!(footer.ends_with("[?]help"), "{width}: {footer}");
+                assert!(
+                    action_letters(&drawn_keys(&footer))
+                        .iter()
+                        .all(|k| ready.contains(k)),
+                    "{width}: {footer}"
+                );
+            }
+        }
+        park_owner(&mut ctx, &key_24(), false, None);
+        assert_eq!(
+            owner_footer(&screen, &ctx, 100),
+            "  [Enter]actions  [v]run /gsd-verify-work 24  [x]settle  [o]pen  [A]ck  [y]copy  [?]help"
+        );
+        assert_eq!(
+            owner_footer(&screen, &ctx, 80),
+            "  [Enter]actions  [v]run  [x]settle  [o]pen  [A]ck  [y]copy  [?]help"
+        );
+    }
+
+    /// Every blocked cell the Owner block fixture produces: the hotkey prints
+    /// exactly the model's reason and pushes nothing.
+    #[test]
+    fn an_owner_blocked_reason_is_what_the_hotkey_prints() {
+        let (mut screen, mut ctx) = actions_ctx();
+        let rows = row_keys(&ctx);
+        let find = |phase: &str, lane: Option<crate::state_reader::owner_items::Lane>| {
+            rows.iter()
+                .find(|(key, src)| {
+                    key.phase == phase
+                        && key.scope_label.is_none()
+                        && lane.is_none_or(|lane| src.group.lane == lane)
+                })
+                .expect("fixture row")
+                .clone()
+        };
+        let blocked_lane = Some(crate::state_reader::owner_items::Lane::Blocked);
+        let cases = [
+            (find("28", None), ActionId::Run, 'v'),
+            (find("28", None), ActionId::Settle, 'x'),
+            (find("23", blocked_lane), ActionId::Open, 'o'),
+        ];
+        for ((key, src), id, letter) in cases {
+            park_owner(&mut ctx, &key, false, None);
+            let actions =
+                row_actions::row_actions(&ctx, Host::OwnerBlock, TEST_ALIAS, &src, None, false);
+            let Some(Availability::Blocked(reason)) = actions
+                .iter()
+                .find(|a| a.id == id)
+                .map(|a| a.availability.clone())
+            else {
+                panic!("{id:?} is blocked on {key:?}");
+            };
+            ctx.status_message = None;
+            let action = key_plain(&mut screen, &mut ctx, KeyCode::Char(letter));
+            assert!(matches!(action, ScreenAction::None), "{id:?}");
+            assert_eq!(
+                ctx.status_message.as_ref().map(|(m, _)| m.as_str()),
+                Some(reason.as_str()),
+                "{id:?} on {key:?}"
+            );
+        }
+    }
+
+    fn key_plain(screen: &mut DetailScreen, ctx: &mut AppContext, code: KeyCode) -> ScreenAction {
+        key(screen, ctx, code)
+    }
+
+    /// Quick 261125-khh, D-04: `x` on a row whose settle still runs opens the
+    /// stop-waiting confirm and starts nothing; the footer lists `[x]stop waiting`;
+    /// a done settle opens the chooser.
+    #[test]
+    fn owner_x_on_a_settling_row_offers_stop_waiting() {
+        use crate::ui::screens::settle_pending::{PendingSettle, Stage};
+        owner_settle::take_settle_launches();
+        let (mut screen, mut ctx) = actions_ctx();
+        park_owner(&mut ctx, &key_24(), false, None);
+        let src = owner_block::row_src_for(ctx.owner_digest(TEST_ALIAS).unwrap(), &key_24())
+            .expect("TEST 24");
+        assert!(owner_footer(&screen, &ctx, 250).contains("[x]settle"));
+        let mut entry = PendingSettle::for_alias_test(TEST_ALIAS);
+        entry.phase = "24".to_owned();
+        entry.files = src.files.clone();
+        ctx.settle_pending.insert(entry.clone());
+        let footer = owner_footer(&screen, &ctx, 250);
+        assert!(footer.contains("[x]stop waiting"), "{footer}");
+        ctx.status_message = None;
+        let action = key(&mut screen, &mut ctx, KeyCode::Char('x'));
+        let ScreenAction::Push(pushed) = action else {
+            panic!("x pushes the stop-waiting confirm");
+        };
+        assert_eq!(pushed.name(), "settle_stop");
+        assert!(ctx.status_message.is_none(), "nothing is said before Yes");
+        assert!(owner_settle::take_settle_launches().is_empty());
+        assert_eq!(ctx.settle_pending.len(), 1, "nothing is dropped before Yes");
+        entry.stage = Stage::Done {
+            since: std::time::Instant::now(),
+        };
+        ctx.settle_pending = Default::default();
+        ctx.settle_pending.insert(entry);
+        let action = key(&mut screen, &mut ctx, KeyCode::Char('x'));
+        let ScreenAction::Push(pushed) = action else {
+            panic!("the chooser");
+        };
+        assert_eq!(pushed.name(), "settle_chooser");
+    }
+
+    /// The fold line: `x` says the one shared text in both screens.
+    #[test]
+    fn owner_x_on_the_fold_line_says_the_shared_text() {
+        let (mut screen, mut ctx) = actions_ctx();
+        ctx.view_cache
+            .entry(TEST_ALIAS.to_string())
+            .or_default()
+            .owner_block
+            .cursor = Some(Stop::FoldLine);
+        ctx.status_message = None;
+        key(&mut screen, &mut ctx, KeyCode::Char('x'));
+        assert_eq!(
+            ctx.status_message.as_ref().map(|(m, _)| m.as_str()),
+            Some("Select a check or a group row to settle it")
+        );
+    }
+
+    // ── The Enter action menu (quick 261119-f5b) ───────────────────────────────
+
+    use crate::ui::screens::owner_row_actions::ActionMenu;
+
+    /// Everything a key sequence left behind that a menu entry must reproduce.
+    #[derive(Debug, PartialEq)]
+    struct Left {
+        action: String,
+        status: String,
+        runs: Vec<String>,
+        settles: usize,
+        copies: Vec<String>,
+        expanded: usize,
+        focus: DetailFocus,
+        cursor: Option<Stop>,
+    }
+
+    fn tag(action: &ScreenAction) -> String {
+        match action {
+            ScreenAction::None => "none".to_owned(),
+            ScreenAction::Push(screen) => format!("push:{}", screen.name()),
+            ScreenAction::WriteOsc52(text) => format!("osc52:{text}"),
+            ScreenAction::Pop => "pop".to_owned(),
+            _ => "other".to_owned(),
+        }
+    }
+
+    /// The Owner block with the cursor parked on the TEST row of phase 24.
+    fn parked_24() -> (DetailScreen, AppContext) {
+        let (screen, mut ctx) = actions_ctx();
+        park_owner(&mut ctx, &key_24(), false, None);
+        owner_draw(&screen, &ctx);
+        *screen.menu.borrow_mut() = None;
+        (screen, ctx)
+    }
+
+    fn left_by(keys: &[KeyCode]) -> Left {
+        owner_actions::take_run_launches();
+        owner_settle::take_settle_launches();
+        owner_actions::force_launcher(Some(owner_actions::test_launcher()));
+        owner_actions::force_clipboard(Some(crate::clipboard::ClipboardProbes {
+            os: "linux",
+            wayland_display: true,
+            display: true,
+            on_path: vec!["wl-copy"],
+        }));
+        let copies_before = owner_actions::seam_ran().len();
+        let (mut screen, mut ctx) = parked_24();
+        let mut last = ScreenAction::None;
+        for code in keys {
+            last = key(&mut screen, &mut ctx, *code);
+        }
+        let copies = owner_actions::seam_ran()
+            .into_iter()
+            .skip(copies_before)
+            .map(|(_, text, _)| text)
+            .collect();
+        owner_actions::force_clipboard(None);
+        owner_actions::force_launcher(None);
+        Left {
+            action: tag(&last),
+            status: ctx
+                .status_message
+                .as_ref()
+                .map(|(m, _)| m.clone())
+                .unwrap_or_default(),
+            runs: owner_actions::take_run_launches()
+                .iter()
+                .map(|plan| plan.command.to_string())
+                .collect(),
+            settles: owner_settle::take_settle_launches().len(),
+            copies,
+            expanded: owner_view_of(&ctx).expanded.len(),
+            focus: screen.focus,
+            cursor: owner_view_of(&ctx).cursor,
+        }
+    }
+
+    /// Enter on a group row opens the menu, expands nothing, draws it inside the
+    /// frame; Esc and `q` close only the menu.
+    #[test]
+    fn owner_enter_opens_the_menu_and_esc_or_q_close_only_it() {
+        let (mut screen, mut ctx) = parked_24();
+        let action = key(&mut screen, &mut ctx, KeyCode::Enter);
+        assert!(matches!(action, ScreenAction::None));
+        assert!(screen.menu.borrow().is_some());
+        assert!(owner_view_of(&ctx).expanded.is_empty());
+        let drawn = render_detail_to_text_at(&screen, &ctx, 80, 24);
+        assert!(drawn.contains(" Actions "), "{drawn}");
+        assert!(drawn.contains("> v     run             /gsd-verify-work 24"));
+        assert!(drawn.contains("Space expand"), "{drawn}");
+        assert!(!drawn.contains("go to project"), "g is inbox-only: {drawn}");
+        assert!(drawn.lines().all(|line| line.chars().count() <= 80));
+        let action = key(&mut screen, &mut ctx, KeyCode::Esc);
+        assert!(matches!(action, ScreenAction::None));
+        assert!(screen.menu.borrow().is_none());
+        assert_eq!(screen.focus, DetailFocus::Owner, "Esc only closed the menu");
+        key(&mut screen, &mut ctx, KeyCode::Enter);
+        let action = key(&mut screen, &mut ctx, KeyCode::Char('q'));
+        assert!(matches!(action, ScreenAction::None), "q did not pop");
+        assert!(screen.menu.borrow().is_none());
+        assert_eq!(screen.focus, DetailFocus::Owner);
+    }
+
+    /// A menu entry is the hotkey: the letter in the menu, and `j`..`Enter` onto
+    /// the entry, leave exactly what the typed key leaves.
+    #[test]
+    fn owner_menu_entries_are_the_hotkey_path() {
+        let menu = KeyCode::Enter;
+        let letters = ['v', 'x', 'o', 'A', 'y', ' '];
+        for letter in letters {
+            assert_eq!(
+                left_by(&[KeyCode::Char(letter)]),
+                left_by(&[menu, KeyCode::Char(letter)]),
+                "{letter:?} through the menu"
+            );
+        }
+        let v = left_by(&[menu, KeyCode::Char('v')]);
+        assert_eq!(v.runs, ["/gsd-verify-work 24"]);
+        assert_eq!(left_by(&[menu, KeyCode::Char('y')]).copies.len(), 1);
+        assert_eq!(
+            left_by(&[menu, KeyCode::Char('x')]).action,
+            "push:settle_chooser"
+        );
+        assert_eq!(
+            left_by(&[menu, KeyCode::Char('A')]).action,
+            "push:ack_confirm"
+        );
+        assert_eq!(left_by(&[menu, KeyCode::Char(' ')]).expanded, 1);
+        // v x o A y Space in order; the Owner block has no `g`.
+        for (n, letter) in letters.into_iter().enumerate() {
+            let mut keys = vec![menu];
+            keys.extend(std::iter::repeat_n(KeyCode::Char('j'), n));
+            keys.push(KeyCode::Enter);
+            assert_eq!(
+                left_by(&keys),
+                left_by(&[KeyCode::Char(letter)]),
+                "{n} x j then Enter is {letter:?}"
+            );
+        }
+        assert_eq!(
+            left_by(&[
+                menu,
+                KeyCode::Down,
+                KeyCode::Down,
+                KeyCode::Up,
+                KeyCode::Enter
+            ]),
+            left_by(&[KeyCode::Char('x')])
+        );
+    }
+
+    /// `x` through the menu opens the chooser and the popup's backdrop shows no
+    /// menu.
+    #[test]
+    fn owner_menu_closes_before_a_popup_draws_its_backdrop() {
+        owner_settle::take_settle_launches();
+        let (mut screen, mut ctx) = parked_24();
+        key(&mut screen, &mut ctx, KeyCode::Enter);
+        let ScreenAction::Push(chooser) = key(&mut screen, &mut ctx, KeyCode::Char('x')) else {
+            panic!("x opens the settle chooser");
+        };
+        assert_eq!(chooser.name(), "settle_chooser");
+        assert!(screen.menu.borrow().is_none());
+        assert!(owner_settle::take_settle_launches().is_empty());
+        let backdrop = render_detail_to_text_at(&screen, &ctx, 100, 30);
+        assert!(!backdrop.contains(" Actions "), "{backdrop}");
+    }
+
+    /// A blocked entry's letter prints the reason the menu drew and j/k skip it.
+    #[test]
+    fn owner_blocked_menu_entry_prints_the_reason_the_menu_drew() {
+        let (mut screen, mut ctx) = actions_ctx();
+        let (key28, _) = row_keys(&ctx)
+            .into_iter()
+            .find(|(key, _)| key.phase == "28")
+            .expect("the unreadable row");
+        park_owner(&mut ctx, &key28, false, None);
+        owner_draw(&screen, &ctx);
+        key(&mut screen, &mut ctx, KeyCode::Enter);
+        let drawn = render_detail_to_text_at(&screen, &ctx, 80, 24);
+        assert!(
+            drawn.contains("(No command: the source file is unreadable)"),
+            "{drawn}"
+        );
+        // v and x are blocked: the menu preselects `o`, and k stays there.
+        let selected =
+            |screen: &DetailScreen| screen.menu.borrow().as_ref().map(ActionMenu::selected);
+        assert_eq!(selected(&screen), Some(ActionId::Open));
+        key(&mut screen, &mut ctx, KeyCode::Char('k'));
+        assert_eq!(selected(&screen), Some(ActionId::Open));
+        let action = key(&mut screen, &mut ctx, KeyCode::Char('v'));
+        assert!(matches!(action, ScreenAction::None));
+        assert!(screen.menu.borrow().is_none());
+        assert_eq!(
+            ctx.status_message.as_ref().map(|(m, _)| m.as_str()),
+            Some("No command: the source file is unreadable")
+        );
+    }
+
+    /// While the menu is open nothing pops, switches tab or hands focus away, and
+    /// the mouse does nothing under it.
+    #[test]
+    fn owner_open_menu_swallows_keys_and_mouse() {
+        let (mut screen, mut ctx) = parked_24();
+        key(&mut screen, &mut ctx, KeyCode::Enter);
+        let tab_before = ctx.detail_sub_view_per_project.get(TEST_ALIAS).cloned();
+        let selected_before = ctx
+            .view_cache
+            .get(TEST_ALIAS)
+            .map_or(0, |c| c.pipeline_selected);
+        let cursor_before = owner_view_of(&ctx).cursor;
+        for code in [
+            KeyCode::Char('1'),
+            KeyCode::Char('4'),
+            KeyCode::Char('D'),
+            KeyCode::Char('['),
+            KeyCode::Char(']'),
+            KeyCode::Tab,
+            KeyCode::Char('?'),
+            KeyCode::Char('M'),
+            KeyCode::Char('g'),
+            KeyCode::Char('G'),
+            KeyCode::Left,
+            KeyCode::Right,
+            KeyCode::Char('h'),
+            KeyCode::Char('l'),
+            KeyCode::PageDown,
+            KeyCode::Char('e'),
+        ] {
+            let action = key(&mut screen, &mut ctx, code);
+            assert!(matches!(action, ScreenAction::None), "{code:?}");
+            assert!(screen.menu.borrow().is_some(), "{code:?} closed the menu");
+            assert_eq!(screen.focus, DetailFocus::Owner, "{code:?}");
+        }
+        assert_eq!(owner_view_of(&ctx).cursor, cursor_before);
+        assert!(owner_view_of(&ctx).expanded.is_empty());
+        // A Ctrl-V neither runs `v` nor closes the menu.
+        let action = screen.handle_key(KeyCode::Char('v'), KeyModifiers::CONTROL, &mut ctx);
+        assert!(matches!(action, ScreenAction::None));
+        assert!(screen.menu.borrow().is_some());
+        assert!(owner_actions::take_run_launches().is_empty());
+        // Clicks and wheel steps are swallowed wherever they land.
+        for column in [2u16, 12, 30, 50, 70] {
+            for row in [1u16, 4, 8, 14, 20] {
+                for input in [
+                    MouseInput::Click {
+                        column,
+                        row,
+                        double: false,
+                    },
+                    MouseInput::Click {
+                        column,
+                        row,
+                        double: true,
+                    },
+                    MouseInput::Wheel {
+                        column,
+                        row,
+                        down: true,
+                    },
+                ] {
+                    let action = screen.handle_mouse(input, &mut ctx);
+                    assert!(matches!(action, ScreenAction::None));
+                    assert!(screen.menu.borrow().is_some());
+                    assert_eq!(screen.focus, DetailFocus::Owner);
+                }
+            }
+        }
+        assert_eq!(
+            ctx.detail_sub_view_per_project.get(TEST_ALIAS).cloned(),
+            tab_before
+        );
+        assert_eq!(
+            ctx.view_cache
+                .get(TEST_ALIAS)
+                .map_or(0, |c| c.pipeline_selected),
+            selected_before
+        );
+        assert_eq!(owner_view_of(&ctx).cursor, cursor_before);
+    }
+
+    /// A refresh that drops the target closes the menu silently; the next key acts
+    /// as if no menu had been open.
+    #[test]
+    fn owner_refresh_that_drops_the_target_closes_the_menu_silently() {
+        let (mut screen, mut ctx) = parked_24();
+        key(&mut screen, &mut ctx, KeyCode::Enter);
+        assert!(screen.menu.borrow().is_some());
+        ctx.owner_digests.insert(
+            TEST_ALIAS.to_string(),
+            crate::state_reader::owner_items::OwnerDigest::default(),
+        );
+        // `q` is then the Owner block's own pop, not a menu close.
+        let action = screen.handle_key(KeyCode::Char('q'), KeyModifiers::NONE, &mut ctx);
+        assert!(matches!(action, ScreenAction::Pop));
+        assert!(screen.menu.borrow().is_none());
+        // Focus leaving the block drops it as well.
+        let (mut screen, mut ctx) = parked_24();
+        key(&mut screen, &mut ctx, KeyCode::Enter);
+        screen.focus = DetailFocus::TabBar;
+        key(&mut screen, &mut ctx, KeyCode::Char('x'));
+        assert!(screen.menu.borrow().is_none());
+        assert!(!render_detail_to_text_at(&screen, &ctx, 100, 30).contains(" Actions "));
+    }
+
+    /// Review WR-04: a frame over a menu whose row vanished (or whose block lost the
+    /// keyboard) clears the menu, so it never draws again when the row or the focus
+    /// comes back and the next key is not swallowed.
+    #[test]
+    fn owner_frame_clears_a_menu_whose_row_vanished_for_good() {
+        let (mut screen, mut ctx) = parked_24();
+        key(&mut screen, &mut ctx, KeyCode::Enter);
+        assert!(screen.menu.borrow().is_some());
+        let digest = ctx.owner_digests[TEST_ALIAS].clone();
+        ctx.owner_digests.insert(
+            TEST_ALIAS.to_string(),
+            crate::state_reader::owner_items::OwnerDigest::default(),
+        );
+        assert!(!render_detail_to_text_at(&screen, &ctx, 100, 30).contains(" Actions "));
+        assert!(screen.menu.borrow().is_none(), "the frame dropped the menu");
+        ctx.owner_digests.insert(TEST_ALIAS.to_string(), digest);
+        assert!(!render_detail_to_text_at(&screen, &ctx, 100, 30).contains(" Actions "));
+        let action = screen.handle_key(KeyCode::Char('q'), KeyModifiers::NONE, &mut ctx);
+        assert!(matches!(action, ScreenAction::Pop), "q is the screen's own");
+        // Focus leaving the block, then returning, does not bring the menu back.
+        let (mut screen, mut ctx) = parked_24();
+        key(&mut screen, &mut ctx, KeyCode::Enter);
+        screen.focus = DetailFocus::TabBar;
+        assert!(!render_detail_to_text_at(&screen, &ctx, 100, 30).contains(" Actions "));
+        assert!(screen.menu.borrow().is_none());
+        screen.focus = DetailFocus::Owner;
+        assert!(!render_detail_to_text_at(&screen, &ctx, 100, 30).contains(" Actions "));
+    }
+
+    /// Review WR-02: when a refresh removed the selected entry, the frame draws the
+    /// marker on the nearest ready entry and Enter runs that one.
+    #[test]
+    fn owner_enter_runs_the_marked_entry_after_the_selected_one_vanished() {
+        let (mut screen, mut ctx) = parked_24();
+        key(&mut screen, &mut ctx, KeyCode::Enter);
+        assert_eq!(
+            screen.menu.borrow().as_ref().map(ActionMenu::selected),
+            Some(ActionId::Run)
+        );
+        let mut digest = ctx.owner_digests[TEST_ALIAS].clone();
+        for group in &mut digest.groups {
+            if group.phase == "24" {
+                group.run = None;
+                group.command = None;
+            }
+        }
+        ctx.owner_digests.insert(TEST_ALIAS.to_string(), digest);
+        let drawn = render_detail_to_text_at(&screen, &ctx, 100, 30);
+        assert!(
+            drawn.contains("> x     settle"),
+            "the marker is drawn: {drawn}"
+        );
+        let ScreenAction::Push(popup) = key(&mut screen, &mut ctx, KeyCode::Enter) else {
+            panic!("Enter runs the marked entry, `x`");
+        };
+        assert_eq!(popup.name(), "settle_chooser");
+    }
+
+    /// Right/`l` expand, Left/`h` collapse (also from a check line); on the fold
+    /// line they step folds. Enter on the fold line toggles it, never a menu.
+    #[test]
+    fn owner_right_and_left_expand_collapse_and_step_folds() {
+        for (expand, collapse) in [
+            (KeyCode::Right, KeyCode::Left),
+            (KeyCode::Char('l'), KeyCode::Char('h')),
+        ] {
+            let (mut screen, mut ctx) = parked_24();
+            key(&mut screen, &mut ctx, collapse);
+            assert!(owner_view_of(&ctx).expanded.is_empty(), "{collapse:?}");
+            key(&mut screen, &mut ctx, expand);
+            assert!(
+                owner_view_of(&ctx).expanded.contains(&key_24()),
+                "{expand:?}"
+            );
+            key(&mut screen, &mut ctx, expand);
+            assert!(owner_view_of(&ctx).expanded.contains(&key_24()));
+            key(&mut screen, &mut ctx, KeyCode::Char('j'));
+            assert!(owner_view_of(&ctx).sub_stop().is_some());
+            key(&mut screen, &mut ctx, collapse);
+            let view = owner_view_of(&ctx);
+            assert!(view.expanded.is_empty());
+            assert_eq!(view.sub_stop(), None);
+            assert_eq!(view.cursor, Some(Stop::Row(key_24())));
+            // The fold line: Left/Right step the folds; nothing expands.
+            ctx.view_cache
+                .entry(TEST_ALIAS.to_string())
+                .or_default()
+                .owner_block
+                .cursor = Some(Stop::FoldLine);
+            key(&mut screen, &mut ctx, collapse);
+            let first = owner_view_of(&ctx).fold_cursor;
+            key(&mut screen, &mut ctx, expand);
+            assert_ne!(owner_view_of(&ctx).fold_cursor, first, "{expand:?} stepped");
+            assert!(owner_view_of(&ctx).expanded.is_empty());
+            let open_before = owner_view_of(&ctx).open_folds.clone();
+            key(&mut screen, &mut ctx, KeyCode::Enter);
+            assert!(screen.menu.borrow().is_none());
+            assert_ne!(
+                owner_view_of(&ctx).open_folds,
+                open_before,
+                "Enter toggled the fold"
+            );
+        }
+    }
+
+    /// Every row kind of the fixture: the menu at 80x24 stays inside the frame and
+    /// draws each entry's key and label unclipped.
+    #[test]
+    fn owner_menu_fits_80x24_on_every_row() {
+        let (mut screen, mut ctx) = actions_ctx();
+        for (row_key, src) in row_keys(&ctx) {
+            park_owner(&mut ctx, &row_key, false, None);
+            owner_draw(&screen, &ctx);
+            *screen.menu.borrow_mut() = None;
+            key(&mut screen, &mut ctx, KeyCode::Enter);
+            assert!(screen.menu.borrow().is_some(), "{row_key:?}");
+            let actions =
+                row_actions::row_actions(&ctx, Host::OwnerBlock, TEST_ALIAS, &src, None, false);
+            let drawn = render_detail_to_text_at(&screen, &ctx, 80, 24);
+            assert!(drawn.lines().all(|line| line.chars().count() <= 80));
+            assert!(drawn.contains(" Actions "), "{row_key:?}: {drawn}");
+            for action in &actions {
+                let want = format!("{:<6}{:<16}", action.key_label, action.label);
+                assert!(
+                    drawn.contains(&want),
+                    "{row_key:?} {:?} lacks {want:?}: {drawn}",
+                    action.id
+                );
+            }
+            *screen.menu.borrow_mut() = None;
         }
     }
 }

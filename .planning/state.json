@@ -1,7 +1,7 @@
 {
   "contract": "1.0.0",
   "flavor": "core",
-  "milestone": "v2.3.0 — Multiplexer Backends",
+  "milestone": "v2.5.0 — Owner Inbox",
   "phases": [
     {
       "number": "14",
@@ -82,12 +82,47 @@
       "number": "31",
       "name": "Retire Superseded Envelope & Goal-Layer Code",
       "status": "complete"
+    },
+    {
+      "number": "33",
+      "name": "Terminal multiplexer backend seam + herdr support",
+      "status": "complete"
+    },
+    {
+      "number": "34",
+      "name": "Owner items reader + inbox CLI",
+      "status": "pending"
+    },
+    {
+      "number": "35",
+      "name": "Decisions, code-needed and gates",
+      "status": "complete"
+    },
+    {
+      "number": "36",
+      "name": "Dashboard and detail",
+      "status": "pending"
+    },
+    {
+      "number": "37",
+      "name": "Inbox screen and actions",
+      "status": "pending"
+    },
+    {
+      "number": "38",
+      "name": "Inbox digest and triage hygiene",
+      "status": "pending"
+    },
+    {
+      "number": "39",
+      "name": "Check actions through GSD",
+      "status": "in_progress"
     }
   ],
   "next": {
-    "command": "/gsd-progress",
-    "label": "Show progress",
-    "reason": "Unsure of state — showing progress"
+    "command": "/gsd-progress --next",
+    "label": "Advance to the next step (verify)",
+    "reason": "Phase 6 of 6 · 17% · ready to verify"
   },
-  "updated_at": "2026-11-11T02:01:15.633Z"
+  "updated_at": "2026-11-17T21:33:08.787Z"
 }

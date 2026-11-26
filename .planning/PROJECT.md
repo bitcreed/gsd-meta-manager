@@ -74,9 +74,19 @@ See the state of every GSD project at a glance and act on any of them without le
 
 ### Active
 
-No milestone is open (v2.3.0 shipped 2026-11-10). Next: `/gsd-new-milestone`.
+**v2.5.0 Owner Inbox** (started 2026-11-14) — requirements in `.planning/REQUIREMENTS.md`, source
+of truth `.planning/research/OWNER-INBOX-UX.md`:
 
-Candidates carried forward:
+- [ ] **OWN-01..OWN-12** — native per-item UAT/VERIFICATION reader (gsd-core `audit-uat` parity,
+  oracle-checked), owner rules R1-R10 (lanes, UAT supersedes VERIFICATION, gaps merge, acknowledged,
+  archived, deferred, closeable-by-testing, milestone gate), decide/fix signals, safety and cost.
+- [ ] **OWN-13..OWN-15** — read-only `gsd-meta-manager inbox [--json]` CLI and additive `owner`
+  counts in `status --json`.
+- [ ] **OWN-16..OWN-23** — dashboard `You` column and summary line, AttentionFirst rank and `/y`
+  filter, Owner block on the detail Phases tab, cross-project inbox screen with run / acknowledge /
+  copy actions, help and README.
+
+Candidates carried forward (not in v2.5.0 scope):
 
 - **Further multiplexer backends** — zellij, WezTerm mux, kitty remote control, GNU screen, Rex, herdr-core/`hc` (MUX-F01..F06 in `.planning/milestones/v2.3.0-REQUIREMENTS.md`). Phase 33 IN-06 (`same_dir` canonicalize per herdr pane on the UI thread) is open at info.
 
@@ -176,6 +186,28 @@ across state readers, config schema, and UI).
 
 </details>
 
+## Current Milestone: v2.5.0 Owner Inbox
+
+**Goal:** Answer "what do I, the owner, have to do?" across every registered project in one place:
+which checks to run to close a phase, what waits on a ruling, where code is needed, and what blocks
+the milestone, read natively from the files without running gsd-core per project.
+
+**Target features:**
+- Native per-item UAT/VERIFICATION reader matching gsd-core `audit-uat` (Layer A, conformance
+  oracle), plus the owner's rules on top (Layer B): lanes Test/Decide/Fix/Blocked, dedup, acknowledged,
+  archived and deferred handling, closeable-by-testing and the milestone gate
+- `gsd-meta-manager inbox [--json]` (schema `gsd-meta-manager/inbox` v1) and `owner` counts in
+  `status --json`, documented in `status --skill`
+- Dashboard `You` column, summary line, `has owner work` sort rank and `/y` filter; `needs_human` and
+  the `❢` badge stay unchanged
+- Owner block on the detail Phases tab and a cross-project inbox screen (`i`) with run command (`v`),
+  acknowledge via gsd-core (`A`) and copy checklist (`y`)
+
+**Key context:** started unattended from the owner-inbox UX report (evidence: `audit-uat` over 20
+projects, 568 raw items → ~43 actionable checks). Four phases, 34-37. All open decisions D1-D12 take
+the report's defaults `[inferred — milestone start 2026-11-14]`. The app writes nothing into projects;
+acknowledge launches gsd-core's own writer.
+
 ## Last Milestone: v2.3.0 Multiplexer Backends (shipped 2026-11-10)
 
 **Goal:** Focus and launch Claude sessions from the TUI in whatever terminal workspace the user
@@ -245,6 +277,11 @@ LLM-goal-layer design, were superseded by spikes 001/002. See Active and Key Dec
   must support a dry-run mode that reports the commands it would issue without issuing them.
   **Amended 2026-10-29 — user decision: CTRL-02/CTRL-03 superseded by sandboxed launcher + DIRECTION.md stop rules; Phase 31 retirement of drive dry-run/opt-in gate accepted.** The dry-run clause is superseded; stoppability stands.
 - **Portability**: Should work for any GSD user, not hardcoded to one user's setup
+- **GSD files are read-only** *(user decision 2026-11-16)*: The tool reads GSD's files
+  (`.planning/**`, `$GSD_HOME`) but never writes them itself. Every change goes through
+  `gsd-tools` or a GSD command (launched slash command, with the user's intent spelled out
+  in plain language for GSD to record). The tool's own state lives in its own namespace
+  (`.planning/meta-manager/`) or under XDG dirs.
 
 ## Key Decisions
 
@@ -309,4 +346,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-11-10 after v2.3.0 milestone*
+*Last updated: 2026-11-14 after starting milestone v2.5.0 Owner Inbox*

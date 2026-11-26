@@ -11,7 +11,7 @@
 //!    (read by plain `config::load_config`, which returns an empty config for a
 //!    missing file and never writes; the pruning loader `list` uses SAVES, so it
 //!    is deliberately not used here) and the process table (read-only).
-//! 2. **One compact JSON document, one stdout line** (D1): `{schema,
+//! 2. **One compact JSON document, one stdout line** (D1; every entry has twelve keys): `{schema,
 //!    schema_version, sessions_supported, projects}`. No timestamp, so the output
 //!    is deterministic. The schema v1 contract (every key path, its type and its
 //!    meaning, and the stability rule) lives in README.md's "Scripting and agents"
@@ -23,27 +23,29 @@
 //! 4. **Escaping (D5).** Every project-authored string (milestone, phase name, raw
 //!    verification and UAT values, workstream names, session ids, the echoed
 //!    target) goes through `text::render_for_terminal` and is capped at
-//!    [`MAX_TEXT_CHARS`]. Filesystem paths (`path`, `sessions[].cwd`) are emitted
+//!    [`gsd_meta_manager::text::MAX_TEXT_CHARS`]. Filesystem paths (`path`, `sessions[].cwd`) are emitted
 //!    raw: they are identifiers a script will `cd` into, and JSON encoding still
 //!    escapes C0 controls. Artifact prose (phase goals, descriptions, CONTEXT.md,
 //!    HANDOFF `next_action`) never reaches the output.
-//! 5. **`projects[].next` is `next --json`.** It is built by
+//! 5. **`projects[].owner` is counts only.** It is built from the same owner digest
+//!    `inbox` prints (`read_owner_digest`, read once per project), so the two cannot
+//!    drift; a project that could not be read has `owner: null`.
+//! 6. **`projects[].next` is `next --json`.** It is built by
 //!    [`crate::next_cli::hint_for`], the same function `next` calls, so the two
 //!    cannot drift.
 
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use gsd_meta_manager::config::{load_config, Config};
 use gsd_meta_manager::driver::router;
-use gsd_meta_manager::launch_target::resolve_launch_target;
-use gsd_meta_manager::registry::list_projects;
 use gsd_meta_manager::session_detector::{detect_sessions, ClaudeSession, SessionKind};
 use gsd_meta_manager::state_reader::disk_status::VerificationStatus;
+use gsd_meta_manager::state_reader::owner_items::{read_owner_digest, OwnerDigest};
 use gsd_meta_manager::state_reader::{parse_project_state, ProjectState};
-use gsd_meta_manager::text::{render_for_terminal, Rendered};
+use gsd_meta_manager::text::{cap_rendered as cap, terminal_capped as text};
 use serde_json::{json, Value};
 
+use crate::cli_targets::{self, fail, out_line, slots, Slot};
 use crate::next_cli;
 
 /// The `schema` field.
@@ -52,35 +54,6 @@ const SCHEMA: &str = "gsd-meta-manager/status";
 /// The `schema_version` field. Bumped on any rename, removal or type change; new
 /// keys may be added without a bump.
 const SCHEMA_VERSION: u64 = 1;
-
-/// The longest project-authored string, in characters, before it is cut.
-const MAX_TEXT_CHARS: usize = 200;
-
-/// Write one line to stdout, ignoring failure (a closed pipe must not panic).
-fn out_line(text: &str) {
-    let mut stdout = std::io::stdout().lock();
-    let _ = writeln!(stdout, "{text}");
-}
-
-/// Cut `value` to [`MAX_TEXT_CHARS`] characters, appending one `…` when it cut.
-fn cap_string(value: String) -> String {
-    if value.chars().count() <= MAX_TEXT_CHARS {
-        return value;
-    }
-    let mut cut: String = value.chars().take(MAX_TEXT_CHARS).collect();
-    cut.push('…');
-    cut
-}
-
-/// An escaped value, capped.
-fn cap(rendered: Rendered) -> String {
-    cap_string(String::from(rendered))
-}
-
-/// Project-authored text: escaped for a terminal, then capped.
-fn text(value: &str) -> String {
-    cap(render_for_terminal(value))
-}
 
 /// [`text`], or `None` for a blank value.
 fn opt_text(value: &str) -> Option<String> {
@@ -159,7 +132,11 @@ fn attention_item(
 /// Per scope, in order: the scope-wide flags, then each roadmap phase's disk
 /// verdicts in roadmap order, then the deferred-verification rows. Prose
 /// (`pause_context`, goals, descriptions) is never read.
-fn attention_json(state: &ProjectState) -> Vec<Value> {
+///
+/// `uat_outstanding` fires at most once per phase: when the UAT status is
+/// owner-outstanding (`testing` included), or when the owner digest holds an open
+/// check in a UAT whose status is not terminal (OWN-09).
+fn attention_json(state: &ProjectState, digest: &OwnerDigest) -> Vec<Value> {
     let mut items = Vec::new();
     for (workstream, scope) in state.scopes() {
         let ws = workstream.map(|w| w.name.as_str());
@@ -180,7 +157,9 @@ fn attention_json(state: &ProjectState) -> Vec<Value> {
             if disk.verification_status == VerificationStatus::HumanNeeded {
                 items.push(attention_item("verification_human_needed", id, ws, None));
             }
-            if disk.uat_status.is_outstanding() {
+            if disk.uat_status.is_owner_outstanding()
+                || digest.has_open_uat_items(ws, &phase.number)
+            {
                 items.push(attention_item(
                     "uat_outstanding",
                     id,
@@ -227,14 +206,34 @@ fn owning_root<'a>(cwd: &Path, roots: &'a [PathBuf]) -> Option<&'a Path> {
         .map(PathBuf::as_path)
 }
 
-/// A readable project's entry: all eleven keys of the schema.
+/// The `owner` counts of one project: numbers only, current milestone of the root
+/// and every workstream, after the owner rules. `decide` counts the open decisions
+/// (debug sessions awaiting confirmation so far) and `fix_debug` the open debug
+/// investigations, which are root-scoped and never counted as phases.
+fn owner_json(digest: &OwnerDigest) -> Value {
+    json!({
+        "test": digest.test,
+        "decide": digest.decide,
+        "fix_phases": digest.fix_phases,
+        "fix_debug": digest.fix_debug,
+        "blocked": digest.blocked,
+        "closeable_phases": digest.closeable_phases,
+        "closes_after": gsd_meta_manager::inbox::closes_after_json(&digest.closes_after),
+    })
+}
+
+/// A readable project's entry: all twelve keys of the schema.
 fn project_entry(
     target: Option<&str>,
     alias: Option<&str>,
     root: &Path,
     sessions: Vec<Value>,
+    stale_days: u32,
+    now: chrono::DateTime<chrono::Utc>,
 ) -> Value {
-    let state = parse_project_state(&root.join(".planning"));
+    let planning = root.join(".planning");
+    let state = parse_project_state(&planning);
+    let digest = read_owner_digest(&planning, &state, now, stale_days);
     json!({
         "target": target.map(text),
         "alias": alias.map(text),
@@ -243,14 +242,15 @@ fn project_entry(
         "milestone": milestone_json(&state),
         "phase": phase_json(&state),
         "progress": progress_json(&state),
-        "attention": attention_json(&state),
+        "attention": attention_json(&state, &digest),
         "sessions": sessions,
         "next": next_cli::hint_for(root, &state),
         "warnings": warnings_json(&state),
+        "owner": owner_json(&digest),
     })
 }
 
-/// The entry for a project that could not be read (D8): the same eleven keys,
+/// The entry for a project that could not be read (D8): the same twelve keys,
 /// null data keys and empty arrays.
 fn error_entry(
     target: Option<&str>,
@@ -271,103 +271,8 @@ fn error_entry(
         "sessions": Vec::<Value>::new(),
         "next": Value::Null,
         "warnings": Vec::<String>::new(),
+        "owner": Value::Null,
     })
-}
-
-/// What one requested project resolved to, before its state is read.
-enum Slot {
-    /// A root that exists and holds `.planning/`.
-    Project {
-        target: Option<String>,
-        alias: Option<String>,
-        root: PathBuf,
-    },
-    /// Resolution failed; the finished error entry.
-    Failed(Value),
-}
-
-fn canon_or_raw(path: &Path) -> PathBuf {
-    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
-}
-
-/// A registered (or resolved) root, checked before its state is parsed.
-fn checked_slot(target: Option<&str>, alias: Option<&str>, root: PathBuf) -> Slot {
-    if !root.is_dir() {
-        let message = format!(
-            "the folder {} does not exist",
-            text(&root.display().to_string())
-        );
-        return Slot::Failed(error_entry(
-            target,
-            alias,
-            Some(&root),
-            "folder_missing",
-            &message,
-        ));
-    }
-    if !root.join(".planning").is_dir() {
-        let message = format!(
-            "{} has no .planning/ directory",
-            text(&root.display().to_string())
-        );
-        return Slot::Failed(error_entry(
-            target,
-            alias,
-            Some(&root),
-            "no_planning",
-            &message,
-        ));
-    }
-    Slot::Project {
-        target: target.map(str::to_owned),
-        alias: alias.map(str::to_owned),
-        root,
-    }
-}
-
-/// The registry alias whose canonical root is `root`; ties go to the
-/// lexicographically smallest alias, because `projects` is a `HashMap`.
-fn alias_of_root(config: &Config, root: &Path) -> Option<String> {
-    config
-        .projects
-        .iter()
-        .filter(|(_, project)| canon_or_raw(&project.path) == root)
-        .map(|(alias, _)| alias.clone())
-        .min()
-}
-
-/// Resolve one argv target (D2, D3): a directory holding `.planning/`, else a
-/// registered alias or a path inside a registered root, else unresolved.
-fn resolve_target(config: &Config, cwd: &Path, target: &str) -> Slot {
-    let path = Path::new(target);
-    if path.join(".planning").is_dir() {
-        let root = canon_or_raw(path);
-        let alias = alias_of_root(config, &root);
-        return checked_slot(Some(target), alias.as_deref(), root);
-    }
-    if let Ok(alias) = resolve_launch_target(config, target, cwd) {
-        if let Some(project) = config.projects.get(&alias) {
-            return checked_slot(Some(target), Some(&alias), canon_or_raw(&project.path));
-        }
-    }
-    let message = format!(
-        "{} is neither a directory containing .planning/ nor a registered project",
-        text(target)
-    );
-    Slot::Failed(error_entry(
-        Some(target),
-        None,
-        None,
-        "unresolved",
-        &message,
-    ))
-}
-
-/// Write the one `status: ...` stderr line of a failed run.
-fn fail(message: &str) -> i32 {
-    let mut stderr = std::io::stderr().lock();
-    let _ = writeln!(stderr, "status: {}", render_for_terminal(message));
-    1
 }
 
 /// Run `status` and return the process exit code.
@@ -375,24 +280,22 @@ pub fn run(targets: &[String], config: Option<PathBuf>) -> i32 {
     let config_path = config.unwrap_or_else(Config::default_path);
     let config = match load_config(&config_path) {
         Ok(config) => config,
-        Err(error) => return fail(&format!("{error:#}")),
+        Err(error) => return fail("status", &format!("{error:#}")),
     };
     let cwd = match std::env::current_dir() {
         Ok(cwd) => cwd,
-        Err(error) => return fail(&format!("cannot read the working directory: {error}")),
+        Err(error) => {
+            return fail(
+                "status",
+                &format!("cannot read the working directory: {error}"),
+            )
+        }
     };
 
-    let slots: Vec<Slot> = if targets.is_empty() {
-        list_projects(&config)
-            .into_iter()
-            .map(|(alias, project)| checked_slot(None, Some(alias), canon_or_raw(&project.path)))
-            .collect()
-    } else {
-        targets
-            .iter()
-            .map(|target| resolve_target(&config, &cwd, target))
-            .collect()
-    };
+    let stale_days = config.preferences.owner_stale_days();
+    // One clock reading per run, so every age in the document shares one instant.
+    let now = chrono::Utc::now();
+    let slots: Vec<Slot> = slots(&config, &cwd, targets);
 
     // One detection per run, and only when some project can own a session. A
     // session goes to the deepest root among every registered and listed one.
@@ -407,17 +310,29 @@ pub fn run(targets: &[String], config: Option<PathBuf>) -> i32 {
     let mut roots: Vec<PathBuf> = config
         .projects
         .values()
-        .map(|project| canon_or_raw(&project.path))
+        .map(|project| cli_targets::canon_or_raw(&project.path))
         .collect();
     roots.extend(slots.iter().filter_map(|slot| match slot {
         Slot::Project { root, .. } => Some(root.clone()),
-        Slot::Failed(_) => None,
+        Slot::Failed { .. } => None,
     }));
 
     let projects: Vec<Value> = slots
         .into_iter()
         .map(|slot| match slot {
-            Slot::Failed(entry) => entry,
+            Slot::Failed {
+                target,
+                alias,
+                path,
+                kind,
+                message,
+            } => error_entry(
+                target.as_deref(),
+                alias.as_deref(),
+                path.as_deref(),
+                kind,
+                &message,
+            ),
             Slot::Project {
                 target,
                 alias,
@@ -429,7 +344,14 @@ pub fn run(targets: &[String], config: Option<PathBuf>) -> i32 {
                     .collect();
                 mine.sort_by_key(|s| s.pid);
                 let mine = mine.into_iter().map(session_json).collect();
-                project_entry(target.as_deref(), alias.as_deref(), &root, mine)
+                project_entry(
+                    target.as_deref(),
+                    alias.as_deref(),
+                    &root,
+                    mine,
+                    stale_days,
+                    now,
+                )
             }
         })
         .collect();
@@ -526,17 +448,5 @@ mod tests {
         let value = session_json(&session(SessionKind::Claude, Some("a\u{202e}b\u{1b}[0m")));
         let id = value["session_id"].as_str().unwrap();
         assert!(!id.contains('\u{202e}') && !id.contains('\u{1b}'), "{id:?}");
-    }
-
-    #[test]
-    fn cap_cuts_a_long_value_and_leaves_a_short_one_alone() {
-        let long = cap_string("y".repeat(500));
-        assert_eq!(long.chars().count(), MAX_TEXT_CHARS + 1);
-        assert!(long.ends_with('\u{2026}'));
-        assert_eq!(cap_string("short".to_string()), "short");
-        assert_eq!(
-            cap_string("z".repeat(MAX_TEXT_CHARS)).chars().count(),
-            MAX_TEXT_CHARS
-        );
     }
 }

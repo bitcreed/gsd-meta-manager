@@ -1,38 +1,39 @@
 ---
 gsd_state_version: "1.0"
-milestone: v2.6.0
-current_phase_name: v2.6.0 shipped; no milestone open
-status: shipped
-stopped_at: v2.6.0 released (release commit + annotated tag v2.6.0, pushed; tag push publishes to crates.io) — gsd-core 1.23.0 sync
-last_updated: "2026-11-24T18:48:24.568Z"
-last_activity: 2026-11-24
-last_activity_desc: v2.6.0 released — gsd-core 1.23.0 Sync
-state_head: 0d54a1830c14983f1e8d4048d0dbd5279640a5fe
+milestone: v2.5.0
+milestone_name: Owner Inbox
+current_phase: 39
+current_phase_name: Check actions through GSD
+status: verifying
+stopped_at: Completed 39-03-PLAN.md
+last_updated: "2026-11-25T21:43:43.152Z"
+last_activity: 2026-11-25
+last_activity_desc: Phase 39 execution started
+state_head: 4479993c9d1fad9b0e8a55ffc631e5a12bf055e1
 progress:
-  total_phases: 1
+  total_phases: 6
   completed_phases: 1
-  total_plans: 2
-  completed_plans: 2
-  percent: 100
-milestone_name: gsd-core 1.23.0 Sync
-current_phase: 33
+  total_plans: 28
+  completed_plans: 28
+  percent: 17
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-11-10)
+See: .planning/PROJECT.md (updated 2026-11-14)
 
 **Core value:** See the state of every GSD project at a glance and act on any of them without leaving the TUI.
-**Current focus:** Planning next milestone (v2.6.0 shipped 2026-11-24)
+**Current focus:** Phase 39 — Check actions through GSD
 
 ## Current Position
 
-Phase: — (v2.6.0 shipped; no milestone open)
-Plan: —
-Status: Shipped v2.6.0 gsd-core 1.23.0 Sync — interim release between milestones (quick 261124-fox); release commit and annotated tag v2.6.0 pushed, which publishes to crates.io.
-Last activity: 2026-11-24 - Completed quick task 261124-fox: Sync against gsd-core v1.23.0
+Phase: 39 (Check actions through GSD) — EXECUTING
+Plan: 3 of 3
+Status: Phase complete — ready for verification
+Last activity: 2026-11-25 - Completed quick task 261125-kfc: TUI registry writes keep external config.json edits; never auto-register gsdmm-owned data-dir roots
+
 
 ## Deferred Verification
 
@@ -42,7 +43,7 @@ None. Phase 19's deferred human verification was closed by supersession on 2026-
 
 **Velocity:**
 
-- Total plans completed: 71
+- Total plans completed: 75
 - Average duration: --
 - Total execution time: 0 hours
 
@@ -59,6 +60,7 @@ None. Phase 19's deferred human verification was closed by supersession on 2026-
 | 31 | 9 | - | - |
 | 28.1 | 14 | - | - |
 | 33 | 2 | - | - |
+| 35 | 4 | - | - |
 
 **Recent Trend (from v1.1):**
 
@@ -172,6 +174,30 @@ None. Phase 19's deferred human verification was closed by supersession on 2026-
 | Phase 31 P08 | 40 min | 3 tasks | 11 files |
 | Phase 31 P09 | about 2h | 3 tasks | 6 files |
 | Phase 31 P07 | 45min | 3 tasks | 42 files |
+| Phase 34 P01 | 1 session | 2 tasks | 22 files |
+| Phase 34 P06 | single session | 2 tasks | 14 files |
+| Phase 34 P02 | 40min | 2 tasks | 6 files |
+| Phase 34 P03 | 45min | 3 tasks | 30 files |
+| Phase 34 P04 | 1 session | 3 tasks | 10 files |
+| Phase 34 P05 | ~2h | 3 tasks | 9 files |
+| Phase 35 P01 | 1 session | 2 tasks | 43 files |
+| Phase 35 P02 | 1 session | 2 tasks | 12 files |
+| Phase 35 P03 | one session | 2 tasks | 24 files |
+| Phase 35 P04 | one session | 3 tasks | 22 files |
+| Phase 37 P01 | 18 min | 2 tasks | 19 files |
+| Phase 37 P02 | 25 min | 2 tasks | 11 files |
+| Phase 37 P03 | 75 min | 2 tasks | 17 files |
+| Phase 37 P04 | 95min | 2 tasks | 9 files |
+| Phase 37 P05 | 120 min | 3 tasks | 7 files |
+| Phase 37 P06 | 150min | 2 tasks | 16 files |
+| Phase 37 P07 | 110 min | 2 tasks | 14 files |
+| Phase 38 P01 | n/a | 3 tasks | 10 files |
+| Phase 38 P02 | 35min | 2 tasks | 30 files |
+| Phase 38 P04 | n/a | 2 tasks | 10 files |
+| Phase 38 P03 | 60min | 2 tasks | 14 files |
+| Phase 39 P01 | 19min | 2 tasks | 11 files |
+| Phase 39 P02 | 1h | 3 tasks | 8 files |
+| Phase 39 P03 | 35m | 3 tasks | 10 files |
 
 ## Accumulated Context
 
@@ -329,9 +355,36 @@ Recent decisions affecting current work:
 - [Phase 33]: herdr launch is one std-only `layout.apply` socket request; no shell-based herdr path even as fallback [inferred - audit]
 - [Phase 33]: herdr focus joins session id → pid → unique cwd; ambiguity on any tier refused; `agent focus` with `tab focus` fallback [inferred - audit]
 - [Phase 33]: innermost multiplexer chosen by nearest `/proc` ancestor server; tmux detection keeps "any `$TMUX` value counts" [inferred - audit]
+- [Phase 34]: 34-01: owner scan filters phase dirs by state.in_current_milestone as well as state.phases [inferred]
+- [Phase 34]: 34-01: a Fix group with unreadable checks carries command null [inferred, schema decision 4]
+- [Phase 34]: 34-06: acknowledged groups are built flagged and skipped by counts and default listing; disk_status artifact reads open non-blocking
+- [Phase 34]: 34-02: Gaps tables skip only resolved (oracle), not done/pass [inferred]
+- [Phase 34]: 34-03: out-of-set VERIFICATION status degrades one file to Unreadable::OutOfSetStatus; parse cache keyed (canonical path, kind) -> (mtime,len), bounded 8192, after containment/regular/size checks
+- [Phase 34]: 34-05: Filters::lists_group is the single listing predicate for JSON and text; dev profile optimizes the regex stack so the debug cold run meets the 1 s budget
+- [Phase 35]: 35-01: debug groups are root-scoped (phase empty, command /gsd-debug) and never count as fix_phases; Layer B recovers status from a YAML-rejected fence (F2)
+- [Phase 35]: 35-02: separate CONTEXT_CACHE; ws oracle run sees only its own archive; archived question groups use dir slug
+- [Phase 35]: 35-03: stale handoffs are listed with stale true, never filtered; a checkpoint always counts 1 in decide; hidden.todos_unreadable closes IN-05 without a type change
+- [Phase 35]: 35-04: closes_after counts a checkpoint as 1 decision, matching summary.decide
+- [Phase 35]: 35-04: VERIFICATION entries are named by test text in Layer B only; Layer A names stay the oracle's
+- [Phase 37]: D-17 gate reads the CONTEXT scan directory listing (regular PLAN/SUMMARY files), not DiskStatus; acknowledged wins over planned, unreadable stays listed
+- [Phase 37]: D-11: OwnerGroup.run (RunCommand) is the source; command is its Display; Owner block pinned by three goldens
+- [Phase 37]: 37-03 D-11/D-12/D-13: v builds the command only from the typed RunCommand, re-validates tokens at launch, focuses (never injects into) a live session at the exact project path; argv is [env, claude, command-as-one-element]
+- [Phase 37]: 37-04: absent owner data is loading or unreadable (OwnerDigestFailed, no timer); the cursor re-anchors after every digest update; the dashboard still counts a failed project as loading (follow-up)
+- [Phase 37]: 37-05 D-08: o pushes an in-app read-only viewer; file read on the key press only when inside the canonical project .planning/, regular, at most 1 MiB (inferred)
+- [Phase 37]: 37-05 D-07: g re-selects the dashboard row when listed and pushes DetailScreen::opened_on_owner itself; Owner focus only when the identity is a block stop (inferred)
+- [Phase 37]: 37-06: failure copy uses the last non-empty stderr line; root groups are refused while .planning/active-workstream is non-empty; Yes re-derives the acknowledge target before running
+- [Phase 37]: 37-07 D-09: y copies the CLI's checklist lines (shared group_checklist) via a bounded native clipboard child, else OSC 52 written by the main loop after the frame; target OS is data, not cfg
+- [Phase 38]: Plain inbox prints the digest; --all keeps the full checklist (D-01, D-02)
+- [Phase 38]: 38-02: inbox ALIAS prints no Stale: fold line; its STALE section lists the folded entries
+- [Phase 39]: Settle uses gsd-core's deferral encoding (result: skipped, Deferred follow-up: reason) for every outcome
+- [Phase 39]: Settle popup draws the whole argv once with the instruction inside the quoted prompt element
+- [Phase 39]: Typographic quotes added to the glyph scan TYPOGRAPHY set; owner_settle.rs added to FOCUS_CALLERS
+- [Phase 39]: 39-02: item sub-cursor is a beside-fold_cursor sub-cursor keyed by OwnerItem::id; Move phase step is its own screen
+- [Phase 39]: 39-03: live-session settle = focus + clipboard via one PopWriteOsc52 ScreenAction; [x]settle on the widest footer rung only (100/80-col rungs unchanged)
 
 ### Roadmap Evolution
 
+- Phases 38-39 added (2026-11-16) to v2.5.0 after Phase 37: 38 Inbox digest and triage hygiene (OWN-24..28: digest default, `inbox <alias>`/`--lane`/`--all`, collapsed phases, stale fold, duplicate-UAT merge, `decision?`/`looks resolved` labels); 39 Check actions through GSD (OWN-29..31: won't-do and defer/move launching GSD commands plus a todo, app writes no GSD file). OWN-F02 promoted as label-only [inferred].
 - Phase 33 added (2026-11-10): Terminal multiplexer backend seam + herdr support — sole phase of new milestone v2.3.0 Multiplexer Backends (MUX-01..07; zellij/WezTerm/kitty/screen/Rex/herdr-core deferred as MUX-F01..F07). Milestone started via a condensed `/gsd-new-milestone` because no milestone was open after v2.2.0 (4-researcher fan-out and roadmapper skipped; quick ecosystem scan recorded in REQUIREMENTS.md) [inferred]. Numbered 33, not 32, because "Phase 32" already names the deferred capabilities phase (backlog 999.8) [inferred].
 - Capabilities phase (then numbered 32; now backlog 999.8 since 2026-10-28) added (2026-10-19): GSD Capabilities: Visibility & Per-Project Control — Tier 1 see (per-project list + capabilities × projects matrix), Tier 2 toggle `activationKey` and edit manifest-declared config keys generically; read/write path (direct files vs `gsd-tools capability … --json`) left as an explicit discuss/research decision; gated by the atomic/lock-aware config.json quick fix; placed in v2.0 as the current milestone and marked parallel-safe with no phase dependency [inferred]. Deferred to backlog: 999.5 capability lifecycle, 999.6 registry browsing
 - Phase 25 added (2026-09-25): Running Agents & Live Wave View — TUI-only, read-only view of running GSD agents and executor wave progress (worktrees + `~/.claude/projects/.../subagents/*.meta.json` + transcript mtime + PLAN `wave:`); seed evidence from ttbook in ROADMAP Phase 25 details; landed in v2.0 after the v1.8.0 interim release [inferred — no new milestone, same pattern as Phase 24]; Phase 19/21 left untouched (halted by user decision; since closed by supersession 2026-10-28)
@@ -536,8 +589,19 @@ Older entries (Phase 19 T-19-* rows, Phase 21 round-13 gaps, Phase 26 risks, 31-
 | 261113-dcl | Conformance oracle and provisioning script follow CLAUDE_CONFIG_DIR | 2026-11-13 | e4897c2 | .planning/quick/261113-dcl-conformance-oracle-follows-claude-config-dir-tests-driver-ro |
 | 261113-epo | Sandbox binds of `.gsd` and `.gsd-capabilities.json` honour `GSD_HOME` | 2026-11-13 | 3eb643a | [261113-epo-sandbox-binds-of-gsd-and-gsd-capabilitie](./quick/261113-epo-sandbox-binds-of-gsd-and-gsd-capabilitie/) |
 | 261113-fi0 | Sync against gsd-core v1.21.0 | 2026-11-13 | 1ac9832 | [261113-fi0-sync-against-gsd-core-v1-21-0](./quick/261113-fi0-sync-against-gsd-core-v1-21-0/) |
+| 261116-kft | Route Config-tab config.json saves through gsd-tools config-set; drop the .planning/.lock replica (defaults.json still direct: no gsd-core writer) | 2026-11-16 | c924939 | [261116-kft-route-config-json-writes-through-gsd-too](./quick/261116-kft-route-config-json-writes-through-gsd-too/) |
+| 261118-tki | Help overlay: pressing a key highlights the rows that list it, cycles matches | 2026-11-18 | c102198c | [261118-tki-help-overlay-key-highlight](./quick/261118-tki-help-overlay-key-highlight/) |
+| 261118-tm6 | Owner block focus on the Phases tab: reachable by Down, visible when phases are empty | 2026-11-18 | c86bcc02 | [261118-tm6-owner-block-focus-on-the-phases-tab-reac](./quick/261118-tm6-owner-block-focus-on-the-phases-tab-reac/) |
+| 261118-tro | Compact the settle confirm popup: bold Runs summary, capped instruction text, d toggles verbatim full command | 2026-11-18 | 376614f9 | [261118-tro-compact-the-settle-confirm-popup-bold-ru](./quick/261118-tro-compact-the-settle-confirm-popup-bold-ru/) |
+| 261118-u4e | Enter opens the Owner source file at the right place (inbox + Owner block) | 2026-11-18 | be39d868 | [261118-u4e-enter-opens-the-owner-source-file-at-the](./quick/261118-u4e-enter-opens-the-owner-source-file-at-the/) |
+| 261118-u5i | debug-sessions owner fixture: workstream `a` gets the phases/ dir gsd-core always scaffolds (audit-uat oracle no longer errors) | 2026-11-18 | 59930419 | [261118-u5i-debug-sessions-fixture-workstream-phases](./quick/261118-u5i-debug-sessions-fixture-workstream-phases/) |
+| 261118-v6l | Pending row state after settle: settling badge, recorded step, ✓ linger (inbox + Owner block) | 2026-11-18 | dd086ffb | [261118-v6l-pending-row-state-after-settle-settling-](./quick/261118-v6l-pending-row-state-after-settle-settling-/) |
+| 261119-f5b | Owner-row action menu and context-aware footer (Owner block + inbox, shared) | 2026-11-19 | dd15c1a2 | [261119-f5b-owner-row-action-menu-and-context-aware-](./quick/261119-f5b-owner-row-action-menu-and-context-aware-/) |
 | 261119-ikn | Sync against gsd-core v1.22.0 | 2026-11-19 | 157d6b5f | [261119-ikn-sync-against-gsd-core-v1-22-0](./quick/261119-ikn-sync-against-gsd-core-v1-22-0/) |
 | 261124-fox | Sync against gsd-core v1.23.0 | 2026-11-24 | bfcd3fc7 | [261124-fox-sync-against-gsd-core-v1-23-0](./quick/261124-fox-sync-against-gsd-core-v1-23-0/) |
+| 261124-k1s | Clarify in-app meaning of Owner-row actions A (acknowledge = hide) and x (settle = record as skipped) | 2026-11-24 | c473a9cd | [261124-k1s-clarify-in-app-meaning-of-owner-row-acti](./quick/261124-k1s-clarify-in-app-meaning-of-owner-row-acti/) |
+| 261125-jx7 | Don't auto-register non-GSD or temp-dir roots from detected sessions | 2026-11-25 | a363aeab | [261125-jx7-don-t-auto-register-non-gsd-or-temp-dir-](./quick/261125-jx7-don-t-auto-register-non-gsd-or-temp-dir-/) |
+| 261125-kfc | TUI registry writes keep external config.json edits; never auto-register gsdmm's own oneoff/driver/envelope dirs | 2026-11-25 | 4881f331 | [261125-kfc-fix-tui-registry-lost-update-on-config-j](./quick/261125-kfc-fix-tui-registry-lost-update-on-config-j/) |
 
 ## Deferred Items
 
@@ -593,11 +657,12 @@ non-unique bullets in these narrative logs). Disclosed per file instead [inferre
 
 ## Session Continuity
 
-Last session: 2026-11-24
-Stopped at: v2.6.0 released — quick 261124-fox (gsd-core v1.23.0 sync); release commit and annotated tag v2.6.0 pushed
+Last session: 2026-11-17T21:33:11.905Z
+Stopped at: Completed 39-03-PLAN.md
 Resume file: None
 
-Next: `/gsd-new-milestone`.
+Next: verify Phase 39 (`/gsd-verify-work 39`). Note: milestone label v2.5.0 collides with the already-released v2.5.0 (gsd-core 1.22.0 Sync); renumber before release.
+Earlier (2026-11-24): v2.6.0 released and published to crates.io — gsd-core 1.23.0 Sync.
 Earlier (2026-11-19): v2.5.0 released and published to crates.io — gsd-core 1.22.0 Sync.
 Earlier (2026-11-11): v2.4.0 released and published to crates.io — Session Locations.
 Earlier (2026-11-11): v2.3.1 released and published to crates.io — Multiplexer Backends (publish fix).

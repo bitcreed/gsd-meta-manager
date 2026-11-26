@@ -819,7 +819,7 @@ fn test_outstanding_uat_gate_flows_onto_the_phase_inference() {
     );
     let state = parse_project_state(&tmp.path().join(".planning"));
     let inference = state.phase_disk_statuses.get("19").unwrap();
-    assert!(inference.uat_status.is_outstanding());
+    assert!(inference.uat_status.is_upstream_blocking());
     assert_eq!(inference.uat_status.as_str(), "pending");
 }
 

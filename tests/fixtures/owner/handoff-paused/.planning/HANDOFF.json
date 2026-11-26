@@ -1,0 +1,20 @@
+{
+  "status": "paused",
+  "phase": "04",
+  "next_action": "Run the device check",
+  "timestamp": "2026-05-14T09:04:46.076Z",
+  "human_actions_pending": [
+    {
+      "action": "Pair the test device",
+      "context": "needs the lab bench",
+      "blocking": true
+    }
+  ],
+  "blockers": [
+    {
+      "description": "Vendor key missing",
+      "type": "external",
+      "workaround": "use the sandbox key"
+    }
+  ]
+}

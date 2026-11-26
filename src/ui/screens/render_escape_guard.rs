@@ -361,6 +361,7 @@ use std::path::{Path, PathBuf};
 type FixtureRow = (&'static str, &'static str);
 
 const SCREEN_IDENTITY_DISPOSITIONS: &[FixtureRow] = &[
+    ("AckConfirmScreen", "src/ui/screens/ack_confirm.rs"),
     ("AddProjectScreen", "src/ui/screens/add_project.rs"),
     ("AnswerScreen", "src/ui/screens/driver_steer.rs"),
     ("ControlChooserScreen", "src/ui/screens/driver_steer.rs"),
@@ -372,17 +373,24 @@ const SCREEN_IDENTITY_DISPOSITIONS: &[FixtureRow] = &[
     ("EditLintConfirmScreen", "src/ui/screens/driver_steer.rs"),
     ("EnqueueScreen", "src/ui/screens/enqueue.rs"),
     ("HelpScreen", "src/ui/screens/help.rs"),
+    ("InboxScreen", "src/ui/screens/inbox.rs"),
     ("LaunchFormScreen", "src/ui/screens/driver_launch.rs"),
     ("LintPopupScreen", "src/ui/screens/driver_launch.rs"),
     ("NormalScreen", "src/ui/screens/normal.rs"),
     ("OneoffScreen", "src/ui/screens/oneoff.rs"),
     ("OneoffViewerScreen", "src/ui/screens/oneoff_viewer.rs"),
+    ("OwnerFileViewScreen", "src/ui/screens/owner_file_view.rs"),
     ("PoliteStopScreen", "src/ui/screens/driver_steer.rs"),
     ("PreferencesScreen", "src/ui/screens/preferences.rs"),
     (
         "QueueDeleteConfirmScreen",
         "src/ui/screens/queue_delete_confirm.rs",
     ),
+    ("SettleChooserScreen", "src/ui/screens/settle_popup.rs"),
+    ("SettleConfirmScreen", "src/ui/screens/settle_popup.rs"),
+    ("SettlePhaseScreen", "src/ui/screens/settle_popup.rs"),
+    ("SettleReasonScreen", "src/ui/screens/settle_popup.rs"),
+    ("SettleStopScreen", "src/ui/screens/settle_popup.rs"),
     ("SlugInputScreen", "src/ui/screens/driver_launch.rs"),
     (
         "UnsandboxedConfirmScreen",
@@ -1008,6 +1016,155 @@ fn hostile_project_state(identity: &str) -> crate::state_reader::ProjectState {
     }
 }
 
+/// A digest whose every free-text field carries `identity`, the hostile string
+/// the guard probes with (OWN-11). Counts are non-zero in every lane, so the
+/// `You` column and the summary row draw numbers next to the hostile alias. The
+/// detail screens (36-03, 36-04) reuse it.
+fn hostile_owner_digest(identity: &str) -> crate::state_reader::owner_items::OwnerDigest {
+    use crate::state_reader::owner_items::{
+        ArchivedCounts, Category, ClosesAfter, GroupCounts, Kind, Lane, LanePhases, OwnerDigest,
+        OwnerGap, OwnerGroup, OwnerItem, Scope,
+    };
+    let item = || OwnerItem {
+        id: identity.to_string(),
+        test: Some(identity.to_string()),
+        name: identity.to_string(),
+        expected: Some(identity.to_string()),
+        result: identity.to_string(),
+        category: Category::Pending,
+        reason: Some(identity.to_string()),
+        blocked_by: Some(identity.to_string()),
+        gaps: vec![OwnerGap {
+            name: identity.to_string(),
+            result: identity.to_string(),
+            reason: Some(identity.to_string()),
+        }],
+        why_human: Some(identity.to_string()),
+    };
+    let group = |lane: Lane, scope: Scope, workstream: Option<String>| OwnerGroup {
+        lane,
+        kind: Kind::Uat,
+        scope,
+        workstream,
+        phase: identity.to_string(),
+        phase_name: identity.to_string(),
+        file: identity.to_string(),
+        file_status: identity.to_string(),
+        closes_phase: true,
+        bookkeeping_only: false,
+        acknowledged: false,
+        age_days: Some(3),
+        stale: false,
+        run: None,
+        command: Some(identity.to_string()),
+        supersedes: vec![identity.to_string()],
+        counts: GroupCounts {
+            checks: 1,
+            failed: 1,
+            gaps: 1,
+            unreadable: 1,
+        },
+        items: vec![item()],
+    };
+    let hostile = || vec![identity.to_string()];
+    // A VERIFICATION of the first group's phase, workstream and lane: the inbox
+    // draws the two as one merged row with `file` sub-headings (38, D-08).
+    let mut verification = group(Lane::Test, Scope::Current, None);
+    verification.kind = Kind::Verification;
+    // A group older than the default fold: the inbox lists it in the Stale fold,
+    // its item name reading like a decision (a label, D-11).
+    let mut stale = OwnerGroup {
+        age_days: Some(120),
+        ..group(
+            Lane::Test,
+            Scope::Current,
+            Some(format!("{identity}-stale")),
+        )
+    };
+    stale.items[0].name = format!("{identity} review");
+    OwnerDigest {
+        groups: vec![
+            group(Lane::Test, Scope::Current, None),
+            verification,
+            stale,
+            group(Lane::Decide, Scope::Current, None),
+            group(Lane::Fix, Scope::Current, None),
+            group(Lane::Blocked, Scope::Current, None),
+            group(Lane::Test, Scope::Current, Some(identity.to_string())),
+            group(
+                Lane::Test,
+                Scope::Archived {
+                    label: identity.to_string(),
+                    rank: 0,
+                },
+                None,
+            ),
+        ],
+        test: 7,
+        decide: 3,
+        fix_phases: 2,
+        fix_debug: 1,
+        blocked: 4,
+        closeable_phases: 2,
+        archived: ArchivedCounts {
+            test: 3,
+            blocked: 1,
+            fix: 1,
+            decide: 1,
+        },
+        closes_after: ClosesAfter {
+            test: 2,
+            decide: 1,
+            fix: 1,
+            blocked: 1,
+            phases_open: hostile(),
+            not_built: hostile(),
+            lane_phases: LanePhases {
+                test: hostile(),
+                decide: hostile(),
+                fix: hostile(),
+                blocked: hostile(),
+            },
+        },
+        ..OwnerDigest::default()
+    }
+}
+
+/// A settle draft whose every text field carries `identity` (39-01): the alias,
+/// the phase token, the workstream, the check file, number and name.
+fn hostile_settle_draft(identity: &str) -> super::owner_settle::SettleDraft {
+    use super::owner_block::GroupKey;
+    use super::owner_settle::{CheckRef, SettleDraft, SettleScope, SettleTarget};
+    use crate::state_reader::owner_items::{RunCommand, RunVerb};
+    SettleDraft {
+        target: SettleTarget {
+            alias: identity.to_string(),
+            key: GroupKey {
+                lane: "test",
+                kind: "uat",
+                scope_label: None,
+                workstream: Some(identity.to_string()),
+                phase: identity.to_string(),
+                file: identity.to_string(),
+            },
+            command: RunCommand {
+                verb: RunVerb::VerifyWork,
+                phase: Some(identity.to_string()),
+                workstream: Some(identity.to_string()),
+            },
+            scope: SettleScope::Phase,
+            checks: vec![CheckRef {
+                file: identity.to_string(),
+                noun: "test",
+                number: identity.to_string(),
+                name: identity.to_string(),
+            }],
+        },
+        cwd: std::path::PathBuf::from("/nonexistent").join(identity),
+        live_session: None,
+    }
+}
+
 /// An `AppContext` with `identity` registered as a key AND as every
 /// `.planning`-read value the dashboard and detail views draw.
 ///
@@ -1588,6 +1745,40 @@ const DETAIL_TAB_ARRIVAL: &[(&str, bool, &str)] = &[
         "Draws all four `GitLogEntry` fields — populated by 21-23.",
     ),
     (
+        "Phases tab with an Owner block",
+        true,
+        "The Phases tab drawn with `hostile_owner_digest` under the probed alias \
+         (36-03, OWN-11). The Owner block's header (alias, milestone, the \
+         `closes after` phase lists), its group rows (phase, workstream, phase \
+         name, command, status phrases built from file status and categories) and \
+         the Old debt label all reach cells through `shown()`; at the probe's 200 \
+         columns every column draws.",
+    ),
+    (
+        "Phases tab with the Owner action menu open",
+        false,
+        "Not a counted arrival, and why: this state is the \"Phases tab with an Owner \
+         block\" picture with the action menu drawn OVER it (quick 261119-f5b), and \
+         the overlay covers rows whose cells carried the identity, so the strictly-\
+         more-than-baseline count cannot hold even though the menu itself draws it: \
+         every entry's detail (the run command with the phase token and workstream, \
+         the source file's name, the alias) and the reason of a blocked action reach \
+         cells through `shown()`. The state is still probed: the clean stem \
+         reaches the buffer (plain containment), so assertions 2 and 4 demand the \
+         escaped form and no raw hostile one, and assertion 3 demands no invisible \
+         character, over the overlay's cells.",
+    ),
+    (
+        "Phases tab with an expanded Owner block",
+        true,
+        "The Phases tab drawn with `hostile_owner_digest` under the probed alias, \
+         every current group expanded and Old debt open (36-04, OWN-11). On top of \
+         the collapsed block's strings, the expansion lines (item test number and \
+         name, expected, why, reason and blocked-by detail, gap name, result and \
+         reason, the `file` path), the milestone sub-header and the archived row \
+         with its command all reach cells through `shown()`.",
+    ),
+    (
         "Pipeline tab",
         true,
         "Draws the current phase name, status and pause context — and, since \
@@ -1897,6 +2088,63 @@ const DETAIL_SUB_STATES: &[(&str, SubStateArrange)] = &[
             cache.waves_toggles.insert((key.clone(), wave));
         }
     }),
+    // OWN-11 (36-03): the Phases tab with an Owner block. The hostile digest sits
+    // behind the hostile alias, so the header, the group rows (every column,
+    // the command included at 200 columns) and the fold line all draw digest
+    // strings. `chrome_ctx` has no project state, so there the block is not drawn.
+    ("Phases tab with an Owner block", |identity, ctx| {
+        ctx.detail_sub_view_per_project
+            .insert(identity.to_string(), crate::app::DetailSubView::Pipeline);
+        ctx.owner_digests
+            .insert(identity.to_string(), hostile_owner_digest(identity));
+    }),
+    // OWN-11 (36-04): the same block with every group expanded and Old debt
+    // open, so the item, detail, gap, file, sub-header and archived-row lines
+    // draw. The keys are DERIVED from the digest, never respelled.
+    (
+        "Phases tab with an expanded Owner block",
+        |identity, ctx| {
+            use crate::ui::screens::owner_block::{skeleton, Fold, OwnerBlockState, Stop};
+            ctx.detail_sub_view_per_project
+                .insert(identity.to_string(), crate::app::DetailSubView::Pipeline);
+            let digest = hostile_owner_digest(identity);
+            let mut view = OwnerBlockState::default();
+            view.open_folds.insert(Fold::OldDebt);
+            for stop in skeleton(&digest, &view).stops {
+                if let Stop::Row(key) = stop {
+                    view.expanded.insert(key);
+                }
+            }
+            ctx.owner_digests.insert(identity.to_string(), digest);
+            ctx.view_cache
+                .entry(identity.to_string())
+                .or_default()
+                .owner_block = view;
+        },
+    ),
+    // Quick 261119-f5b: the Owner block focused with its action menu open on the
+    // first row of the hostile digest. Only `DetailScreen`'s builder opens the
+    // menu (it reads the parked cursor); the screens that paint the detail body
+    // through `render_main_only` draw the same block without the overlay.
+    (
+        "Phases tab with the Owner action menu open",
+        |identity, ctx| {
+            use crate::ui::screens::owner_block::{skeleton, OwnerBlockState, Stop};
+            ctx.detail_sub_view_per_project
+                .insert(identity.to_string(), crate::app::DetailSubView::Pipeline);
+            let digest = hostile_owner_digest(identity);
+            let mut view = OwnerBlockState::default();
+            view.cursor = skeleton(&digest, &view)
+                .stops
+                .into_iter()
+                .find(|stop| matches!(stop, Stop::Row(_)));
+            ctx.owner_digests.insert(identity.to_string(), digest);
+            ctx.view_cache
+                .entry(identity.to_string())
+                .or_default()
+                .owner_block = view;
+        },
+    ),
     ("Backlog tab, expanded", |identity, ctx| {
         ctx.detail_sub_view_per_project
             .insert(identity.to_string(), crate::app::DetailSubView::Backlog);
@@ -2050,6 +2298,12 @@ fn fixture_for(type_name: &str) -> Option<Fixture> {
             let mut filtering = probe_ctx(identity);
             filtering.filter_text = identity.to_string();
             filtering.recompute_filtered_aliases();
+            // OWN-11: a hostile digest behind the hostile alias. At 200x60 the
+            // `You` column and the summary row both draw.
+            let mut with_owner = probe_ctx(identity);
+            with_owner
+                .owner_digests
+                .insert(identity.to_string(), hostile_owner_digest(identity));
             let mut with_status = probe_ctx(identity);
             with_status.status_message = Some((
                 status_message_like_app_builds_it(identity),
@@ -2069,6 +2323,11 @@ fn fixture_for(type_name: &str) -> Option<Fixture> {
                 // on. That the branch is actually reached is asserted by
                 // `the_status_footer_state_reaches_the_status_branch` rather
                 // than assumed here.
+                one_state(
+                    "dashboard with owner work",
+                    with_owner,
+                    Box::new(super::normal::NormalScreen::new()),
+                ),
                 one_state(
                     "dashboard with a status message",
                     with_status,
@@ -2103,6 +2362,461 @@ fn fixture_for(type_name: &str) -> Option<Fixture> {
             )]
         }),
 
+        // The acknowledge popup (37-06): the hostile identity is the registered
+        // alias, the project-relative file, the milestone, the archived label, the
+        // phase token, the workstream and the whole argv (the gsd-tools path
+        // included). Drawn over the inbox and over the detail view.
+        "AckConfirmScreen" => Some(|identity| {
+            use super::ack_confirm::{AckConfirmScreen, AckHost};
+            use super::owner_actions::{AckRequest, AckTarget};
+            let request = || AckRequest {
+                alias: identity.to_string(),
+                cwd: std::path::PathBuf::from("/nonexistent").join(identity),
+                program: "node".to_string(),
+                argv: vec![
+                    identity.to_string(),
+                    "--category".to_string(),
+                    "uat_gaps".to_string(),
+                    "--milestone".to_string(),
+                    identity.to_string(),
+                    "--phase".to_string(),
+                    identity.to_string(),
+                    "--file".to_string(),
+                    identity.to_string(),
+                    "--archived-milestone".to_string(),
+                    identity.to_string(),
+                    "--ws".to_string(),
+                    identity.to_string(),
+                ],
+                target: AckTarget {
+                    category: "uat_gaps",
+                    milestone: identity.to_string(),
+                    phase: Some(identity.to_string()),
+                    file: Some(identity.to_string()),
+                    slug: None,
+                    archived_milestone: Some(identity.to_string()),
+                    workstream: Some(identity.to_string()),
+                    rel_file: identity.to_string(),
+                    items: 3,
+                },
+                key: super::inbox::InboxKey {
+                    alias: identity.to_string(),
+                    key: super::owner_block::GroupKey {
+                        lane: "test",
+                        kind: "uat",
+                        scope_label: None,
+                        workstream: None,
+                        phase: identity.to_string(),
+                        file: identity.to_string(),
+                    },
+                },
+            };
+            let mut over_inbox = probe_ctx(identity);
+            over_inbox
+                .owner_digests
+                .insert(identity.to_string(), hostile_owner_digest(identity));
+            vec![
+                one_state(
+                    "popup over the inbox",
+                    over_inbox,
+                    Box::new(AckConfirmScreen::new(AckHost::Inbox, request())),
+                ),
+                one_state(
+                    "popup over the detail view",
+                    probe_ctx(identity),
+                    Box::new(AckConfirmScreen::new(
+                        AckHost::Detail(identity.to_string()),
+                        request(),
+                    )),
+                ),
+            ]
+        }),
+
+        // The settle screens (39-01): the hostile identity is the alias, the phase
+        // token, the workstream, the check file and name, the check number and (on
+        // the reason field) the buffer. Each is drawn over the inbox and over the
+        // detail view.
+        "SettleChooserScreen" => Some(|identity| {
+            use super::ack_confirm::AckHost;
+            use super::settle_popup::SettleChooserScreen;
+            let mut over_inbox = probe_ctx(identity);
+            over_inbox
+                .owner_digests
+                .insert(identity.to_string(), hostile_owner_digest(identity));
+            vec![
+                one_state(
+                    "chooser over the inbox",
+                    over_inbox,
+                    Box::new(SettleChooserScreen::new(
+                        AckHost::Inbox,
+                        hostile_settle_draft(identity),
+                    )),
+                ),
+                one_state(
+                    "chooser over the detail view",
+                    probe_ctx(identity),
+                    Box::new(SettleChooserScreen::new(
+                        AckHost::Detail(identity.to_string()),
+                        hostile_settle_draft(identity),
+                    )),
+                ),
+            ]
+        }),
+
+        "SettlePhaseScreen" => Some(|identity| {
+            use super::ack_confirm::AckHost;
+            use super::owner_settle::MoveTarget;
+            use super::settle_popup::SettlePhaseScreen;
+            use crossterm::event::{KeyCode, KeyModifiers};
+            // Candidate numbers are safe tokens by construction; the names are the
+            // roadmap's own text and carry the identity.
+            let candidates = || {
+                vec![
+                    MoveTarget {
+                        number: "2".to_owned(),
+                        name: Some(identity.to_string()),
+                        known: true,
+                    },
+                    MoveTarget {
+                        number: "999.1".to_owned(),
+                        name: Some(identity.to_string()),
+                        known: true,
+                    },
+                ]
+            };
+            let build = |ctx: &mut AppContext, host: AckHost, typed: &str, refuse: bool| {
+                let mut screen = SettlePhaseScreen::with_candidates(
+                    host,
+                    hostile_settle_draft(identity),
+                    candidates(),
+                    0,
+                );
+                for ch in typed.chars() {
+                    screen.handle_key(KeyCode::Char(ch), KeyModifiers::NONE, ctx);
+                }
+                if refuse {
+                    // The hostile text is not a phase number: the error row draws
+                    // the cleaned echo.
+                    screen.handle_key(KeyCode::Enter, KeyModifiers::NONE, ctx);
+                }
+                Box::new(screen) as Box<dyn Screen>
+            };
+            let mut over_inbox = probe_ctx(identity);
+            over_inbox
+                .owner_digests
+                .insert(identity.to_string(), hostile_owner_digest(identity));
+            let inbox = build(&mut over_inbox, AckHost::Inbox, "", false);
+            let mut over_detail = probe_ctx(identity);
+            let detail = build(
+                &mut over_detail,
+                AckHost::Detail(identity.to_string()),
+                // The typed entry takes only ASCII digits, letters and dots: the
+                // identity's ASCII part is what survives.
+                &identity
+                    .chars()
+                    .filter(char::is_ascii_digit)
+                    .collect::<String>(),
+                false,
+            );
+            let mut refused_ctx = probe_ctx(identity);
+            let refused = build(&mut refused_ctx, AckHost::Inbox, "1x\u{1b}[2J", true);
+            vec![
+                one_state("candidates over the inbox", over_inbox, inbox),
+                one_state("typed entry over the detail view", over_detail, detail),
+                one_state("refused entry with its error row", refused_ctx, refused),
+            ]
+        }),
+
+        "SettleReasonScreen" => Some(|identity| {
+            use super::ack_confirm::AckHost;
+            use super::owner_settle::Outcome;
+            use super::settle_popup::SettleReasonScreen;
+            use crossterm::event::{KeyCode, KeyModifiers};
+            let build = |identity: &str,
+                         ctx: &mut AppContext,
+                         host: AckHost,
+                         outcome: Outcome,
+                         refuse: bool|
+             -> Box<dyn Screen> {
+                let mut screen =
+                    SettleReasonScreen::new(host, hostile_settle_draft(identity), outcome);
+                if !refuse {
+                    for ch in identity.chars() {
+                        screen.handle_key(KeyCode::Char(ch), KeyModifiers::NONE, ctx);
+                    }
+                } else {
+                    screen.handle_key(KeyCode::Enter, KeyModifiers::NONE, ctx);
+                }
+                Box::new(screen)
+            };
+            let mut over_inbox = probe_ctx(identity);
+            over_inbox
+                .owner_digests
+                .insert(identity.to_string(), hostile_owner_digest(identity));
+            let inbox = build(
+                identity,
+                &mut over_inbox,
+                AckHost::Inbox,
+                Outcome::WontDo,
+                false,
+            );
+            let mut over_detail = probe_ctx(identity);
+            let detail = build(
+                identity,
+                &mut over_detail,
+                AckHost::Detail(identity.to_string()),
+                Outcome::DeferPermanently,
+                false,
+            );
+            let mut refused_ctx = probe_ctx(identity);
+            let refused = build(
+                identity,
+                &mut refused_ctx,
+                AckHost::Detail(identity.to_string()),
+                Outcome::WontDo,
+                true,
+            );
+            vec![
+                one_state("reason field over the inbox", over_inbox, inbox),
+                one_state("optional reason over the detail view", over_detail, detail),
+                one_state(
+                    "refused empty reason, with its error row",
+                    refused_ctx,
+                    refused,
+                ),
+            ]
+        }),
+
+        // The stop-waiting confirm (quick 261125-khh, D-04): the alias and the badge
+        // words carry the identity, and the row comes from the hostile digest.
+        "SettleStopScreen" => Some(|identity| {
+            use super::ack_confirm::AckHost;
+            use super::owner_block::{self, GroupKey};
+            use super::settle_popup::SettleStopScreen;
+            let digest = hostile_owner_digest(identity);
+            let row = owner_block::row_src_for(&digest, &GroupKey::of(&digest.groups[0]))
+                .expect("the hostile digest lists a row");
+            let ctx_with_digest = || {
+                let mut ctx = probe_ctx(identity);
+                ctx.owner_digests
+                    .insert(identity.to_string(), hostile_owner_digest(identity));
+                ctx
+            };
+            vec![
+                one_state(
+                    "stop popup over the inbox",
+                    ctx_with_digest(),
+                    Box::new(SettleStopScreen::new(
+                        AckHost::Inbox,
+                        identity.to_string(),
+                        row.clone(),
+                        identity.to_string(),
+                    )),
+                ),
+                one_state(
+                    "stop popup over the detail view",
+                    ctx_with_digest(),
+                    Box::new(SettleStopScreen::new(
+                        AckHost::Detail(identity.to_string()),
+                        identity.to_string(),
+                        row,
+                        identity.to_string(),
+                    )),
+                ),
+            ]
+        }),
+
+        "SettleConfirmScreen" => Some(|identity| {
+            use super::ack_confirm::AckHost;
+            use super::owner_settle::MoveTarget;
+            use super::owner_settle::{Outcome, SettleChoice, SettlePlan};
+            use super::settle_popup::SettleConfirmScreen;
+            let plan = || SettlePlan {
+                draft: hostile_settle_draft(identity),
+                choice: SettleChoice {
+                    outcome: Outcome::WontDo,
+                    reason: identity.to_string(),
+                    move_to: None,
+                },
+            };
+            // A Move whose target name (and number) carry the identity, known or not.
+            let move_plan = |known: bool| SettlePlan {
+                draft: hostile_settle_draft(identity),
+                choice: SettleChoice {
+                    outcome: Outcome::Move,
+                    reason: identity.to_string(),
+                    move_to: Some(MoveTarget {
+                        number: identity.to_string(),
+                        name: known.then(|| identity.to_string()),
+                        known,
+                    }),
+                },
+            };
+            let mut over_inbox = probe_ctx(identity);
+            over_inbox
+                .owner_digests
+                .insert(identity.to_string(), hostile_owner_digest(identity));
+            vec![
+                one_state(
+                    "popup over the inbox",
+                    over_inbox,
+                    Box::new(SettleConfirmScreen::new(AckHost::Inbox, plan())),
+                ),
+                one_state(
+                    "move popup with a named phase",
+                    probe_ctx(identity),
+                    Box::new(SettleConfirmScreen::new(AckHost::Inbox, move_plan(true))),
+                ),
+                one_state(
+                    "move popup with the unknown-phase warning",
+                    probe_ctx(identity),
+                    Box::new(SettleConfirmScreen::new(
+                        AckHost::Detail(identity.to_string()),
+                        move_plan(false),
+                    )),
+                ),
+                one_state(
+                    "popup over the detail view",
+                    probe_ctx(identity),
+                    Box::new(SettleConfirmScreen::new(
+                        AckHost::Detail(identity.to_string()),
+                        plan(),
+                    )),
+                ),
+                one_state(
+                    "popup in the full-command view",
+                    probe_ctx(identity),
+                    Box::new(
+                        SettleConfirmScreen::new(AckHost::Inbox, plan()).showing_full_command(),
+                    ),
+                ),
+            ]
+        }),
+
+        // The Owner inbox (37-03): the hostile identity is the registered alias AND
+        // every digest string behind it (phase, phase name, file, file status,
+        // workstream, command). The group rows draw the alias, the phase cell
+        // (with the workstream prefix), the name and the phrase; the header draws
+        // the fleet numbers. A second state adds a status message that carries the
+        // identity, as `v`'s refusals do with a phase token or workstream name.
+        "InboxScreen" => Some(|identity| {
+            let mut with_owner = probe_ctx(identity);
+            with_owner
+                .owner_digests
+                .insert(identity.to_string(), hostile_owner_digest(identity));
+            let mut with_status = probe_ctx(identity);
+            with_status
+                .owner_digests
+                .insert(identity.to_string(), hostile_owner_digest(identity));
+            with_status.status_message = Some((
+                status_message_like_app_builds_it(identity),
+                std::time::Instant::now(),
+            ));
+            // 37-05: every row expanded (items, details, gaps, file and run lines),
+            // Old debt open (rows under the hostile milestone sub-header), the
+            // cursor on the fold line, and a status message from the `o` refusals.
+            let mut drilled = probe_ctx(identity);
+            drilled
+                .owner_digests
+                .insert(identity.to_string(), hostile_owner_digest(identity));
+            // 38: the merged same-phase row expands to its `file` sub-headings and
+            // labels, and the Stale fold is open with its hostile row expanded.
+            drilled
+                .inbox_view
+                .open_folds
+                .insert(super::owner_block::Fold::OldDebt);
+            drilled
+                .inbox_view
+                .open_folds
+                .insert(super::owner_block::Fold::Stale);
+            let keys: Vec<_> = super::inbox::stop_rows(&drilled)
+                .iter()
+                .map(super::inbox::InboxRow::key)
+                .collect();
+            drilled.inbox_view.expanded.extend(keys);
+            drilled.inbox_view.cursor = Some(super::inbox::InboxStop::FoldLine);
+            drilled.inbox_view.fold_cursor = Some(super::owner_block::Fold::OldDebt);
+            drilled.status_message = Some((
+                format!("Cannot open {identity}: not readable"),
+                std::time::Instant::now(),
+            ));
+            // 37-06: the status line after a failed acknowledge, which carries
+            // gsd-core's own output line and the file name.
+            let mut acknowledge_failed = probe_ctx(identity);
+            acknowledge_failed
+                .owner_digests
+                .insert(identity.to_string(), hostile_owner_digest(identity));
+            acknowledge_failed.status_message = Some((
+                format!("Acknowledge failed: {identity}"),
+                std::time::Instant::now(),
+            ));
+            // Quick 261119-f5b: Enter on the first (hostile) row opens its action
+            // menu, whose entries draw the command, the file name, the alias and
+            // the reasons of blocked actions.
+            let mut menu_open = probe_ctx(identity);
+            menu_open
+                .owner_digests
+                .insert(identity.to_string(), hostile_owner_digest(identity));
+            let mut menu_screen = super::inbox::InboxScreen::new();
+            let _ = menu_screen.handle_key(
+                crossterm::event::KeyCode::Enter,
+                crossterm::event::KeyModifiers::NONE,
+                &mut menu_open,
+            );
+            vec![
+                one_state(
+                    "inbox with the action menu open over a hostile row",
+                    menu_open,
+                    Box::new(menu_screen),
+                ),
+                one_state(
+                    "inbox after a failed acknowledge",
+                    acknowledge_failed,
+                    Box::new(super::inbox::InboxScreen::new()),
+                ),
+                one_state(
+                    "inbox over hostile owner digests",
+                    with_owner,
+                    Box::new(super::inbox::InboxScreen::new()),
+                ),
+                one_state(
+                    "inbox with a status message",
+                    with_status,
+                    Box::new(super::inbox::InboxScreen::new()),
+                ),
+                one_state(
+                    "inbox expanded, Old debt open, fold line selected",
+                    drilled,
+                    Box::new(super::inbox::InboxScreen::new()),
+                ),
+            ]
+        }),
+
+        // The read-only file viewer behind `o` (37-05): the identity is the
+        // alias, the project-relative path and every line of the file, in a
+        // markdown and in a plain-text state.
+        "OwnerFileViewScreen" => Some(|identity| {
+            let text = format!("{identity}\n```\n{identity}\n```\n- {identity}");
+            vec![
+                one_state(
+                    "viewer over a markdown file",
+                    probe_ctx(identity),
+                    Box::new(super::owner_file_view::OwnerFileViewScreen::new(
+                        identity, identity, &text,
+                    )),
+                ),
+                one_state(
+                    "viewer over a plain file",
+                    probe_ctx(identity),
+                    Box::new(super::owner_file_view::OwnerFileViewScreen::new(
+                        identity,
+                        "HANDOFF.json",
+                        &text,
+                    )),
+                ),
+            ]
+        }),
+
         "PreferencesScreen" => Some(|identity| {
             vec![one_state(
                 "preferences screen",
@@ -2112,8 +2826,22 @@ fn fixture_for(type_name: &str) -> Option<Fixture> {
         }),
 
         "DetailScreen" => Some(|identity| {
-            states_over_sub_views(identity, &|identity, _ctx| {
-                Box::new(super::detail::DetailScreen::new(identity.to_string()))
+            states_over_sub_views(identity, &|identity, ctx| {
+                let screen = super::detail::DetailScreen::new(identity.to_string());
+                // The state "Phases tab with the Owner action menu open" parks the
+                // Owner block's cursor on a row; only then is the menu opened, and
+                // only where the block is drawn at all (the chrome baseline has no
+                // project state, so it is measured without the overlay too).
+                let parked = ctx.project_states.contains_key(identity)
+                    && ctx
+                        .view_cache
+                        .get(identity)
+                        .is_some_and(|cache| cache.owner_block.cursor.is_some());
+                Box::new(if parked {
+                    screen.with_owner_menu_open(ctx)
+                } else {
+                    screen
+                })
             })
         }),
 

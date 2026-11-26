@@ -25,7 +25,7 @@
 use super::confirm_popup::{ConfirmOutcome, ConfirmPopup};
 use super::{AppContext, Screen, ScreenAction};
 use crate::action::Action;
-use crate::config::save_config;
+use crate::config;
 use crate::registry;
 use crate::ui::mouse::MouseInput;
 use crossterm::event::{KeyCode, KeyModifiers};
@@ -274,100 +274,71 @@ pub(super) fn dispatch(ctx: &mut AppContext, action: Action, alias: &str) {
 /// Flip the opt-in record for `alias` and persist it.
 ///
 /// `registry::record_opt_in` and `registry::clear_opt_in` deliberately do not
-/// persist — every function in that module leaves saving to its caller — so this
-/// calls `save_config` itself, exactly as `delete_confirm.rs` does.
+/// persist, so this runs them through [`config::update_config`]: the toggle is
+/// applied to a **fresh read** of `config.json`, and memory adopts only what
+/// reached disk ([`AppContext::adopt_config`], quick 261125-kfc). The launcher's
+/// push step reads `config.json` *from disk*, in a different process, so the
+/// order is the point: the TUI never shows a record the push step cannot see.
 ///
-/// **A failed save is rolled back in memory**, which `delete_confirm.rs` does
-/// not need to do and this does. The launcher's push step reads `config.json`
-/// *from disk*, in a different process; an in-memory opt-in that never reached
-/// the file would make the TUI show a record the push step never sees. Reverting
-/// keeps the two in agreement, so the error message is the only thing the user
-/// has to act on.
+/// **A failed save leaves memory exactly as it was, so no revert exists (WR-04).**
+/// The old build changed memory first and put it back on a failed save, and the
+/// withdrawal revert had to be an assignment of a clone of the record the user
+/// granted, never a call to [`registry::record_opt_in`], which mints a record
+/// with a fresh `opted_in_at` and a fresh digest snapshot (approving whatever the
+/// disclosed files contain *now*, with no disclosure shown and no user act). With
+/// nothing to revert nothing can launder: `record_opt_in` stays the sole
+/// constructor of a record, so a `Some(record)` in a `config.json` is still proof
+/// of a deliberate user act (D-14).
 ///
-/// **A revert restores; it never approves (WR-04).** The withdrawal direction
-/// puts back a *clone of the record the user already granted*, captured before
-/// anything is applied. It deliberately does not call
-/// [`registry::record_opt_in`] — see the comment at the revert itself for why
-/// that is a laundering rather than a restore.
+/// The direction is the one the user confirmed (read from memory before the
+/// update). A grant is refused when the on-disk entry's path differs from the path
+/// the user confirmed: the consent covers the files that were disclosed, and a
+/// project another process repointed is a different set of files (D-14).
 fn do_toggle_opt_in(ctx: &mut AppContext, alias: &str) {
     let was_opted_in = registry::is_opted_in(&ctx.config, alias);
-
-    // Captured BEFORE anything is applied, because after the toggle it is gone.
-    // `None` in the grant direction, where there is nothing to put back.
-    let previous = ctx
+    // What the user confirmed: the path whose files the popup disclosed.
+    let confirmed_path = ctx
         .config
         .projects
         .get(alias)
-        .and_then(|entry| entry.driver_opt_in.clone());
+        .map(|entry| entry.path.clone());
 
-    let applied = if was_opted_in {
-        registry::clear_opt_in(&mut ctx.config, alias)
-    } else {
-        registry::record_opt_in(&mut ctx.config, alias)
-    };
-    if let Err(e) = applied {
-        ctx.error_message = Some(e.to_string());
-        ctx.needs_redraw = true;
-        return;
-    }
-
-    if let Err(e) = save_config(&ctx.config, &ctx.config_path) {
-        // **The withdrawal revert is an assignment, not a construction, and that
-        // is not a violation of `record_opt_in`'s sole-constructor property
-        // (D-14) — it is what preserves it.** The value put back is a clone of a
-        // record the user constructed by opting in; nothing new comes into
-        // existence, so a `Some(record)` in a `config.json` is still proof of a
-        // deliberate user action, which is the claim `registry.rs:96-99` makes
-        // and which this call site must not become a counterexample to.
-        //
-        // Calling `record_opt_in` here instead — which is what this did — mints
-        // a record with a fresh `opted_in_at` and a fresh `current_prompt_inputs`
-        // snapshot. That approves whatever the disclosed files contain *right
-        // now*, with no disclosure shown and no user act: a project whose
-        // `CLAUDE.md` was rewritten under a `git pull` since the opt-in, and
-        // whose recorded digest therefore no longer matches (`PromptInputsDrifted`),
-        // comes back already approved and the next successful save persists it.
-        // That is exactly the drift plan 21-03's SHA-256 digests were added to
-        // catch (WR-04, T-21-10-02).
-        //
-        // The grant direction keeps `clear_opt_in`, which is correct and
-        // unchanged: withdrawing a record that never reached disk needs no prior
-        // value.
-        let restored = if was_opted_in {
-            match ctx.config.projects.get_mut(alias) {
-                Some(entry) => {
-                    entry.driver_opt_in = previous;
-                    true
-                }
-                // Only reachable if the alias vanished from the config between
-                // the toggle and here. Nothing in this process can do that —
-                // both `registry` calls above bail on an unknown alias before
-                // the save is attempted — but the note below is what a user
-                // would need if it ever became reachable, and deriving it from
-                // an outcome rather than asserting the outcome is what keeps it
-                // honest.
-                None => false,
+    let updated = config::update_config(&ctx.config_path, |config| {
+        if was_opted_in {
+            return registry::clear_opt_in(config, alias);
+        }
+        if let (Some(entry), Some(confirmed)) = (config.projects.get(alias), &confirmed_path) {
+            if entry.path != *confirmed {
+                return Err(anyhow::anyhow!(
+                    "\"{}\" changed on disk since you confirmed; nothing was recorded",
+                    crate::text::render_for_terminal(alias)
+                ));
             }
-        } else {
-            registry::clear_opt_in(&mut ctx.config, alias).is_ok()
-        };
-        let note = if restored {
-            ""
-        } else {
-            " (and the in-memory registry could not be restored)"
-        };
-        ctx.error_message = Some(format!("Failed to save config: {e}{note}"));
-        ctx.needs_redraw = true;
-        return;
-    }
+        }
+        registry::record_opt_in(config, alias)
+    });
 
-    let message = if was_opted_in {
-        format!("\"{alias}\": driver opt-in withdrawn")
-    } else {
-        format!("\"{alias}\": driver opt-in recorded")
-    };
-    ctx.status_message = Some((message, std::time::Instant::now()));
-    ctx.needs_redraw = true;
+    match updated {
+        Err(e) => {
+            ctx.error_message = Some(format!("Failed to save config: {e}"));
+            ctx.needs_redraw = true;
+        }
+        Ok((fresh, Err(e))) => {
+            ctx.adopt_config(fresh);
+            ctx.error_message = Some(e.to_string());
+            ctx.needs_redraw = true;
+        }
+        Ok((fresh, Ok(()))) => {
+            ctx.adopt_config(fresh);
+            let message = if was_opted_in {
+                format!("\"{alias}\": driver opt-in withdrawn")
+            } else {
+                format!("\"{alias}\": driver opt-in recorded")
+            };
+            ctx.status_message = Some((message, std::time::Instant::now()));
+            ctx.needs_redraw = true;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -380,7 +351,8 @@ pub(crate) mod tests {
     pub(crate) const ALIAS: &str = "proj";
 
     /// An `AppContext` with one registered project, a live event channel, and a
-    /// config path inside `root` so `save_config` is a real write.
+    /// config path inside `root` with the registry saved there, so a registry
+    /// write re-reads and rewrites a real file.
     ///
     /// `pub(crate)` so the sibling driver screens assert against the **same**
     /// `Action` receiver rather than each standing up its own full-field
@@ -419,6 +391,12 @@ pub(crate) mod tests {
             error_message: None,
             event_tx: Some(tx),
             reparse_dispatches: 0,
+            owner_digests: HashMap::new(),
+            owner_digest_failed: Default::default(),
+            owner_ack_busy: Default::default(),
+            owner_copy_busy: false,
+            inbox_view: Default::default(),
+            settle_pending: Default::default(),
             agent_views: HashMap::new(),
             agents_scan_in_flight: false,
             sort_mode: crate::ui::screens::SortMode::default(),
@@ -436,6 +414,8 @@ pub(crate) mod tests {
             // the flag-off tests call `with_experimental(false)`.
             experimental: true,
         };
+        // Memory mirrors disk, as in production: a toggle re-reads `config.json`.
+        crate::config::save_config(&ctx.config, &ctx.config_path).expect("seed config.json");
         (ctx, rx)
     }
 
@@ -506,20 +486,17 @@ pub(crate) mod tests {
     // disk has moved.
     // ========================================================================
 
-    /// A config path `save_config` cannot write.
+    /// A config path `update_config` cannot read, so it fails before any
+    /// mutation runs and nothing is written.
     ///
-    /// Its parent **component is a regular file**, so `create_dir_all` fails
-    /// with `NotADirectory` before a temp file is ever created. Deterministic
-    /// and portable, and deliberately not a read-only directory: a permission
-    /// bit does not stop a process running as root, which some CI does.
+    /// A **directory stands where `config.json` must be**, so reading it fails
+    /// for every user. Deterministic and portable, and deliberately not a
+    /// read-only directory: a permission bit does not stop a process running as
+    /// root, which some CI does.
     fn unwritable_config_path(root: &Path) -> std::path::PathBuf {
-        let blocker = root.join("not-a-directory");
-        std::fs::write(
-            &blocker,
-            b"a regular file standing where a directory must be",
-        )
-        .expect("the blocker is written");
-        blocker.join("config.json")
+        let path = root.join("blocked").join("config.json");
+        std::fs::create_dir_all(&path).expect("a directory where the file must be");
+        path
     }
 
     /// A record a user granted, at a moment and over a file set both
@@ -543,12 +520,16 @@ pub(crate) mod tests {
     }
 
     /// Put `record` on the fixture project, as a prior opt-in the user granted.
+    ///
+    /// Persisted too, as a user's grant is, so the toggle's fresh read sees it. The
+    /// result is ignored where the config path is unwritable on purpose.
     fn grant(ctx: &mut AppContext, record: crate::config::DriverOptIn) {
         ctx.config
             .projects
             .get_mut(ALIAS)
             .expect("the fixture project")
             .driver_opt_in = Some(record);
+        let _ = crate::config::save_config(&ctx.config, &ctx.config_path);
     }
 
     /// Press `y` on the opt-in toggle, which is the only way a user reaches it.
@@ -689,6 +670,60 @@ pub(crate) mod tests {
                 "{direction}: a failed save must not also report success"
             );
         }
+    }
+
+    #[test]
+    fn the_opt_in_toggle_keeps_an_entry_another_process_added() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut ctx, _rx) = ctx_with_project(dir.path());
+        let mut on_disk = crate::config::load_config(&ctx.config_path).expect("load");
+        on_disk.projects.insert(
+            "ext".to_string(),
+            RegisteredProject {
+                path: dir.path().join("ext"),
+                added: "2026-02-02".to_string(),
+                driver_opt_in: None,
+                extra: Default::default(),
+            },
+        );
+        crate::config::save_config(&on_disk, &ctx.config_path).expect("other writer");
+
+        toggle(&mut ctx);
+
+        let saved = crate::config::load_config(&ctx.config_path).expect("reload");
+        assert!(
+            saved.projects.contains_key("ext"),
+            "the other writer's entry survives"
+        );
+        assert_eq!(saved.projects["ext"].added, "2026-02-02");
+        assert!(saved.projects[ALIAS].driver_opt_in.is_some());
+        assert!(registry::is_opted_in(&ctx.config, ALIAS));
+        assert!(
+            ctx.config.projects.contains_key("ext"),
+            "memory adopted the file"
+        );
+        assert_eq!(ctx.error_message, None);
+    }
+
+    #[test]
+    fn a_grant_is_refused_when_the_project_was_repointed_on_disk() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (mut ctx, _rx) = ctx_with_project(dir.path());
+        let mut on_disk = crate::config::load_config(&ctx.config_path).expect("load");
+        on_disk.projects.get_mut(ALIAS).unwrap().path = dir.path().join("elsewhere");
+        crate::config::save_config(&on_disk, &ctx.config_path).expect("other writer");
+        let before = std::fs::read(&ctx.config_path).expect("read");
+
+        toggle(&mut ctx);
+
+        let message = ctx.error_message.as_deref().expect("the refusal is shown");
+        assert!(message.contains("changed on disk"), "got: {message}");
+        assert_eq!(std::fs::read(&ctx.config_path).expect("read"), before);
+        assert!(
+            !registry::is_opted_in(&ctx.config, ALIAS),
+            "nothing was recorded in memory either"
+        );
+        assert!(ctx.status_message.is_none());
     }
 
     /// A launcher run id for the 28-07 tests.

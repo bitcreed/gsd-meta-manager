@@ -21,11 +21,20 @@ use std::process::Command;
 use common::git;
 use gsd_meta_manager::config::{load_config, Config};
 use gsd_meta_manager::registry::{
-    add_project, add_project_unchecked, auto_register_from_sessions, linked_worktree_main, Alias,
-    LinkedWorktreeRefusal,
+    add_project, add_project_unchecked, auto_register_from_sessions_with_temp_root,
+    linked_worktree_main, Alias, LinkedWorktreeRefusal,
 };
 use gsd_meta_manager::session_detector::{ClaudeSession, SessionKind};
 use tempfile::TempDir;
+
+// The fixtures live under the system temp dir, which the public entry refuses
+// by design (quick 261125-jx7), so these tests pass no temp root.
+fn auto_register_from_sessions(
+    config: &mut Config,
+    sessions: &[ClaudeSession],
+) -> Vec<(String, PathBuf)> {
+    auto_register_from_sessions_with_temp_root(config, sessions, None)
+}
 
 /// A repository `main` with a committed `.planning/STATE.md` and a linked
 /// worktree at `.claude/worktrees/agent-x` on branch `worktree-agent-x`.
