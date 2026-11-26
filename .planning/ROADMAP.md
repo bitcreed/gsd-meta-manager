@@ -11,7 +11,7 @@
 - ✅ **v1.6.0 GSD 1.8.0 Catch-up** - 1 quick task + 2 fast tasks (shipped 2026-07-22)
 - ✅ **v2.0 Autonomous Orchestration** - Phases 14-31 (shipped 2026-10-29 as v2.0.0; Phases 19, 21, 22, 23 closed by supersession; Phase 32 deferred to backlog 999.8)
 - ✅ **v2.3.0 Multiplexer Backends** - Phase 33 (shipped 2026-11-10 as v2.3.0; number 32 skipped, it names the deferred v2.0 phase now backlog 999.8)
-- 🚧 **v2.5.0 Owner Inbox** - Phases 34-39 (in progress, started 2026-11-14)
+- 🚧 **v2.7.0 Owner Inbox** - Phases 34-39 (in progress, started 2026-11-14)
 
 ## Phases
 
@@ -124,7 +124,7 @@ Requirements: `.planning/milestones/v2.3.0-REQUIREMENTS.md` (MUX-01..07, all Com
 
 </details>
 
-### 🚧 v2.5.0 Owner Inbox (In Progress)
+### 🚧 v2.7.0 Owner Inbox (In Progress)
 
 Requirements: `.planning/REQUIREMENTS.md` (OWN-01..OWN-31). Source of truth: `.planning/research/OWNER-INBOX-UX.md` (section 6 phase split, section 7 decision defaults D1-D12).
 
@@ -139,7 +139,7 @@ Requirements: `.planning/REQUIREMENTS.md` (OWN-01..OWN-31). Source of truth: `.p
 
 **Goal:** On any machine, `gsd-meta-manager inbox` answers "what checks do I have to run?" for every registered project in one call, read natively from the files (no gsd-core process spawned), with per-item results that match gsd-core's `audit-uat` and the owner's rules (lanes, dedup, acknowledged, archived and deferred handling, closeable-by-testing) applied on top.
 **Requirements**: OWN-01, OWN-02, OWN-03, OWN-04, OWN-05, OWN-06, OWN-07, OWN-09, OWN-11, OWN-12, OWN-13, OWN-14, OWN-15
-**Depends on:** Nothing (first phase of v2.5.0)
+**Depends on:** Nothing (first phase of v2.7.0)
 **Verification:** Automatic (conformance oracle, fixtures, golden output)
 **Plans:** 6/6 plans executed
 

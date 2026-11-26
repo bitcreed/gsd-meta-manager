@@ -1,6 +1,6 @@
-# Requirements: v2.5.0 Owner Inbox
+# Requirements: v2.7.0 Owner Inbox
 
-**Milestone:** v2.5.0
+**Milestone:** v2.7.0
 **Defined:** 2026-11-14
 **Core Value:** See the state of every GSD project at a glance and act on any of them without leaving the TUI.
 **Source:** `.planning/research/OWNER-INBOX-UX.md` (owner-inbox UX report; evidence: `gsd-tools query
@@ -23,7 +23,7 @@ the `status:` line of `NN-UAT.md` / `NN-VERIFICATION.md`: `status: testing` is n
 gsd-core's own `audit-uat` returns 568 raw items for 17 readable projects, which reduce to about 43
 checks the owner can run today (report section 1).
 
-## v2.5.0 Requirements
+## v2.7.0 Requirements
 
 ### Reader and rules (OWN-01..12)
 
@@ -161,7 +161,7 @@ All defaults taken as written **[inferred — milestone start 2026-11-14]**:
 | D9 | Stale threshold | 30 days, `owner.stale_days` in the app config |
 | D10 | Keys | `i` inbox, `/y` filter, `v` run, `A` acknowledge, `y` copy |
 | D11 | Open-question bullets marked RESOLVED/ANSWERED | Filtered out by our layer |
-| D12 | Milestone and version | v2.5.0 "Owner Inbox", phases 34-37, coarse granularity |
+| D12 | Milestone and version | v2.7.0 "Owner Inbox" (proposed as v2.5.0; renumbered 2026-11-26 because v2.5.0 and v2.6.0 shipped as gsd-core syncs), phases 34-37, coarse granularity |
 
 Additional orchestrator calls:
 
@@ -236,7 +236,7 @@ Deferred (report section 6):
 | OWN-31 | Phase 39 | Complete |
 
 **Coverage:**
-- v2.5.0 requirements: 31 total
+- v2.7.0 requirements: 31 total
 - Mapped to phases: 31
 - Unmapped: 0 ✓
 

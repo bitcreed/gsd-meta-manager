@@ -74,7 +74,7 @@ See the state of every GSD project at a glance and act on any of them without le
 
 ### Active
 
-**v2.5.0 Owner Inbox** (started 2026-11-14) — requirements in `.planning/REQUIREMENTS.md`, source
+**v2.7.0 Owner Inbox** (started 2026-11-14) — requirements in `.planning/REQUIREMENTS.md`, source
 of truth `.planning/research/OWNER-INBOX-UX.md`:
 
 - [ ] **OWN-01..OWN-12** — native per-item UAT/VERIFICATION reader (gsd-core `audit-uat` parity,
@@ -86,7 +86,7 @@ of truth `.planning/research/OWNER-INBOX-UX.md`:
   filter, Owner block on the detail Phases tab, cross-project inbox screen with run / acknowledge /
   copy actions, help and README.
 
-Candidates carried forward (not in v2.5.0 scope):
+Candidates carried forward (not in v2.7.0 scope):
 
 - **Further multiplexer backends** — zellij, WezTerm mux, kitty remote control, GNU screen, Rex, herdr-core/`hc` (MUX-F01..F06 in `.planning/milestones/v2.3.0-REQUIREMENTS.md`). Phase 33 IN-06 (`same_dir` canonicalize per herdr pane on the UI thread) is open at info.
 
@@ -186,7 +186,7 @@ across state readers, config schema, and UI).
 
 </details>
 
-## Current Milestone: v2.5.0 Owner Inbox
+## Current Milestone: v2.7.0 Owner Inbox
 
 **Goal:** Answer "what do I, the owner, have to do?" across every registered project in one place:
 which checks to run to close a phase, what waits on a ruling, where code is needed, and what blocks
@@ -346,4 +346,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-11-14 after starting milestone v2.5.0 Owner Inbox*
+*Last updated: 2026-11-14 after starting milestone v2.7.0 Owner Inbox (started as v2.5.0; renumbered 2026-11-26, after v2.5.0 and v2.6.0 shipped as gsd-core syncs)*

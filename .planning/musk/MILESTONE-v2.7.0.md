@@ -1,4 +1,6 @@
-# Musk milestone pass: v2.5.0 Owner Inbox
+# Musk milestone pass: v2.7.0 Owner Inbox
+
+_Renumbered from v2.5.0 on 2026-11-26 (marker was `MILESTONE-v2.5.0.md`); v2.5.0 and v2.6.0 shipped as gsd-core syncs meanwhile._
 
 Run unattended from the Phase 34 discuss:pre hook (2026-11-14), `scope_cuts: defer`. No phase had
 started. Owner of every item: the owner's recurring request ("find the missing UATs") and the

@@ -1,6 +1,6 @@
 ---
 gsd_state_version: "1.0"
-milestone: v2.5.0
+milestone: v2.7.0
 milestone_name: Owner Inbox
 current_phase: 39
 current_phase_name: Check actions through GSD
@@ -384,7 +384,7 @@ Recent decisions affecting current work:
 
 ### Roadmap Evolution
 
-- Phases 38-39 added (2026-11-16) to v2.5.0 after Phase 37: 38 Inbox digest and triage hygiene (OWN-24..28: digest default, `inbox <alias>`/`--lane`/`--all`, collapsed phases, stale fold, duplicate-UAT merge, `decision?`/`looks resolved` labels); 39 Check actions through GSD (OWN-29..31: won't-do and defer/move launching GSD commands plus a todo, app writes no GSD file). OWN-F02 promoted as label-only [inferred].
+- Phases 38-39 added (2026-11-16) to the Owner Inbox milestone after Phase 37: 38 Inbox digest and triage hygiene (OWN-24..28: digest default, `inbox <alias>`/`--lane`/`--all`, collapsed phases, stale fold, duplicate-UAT merge, `decision?`/`looks resolved` labels); 39 Check actions through GSD (OWN-29..31: won't-do and defer/move launching GSD commands plus a todo, app writes no GSD file). OWN-F02 promoted as label-only [inferred].
 - Phase 33 added (2026-11-10): Terminal multiplexer backend seam + herdr support — sole phase of new milestone v2.3.0 Multiplexer Backends (MUX-01..07; zellij/WezTerm/kitty/screen/Rex/herdr-core deferred as MUX-F01..F07). Milestone started via a condensed `/gsd-new-milestone` because no milestone was open after v2.2.0 (4-researcher fan-out and roadmapper skipped; quick ecosystem scan recorded in REQUIREMENTS.md) [inferred]. Numbered 33, not 32, because "Phase 32" already names the deferred capabilities phase (backlog 999.8) [inferred].
 - Capabilities phase (then numbered 32; now backlog 999.8 since 2026-10-28) added (2026-10-19): GSD Capabilities: Visibility & Per-Project Control — Tier 1 see (per-project list + capabilities × projects matrix), Tier 2 toggle `activationKey` and edit manifest-declared config keys generically; read/write path (direct files vs `gsd-tools capability … --json`) left as an explicit discuss/research decision; gated by the atomic/lock-aware config.json quick fix; placed in v2.0 as the current milestone and marked parallel-safe with no phase dependency [inferred]. Deferred to backlog: 999.5 capability lifecycle, 999.6 registry browsing
 - Phase 25 added (2026-09-25): Running Agents & Live Wave View — TUI-only, read-only view of running GSD agents and executor wave progress (worktrees + `~/.claude/projects/.../subagents/*.meta.json` + transcript mtime + PLAN `wave:`); seed evidence from ttbook in ROADMAP Phase 25 details; landed in v2.0 after the v1.8.0 interim release [inferred — no new milestone, same pattern as Phase 24]; Phase 19/21 left untouched (halted by user decision; since closed by supersession 2026-10-28)
@@ -662,7 +662,7 @@ Last session: 2026-11-17T21:33:11.905Z
 Stopped at: Completed 39-03-PLAN.md
 Resume file: None
 
-Next: verify Phase 39 (`/gsd-verify-work 39`). Note: milestone label v2.5.0 collides with the already-released v2.5.0 (gsd-core 1.22.0 Sync); renumber before release.
+Next: verify Phase 39 (`/gsd-verify-work 39`). The Owner Inbox milestone was renumbered v2.5.0 → v2.7.0 on 2026-11-26 (v2.5.0 and v2.6.0 shipped as gsd-core syncs meanwhile).
 Earlier (2026-11-24): v2.6.0 released and published to crates.io — gsd-core 1.23.0 Sync.
 Earlier (2026-11-19): v2.5.0 released and published to crates.io — gsd-core 1.22.0 Sync.
 Earlier (2026-11-11): v2.4.0 released and published to crates.io — Session Locations.
