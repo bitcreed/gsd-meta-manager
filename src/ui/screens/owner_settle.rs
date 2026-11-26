@@ -42,6 +42,16 @@ use super::settle_popup::SettleChooserScreen;
 pub const DEFERRED_PREFIX: &str = "Deferred follow-up:";
 /// The most characters of the owner's reason (D-02).
 pub const REASON_MAX_CHARS: usize = 200;
+/// What opens the owner's note in the instruction (quick 261125-khh, D-06): three
+/// typographic left double quotes. Typographic, never ASCII, because verify-work
+/// parses its arguments with `sed | xargs`, which breaks on an ASCII quote. The
+/// note can never contain it (see [`owner_note`]), so it cannot end early.
+pub const NOTE_OPEN: &str = "\u{201c}\u{201c}\u{201c}";
+/// What closes the owner's note: three typographic right double quotes (D-06).
+pub const NOTE_CLOSE: &str = "\u{201d}\u{201d}\u{201d}";
+/// Said right after the recorded reason when there is a note (D-07), so the
+/// agent copies the owner's words verbatim and keeps the delimiters.
+const VERBATIM_SENTENCE: &str = " Record that reason exactly, up to and including the closing triple quotes, with the owner\u{2019}s note between them copied verbatim.";
 /// The most characters of a check name or file name in the instruction (D-08).
 pub const NAME_MAX_CHARS: usize = 80;
 /// The most check numbers of one file listed before `all N open tests` (D-08).
@@ -417,18 +427,61 @@ pub fn target_text(target: &SettleTarget) -> String {
         .join(" and ")
 }
 
-/// The owner's reason as a trailing sentence: a leading space and a closing
-/// period unless it already ends in one. Empty when there is no reason.
-fn reason_sentence(reason: &str) -> String {
+/// The owner's already-[`clean`]ed reason as the note between [`NOTE_OPEN`] and
+/// [`NOTE_CLOSE`] (D-06): every `\u{201c}` becomes `\u{2018}` and every `\u{201d}`
+/// becomes `\u{2019}`, nothing else, so the character count (and the cap) is
+/// unchanged. `clean` already turned ASCII double quotes into `\u{201d}`, so after
+/// this the note holds no double quote of any kind and can never close its
+/// delimiter early (T-khh-02).
+pub fn owner_note(reason: &str) -> String {
+    reason
+        .chars()
+        .map(|c| match c {
+            '\u{201c}' => '\u{2018}',
+            '\u{201d}' => '\u{2019}',
+            other => other,
+        })
+        .collect()
+}
+
+/// The note as the instruction quotes it: [`NOTE_OPEN`], [`owner_note`] and
+/// [`NOTE_CLOSE`]. Empty for an empty reason.
+pub fn delimited_note(reason: &str) -> String {
     if reason.is_empty() {
         return String::new();
     }
-    let stop = if reason.ends_with(['.', '!', '?']) {
+    format!("{NOTE_OPEN}{}{NOTE_CLOSE}", owner_note(reason))
+}
+
+/// The exact reason the instruction asks GSD to record (D-07):
+/// `Deferred follow-up: <outcome words>`, then, only with a reason,
+/// ` Owner\u{2019}s note: ` and the [`delimited_note`]. It starts with
+/// [`DEFERRED_PREFIX`] because that prefix is what makes gsd-core count a
+/// `result: skipped` as non-blocking. No period is appended inside the note:
+/// verbatim means verbatim.
+pub fn recorded_reason(choice: &SettleChoice) -> String {
+    let outcome = match (&choice.outcome, &choice.move_to) {
+        (Outcome::WontDo, _) => "will not do.".to_owned(),
+        (Outcome::DeferPermanently, _) => "deferred permanently.".to_owned(),
+        (Outcome::Move, Some(to)) => format!("moved to phase {}.", to.number),
+        (Outcome::Move, None) => "moved.".to_owned(),
+    };
+    let note = if choice.reason.is_empty() {
+        String::new()
+    } else {
+        format!(" Owner\u{2019}s note: {}", delimited_note(&choice.reason))
+    };
+    format!("{DEFERRED_PREFIX} {outcome}{note}")
+}
+
+/// [`recorded_reason`] and, with a reason, the sentence asking for it verbatim.
+fn recorded_clause(choice: &SettleChoice) -> String {
+    let verbatim = if choice.reason.is_empty() {
         ""
     } else {
-        "."
+        VERBATIM_SENTENCE
     };
-    format!(" {reason}{stop}")
+    format!("{}{verbatim}", recorded_reason(choice))
 }
 
 /// The plain-language instruction after the slash command (D-08).
@@ -439,17 +492,14 @@ pub fn instruction(target: &SettleTarget, choice: &SettleChoice) -> String {
         (1, Some(check)) => (format!("{} {}", check.noun, check.number), "it", "It"),
         _ => ("each of them".to_owned(), "them", "They"),
     };
-    let reason = reason_sentence(&choice.reason);
-    let (lead, outcome) = match choice.outcome {
-        Outcome::WontDo => (format!("The user will not perform {r}."), "will not do."),
-        Outcome::DeferPermanently => (
-            format!("The user defers {r} permanently."),
-            "deferred permanently.",
-        ),
+    let lead = match choice.outcome {
+        Outcome::WontDo => format!("The user will not perform {r}."),
+        Outcome::DeferPermanently => format!("The user defers {r} permanently."),
         Outcome::Move => return move_instruction(target, choice, &r, (&each, it, upper_it)),
     };
+    let recorded = recorded_clause(choice);
     format!(
-        "{lead} Resume the UAT session of phase {n} without restarting it and record {each} as result: skipped, reason: {DEFERRED_PREFIX} {outcome}{reason} {upper_it} must not block phase {n} or be asked again. Keep {it} in the UAT file and do not promote {it} to the 999.x backlog."
+        "{lead} Resume the UAT session of phase {n} without restarting it and record {each} as result: skipped, reason: {recorded} {upper_it} must not block phase {n} or be asked again. Keep {it} in the UAT file and do not promote {it} to the 999.x backlog."
     )
 }
 
@@ -480,10 +530,10 @@ fn move_instruction(
             format!("{k} {}", if k == 1 { "check" } else { "checks" })
         }
     };
-    let reason = reason_sentence(&choice.reason);
+    let recorded = recorded_clause(choice);
     let comes = if it == "it" { "it comes" } else { "they come" };
     format!(
-        "The user moves {r} to phase {m}{quoted}. Resume the UAT session of phase {n} without restarting it and record {each} as result: skipped, reason: {DEFERRED_PREFIX} moved to phase {m}.{reason} {upper_it} must not block phase {n}. Then add one todo as /gsd-capture does, titled \u{201c}Phase {m}{bare}: rerun {from} from phase {n}\u{201d}, so {comes} up again when phase {m} runs. Do not promote {it} to the 999.x backlog."
+        "The user moves {r} to phase {m}{quoted}. Resume the UAT session of phase {n} without restarting it and record {each} as result: skipped, reason: {recorded} {upper_it} must not block phase {n}. Then add one todo as /gsd-capture does, titled \u{201c}Phase {m}{bare}: rerun {from} from phase {n}\u{201d}, so {comes} up again when phase {m} runs. Do not promote {it} to the 999.x backlog."
     )
 }
 
@@ -1007,6 +1057,14 @@ mod tests {
         )
     }
 
+    /// The clause a reason adds after the outcome words (D-06, D-07), spelled out
+    /// as a literal: the quoted note and the verbatim sentence.
+    fn note_clause(note: &str) -> String {
+        format!(
+            " Owner\u{2019}s note: \u{201c}\u{201c}\u{201c}{note}\u{201d}\u{201d}\u{201d} Record that reason exactly, up to and including the closing triple quotes, with the owner\u{2019}s note between them copied verbatim."
+        )
+    }
+
     fn target(
         ctx: &AppContext,
         key: &GroupKey,
@@ -1077,7 +1135,7 @@ mod tests {
                 "The user will not perform tests 2, 3 in 01-UAT.md.",
                 each,
                 "will not do",
-                " no device here.",
+                &note_clause("no device here"),
                 ("They", "them")
             )
         );
@@ -1088,7 +1146,7 @@ mod tests {
                 "The user defers tests 2, 3 in 01-UAT.md permanently.",
                 each,
                 "deferred permanently",
-                " later.",
+                &note_clause("later"),
                 ("They", "them")
             )
         );
@@ -1100,7 +1158,7 @@ mod tests {
                 &format!("The user will not perform {named}."),
                 "test 2",
                 "will not do",
-                " no device here.",
+                &note_clause("no device here"),
                 ("It", "it")
             )
         );
@@ -1128,7 +1186,7 @@ mod tests {
                 "The user will not perform tests 1, 2 in 03-UAT.md.",
                 each,
                 "will not do",
-                " r.",
+                &note_clause("r"),
                 ("They", "them")
             )
         );
@@ -1150,7 +1208,7 @@ mod tests {
                 "The user defers test 2 (\u{201c}Stream check two\u{201d}) in 03-UAT.md permanently.",
                 "test 2",
                 "deferred permanently",
-                " r.",
+                &note_clause("r"),
                 ("It", "it")
             )
         );
@@ -1495,7 +1553,11 @@ mod tests {
             p.contains("Keep it in the UAT file and do not promote it to"),
             "{p}"
         );
-        assert!(!p.contains("They") && !p.contains("them"), "{p}");
+        // No plural pronoun for the one check (the verbatim sentence's `between
+        // them` names the quotes, not the checks).
+        for plural in ["They ", "Keep them", "promote them"] {
+            assert!(!p.contains(plural), "{plural:?} in {p}");
+        }
     }
 
     #[test]
@@ -1511,11 +1573,112 @@ mod tests {
         );
         assert!(!p.contains(". ."), "{p}");
         assert!(!p.contains("  "), "{p}");
-        // A reason that ends in punctuation is not given a second full stop.
+        // D-08: no note, no quotes and no verbatim sentence without a reason.
+        assert!(!p.contains("Owner\u{2019}s note"), "{p}");
+        assert!(!p.contains(NOTE_OPEN) && !p.contains(NOTE_CLOSE), "{p}");
+        assert!(!p.contains("verbatim"), "{p}");
+        for (outcome, words) in [
+            (Outcome::WontDo, "Deferred follow-up: will not do."),
+            (
+                Outcome::DeferPermanently,
+                "Deferred follow-up: deferred permanently.",
+            ),
+        ] {
+            assert_eq!(recorded_reason(&choice(outcome, "")), words);
+        }
+        // A reason is quoted verbatim: no full stop is added inside the note.
         let p = prompt(&t, &choice(Outcome::WontDo, "no device?"));
-        assert!(p.contains("will not do. no device? They must not"), "{p}");
+        assert!(
+            p.contains("will not do. Owner\u{2019}s note: \u{201c}\u{201c}\u{201c}no device?\u{201d}\u{201d}\u{201d} Record that reason exactly"),
+            "{p}"
+        );
         // Every phase row of the fixture is a real row.
         assert!(!stop_rows(&ctx).is_empty());
+    }
+
+    /// D-07: the recorded reason starts with the non-blocking prefix, names the
+    /// outcome and quotes the note between the delimiters, with nothing appended.
+    #[test]
+    fn recorded_reason_keeps_the_prefix_and_the_quotes() {
+        let moved = |reason: &str| SettleChoice {
+            outcome: Outcome::Move,
+            reason: clean(reason, REASON_MAX_CHARS),
+            move_to: Some(MoveTarget {
+                number: "7".to_owned(),
+                name: None,
+                known: false,
+            }),
+        };
+        let cases = [
+            (
+                choice(Outcome::WontDo, "no device here"),
+                "Deferred follow-up: will not do. Owner\u{2019}s note: \u{201c}\u{201c}\u{201c}no device here\u{201d}\u{201d}\u{201d}",
+            ),
+            (
+                choice(Outcome::DeferPermanently, "later"),
+                "Deferred follow-up: deferred permanently. Owner\u{2019}s note: \u{201c}\u{201c}\u{201c}later\u{201d}\u{201d}\u{201d}",
+            ),
+            (
+                moved("after the redesign"),
+                "Deferred follow-up: moved to phase 7. Owner\u{2019}s note: \u{201c}\u{201c}\u{201c}after the redesign\u{201d}\u{201d}\u{201d}",
+            ),
+            (moved(""), "Deferred follow-up: moved to phase 7."),
+        ];
+        for (choice, want) in cases {
+            let got = recorded_reason(&choice);
+            assert_eq!(got, want);
+            assert!(got.starts_with(DEFERRED_PREFIX), "{got}");
+        }
+        assert_eq!(delimited_note(""), "");
+        assert_eq!(
+            delimited_note("a"),
+            "\u{201c}\u{201c}\u{201c}a\u{201d}\u{201d}\u{201d}"
+        );
+    }
+
+    /// D-06, T-khh-02: whatever the owner types, the note opens once and closes once,
+    /// holds no double quote of either kind, and keeps the argument parse safe.
+    #[test]
+    fn a_note_cannot_close_its_own_quotes() {
+        let (_d, root) = temp_fixture("uat-pending");
+        let ctx = fixture_ctx(&root, ALIAS);
+        let key = group_key(&ctx, Lane::Test, None);
+        let item = ctx.owner_digest(ALIAS).unwrap().groups[0].items[0]
+            .id
+            .clone();
+        let targets = [
+            target(&ctx, &key, None, false).unwrap(),
+            target(&ctx, &key, Some(&item), false).unwrap(),
+        ];
+        for typed in [
+            "ends here\"\"\" and more",
+            "\u{201c}curly\u{201d} and \u{201d}\u{201d}\u{201d}",
+            "\"\"\"",
+        ] {
+            let reason = clean(typed, REASON_MAX_CHARS);
+            let choices = [
+                choice(Outcome::WontDo, typed),
+                choice(Outcome::DeferPermanently, typed),
+                move_choice(typed, sync()),
+            ];
+            for target in &targets {
+                for choice in &choices {
+                    assert_eq!(choice.reason, reason);
+                    let p = prompt(target, choice);
+                    assert_eq!(p.matches(NOTE_OPEN).count(), 1, "{p}");
+                    assert_eq!(p.matches(NOTE_CLOSE).count(), 1, "{p}");
+                    let start = p.find(NOTE_OPEN).unwrap() + NOTE_OPEN.len();
+                    let end = p.find(NOTE_CLOSE).unwrap();
+                    let note = &p[start..end];
+                    assert_eq!(note, owner_note(&reason), "{p}");
+                    assert!(!note.contains(['\u{201c}', '\u{201d}']), "{note:?}");
+                    for bad in ['\'', '"', '\\'] {
+                        assert!(!p.contains(bad), "{bad:?} in {p:?}");
+                    }
+                    assert_eq!(shown(&p), p);
+                }
+            }
+        }
     }
 
     // ── Move (39-02, D-01, D-06, D-09) ──────────────────────────────────────
@@ -1709,7 +1872,7 @@ mod tests {
         };
         assert_eq!(
             prompt(&one, &move_choice("after the redesign", unknown)),
-            "/gsd-verify-work 01 The user moves test 4 (\u{201c}Looks OK on a phone\u{201d}) in 01-UAT.md to phase 7. Resume the UAT session of phase 01 without restarting it and record test 4 as result: skipped, reason: Deferred follow-up: moved to phase 7. after the redesign. It must not block phase 01. Then add one todo as /gsd-capture does, titled \u{201c}Phase 7: rerun test 4 from phase 01\u{201d}, so it comes up again when phase 7 runs. Do not promote it to the 999.x backlog."
+            "/gsd-verify-work 01 The user moves test 4 (\u{201c}Looks OK on a phone\u{201d}) in 01-UAT.md to phase 7. Resume the UAT session of phase 01 without restarting it and record test 4 as result: skipped, reason: Deferred follow-up: moved to phase 7. Owner\u{2019}s note: \u{201c}\u{201c}\u{201c}after the redesign\u{201d}\u{201d}\u{201d} Record that reason exactly, up to and including the closing triple quotes, with the owner\u{2019}s note between them copied verbatim. It must not block phase 01. Then add one todo as /gsd-capture does, titled \u{201c}Phase 7: rerun test 4 from phase 01\u{201d}, so it comes up again when phase 7 runs. Do not promote it to the 999.x backlog."
         );
         // A backlog phase is named by its slug words, and never promoted.
         let parked = MoveTarget {

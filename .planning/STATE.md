@@ -6,10 +6,10 @@ current_phase: 39
 current_phase_name: Check actions through GSD
 status: verifying
 stopped_at: Completed 39-03-PLAN.md
-last_updated: "2026-11-25T21:43:43.152Z"
+last_updated: "2026-11-25T22:05:27.616Z"
 last_activity: 2026-11-25
 last_activity_desc: Phase 39 execution started
-state_head: 4479993c9d1fad9b0e8a55ffc631e5a12bf055e1
+state_head: 81d1d11cf8aecb463b680b9cabc965b83ba8ee8e
 progress:
   total_phases: 6
   completed_phases: 1
@@ -32,7 +32,7 @@ See: .planning/PROJECT.md (updated 2026-11-14)
 Phase: 39 (Check actions through GSD) — EXECUTING
 Plan: 3 of 3
 Status: Phase complete — ready for verification
-Last activity: 2026-11-25 - Completed quick task 261125-kfc: TUI registry writes keep external config.json edits; never auto-register gsdmm-owned data-dir roots
+Last activity: 2026-11-25 - Completed quick task 261125-khh: Settle: always launch a new session, let a pending settle be dropped, quote the owner's reason
 
 
 ## Deferred Verification
@@ -602,6 +602,7 @@ Older entries (Phase 19 T-19-* rows, Phase 21 round-13 gaps, Phase 26 risks, 31-
 | 261124-k1s | Clarify in-app meaning of Owner-row actions A (acknowledge = hide) and x (settle = record as skipped) | 2026-11-24 | c473a9cd | [261124-k1s-clarify-in-app-meaning-of-owner-row-acti](./quick/261124-k1s-clarify-in-app-meaning-of-owner-row-acti/) |
 | 261125-jx7 | Don't auto-register non-GSD or temp-dir roots from detected sessions | 2026-11-25 | a363aeab | [261125-jx7-don-t-auto-register-non-gsd-or-temp-dir-](./quick/261125-jx7-don-t-auto-register-non-gsd-or-temp-dir-/) |
 | 261125-kfc | TUI registry writes keep external config.json edits; never auto-register gsdmm's own oneoff/driver/envelope dirs | 2026-11-25 | 4881f331 | [261125-kfc-fix-tui-registry-lost-update-on-config-j](./quick/261125-kfc-fix-tui-registry-lost-update-on-config-j/) |
+| 261125-khh | Settle: always launch a new session, let a pending settle be dropped, quote the owner's reason | 2026-11-25 | 81d1d11c | [261125-khh-settle-always-launch-a-new-session-let-a](./quick/261125-khh-settle-always-launch-a-new-session-let-a/) |
 
 ## Deferred Items
 

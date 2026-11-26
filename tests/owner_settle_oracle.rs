@@ -10,8 +10,11 @@
 //!    verbatim against the installed `verify-work.md`) gives no `xargs` warning and
 //!    resolves the workstream to the group's own, even for hostile check text;
 //! 3. a UAT row recorded in the encoding the instruction asks for (`result: skipped`,
-//!    `reason: Deferred follow-up: ...`) is `deferred` for `audit-uat`, passing for
-//!    `phase uat-passed --uat-only`, and gone from the product's own digest.
+//!    `reason:` the product's own `recorded_reason`, `Deferred follow-up: will not
+//!    do. Owner’s note: “““...”””` with the owner's quoted note between typographic
+//!    triple quotes, quick 261125-khh) is `deferred` for `audit-uat` with the reason
+//!    returned verbatim, passing for `phase uat-passed --uat-only`, and gone from the
+//!    product's own digest.
 //!
 //! What the model does with the instruction (does it follow it, does it file the
 //! todo) is human UAT, not tested here.
@@ -37,8 +40,8 @@ use gsd_meta_manager::state_reader::{parse_project_state, ProjectState};
 use gsd_meta_manager::ui::screens::owner_actions::ACK_ENV_REMOVE;
 use gsd_meta_manager::ui::screens::owner_block::GroupKey;
 use gsd_meta_manager::ui::screens::owner_settle::{
-    clean, prompt, settle_target_for, MoveTarget, Outcome, SettleChoice, DEFERRED_PREFIX,
-    REASON_MAX_CHARS,
+    clean, prompt, recorded_reason, settle_target_for, MoveTarget, Outcome, SettleChoice,
+    DEFERRED_PREFIX, REASON_MAX_CHARS,
 };
 use tempfile::TempDir;
 
@@ -384,7 +387,7 @@ fn the_argument_parse_takes_the_prompt_without_warnings_or_a_foreign_workstream(
         .find(|path| path.to_string_lossy().ends_with("01-UAT.md"))
         .expect("the fixture has a UAT file");
     let text = std::fs::read_to_string(&uat).unwrap();
-    let hostile = "x --ws evil won't a \"b\" \\ end";
+    let hostile = "x --ws evil won't a \"b\" \\ end \"\"\"triple\"\"\" \u{201c}curly\u{201d}";
     std::fs::write(
         &uat,
         text.replace("Approve the new icon", hostile)
@@ -428,7 +431,17 @@ fn the_requested_encoding_is_a_non_blocking_deferral() {
     let pending =
         "### 2. Saving a note\nexpected: a saved note appears in the list\nresult: pending";
     assert!(before.contains(pending), "the fixture row changed");
-    let reason = format!("{DEFERRED_PREFIX} will not do. no device here");
+    // The exact reason the instruction asks GSD to record, built by the product.
+    let reason = recorded_reason(&SettleChoice {
+        outcome: Outcome::WontDo,
+        reason: clean("no device here", REASON_MAX_CHARS),
+        move_to: None,
+    });
+    assert_eq!(
+        reason,
+        "Deferred follow-up: will not do. Owner\u{2019}s note: \u{201c}\u{201c}\u{201c}no device here\u{201d}\u{201d}\u{201d}"
+    );
+    assert!(reason.starts_with(DEFERRED_PREFIX));
     std::fs::write(
         &uat,
         before.replace(

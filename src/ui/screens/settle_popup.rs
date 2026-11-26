@@ -848,8 +848,13 @@ pub(crate) fn settle_body(plan: &SettlePlan, inner_w: u16) -> Vec<Line<'static>>
     body.extend(field("Project", &shown(&plan.draft.target.alias), inner_w));
     body.push(one_row("Target", &target_label(plan), inner_w));
     body.push(one_row("Outcome", &outcome_label(plan), inner_w));
+    // D-09: the note as the instruction quotes it.
     if !plan.choice.reason.is_empty() {
-        body.push(one_row("Reason", &plan.choice.reason, inner_w));
+        body.push(one_row(
+            "Reason",
+            &owner_settle::delimited_note(&plan.choice.reason),
+            inner_w,
+        ));
     }
     body.push(Line::raw(""));
     match runs_summary(plan) {
@@ -862,7 +867,7 @@ pub(crate) fn settle_body(plan: &SettlePlan, inner_w: u16) -> Vec<Line<'static>>
                 "result: skipped".to_owned(),
             ];
             if !plan.choice.reason.is_empty() {
-                needles.push(shown(&plan.choice.reason));
+                needles.push(shown(&owner_settle::delimited_note(&plan.choice.reason)));
             }
             if let Some(to) = &plan.choice.move_to {
                 needles.push(shown(&format!("phase {}", to.number)));
@@ -1122,7 +1127,7 @@ mod tests {
     const ALIAS: &str = "alder-api";
 
     /// The prompt of the Won't do tracer flow on `uat-pending` (D-08).
-    const TRACER_PROMPT: &str = "/gsd-verify-work 01 The user will not perform tests 2, 3 in 01-UAT.md. Resume the UAT session of phase 01 without restarting it and record each of them as result: skipped, reason: Deferred follow-up: will not do. no device here. They must not block phase 01 or be asked again. Keep them in the UAT file and do not promote them to the 999.x backlog.";
+    const TRACER_PROMPT: &str = "/gsd-verify-work 01 The user will not perform tests 2, 3 in 01-UAT.md. Resume the UAT session of phase 01 without restarting it and record each of them as result: skipped, reason: Deferred follow-up: will not do. Owner\u{2019}s note: \u{201c}\u{201c}\u{201c}no device here\u{201d}\u{201d}\u{201d} Record that reason exactly, up to and including the closing triple quotes, with the owner\u{2019}s note between them copied verbatim. They must not block phase 01 or be asked again. Keep them in the UAT file and do not promote them to the 999.x backlog.";
 
     /// A small screen stack: `Push`, `Replace` and `Pop` as the App applies them.
     pub(crate) struct Stack(Vec<Box<dyn Screen>>, Option<String>);
@@ -1667,7 +1672,10 @@ mod tests {
         assert!(popup.contains("Outcome    Move to phase 7"), "{popup}");
         stack.key(&mut ctx, KeyCode::Char('y'));
         let prompt = take_settle_launches().remove(0).prompt();
-        assert!(prompt.contains("moved to phase 7. later."), "{prompt}");
+        assert!(
+            prompt.contains("moved to phase 7. Owner\u{2019}s note: \u{201c}\u{201c}\u{201c}later\u{201d}\u{201d}\u{201d} Record that reason exactly"),
+            "{prompt}"
+        );
         // A known phase carries no warning.
         let mut stack = Stack::inbox();
         stack.key(&mut ctx, KeyCode::Char('x'));
@@ -1990,7 +1998,7 @@ mod tests {
             "Project    alder-api",
             "Target     phase 01: tests 2, 3 in 01-UAT.md",
             "Outcome    Won't do",
-            "Reason     no device here",
+            "Reason     \u{201c}\u{201c}\u{201c}no device here\u{201d}\u{201d}\u{201d}",
             &format!("Runs       claude /gsd-verify-work 01 \u{b7} env -u ({n} session vars)"),
             "Yes starts a new session \u{b7} GSD records it \u{b7} this app writes nothing",
             "d full command \u{b7} y/n \u{b7} \u{2190}/\u{2192} move \u{b7} Enter select \u{b7} Esc cancel",
@@ -2384,7 +2392,7 @@ mod tests {
             "tests 2, 3 in 01-UAT.md",
             "phase 01",
             "result: skipped",
-            "no device here",
+            "\u{201c}\u{201c}\u{201c}no device here\u{201d}\u{201d}\u{201d}",
         ]
         .map(str::to_owned)
         .to_vec();
@@ -2550,13 +2558,16 @@ mod tests {
             assert!(!screen.popup.clipped(), "{label}\n{text}");
             eprintln!("{label}: {rows} rows of {room}");
             // The full view fits too, except an unknown phase's, which needs one row
-            // more than 80x24 has (as it always did): it clips and `d` goes back.
+            // more than 80x24 has (as it always did), and a Move's with a reason,
+            // whose quoted note and verbatim sentence (quick 261125-khh, D-07) need
+            // two more: they clip and `d` goes back to the summary, which fits.
             screen.full = true;
             let text = draw_screen(&screen, ctx, 80, 24);
             let unknown_phase = plan.choice.move_to.as_ref().is_some_and(|to| !to.known);
+            let reasoned_move = plan.choice.move_to.is_some() && !plan.choice.reason.is_empty();
             assert_eq!(
                 screen.popup.clipped(),
-                unknown_phase,
+                unknown_phase || reasoned_move,
                 "{label} (full)\n{text}"
             );
             // The unknown-phase warning keeps its Yellow and its words in both views.
