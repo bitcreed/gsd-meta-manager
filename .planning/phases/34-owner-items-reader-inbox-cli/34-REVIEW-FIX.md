@@ -1,123 +1,58 @@
 ---
 phase: 34-owner-items-reader-inbox-cli
-fixed_at: 2026-11-14T15:00:00Z
+fixed_at: 2026-11-27T00:00:00Z
 review_path: .planning/phases/34-owner-items-reader-inbox-cli/34-REVIEW.md
 iteration: 1
-findings_in_scope: 6
-fixed: 6
+findings_in_scope: 2
+fixed: 2
 skipped: 0
 status: all_fixed
 ---
 
 # Phase 34: Code Review Fix Report
 
-**Fixed at:** 2026-11-14T15:00:00Z
+**Fixed at:** 2026-11-27
 **Source review:** .planning/phases/34-owner-items-reader-inbox-cli/34-REVIEW.md
 **Iteration:** 1
 
-**Summary:**
-- Findings in scope: 6 (CR-01, WR-01..WR-05)
-- Fixed: 6
-- Skipped: 0
-- Info items also fixed (trivial and clearly correct): IN-01, IN-03
+This report replaces the one from the earlier review round. WR-01 and WR-02 below are the current review's findings.
 
-Verification ran in the feature worktree `/home/blk/projects/rust/gsd-meta-manager-owner-inbox`
-(the isolated checkout the orchestrator provided), not in the main checkout. No nested
-worktree was created. Oracle conformance (`tests/owner_audit_conformance.rs`) is unchanged:
-16 compared, 2 declared divergences, 0 unexpected, over 18 fixtures.
+**Summary:**
+- Findings in scope: 2 (Critical and Warning; the two Info findings are out of scope)
+- Fixed: 2
+- Skipped: 0
+
+Verification ran in the main checkout (`workflow.use_worktrees` was not used; no worktree).
 
 ## Fixed Issues
 
-### CR-01: Quadratic fence rescan per heading in `deferred-items.md` hangs the reader on a hostile file
-
-**Files modified:** `src/state_reader/owner_items/deferred.rs`, `src/state_reader/owner_items/scan.rs`
-**Commit:** db29f46f
-**Applied fix:** A fence scan is a forward state machine, so a scan begun earlier that is
-closed at the restart line continues exactly as a fresh scan from that line would. The
-per-heading and per-item rescans now reuse the running scan when it is closed there
-(`FenceScan::closed_before`) and scan afresh only otherwise; the de-indented lines are
-computed once. The remaining fresh scans draw on a shared work budget (8 line visits per
-line plus a floor); an exhausted budget makes `parse_deferred_items` return `None` and the
-file is marked `Unreadable::TooLarge`, never clean. Rather than the reviewer's
-segment-bounded scan (which changes `unterminated_from` semantics), reuse keeps the output
-identical to the old behavior on every honest file. Tests: a 1 MiB file of headings and two
-1 MiB fence-opener patterns finish well under a 15 s hang bound, and
-`reusing_a_closed_scan_matches_a_fresh_one` proves reuse equals a fresh scan at every start.
-Status: fixed (logic change; conformance unchanged, so human review of the budget constant
-is optional).
-
-### WR-01: Containment check is vacuous above the final path component, so the reader follows a symlinked `phases/` or `workstreams/` out of the project
-
-**Files modified:** `src/state_reader/owner_items/scan.rs`
-**Commit:** 5436c6f9
-**Applied fix:** `contained` now bounds the canonical phase directory to the canonical
-planning tree (computed once in `scan_planning`) instead of to its own parent. A symlinked
-`phases/` or `workstreams/` reads nothing; test
-`a_symlinked_phases_or_workstreams_directory_cannot_lead_out_of_the_project` (confirmed to
-fail with the old check). Module header updated.
-
-### WR-02: A VERIFICATION file whose frontmatter does not parse reads as clean
+### WR-01: A VERIFICATION with an unterminated or non-mapping frontmatter block still reads as clean
 
 **Files modified:** `src/state_reader/owner_items/frontmatter.rs`, `src/state_reader/owner_items/scan.rs`
-**Commit:** 1873189b
-**Applied fix:** New `frontmatter::extract_checked` separates "absent, unterminated or not a
-mapping" (empty `Ok`) from "closed block whose YAML failed to parse, or carries an anchor or
-alias" (`Err`). `parse_document` turns the latter, for a VERIFICATION, into
-`Unreadable::Io` so it lands in the Fix lane. `extract` keeps its old contract. A parsed
-block without a status still contributes nothing (upstream behavior).
-Status: fixed: requires human verification (it makes a previously silent case visible; the
-anchor-refusal case is also reported as unreadable, which the reviewer did not list).
+**Commit:** 765b137f
+**Status:** fixed: requires human verification (logic change in a reader that mirrors upstream)
+**Applied fix:** Added `frontmatter::extract_strict`. It returns `Err(Unparseable)` for a block that opens but never closes, and for a closed block whose YAML is a scalar or sequence. Only a text with no fence at all, or an empty or comment-only block (YAML null), stays `Ok(empty)`. `scan::parse_document` uses it for VERIFICATION files, so those files become `Unreadable::Io` Fix entries instead of vanishing from the digest. Regression tests: `a_verification_with_an_unterminated_or_non_mapping_block_is_unreadable_not_clean` (scan.rs, failed before the change) and `strict_extraction_refuses_an_unterminated_or_non_mapping_block` (frontmatter.rs).
 
-### WR-03: The 1 MiB read cap is bypassed by `parse_project_state`, which reads the same files with an unbounded `read_to_string`
+**Inferred decisions (audit):**
+- The review suggested changing `extract_checked` itself. I added a separate strict function instead, because `extract_checked` is also used by `debug::parse_session`, where an unterminated block already has its own handling (`fence_body` is `None` for an unterminated fence). `extract` (UAT) is unchanged.
+- An empty or comment-only closed block stays clean: it holds nothing that could hide a check.
+- The review said to declare a divergence in the conformance oracle if upstream differs. The existing `owner_audit_conformance` and `owner_digest` tests still pass, so no divergence was declared. Whether upstream reads an unterminated VERIFICATION as `{}` was not independently checked. That is the reason for the human-verification flag.
 
-**Files modified:** `src/state_reader/disk_status.rs`
-**Commit:** 9868af85
-**Applied fix:** `read_text_file` rejects a file whose length exceeds 1 MiB and bounds the
-read itself with `take(cap + 1)`; every caller already treats an error as absent/unreadable.
-Test covers exactly 1 MiB (read), 1 MiB + 1 (refused) and a 4 GiB sparse file (refused
-without reading).
+### WR-02: The G0 `HANDOFF.json` read is an unbounded, blocking `read_to_string`
 
-### WR-04: Impossible-state guard: `file_unreadable` in `apply_r7` is always false at its use
+**Files modified:** `src/state_reader/mod.rs`
+**Commit:** dac7d825
+**Applied fix:** The G0 pause check and `detect_handoff`'s HANDOFF.json read both go through `disk_status::read_text_file` (non-blocking open, regular file only, 1 MiB cap). `detect_handoff` was migrated as well because it runs inside `parse_project_state`; fixing only the G0 read would still hang on a FIFO. Regression test: `a_handoff_json_fifo_does_not_block_the_parse_and_records_no_pause` (Linux only; it hung for 5 s before the change).
 
-**Files modified:** `src/state_reader/owner_items/rules.rs`
-**Commit:** 02693555
-**Applied fix:** Verified the invariant (every current, unacknowledged unreadable or
-partially parsed file yields a Fix group, so `has_fix` already excludes the phase), removed
-the guard, and recorded the invariant at the `has_fix || has_blocked` check. The existing
-"parse gap" row of `r7_closeable_table` covers it.
-Status: fixed: requires human verification (code removal).
+**Inferred decision (audit):** The `.continue-here.md`, STATE.md, ROADMAP.md and HANDOFF.md reads in `parse_project_state` still use plain `read_to_string`. The review proposed migrating them in a follow-up, so I left them. A FIFO at one of those paths can still park `inbox` and `status`. Migrating them would also add the 1 MiB cap to STATE.md and ROADMAP.md, which is a behaviour change worth deciding on separately.
 
-### WR-05: Wall-clock assertions make `a_cold_inbox_over_twenty_projects_is_under_a_second` flaky
+## Verification
 
-**Files modified:** `tests/inbox_cli.rs`
-**Commit:** fb6255c0
-**Applied fix:** The default bound is now a 10 s hang detector; `GSD_MM_STRICT_TIMING=1`
-restores the one-second target for a quiet machine. The test, its name and its
-`summary.projects` / `test > 0` assertions are kept. The pathological-input proof for the
-real performance hazard is the CR-01 unit tests.
-
-### IN-01: Stale `allow(dead_code)` attributes hide an unused production function
-
-**Files modified:** `src/state_reader/owner_items/markdown.rs`, `src/state_reader/owner_items/frontmatter.rs`
-**Commit:** ffc7611e
-**Applied fix:** Removed the module-wide `#![allow(dead_code)]` and `fm_list`'s attribute;
-`collect_section_stopping_at` (no non-test caller) is `#[cfg(test)]`.
-
-### IN-03: `fix_phases` compares raw phase tokens, unlike every other phase comparison
-
-**Files modified:** `src/state_reader/owner_items/rules.rs`
-**Commit:** 572ef92d
-**Applied fix:** The set key uses `phase_key` (the canonical spelling, equal to
-`same_phase`'s identity). Test `two_spellings_of_one_phase_are_one_fix_phase`.
-
-## Left Alone (Info, not trivial)
-
-- IN-02 (id truncation collision), IN-04 (cache bound by weight), IN-05 (todo list error
-  and per-project clock) change schema or behavior beyond a trivial fix; they remain
-  open in REVIEW.md.
+- `cargo clippy --all-targets -- -D warnings`: clean.
+- `cargo test --no-fail-fast`: see the orchestrator summary. The only known failure is the unrelated `the_installed_verify_work_still_parses_arguments_this_way` in `tests/owner_settle_oracle.rs`, which was not touched.
 
 ---
 
-_Fixed: 2026-11-14T15:00:00Z_
+_Fixed: 2026-11-27_
 _Fixer: Claude (gsd-code-fixer)_
 _Iteration: 1_
