@@ -5,11 +5,11 @@ titles: json
 findings:
   - id: WR-01
     severity: warning
-    disposition: open
+    disposition: fixed
     title: "A VERIFICATION with an unterminated or non-mapping frontmatter block still reads as clean (WR-02 fixed only half the class)"
   - id: WR-02
     severity: warning
-    disposition: open
+    disposition: fixed
     title: "The new G0 `HANDOFF.json` read is an unbounded, blocking `read_to_string` in a reader this phase hardens against hostile project trees"
   - id: IN-01
     severity: info
@@ -47,17 +47,17 @@ findings:
     severity: info
     disposition: open
     title: "`inbox` reports zero pending todos when listing them failed"
-open: 6
+open: 4
 total: 11
-recorded: 2026-11-27T06:25:46.264Z
+recorded: 2026-11-27T07:16:11.918Z
 ---
 
 # Phase 34: Code Review Disposition
 
 | Finding | Severity | Disposition | Source |
 |---------|----------|-------------|--------|
-| WR-01 | warning | open | - |
-| WR-02 | warning | open | - |
+| WR-01 | warning | fixed | 34-REVIEW-FIX.md |
+| WR-02 | warning | fixed | 34-REVIEW-FIX.md |
 | IN-01 | info | open | - |
 | IN-02 | info | open | - |
 | CR-01 | critical | fixed | 34-REVIEW-FIX.md (not in the current review) |
