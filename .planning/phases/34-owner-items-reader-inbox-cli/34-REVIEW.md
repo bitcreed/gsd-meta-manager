@@ -1,15 +1,11 @@
 ---
 phase: 34-owner-items-reader-inbox-cli
-reviewed: 2026-11-14T13:40:00Z
+reviewed: 2026-11-27T06:25:01Z
 depth: standard
-files_reviewed: 32
+files_reviewed: 24
 files_reviewed_list:
-  - .github/workflows/release.yml
   - Cargo.toml
-  - scripts/install-conformance-oracle.sh
   - src/app.rs
-  - src/cli.rs
-  - src/cli_targets.rs
   - src/config.rs
   - src/driver/router.rs
   - src/inbox.rs
@@ -28,284 +24,121 @@ files_reviewed_list:
   - src/state_reader/owner_items/verification.rs
   - src/state_reader/state_md.rs
   - src/status_cli.rs
-  - src/text.rs
-  - tests/async_blocking_guard.rs
-  - tests/driver_router_conformance.rs
   - tests/inbox_cli.rs
   - tests/owner_audit_conformance.rs
   - tests/owner_digest.rs
-  - tests/state_reader_test.rs
   - tests/status_cli.rs
 findings:
-  critical: 1
-  warning: 5
-  info: 5
-  total: 11
-  necessity: 1
+  critical: 0
+  warning: 2
+  info: 2
+  total: 4
+  necessity: 0
 status: issues_found
 ---
 
 # Phase 34: Code Review Report
 
-**Reviewed:** 2026-11-14T13:40:00Z
+**Reviewed:** 2026-11-27T06:25:01Z
 **Depth:** standard
-**Files Reviewed:** 32
+**Files Reviewed:** 24
 **Status:** issues_found
 
 ## Summary
 
-Reviewed the owner-items reader (Layer A port and Layer B rules), the `inbox` CLI and
-document, the shared target resolver, the `status` integration, and the `disk_status`
-hardening. The port is careful: slicing is on ASCII boundaries, the escaping of
-project-authored text is consistent, `--ws`/phase command tokens are validated, and the
-FIFO/symlink/oversize handling in `scan.rs` works for the final path component. The
-concrete defects are all in how the reader behaves on a hostile or malformed project,
-which is the exact threat model D-17 sets for this code. Each finding below marked
-"reproduced" was run against `target/debug/gsd-meta-manager inbox` with a crafted tree.
+This is a re-review. I re-read the six fix commits from the previous review (CR-01, WR-01 to WR-05, IN-01, IN-03) and traced each fix against the surrounding code. I then reviewed the rest of the phase diff in the listed files: `inbox.rs`, `inbox_cli.rs`, `cli_targets.rs` (the shared resolver), `status_cli.rs`, `config.rs::update_config`, the `app.rs` digest, reparse, registry-adoption and filter changes, the router G0 gate, and the `scan.rs` and `rules.rs` owner reader.
 
-Read `necessity-review.md`; one necessity finding (WR-04). No structural (fallow) block
-was supplied, so there is no `## Structural Findings` section.
+I did not build or run the tests. Findings come from reading the code and tracing inputs by hand.
 
-Key concerns:
+**The fixes hold up.**
+- **CR-01 (fence scan reuse):** `FenceScan::closed_before` is correct at the opener, closer and unterminated boundaries. Every refresh path either reuses a closed scan or spends the shared work budget. An exhausted budget becomes `Unreadable::TooLarge`, never a clean file.
+- **WR-01 (containment):** `contained` now bounds the canonical phase directory to the canonical planning tree.
+- **WR-03 (read cap):** `read_text_file` checks the length and also bounds the read itself with `take`.
+- **WR-04 (`apply_r7`):** I checked the invariant behind the removed `file_unreadable` guard. Every current, unacknowledged file with `unreadable` or `unparsed_blocks` yields a Fix group in `build_digest_with`. That happens in `lane_entries` and the `group_unreadable` handling, so `has_fix` excludes the phase before the guard point. The removal is sound.
+- **IN-03 (`fix_phases` key):** the key now uses the canonical phase spelling.
 
-- A 64 KiB `deferred-items.md` made of headings already costs 28 s; a 1 MiB one (the
-  cap) does not finish in 60 s (CR-01).
-- The 1 MiB read cap and the containment check are defeated by paths the reader does
-  not guard (WR-01, WR-03).
-- A VERIFICATION file with invalid YAML frontmatter reads as clean (WR-02).
+**New findings.** Both warnings are gaps in hardening this phase otherwise makes. WR-01 is an incomplete WR-02 fix. WR-02 is a new unbounded, blocking read next to the code the phase hardened.
 
-## Critical Issues
+**Carried over, not re-reported:** the earlier review's IN-02 (id collision after `terminal_capped`), IN-04 (parse cache bounded by entry count) and IN-05 (todo listing failure reads as zero) are still open in 34-REVIEW-DISPOSITION.md. I confirmed `inbox_cli.rs:112` (`list_pending(&root).unwrap_or_default()`) is unchanged.
 
-### CR-01: Quadratic fence rescan per heading in `deferred-items.md` hangs the reader on a hostile file
-
-**File:** `src/state_reader/owner_items/deferred.rs:374-381` (also `:197-202`, `:211-230`, `:400-404`)
-**Issue:** `split_heading_entries` calls `scan_fences_from(lines, i + 1)` for every
-heading. `scan_fences_from` allocates a de-indented copy of the whole tail
-(`deindented(tail)`) and runs `scan_fenced_blocks` over it, so the cost is
-O(headings x lines). A file with no `## Deferred Items` section falls back to the whole
-file (`parse_deferred_items`, line 25), so an attacker controls the heading count. The
-1 MiB cap does not help: it permits about 260,000 headings.
-
-Reproduced with a project whose current phase directory holds one `deferred-items.md`
-made of repeated `# a\n` lines (`inbox <dir> --json`, debug build):
-
-| file size | wall time |
-|-----------|-----------|
-| 16 KiB    | 1.9 s     |
-| 32 KiB    | 7.1 s     |
-| 64 KiB    | 28.6 s    |
-| 1 MiB     | killed at 60 s (extrapolates to hours) |
-
-The time doubles twice per size doubling, so it is quadratic. The deferred lane is
-hidden by default, but the digest is computed anyway. `status` runs the same reader, so
-a cloned repository can freeze `inbox`, `status` and (once wired) the TUI refresh. This
-is a hang on untrusted input in code whose header (D-17, fact 4) promises fail-safe
-handling of hostile files. The same re-scan pattern appears at line 403 (`scan = scan_fences_from(lines, i)`
-for each top-level item after an unterminated fence) and at line 267 in
-`split_list_entries`.
-
-**Fix:** Do the fence scan once per body and slice it, instead of rescanning per heading.
-The de-indented fence scan and the heading tokenizer disagree about indentation, so a
-plain "reuse the global scan" is not provably identical; the safe version scans each
-segment only up to the next heading and carries a work budget:
-
-```rust
-// bound the per-heading scan to its own segment
-let seg_end = headings.get(index + 1).map_or(lines.len(), |next| next.line);
-scan = scan_fences_from(&lines[..seg_end], i + 1);
-
-// and fail safe when the body is pathological
-const MAX_SCAN_LINES: usize = 20_000;
-if lines.len() > MAX_SCAN_LINES && headings.len() > 1_000 {
-    return None; // caller marks the file Unreadable::TooLarge, never clean
-}
-```
-
-Add a regression test that parses `"# a\n".repeat(60_000)` under a time bound, and re-run
-`tests/owner_audit_conformance.rs` against the oracle after changing the scan.
+No necessity findings. I read the necessity rubric and found no guard against a state this stack rules out.
 
 ## Warnings
 
-### WR-01: Containment check is vacuous above the final path component, so the reader follows a symlinked `phases/` or `workstreams/` out of the project
+### WR-01: A VERIFICATION with an unterminated or non-mapping frontmatter block still reads as clean (WR-02 fixed only half the class)
 
-**File:** `src/state_reader/owner_items/scan.rs:103-108` (callers `:179`, `:338`, `:384-392`, `:420-465`)
-**Issue:** `contained` compares `canonicalize(phase_dir)` with `canonicalize(phase_dir.parent())`.
-Both are resolved through the same symlinked ancestor, so the comparison passes whenever
-the symlink sits above the phase directory. `current_phase_dirs`, `subdirectories` and
-`archive_dirs` only reject a symlink as the last component (`file_type().is_dir()` does
-not follow links; only `milestones` gets an explicit symlink check). The module header
-promises "a symlink that escapes makes the file absent", which holds only for the file
-itself.
+**File:** `src/state_reader/owner_items/frontmatter.rs:112-134` (also `src/state_reader/owner_items/scan.rs:234-246`)
 
-Reproduced: `.planning/phases -> /somewhere/outside/phases`, where the target holds
-`01-alpha/01-UAT.md` with a row `SECRET-OUTSIDE-ITEM`. `inbox <project>` lists
-`- [ ] SECRET-OUTSIDE-ITEM` and a `/gsd-verify-work 1` command. A cloned repository can
-therefore make the inbox read and display UAT/VERIFICATION/deferred-shaped files from
-anywhere the user can read (frontmatter fields, row names, reasons).
+**Issue:** The WR-02 fix made `extract_checked` return `Err(Unparseable)` only for a closed block whose YAML fails to parse, or one that carries an anchor or alias. Two equally easy damage modes still return `Ok(Mapping::new())`:
+- An unterminated block (the closing `---` is missing). `locate_fence` returns `closed: false`, so `extract_checked` returns `Ok(empty)`.
+- A closed block whose YAML parses to a scalar or sequence (`Some(_) => Ok(Mapping::new())`).
 
-**Fix:** Bound every candidate to the canonical project root, not to its own parent:
+Trace for a VERIFICATION file `---\nstatus: human_needed\nhuman_verification:\n  - check the invoice PDF\n` with no closing `---`:
+1. `extract_checked` returns `Ok(empty)`.
+2. `report_status` returns `Gate::Omit`.
+3. `parse_document` returns `None`.
+4. `read_audit` returns early on `parsed.as_ref().as_ref()?`, so the file is absent from the digest.
 
+The pending human check disappears with no Fix-lane entry. This is the failure the WR-02 fix commit describes: "the file may be hiding a pending check, so it is unreadable, never clean". It is also inconsistent with the dashboard. `disk_status::read_verification_status` reports `Missing` for the same file, and the router treats `Missing` as a gate. The dashboard flags the project while the inbox says there is nothing for the owner to do.
+
+Mirroring upstream's `{}` for these shapes may be intended for conformance. If so, it is a declared divergence candidate, as WR-02's anchor case already is. It is not currently declared or tested; the only unterminated-frontmatter test (`scan.rs:858`) covers a UAT.
+
+**Fix:** In `extract_checked`, treat "opened but never closed" and "closed but not a mapping" as `Err(Unparseable)` when the caller is a VERIFICATION. Keep `Ok(empty)` only for "no fence at all".
 ```rust
-fn contained(root_real: &Path, phase_dir: &Path, file: &Path) -> Option<PathBuf> {
-    let real_dir = phase_dir.canonicalize().ok()?;
-    let real_file = file.canonicalize().ok()?;
-    (real_dir.starts_with(root_real) && real_file.starts_with(&real_dir)).then_some(real_file)
+let Some(fence) = locate_fence(text) else { return Ok(Mapping::new()); };
+if !fence.closed {
+    return Err(Unparseable);          // opened, never closed: damaged, not absent
+}
+...
+match parsed {
+    Some(Value::Mapping(map)) => Ok(map),
+    Some(_) | None => Err(Unparseable),
 }
 ```
+`extract` (which UAT uses) keeps its contract through `unwrap_or_default()`. Add a `scan.rs` test next to `a_verification_with_unparseable_frontmatter_is_unreadable_not_clean`, and declare the divergence in the conformance oracle if upstream differs.
 
-Compute `root_real = planning_dir.canonicalize()` once in `scan_planning` and pass it to
-`read_audit`. Keep a symlink-escape test for `phases/`, `workstreams/` and
-`milestones/ws-*`.
+### WR-02: The new G0 `HANDOFF.json` read is an unbounded, blocking `read_to_string` in a reader this phase hardens against hostile project trees
 
-### WR-02: A VERIFICATION file whose frontmatter does not parse reads as clean
+**File:** `src/state_reader/mod.rs:1008-1013` (siblings at `:1001`, `:902`, `:1023`)
 
-**File:** `src/state_reader/owner_items/scan.rs:231-234` and `src/state_reader/owner_items/frontmatter.rs:100-121`
-**Issue:** `frontmatter::extract` returns an empty mapping when the YAML fails to parse
-(after one repair attempt). `verification::report_status` maps an absent `status` to
-`Gate::Omit`, and `parse_document` then returns `None`, so the file contributes nothing:
-no item, no unreadable marker, no count. The module header (fact 4) says anything the
-parser cannot read is "reported as unreadable checks, never as clean".
+**Issue:** `parse_project_state` is what `inbox` and `status` call for every registered project, including projects the user does not own. This phase hardened the sibling readers for that threat:
+- `disk_status::read_text_file` opens with `O_NONBLOCK`, requires a regular file and (since WR-03) caps the read at 1 MiB.
+- `scan::open_checked` does the same for the owner files.
 
-Reproduced: a `01-VERIFICATION.md` with `status: human_needed`, a Human Verification
-section with one open item, and one stray line `\tbad: [` in the frontmatter. `inbox`
-reports `test 0` and lists nothing. The same file without the stray line reports
-`test 1`. A human check disappears because of a typo in an unrelated key.
+The G0 addition reads `planning_dir.join("HANDOFF.json")` with plain `std::fs::read_to_string`. If `HANDOFF.json` is a FIFO, the open blocks forever. That is exactly what the `read_text_file` doc comment says it prevents ("a FIFO named like an artifact cannot park the reader"). The same call would also buffer a multi-gigabyte file. Because `inbox` is a one-shot CLI that reads every registered project, one project with a planted FIFO hangs the whole command and every other project's report with it.
 
-The upstream port treats "unparseable status" as omit, but upstream aborts or logs; this
-reader reports a clean inbox, which is the wrong failure direction for a tool whose
-core value is not missing a pending action.
+The line above it (`.continue-here.md`) and the STATE.md and ROADMAP.md reads have the same flaw. They predate this phase. The new G0 read adds one more instance and reads a file that `detect_handoff` (`mod.rs:719`) already reads, so the file is opened twice per parse.
 
-**Fix:** Distinguish "no `status` key in a parsed block" (Omit, as upstream) from
-"frontmatter fence is closed but the block did not parse" and mark the latter
-`Unreadable::Io` (or a new `BadFrontmatter`) so it lands in the Fix lane as an
-unreadable check:
-
+**Fix:** Route the new read through the hardened reader, and ideally reuse the handoff already read:
 ```rust
-// extract() returns Result<Mapping, FrontmatterError>; None for no fence
-Err(FrontmatterError::Unparseable) => Some(ParsedFile {
-    unreadable: Some(Unreadable::Io),
-    ..ParsedFile::empty("unknown")
-}),
+if crate::state_reader::disk_status::read_text_file(planning_dir.join("HANDOFF.json"))
+    .is_ok_and(|content| !content.trim().is_empty())
+{
+    state.pause_recorded = true;
+}
 ```
-
-### WR-03: The 1 MiB read cap is bypassed by `parse_project_state`, which reads the same files with an unbounded `read_to_string`
-
-**File:** `src/state_reader/disk_status.rs:431-460` (callers `:854`, `:917`, `:1015`, `:1131`, `:1228`, `:1353`)
-**Issue:** `read_text_file` was added to harden the disk-status readers against hostile
-projects (non-blocking open, regular files only), but it calls `file.read_to_string`
-with no size limit and follows symlinks wherever they point. `inbox` and `status` call
-`parse_project_state` before the owner scan, so the 1 MiB cap and the `contained` check
-in `scan.rs` never see the file first.
-
-Reproduced: a sparse 1.5 GB `01-UAT.md` in a current phase directory. `inbox` finishes
-with `maxrss=1558736 KB` and reports one "unreadable check" afterwards (the owner reader
-did cap it). A larger file exhausts memory. A symlinked `01-UAT.md` pointing at any
-regular file outside the project is also read by this path (only the `status:` value
-leaks, into the `uat` field of `status --json`, and only for files that start with
-frontmatter).
-
-**Fix:** Cap inside the helper and share one implementation with `scan.rs::open_checked`:
-
-```rust
-const READ_CAP: u64 = 1 << 20;
-if file.metadata()?.len() > READ_CAP { return Err(io::Error::new(InvalidInput, "too large")); }
-let mut text = String::new();
-file.take(READ_CAP + 1).read_to_string(&mut text)?;
-if text.len() as u64 > READ_CAP { return Err(io::Error::new(InvalidInput, "too large")); }
-```
-
-Do not apply the cap to `*-PLAN.md` before checking what `MAX_*_BYTES` the caller
-already enforces (the waves manifest has its own check at line 1128).
-
-### WR-04: Impossible-state guard: `file_unreadable` in `apply_r7` is always false at its use
-
-**File:** `src/state_reader/owner_items/rules.rs:510-511`
-**Category:** necessity
-**Issue:** The guarded state cannot occur at that line. `file_unreadable` is true only
-when an unacknowledged current-scope file of the phase has `unparsed_blocks > 0` or
-`unreadable.is_some()`. `build_digest` turns every such file into a Fix-lane group with
-`counts.unreadable > 0` (lines 416-420 give `unreadable >= 1`; line 592-598 pushes the
-group because `group_unreadable != 0`). Superseded files are skipped earlier, but only
-`human_needed` VERIFICATIONs with `unreadable == None` and `unparsed_blocks == 0` can be
-superseded (lines 258-261), so they never satisfy the guard. `in_phase` and `phase_files`
-use the same scope, workstream, acknowledged and phase predicates, so that Fix group is
-in `groups`, `has_fix` is true, and the loop `continue`s at line 507-509 before
-`file_unreadable` is evaluated. The `&& !file_unreadable` term on line 517 is therefore
-always true.
-**Fix:** Remove `file_unreadable` and its use, and record the invariant ("an unreadable
-file always yields a Fix group, so `has_fix` already excludes it") next to the
-`has_fix || has_blocked` check. If the redundancy is meant as defense in depth, keep it
-but add a test that fails when the invariant breaks.
-
-### WR-05: Wall-clock assertions make `a_cold_inbox_over_twenty_projects_is_under_a_second` flaky
-
-**File:** `tests/inbox_cli.rs:919-950`
-**Issue:** The test spawns the real binary, builds 20 projects of 15 phases each, and
-asserts `cold < 1 s` and `lib < 1 s`. Under `cargo test` the other test binaries run in
-parallel, the dev profile is unoptimized (the `Cargo.toml` change adds opt-level 3 for
-`regex` and friends to make this pass), and CI runners are slow and noisy. A pass on the
-author's machine does not predict a pass on a loaded runner, and a failure there reads
-as a product regression. A time bound also does nothing to catch the quadratic input in
-CR-01, which is the real performance hazard.
-**Fix:** Assert the work done instead of time: e.g. count parsed files via the existing
-cache-hit counter (a second scan must read nothing from disk), keep a generous bound
-(10 s) only as a hang detector, and add the adversarial-input test from CR-01.
+Then migrate `.continue-here.md`, STATE.md and ROADMAP.md in a follow-up, or at least record that those reads are outside the hardening.
 
 ## Info
 
-### IN-01: Stale `allow(dead_code)` attributes hide an unused production function
+### IN-01: `inbox::phase_key` orders decimal phases lexically, unlike the digest's own sort
 
-**File:** `src/state_reader/owner_items/markdown.rs:15` and `src/state_reader/owner_items/frontmatter.rs:281`
-**Issue:** Both attributes carry comments saying the callers "land in a later plan".
-`fm_list` now has callers in `verification.rs`, so its attribute is stale.
-`collect_section_stopping_at` (markdown.rs:273) has no caller outside its own test, and
-the module-wide `#![allow(dead_code)]` stops the compiler from saying so.
-**Fix:** Delete `fm_list`'s attribute, delete `collect_section_stopping_at` (or gate it
-with `#[cfg(test)]`), and replace the module-wide attribute with item-level ones where
-still needed.
+**File:** `src/inbox.rs:317-320` (used at `:683`, `:744`, `:1000`, and in the `entry_sections` and `push_groups` sorts)
 
-### IN-02: Item ids can collide after `terminal_capped` truncation
+**Issue:** `phase_key` returns `(leading integer, raw string)`. `2.10` and `2.9` both give `(2, ..)`, then the raw strings compare byte-wise, so `2.10` sorts before `2.9`. The digest sorts groups with `PhaseNum::parse` in `rules::sort_key`, which understands decimals. The text views re-sort with this weaker key, so the `inbox ALIAS`, `--lane` and `--all` section order differs from the D-20 order for decimal phases (inserted phases such as `6.1` to `6.10`). It also shadows the unrelated `phase_num::phase_key` that `rules.rs` imports, which is easy to confuse. The effect is cosmetic ordering only.
 
-**File:** `src/inbox.rs:85`
-**Issue:** `id` is `<basename>#<test>`; the discriminating suffix is at the end, and
-`terminal_capped` cuts at 200 characters. A file name longer than about 195 characters
-(legal up to 255) gives every item in it the same truncated id, breaking the
-"stable id" meaning of the field in the JSON schema.
-**Fix:** Truncate the basename part and keep the suffix, or build the id from
-`format!("{}#{}", cap(basename, 150), suffix)` before escaping.
+**Fix:** Sort with `PhaseNum::parse(phase)` as `rules::sort_key` does, for example `(PhaseNum::parse(phase).is_none(), PhaseNum::parse(phase), phase.to_owned())`. Rename the local helper so it no longer shares a name with `phase_num::phase_key`.
 
-### IN-03: `fix_phases` compares raw phase tokens, unlike every other phase comparison
+### IN-02: The 1 MiB cap makes an oversized artifact indistinguishable from an absent one in `disk_status`
 
-**File:** `src/state_reader/owner_items/rules.rs:604-611`
-**Issue:** The set key is `(workstream, group.phase)` as a string, while supersession,
-R7 and `has_open_uat_items` compare with `same_phase_token` (`01` equals `1`). Two phase
-directories that resolve to one roadmap phase (`01-alpha` and `1-alpha-extra`) would be
-counted as two fix phases.
-**Fix:** Normalize the key, e.g. use `PhaseNum::parse(&group.phase)` (falling back to the
-raw token) as the set element.
+**File:** `src/state_reader/disk_status.rs:431-470` (callers at `:876`, `:977`, `:1191`, `:1288`, `:1413`)
 
-### IN-04: The parse cache is bounded by entry count, not bytes
+**Issue:** `read_text_file` now returns an error for a file over 1 MiB. The callers collapse every error to "absent": `read_verification_status` returns `Missing`, `read_uat_status` returns the default, and a PLAN's superseded check is skipped. The owner reader keeps the distinction (`Unreadable::TooLarge`), so the same oversized VERIFICATION reads "unreadable" in the inbox and "no verification written" on the dashboard and in the router journal reason (`gate_verification_missing`). The router still parks, so this is not fail-open. The journal reason and the dashboard are just misleading, and an oversized PLAN skips its `status: superseded` check and counts as a surviving plan.
 
-**File:** `src/state_reader/owner_items/mod.rs:183-264`
-**Issue:** 8192 entries, each an `Arc<Parsed>` holding every item of a file of up to
-1 MiB. A single 1 MiB UAT yields roughly 200,000 items (the JSON for such a file is
-about 32 MB), so a hostile tree can pin gigabytes in the long-lived TUI process once the
-digest is wired in. The CLI exits, so it is unaffected today.
-**Fix:** Bound by an approximate weight (items or bytes) and clear when the total
-exceeds a budget, or cap the items kept per file.
-
-### IN-05: `inbox` reports zero pending todos when listing them failed
-
-**File:** `src/inbox_cli.rs:73` (also `:70` for the clock)
-**Issue:** `list_pending(&root).unwrap_or_default()` turns an I/O error into
-`todos_count: 0`, so the "Triage" fold and the `hidden.todos` count are silently
-wrong, the same fail-open direction as WR-02. `Utc::now()` is also taken once per
-project instead of once per run, so ages in one document can straddle a day boundary.
-**Fix:** Surface the error as a per-project warning or an error entry, and take `now`
-once in `run` and pass it to `read_entry`.
+**Fix:** For the status readers, read a bounded prefix (the frontmatter is at the top) instead of refusing the file. Or map a too-large error to the `Unparseable` verification status and an unknown UAT status, so it is not read as "not written".
 
 ---
 
-_Reviewed: 2026-11-14T13:40:00Z_
+_Reviewed: 2026-11-27T06:25:01Z_
 _Reviewer: Claude (gsd-code-reviewer)_
 _Depth: standard_
