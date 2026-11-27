@@ -716,7 +716,7 @@ fn detect_handoff(
 ) -> Option<HandoffFile> {
     // Try HANDOFF.json first
     let json_path = planning_dir.join("HANDOFF.json");
-    if let Ok(content) = std::fs::read_to_string(&json_path) {
+    if let Ok(content) = disk_status::read_text_file(&json_path) {
         if !content.trim().is_empty() {
             let mut handoff = HandoffFile {
                 context: None,
@@ -1005,7 +1005,9 @@ pub fn parse_project_state_with(
     // G0: a recorded pause. STATE.md's `paused_at` was read above; a non-empty
     // `HANDOFF.json` also records one, whether or not the dashboard reads it as
     // stale (#6431).
-    if std::fs::read_to_string(planning_dir.join("HANDOFF.json"))
+    // Read through the hardened reader: a FIFO or oversized file must not park or
+    // balloon the `inbox`/`status` parse of a project the user does not own (WR-02).
+    if disk_status::read_text_file(planning_dir.join("HANDOFF.json"))
         .is_ok_and(|content| !content.trim().is_empty())
     {
         state.pause_recorded = true;
@@ -1398,6 +1400,20 @@ mod tests {
 
         let state = pause(&[("STATE.md", "---\nstatus: executing\n---\n")]);
         assert!(!state.pause_recorded);
+    }
+
+    /// WR-02: a `HANDOFF.json` that is a FIFO (a hostile project tree) must not park
+    /// the reader: `inbox` and `status` parse every registered project.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_handoff_json_fifo_does_not_block_the_parse_and_records_no_pause() {
+        use crate::state_reader::driver_frontmatter::fifo_test_support::{mkfifo, within_5s};
+        let td = make_planning(&[("STATE.md", "---\nstatus: executing\n---\n")]);
+        let planning = td.path().join(".planning");
+        mkfifo(&planning.join("HANDOFF.json"));
+        let state = within_5s(move || parse_project_state(&planning));
+        assert!(!state.pause_recorded);
+        assert!(!state.paused);
     }
 
     #[test]
