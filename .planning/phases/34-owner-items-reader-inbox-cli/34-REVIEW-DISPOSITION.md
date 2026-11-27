@@ -3,18 +3,26 @@ phase: 34
 review: 34-REVIEW.md
 titles: json
 findings:
+  - id: WR-01
+    severity: warning
+    disposition: open
+    title: "A VERIFICATION with an unterminated or non-mapping frontmatter block still reads as clean (WR-02 fixed only half the class)"
+  - id: WR-02
+    severity: warning
+    disposition: open
+    title: "The new G0 `HANDOFF.json` read is an unbounded, blocking `read_to_string` in a reader this phase hardens against hostile project trees"
+  - id: IN-01
+    severity: info
+    disposition: open
+    title: "`inbox::phase_key` orders decimal phases lexically, unlike the digest's own sort"
+  - id: IN-02
+    severity: info
+    disposition: open
+    title: "The 1 MiB cap makes an oversized artifact indistinguishable from an absent one in `disk_status`"
   - id: CR-01
     severity: critical
     disposition: fixed
     title: "Quadratic fence rescan per heading in `deferred-items.md` hangs the reader on a hostile file"
-  - id: WR-01
-    severity: warning
-    disposition: fixed
-    title: "Containment check is vacuous above the final path component, so the reader follows a symlinked `phases/` or `workstreams/` out of the project"
-  - id: WR-02
-    severity: warning
-    disposition: fixed
-    title: "A VERIFICATION file whose frontmatter does not parse reads as clean"
   - id: WR-03
     severity: warning
     disposition: fixed
@@ -27,14 +35,6 @@ findings:
     severity: warning
     disposition: fixed
     title: "Wall-clock assertions make `a_cold_inbox_over_twenty_projects_is_under_a_second` flaky"
-  - id: IN-01
-    severity: info
-    disposition: fixed
-    title: "Stale `allow(dead_code)` attributes hide an unused production function"
-  - id: IN-02
-    severity: info
-    disposition: open
-    title: "Item ids can collide after `terminal_capped` truncation"
   - id: IN-03
     severity: info
     disposition: fixed
@@ -47,26 +47,26 @@ findings:
     severity: info
     disposition: open
     title: "`inbox` reports zero pending todos when listing them failed"
-open: 3
+open: 6
 total: 11
-recorded: 2026-11-14T19:40:47.730Z
+recorded: 2026-11-27T06:25:46.264Z
 ---
 
 # Phase 34: Code Review Disposition
 
 | Finding | Severity | Disposition | Source |
 |---------|----------|-------------|--------|
-| CR-01 | critical | fixed | 34-REVIEW-FIX.md |
-| WR-01 | warning | fixed | 34-REVIEW-FIX.md |
-| WR-02 | warning | fixed | 34-REVIEW-FIX.md |
-| WR-03 | warning | fixed | 34-REVIEW-FIX.md |
-| WR-04 | warning | fixed | 34-REVIEW-FIX.md |
-| WR-05 | warning | fixed | 34-REVIEW-FIX.md |
-| IN-01 | info | fixed | 34-REVIEW-FIX.md |
+| WR-01 | warning | open | - |
+| WR-02 | warning | open | - |
+| IN-01 | info | open | - |
 | IN-02 | info | open | - |
-| IN-03 | info | fixed | 34-REVIEW-FIX.md |
-| IN-04 | info | open | - |
-| IN-05 | info | open | - |
+| CR-01 | critical | fixed | 34-REVIEW-FIX.md (not in the current review) |
+| WR-03 | warning | fixed | 34-REVIEW-FIX.md (not in the current review) |
+| WR-04 | warning | fixed | 34-REVIEW-FIX.md (not in the current review) |
+| WR-05 | warning | fixed | 34-REVIEW-FIX.md (not in the current review) |
+| IN-03 | info | fixed | 34-REVIEW-FIX.md (not in the current review) |
+| IN-04 | info | open | - (not in the current review) |
+| IN-05 | info | open | - (not in the current review) |
 
 Dispositions: `open` (recorded, not yet triaged), `fixed`, `skipped`, `deferred`.
 Set `deferred` by hand and put the reason in the Source cell; both are preserved. A `|` in the reason is kept as prose and escaped on the next run.
