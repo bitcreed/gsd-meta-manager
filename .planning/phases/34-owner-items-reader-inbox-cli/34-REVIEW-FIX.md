@@ -26,7 +26,7 @@ Verification ran in the main checkout (`workflow.use_worktrees` was not used; no
 
 ## Fixed Issues
 
-### WR-01: A VERIFICATION with an unterminated or non-mapping frontmatter block still reads as clean
+### WR-01: A VERIFICATION with an unterminated or non-mapping frontmatter block still reads as clean (WR-02 fixed only half the class)
 
 **Files modified:** `src/state_reader/owner_items/frontmatter.rs`, `src/state_reader/owner_items/scan.rs`
 **Commit:** 765b137f
@@ -38,7 +38,7 @@ Verification ran in the main checkout (`workflow.use_worktrees` was not used; no
 - An empty or comment-only closed block stays clean: it holds nothing that could hide a check.
 - The review said to declare a divergence in the conformance oracle if upstream differs. The existing `owner_audit_conformance` and `owner_digest` tests still pass, so no divergence was declared. Whether upstream reads an unterminated VERIFICATION as `{}` was not independently checked. That is the reason for the human-verification flag.
 
-### WR-02: The G0 `HANDOFF.json` read is an unbounded, blocking `read_to_string`
+### WR-02: The new G0 `HANDOFF.json` read is an unbounded, blocking `read_to_string` in a reader this phase hardens against hostile project trees
 
 **Files modified:** `src/state_reader/mod.rs`
 **Commit:** dac7d825
