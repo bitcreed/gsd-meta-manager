@@ -231,9 +231,11 @@ pub(super) fn parse_document(kind: AuditKind, text: &str) -> Option<ParsedFile> 
             })
         }
         AuditKind::Verification => {
-            // A closed frontmatter block that does not parse is not "no status": the
-            // file may be hiding a pending check, so it is unreadable, never clean.
-            let Ok(map) = frontmatter::extract_checked(text) else {
+            // A damaged frontmatter block (unterminated, not a mapping, or YAML that
+            // does not parse) is not "no status": the file may be hiding a pending
+            // check, so it is unreadable, never clean. Only a file with no fence at
+            // all contributes nothing.
+            let Ok(map) = frontmatter::extract_strict(text) else {
                 return Some(ParsedFile {
                     status: "unknown".to_owned(),
                     source: Vec::new(),
@@ -933,6 +935,34 @@ mod tests {
         assert!(
             by_name("01-b-VERIFICATION.md").is_none(),
             "a parsed block without a status still contributes nothing"
+        );
+    }
+
+    #[test]
+    fn a_verification_with_an_unterminated_or_non_mapping_block_is_unreadable_not_clean() {
+        let dir = project();
+        let phase = dir.path().join(".planning/phases/01-alpha");
+        write(
+            &phase.join("01-VERIFICATION.md"),
+            "---\nstatus: human_needed\nhuman_verification:\n  - check the invoice PDF\n",
+        );
+        write(
+            &phase.join("01-b-VERIFICATION.md"),
+            "---\n- just\n- a list\n---\nbody\n",
+        );
+        write(
+            &phase.join("01-c-VERIFICATION.md"),
+            "no frontmatter at all\n",
+        );
+        let files = scan_of(dir.path());
+        let by_name = |name: &str| files.iter().find(|f| f.rel_path.ends_with(name));
+        for name in ["01-VERIFICATION.md", "01-b-VERIFICATION.md"] {
+            let damaged = by_name(name).unwrap_or_else(|| panic!("{name} is listed"));
+            assert_eq!(damaged.unreadable, Some(Unreadable::Io), "{name}");
+        }
+        assert!(
+            by_name("01-c-VERIFICATION.md").is_none(),
+            "no fence at all still contributes nothing"
         );
     }
 

@@ -110,11 +110,27 @@ pub(super) fn extract(text: &str) -> Mapping {
 /// from a closed block whose YAML did not parse (`Err`): a reader that must not read
 /// a damaged file as clean needs the difference.
 pub(super) fn extract_checked(text: &str) -> Result<Mapping, Unparseable> {
+    extract_with(text, false)
+}
+
+/// [`extract_checked`] for a reader that must not read any damaged header as clean
+/// (a VERIFICATION, whose header may be hiding a pending check): a block that opens
+/// but never closes, or closes around YAML that is not a mapping, is `Err` too. Only
+/// a text with no fence at all is `Ok`, empty.
+pub(super) fn extract_strict(text: &str) -> Result<Mapping, Unparseable> {
+    extract_with(text, true)
+}
+
+fn extract_with(text: &str, strict: bool) -> Result<Mapping, Unparseable> {
     let Some(fence) = locate_fence(text) else {
         return Ok(Mapping::new());
     };
     if !fence.closed {
-        return Ok(Mapping::new());
+        return if strict {
+            Err(Unparseable)
+        } else {
+            Ok(Mapping::new())
+        };
     }
     // The body loses its last newline; a final `key:` without one is a YAML error.
     let body = format!("{}\n", &text[fence.body]);
@@ -128,8 +144,10 @@ pub(super) fn extract_checked(text: &str) -> Result<Mapping, Unparseable> {
     });
     match parsed {
         Some(Value::Mapping(map)) => Ok(map),
-        Some(_) => Ok(Mapping::new()),
-        None => Err(Unparseable),
+        // An empty block (or one of only comments) holds nothing to hide.
+        Some(Value::Null) => Ok(Mapping::new()),
+        Some(_) if !strict => Ok(Mapping::new()),
+        Some(_) | None => Err(Unparseable),
     }
 }
 
@@ -401,6 +419,22 @@ mod tests {
     #[test]
     fn an_unterminated_block_is_empty() {
         assert!(extract("---\nstatus: complete\nno closing fence\n").is_empty());
+    }
+
+    #[test]
+    fn strict_extraction_refuses_an_unterminated_or_non_mapping_block() {
+        assert_eq!(
+            extract_strict("---\nstatus: x\nno closer\n"),
+            Err(Unparseable)
+        );
+        assert_eq!(extract_strict("---\n- a\n- b\n---\n"), Err(Unparseable));
+        assert_eq!(extract_strict("---\njust text\n---\n"), Err(Unparseable));
+        assert!(extract_strict("no fence\n").is_ok_and(|map| map.is_empty()));
+        assert!(extract_strict("---\n---\nbody").is_ok_and(|map| map.is_empty()));
+        assert!(extract_strict("---\nstatus: x\n---\n").is_ok_and(|map| !map.is_empty()));
+        // The lenient reader keeps its contract.
+        assert!(extract_checked("---\nstatus: x\nno closer\n").is_ok_and(|map| map.is_empty()));
+        assert!(extract_checked("---\n- a\n---\n").is_ok_and(|map| map.is_empty()));
     }
 
     #[test]
